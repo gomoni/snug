@@ -2229,10 +2229,25 @@ non-allowlisted hosts and any literal IP), or carried as a known gap with
 severity? Until it is closed, no broker milestone may claim exfiltration is
 closed by construction.
 
-**Q9 — should `--dry-run` stop starting things?** (§1.2a.) Moving the `cfg.dryRun`
-branch above `startIdentity`/`startContainers` costs the dry run its ability to
-show the *actual* socket paths and the staged `hosts.yml` entry. Trade the
-fidelity for the claim, or keep the fidelity and change the claim?
+**Q9 — should `--dry-run` stop starting things? ANSWERED, and neither option as
+posed.** A third shape was built: the branch was not moved above
+`startIdentity`/`startContainers`, and the fidelity was not traded. Both take a
+plan-without-starting argument instead, so the socket paths and the staged
+`hosts.yml` entry are still the real ones while nothing is started.
+
+The promise is one predicate — `config.startsNothing()`,
+`internal/cli/main.go:73`, `dryRun || explain` — and it is the ONE place that
+decides it, which is what lets a second screen (`--explain`) inherit the claim
+rather than re-derive it. Its own doc names the failure this replaced: eight
+separate `!cfg.dryRun` guards, where one missed site is not a cosmetic bug but a
+screen claiming it started nothing while holding a socket on the host.
+
+The guards, all of them: the target lock and the orphan sweep
+(`internal/cli/main.go:466`), the host tmp directory — NAMED, not created
+(`:511`), the git probe (`:529`), the runtime directory (`:631`), the identity
+proxy (`:660`), the container engine (`:666`), the http door sockets (`:699`),
+and the resolver warning. A ninth guard added tomorrow gets that method by name
+or it is wrong for `--explain`, and the compiler cannot say which.
 
 **Q10 — the residual of D3: how many adapters, ever?** D3 settled on a *bar*
 rather than a numeric cap, for the reasons in its closing paragraph. What it did

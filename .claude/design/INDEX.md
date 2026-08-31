@@ -487,7 +487,9 @@ This is a monotonicity-adjacent property, and worth naming: **the trusted profil
 
 #### DESIGNED, NOT BUILT — the explicit-config gate
 
-Everything from here to the end of §2.7 describes machinery that **does not exist**. There is no `--config` flag, no `SNUG_CONFIG`, and no privileged-grant classifier; `Profile.Trusted` is set and never read. The residual gap is https://github.com/gomoni/snug/issues/27 and is stated in CLAUDE.md invariant 3: `$XDG_CONFIG_HOME` is trusted unconditionally, so pointing that variable into a checked-out repository does load that repository's profiles. Low severity — it is the host user's own environment variable, not something the sandboxed process controls — but **do not cite §2.7 as a gate that exists.**
+Everything from here to the end of §2.7 describes machinery that **does not exist**. There is no `--config` flag, no `SNUG_CONFIG`, and no privileged-grant classifier. `Profile.Trusted` (`internal/policy/profile.go:131`) is assigned in `internal/profile/file.go:350` and read nowhere, which a grep for the identifier confirms in one command — that grep, not this paragraph, is the check.
+
+The behaviour is therefore: `$XDG_CONFIG_HOME` is trusted unconditionally (`ConfigDirs`, `internal/profile/file.go:643-655`), so pointing that variable into a checked-out repository does load that repository's profiles. Low severity — it is the host user's own environment variable, not something the sandboxed process controls — but **do not cite §2.7 as a gate that exists.** CLAUDE.md invariant 3 is where the real rule lives, and it states the real behaviour.
 
 The intended shape, kept because it is still the answer:
 
