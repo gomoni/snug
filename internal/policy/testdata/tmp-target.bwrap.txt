@@ -10,17 +10,18 @@
 --die-with-parent
 --cap-drop ALL
 --perms 0755
---dir /etc
---perms 0755
 --dir /home
---ro-bind /opt /bin
+--symlink usr/bin /bin
 --dev /dev
 --remount-ro /dev
 --size 1073741824
 --tmpfs /dev/shm
+--ro-bind /etc /etc
+--ro-bind-try /opt /opt
 --proc /proc
 --size 1073741824
 --tmpfs /tmp
+--ro-bind /usr /usr
 --ro-bind-data 10 /etc/resolv.conf
 --size 1073741824
 --tmpfs /home/u
@@ -29,17 +30,22 @@
 --ro-bind-data 13 /proc/keys
 --ro-bind /proc/sys /proc/sys
 --size 1073741824
+--tmpfs /tmp/t
+--size 1073741824
 --tmpfs /home/u/.cache
 --size 1073741824
 --tmpfs /home/u/.config
 --size 1073741824
 --tmpfs /home/u/.local
---ro-bind /home/u/proj /home/u/proj
+--size 1073741824
+--tmpfs /tmp/t/001
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind /home/u/proj/sub /home/u/proj/sub
+--size 1073741824
+--tmpfs /tmp/t/001/proj
+--bind /tmp/t/001/proj/sub /tmp/t/001/proj/sub
 --remount-ro /
 --clearenv
 --setenv HOME /home/u
@@ -48,13 +54,13 @@
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /bin/sh
 --setenv SNUG 1
---setenv SNUG_PROFILES @cwd-rw,@home,@parent-ro,runtime-bin
---setenv SNUG_TARGET /home/u/proj/sub
+--setenv SNUG_PROFILES @cwd-rw,@home,@sys
+--setenv SNUG_TARGET /tmp/t/001/proj/sub
 --setenv TMPDIR /tmp
 --setenv USER u
 --setenv XDG_CACHE_HOME /home/u/.cache
 --setenv XDG_CONFIG_HOME /home/u/.config
 --setenv XDG_DATA_HOME /home/u/.local/share
 --setenv XDG_STATE_HOME /home/u/.local/state
---chdir /home/u/proj/sub
+--chdir /tmp/t/001/proj/sub
 -- /bin/sh

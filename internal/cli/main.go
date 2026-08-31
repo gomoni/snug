@@ -676,6 +676,13 @@ func run(cfg config) int {
 	// breaks if that ever stops being true.
 	defer ctr.cleanup()
 
+	// The post-Resolve mounts above create ancestors of their own — the staged
+	// gh hosts.yml is the first mount under {home}/.config/gh — so the anchor
+	// set is recomputed here rather than left as Resolve computed it. It is
+	// idempotent (anchor.go), so this is an addition and never a change to what
+	// Resolve already installed.
+	pol.InstallAnchors()
+
 	// Re-validate. Everything above this line ADDS mounts to a policy Resolve
 	// already validated — the staged Claude credentials, the generated gh
 	// hosts.yml, the ssh-agent and container proxy sockets — and it does so after

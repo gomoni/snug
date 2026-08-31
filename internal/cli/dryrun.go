@@ -172,6 +172,20 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 		}
 	}
 	fmt.Fprintf(out, "  %-6s %s\n", "ro-/", "everything else is a read-only skeleton (--remount-ro /)")
+	// The header one screen up says every line is a grant. An anchor is the one
+	// row for which that is not true, so it says so HERE rather than leaving a
+	// reader to assume some profile asked for an empty tmpfs at their project's
+	// parent. Printed only when there is one, so the common screen does not
+	// carry an explanation of something absent from it.
+	for _, m := range rep.Mounts {
+		if !m.Anchor {
+			continue
+		}
+		for _, frag := range wrapMark("  ← " + policy.AnchorNote) {
+			fmt.Fprintln(out, frag)
+		}
+		break
+	}
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden;")

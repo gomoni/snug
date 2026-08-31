@@ -34,6 +34,10 @@
 --size 1073741824
 --tmpfs /home/u/.config
 --size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/proj
+--size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state

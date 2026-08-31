@@ -638,6 +638,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		From:    []string{"(snug)"},
 	})
 
+	// The LAST mount write in Resolve, and it has to be: an anchor is computed
+	// from the finished mount set, and the generated KindData files above create
+	// ancestors that need one ({home}/.ssh from the identity config, {home}/.claude
+	// from @claude's settings). It runs before the environment because sanitise
+	// and HasStagedBin read the mount set (issue #553).
+	p.InstallAnchors()
+
 	// 5. The environment is reconstructed, not filtered. --clearenv discards the
 	//    host's, and each variable below is set explicitly.
 	//

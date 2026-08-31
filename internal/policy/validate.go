@@ -1236,6 +1236,19 @@ func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
 		if m.Kind != KindTmpfs {
 			continue
 		}
+		// An anchor is not what this rule is about, and without this arm every
+		// home-rooted target below the first level would be refused: the anchor
+		// at the target's parent (anchor.go, issue #553) would equal `parent`
+		// on every default run. An anchor is placed ONLY where the deepest cover
+		// is ALREADY a tmpfs, so it never converts a persistent parent into an
+		// ephemeral one — the parent was ephemeral before the anchor and is
+		// ephemeral after it, and whichever grant made it so is still in this
+		// loop under its own name. This rule asks whether a PROFILE provides the
+		// target's parent as an empty tmpfs, which is what its message says
+		// ("which %s provides") and what the fix it prints acts on.
+		if m.Anchor {
+			continue
+		}
 		// Only ephemeral directories rooted at the home. snug's own /tmp is a
 		// tmpfs and a /tmp target must keep working.
 		if !covers(p.Home, m.Guest) {

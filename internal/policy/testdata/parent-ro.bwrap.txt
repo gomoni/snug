@@ -33,6 +33,8 @@
 --tmpfs /home/u/.cache
 --size 1073741824
 --tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local
 --ro-bind /home/u/proj /home/u/proj
 --size 1073741824
 --tmpfs /home/u/.local/share

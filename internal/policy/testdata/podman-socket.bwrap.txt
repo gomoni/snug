@@ -60,6 +60,10 @@
 --tmpfs /home/u/.cache
 --size 1073741824
 --tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/proj
 --perms 0755
 --ro-bind-data 11 /snug/bin/podman
 --size 1073741824
