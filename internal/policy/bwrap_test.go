@@ -73,6 +73,16 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// Every other golden here is the interactive shape (testCtx), so the
 		// pair is what shows the flag tracks the run and not the profile.
 		{"no-terminal", testDefaults, noTerminalCtx(), nil},
+		// The review artifact for #553's /tmp half: t.TempDir() nests three
+		// levels under snug's own private /tmp tmpfs, which is exactly the
+		// layout every integration test in this tree builds its target on
+		// (sandbox_test.go's target()) — and no prior golden here put a
+		// target anywhere under /tmp, so the anchors #553 adds at
+		// /tmp/t/001/proj were invisible to argv review until this case
+		// existed. The three reviewable rows are the anchors at /tmp/t,
+		// /tmp/t/001 and /tmp/t/001/proj, emitted depth-ascending and each
+		// an empty (snug anchor) tmpfs, before the target's own rw bind.
+		{"tmp-target", testDefaults, tmpTargetCtx(), func() *fakeEnv { return envWith("/tmp/t/001/proj/sub") }},
 	}
 
 	for _, tc := range cases {
@@ -265,6 +275,15 @@ func TestTheNoTerminalReasonIsExactlyTheEmptyDescriptorSet(t *testing.T) {
 func noTerminalCtx() Context {
 	ctx := testCtx()
 	ctx.StdioTerminals = 0
+	return ctx
+}
+
+// tmpTargetCtx is testCtx with the target moved under /tmp, three levels
+// deep — the shape t.TempDir() produces and the one the integration suite
+// actually runs against (see the "tmp-target" golden case above).
+func tmpTargetCtx() Context {
+	ctx := testCtx()
+	ctx.Target = "/tmp/t/001/proj/sub"
 	return ctx
 }
 

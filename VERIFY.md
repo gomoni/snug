@@ -1133,9 +1133,48 @@ default selection is `@sys @home @cwd-rw`:
 ```
 
 Expect exactly `sub`, and **no `sibling`**. The parent path exists inside only
-because the target has to be mounted somewhere — it is the skeleton `bwrap`
-creates for the mount point, not a grant of the parent. The sibling is not
+because the target has to be mounted somewhere — it is an empty tmpfs snug
+mounts there (an *anchor*, below), not a grant of the parent. The sibling is not
 hidden by a rule; it was never granted, so there is nothing there to deny.
+
+**The ancestors cannot be renamed out from under the target** (issue #553).
+`rename(2)` refuses only when the dentry being renamed IS a mount point, so
+without an anchor a payload renames the *parent*, the target's mount travels
+with it, and the freed path is recreated as the payload's own directory — after
+which `$SNUG_TARGET`, and a human's `snug attach`, read payload-authored content
+while every screen still prints the real project path.
+
+```bash
+./bin/snug $SC/proj/sub -- /bin/sh -c '
+  echo "before: $(cat "$SNUG_TARGET/marker" 2>/dev/null)"
+  cd "$(dirname "$SNUG_TARGET")/.."
+  mv "$(basename "$(dirname "$SNUG_TARGET")")" hidden || echo RENAME-REFUSED'
+```
+
+Expect the control read to succeed and then
+
+```
+mv: cannot move 'proj' to 'hidden': Device or resource busy
+RENAME-REFUSED
+```
+
+The same holds one rung further up, which is the rung nothing anchored before —
+`@parent-ro` binds the parent, so #553's second reproduction went for the
+GRANDparent:
+
+```bash
+./bin/snug -p @parent-ro $SC/proj/sub -- /bin/sh -c "cd $SC && mv proj proj2"
+```
+
+Expect `mv: cannot move 'proj' to 'proj2': Device or resource busy`.
+
+Anchors are visible on the `--dry-run` FILESYSTEM block as `tmpfs` rows with the
+provenance `(snug anchor)`, with a trailer saying they grant nothing: the
+payload could already write those paths through the tmpfs covering them. What
+is NOT anchored is an ancestor covered by a read-WRITE bind — an empty tmpfs
+there would hide real host content — so a profile granting `rw` over a
+directory containing the target keeps the rename, and it lands on the host,
+which is what an `rw` grant of a tree means.
 
 Ask for it and it is there:
 
@@ -3118,9 +3157,13 @@ What to check:
 
 1. The row is marked. Before #223 it rendered as a bare `ro /tmp @parent-ro`,
    indistinguishable from any other read-only bind.
-2. **The writable surface is eight for this run, not the nine the same target
-   gets without the profile** (`snug --explain`: "21 paths read-only, 8 writable"
-   against "20 paths read-only, 9 writable"). `/tmp` is the host's and read-only.
+2. **The writable surface is one LOWER for this run than the same target gets
+   without the profile** (`snug --explain`: "21 paths read-only, 9 writable"
+   against "20 paths read-only, 10 writable"). `/tmp` is the host's and read-only.
+   Read the difference, not the absolute numbers: both counts include the
+   anchors snug mounts at tmpfs-covered ancestors (issue #553), so they grow
+   with how deep a target the human named — the same layout one level deeper
+   reads "20 paths read-only, 12 writable".
    That is the whole point of the mark: a guarantee that quietly stopped holding.
 3. An ordinary target gets **no** mark:
 

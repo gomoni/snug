@@ -47,6 +47,10 @@
 --file 14 /home/u/.claude.json
 --size 1073741824
 --tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/proj
 --ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
 --ro-bind-data 15 /home/u/.claude/CLAUDE.md
 --perms 0600

@@ -246,6 +246,34 @@
       "size_bytes": 1073741824
     },
     {
+      "guest": "/home/u/.local",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "(snug anchor)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824
+    },
+    {
+      "guest": "/home/u/proj",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "(snug anchor)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824
+    },
+    {
       "guest": "/home/u/.local/share",
       "host": "",
       "kind": "tmpfs",
@@ -763,6 +791,14 @@
       "1073741824",
       "--tmpfs",
       "/home/u/.config",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.local",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/proj",
       "--size",
       "1073741824",
       "--tmpfs",

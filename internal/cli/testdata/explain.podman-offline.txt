@@ -15,7 +15,7 @@ away, so adding a profile can only ever make the sandbox see more, and the way
 to see less is to select fewer.
 
 FILESYSTEM
-  The root is an empty tmpfs. It has 10 paths read-only, 9 writable, and
+  The root is an empty tmpfs. It has 10 paths read-only, 11 writable, and
   1 file snug generates itself rather than binding from your host.
   Everything else on this machine is not missing by a rule — it was never
   granted, so there is nothing there to deny.
@@ -25,8 +25,10 @@ FILESYSTEM
     /home/u
     /home/u/.cache
     /home/u/.config
+    /home/u/.local
     /home/u/.local/share
     /home/u/.local/state
+    /home/u/proj
     /home/u/proj/sub
     /proc
     /tmp

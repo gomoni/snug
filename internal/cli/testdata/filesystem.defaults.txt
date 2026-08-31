@@ -5,19 +5,38 @@ FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)
   link   /lib64 -> usr/lib64                            @sys
   proc   /proc                                          (snug)
   link   /sbin -> usr/sbin                              @sys
-  tmpfs  /tmp                                           (snug)
+  tmpfs  /tmp (max 1 GiB)                               (snug)
   ro     /usr                                           @sys
   ro     /etc/group                                     @sys
   ro     /etc/ld.so.cache                               @sys
   ro     /etc/ld.so.conf                                @sys
-  ro     /etc/nsswitch.conf                             @sys
+  ro     /etc/nsswitch.conf                             @sys (optional)
   ro     /etc/passwd                                    @sys
   data   /etc/resolv.conf                               (snug)
-  tmpfs  /home/u                                        @home
-  tmpfs  /home/u/.cache                                 @home
-  tmpfs  /home/u/.config                                @home
-  ro     /home/u/proj                                   @parent-ro
-  tmpfs  /home/u/.local/share                           @home
-  tmpfs  /home/u/.local/state                           @home
+  tmpfs  /home/u (max 1 GiB)                            @home
+  data   /proc/config.gz                                (snug)
+                     ← replaced with an EMPTY file — the host's copy is the
+                       complete host kernel config — an exploit-selection oracle
+  data   /proc/key-users                                (snug)
+                     ← replaced with an EMPTY file — the host's copy is the host
+                       user's keyring accounting
+  data   /proc/keys                                     (snug)
+                     ← replaced with an EMPTY file — the host's copy is the host
+                       user's live keyring (keyctl is already seccomp-denied)
+  ro     /proc/sys                                      (snug)
+                     ← read-only: the write side is snug's own mount now, not a
+                       capability check snug does not own. Reads are unchanged,
+                       and namespace-scoped values are still this sandbox's
+  tmpfs  /home/u/.cache (max 1 GiB)                     @home
+  tmpfs  /home/u/.config (max 1 GiB)                    @home
+  tmpfs  /home/u/.local (max 1 GiB)                     (snug anchor)
+  tmpfs  /home/u/proj (max 1 GiB)                       (snug anchor)
+  tmpfs  /home/u/.local/share (max 1 GiB)               @home
+  tmpfs  /home/u/.local/state (max 1 GiB)               @home
   rw     /home/u/proj/sub                               @cwd-rw
   ro-/   everything else is a read-only skeleton (--remount-ro /)
+                     ← (snug anchor) rows are snug's own empty tmpfs at an
+                       ancestor of a grant. They hold nothing and grant nothing
+                       — the payload could already write that path through the
+                       tmpfs covering it — and they exist so it cannot rename
+                       the path out from under a mount (issue #553).

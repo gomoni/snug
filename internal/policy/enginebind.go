@@ -58,6 +58,30 @@ import (
 //     with Access == AccessRW covers P; otherwise C_i is anchored and the
 //     walk continues.
 //
+// # Anchors satisfy case 3, and they satisfy it MORE than an ordinary bind
+//
+// An anchor (anchor.go, issue #553) is a KindTmpfs snug mounts at an ancestor
+// of another mount, so it is a mount root and case 2 stops firing for a name
+// underneath it. That is the removal of a statement that has BECOME FALSE, not
+// a loosening: case 2's message says the name can be replaced with a symlink
+// after this check, and with the anchor in place mv and ln -s onto it return
+// EBUSY. Printing it anyway would be a refusal whose stated reason is wrong.
+//
+// Case 3 then decides, and for an anchor its residual worry is structurally
+// absent. M4 is about a SECOND ROUTE to the same underlying directory entry —
+// a host directory reachable both through this sandbox's mount and through a
+// read-write bind of the same tree. An anchor's dentry lives in a tmpfs snug
+// created for this run; there is no host filesystem behind it and no other
+// route to it. rwBindCovers still guards the parent, which is the conservative
+// direction and is what keeps a source under @tmp-shared's rw /tmp refused.
+//
+// This rule reads the engine's view as DERIVED from the sandbox's, and an
+// anchor is in it: the engine's mount namespace is built by open_tree on the
+// host path, setns into THIS sandbox's mount namespace, then unshare
+// (ENGINE-NETNS.md §5.1, measured — "the rest of the host tree is not there;
+// the sandbox's own grants are"). An anchor is therefore a boundary over there
+// too, and not a name that means one thing here and the host's directory there.
+//
 // Two premises this rule depends on, both measured rather than assumed:
 //
 //   - the root of the sandbox is a plain tmpfs that nothing granted covers,

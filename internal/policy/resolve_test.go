@@ -488,7 +488,32 @@ func TestResolveIsMonotone(t *testing.T) {
 					ProcfsClosuresSkipped(with) && !ProcfsClosuresSkipped(basePol) {
 					continue
 				}
+				// AN ANCHOR IS NOT A GRANT, and this loop is about grants.
+				//
+				// An anchor (anchor.go, issue #553) is derived from the finished
+				// mount set: snug's own empty tmpfs at an ancestor of a mount
+				// whose cover is a tmpfs. A profile that binds that ancestor —
+				// or anything between it and the tmpfs — makes the derivation
+				// stop applying, so the anchor is gone from the richer policy.
+				// Nothing a profile granted was removed; what was there was an
+				// empty ephemeral directory snug created, and the path is more
+				// visible afterwards, not less.
+				if was.Anchor {
+					continue
+				}
 				t.Errorf("adding %q REMOVED the grant at %s — profiles must only relax", name, guest)
+				continue
+			}
+			// Same exception, the other arm: `@parent-ro` puts a READ-ONLY bind
+			// of the real parent where the base selection had an anchor, which
+			// reads as rw -> ro at that guest. The write it takes away is write
+			// to an empty tmpfs that holds nothing and evaporates at teardown,
+			// and it was already taken away before anchors existed — the parent
+			// was covered by @home's tmpfs, so the same path went from writable
+			// to read-only with no mount keyed there for this loop to see. The
+			// anchor made a pre-existing effective weakening representable; it
+			// did not introduce one.
+			if was.Anchor {
 				continue
 			}
 			if now.Access < was.Access {

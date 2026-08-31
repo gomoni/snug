@@ -201,6 +201,22 @@ type Mount struct {
 	// last sentence.
 	Authored bool
 
+	// Anchor marks one of Authored's own kind with a narrower job: an empty
+	// tmpfs snug mounts at an ancestor of another mount purely so that the name
+	// cannot be renamed away (anchor.go, issue #553). It grants nothing — the
+	// payload could already read, traverse and write that path through the
+	// tmpfs covering it — and it holds nothing.
+	//
+	// It is a FIELD on a KindTmpfs rather than a Kind of its own, and the
+	// difference is measured in silent wrong answers. A new Kind has to be
+	// taught to every switch that has a default arm, and three of those
+	// defaults fail unsafely: payloadWritable would call an anchor unwritable,
+	// IsShadowSlot would stop reporting a directory under one as a shadow slot,
+	// and Kind.String would render it as "bind". With Kind == KindTmpfs every
+	// existing switch keeps giving the tmpfs answer, which is the true one, and
+	// exactly one rule — rejectTargetInAnEphemeralDirectory — reads the flag.
+	Anchor bool
+
 	// HostDestExists states a FACT the caller measured, not a permission: the
 	// file at this mount's guest path ALREADY EXISTS on the host. It matters for
 	// exactly one thing — a KindData mount rendered as bwrap's --ro-bind-data
@@ -610,7 +626,17 @@ func (p *Policy) Implied() []ProfileName {
 // Mount.Authored true of exactly the things snug wrote.
 func (p *Policy) Replace(m Mount) {
 	m.Authored = true
-	if old, ok := p.Mounts[m.Guest]; ok {
+	// An ANCHOR is not recorded as displaced, and that is not tidying. This
+	// provenance exists so a human reading --dry-run sees that a GRANT of
+	// theirs was superseded rather than quietly ignored (@git-ro's bind of
+	// ~/.gitconfig under an identity profile). An anchor is snug's own empty
+	// tmpfs at an ancestor (anchor.go), holds nothing, and nobody selected it —
+	// so "replaces:(snug anchor)" would attach a displacement notice to a
+	// generated file for having landed where nothing was. Measured on the
+	// refusals golden: `@claude` staging .claude.json over an anchor rendered
+	// as "from @claude+replaces:(snug anchor)" inside a refusal about a
+	// completely different grant.
+	if old, ok := p.Mounts[m.Guest]; ok && !old.Anchor {
 		m.From = append(append([]string{}, m.From...),
 			"replaces:"+strings.Join(old.From, "+"))
 	}

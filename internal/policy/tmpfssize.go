@@ -3,10 +3,16 @@ package policy
 import "fmt"
 
 // DefaultTmpfsSize is the bound applied to every snug-controlled tmpfs when
-// the user's config names none. 1 GiB per mount, which on the default
-// selection is six mounts — five from base.toml's [profile.home] plus /tmp —
-// so a worst case near 6 GiB of pinned page cache. Read the count from
-// internal/profile/profiles/base.toml, never from this comment.
+// the user's config names none. 1 GiB per mount, and the WORST CASE IS PER
+// RUN rather than a number this comment can hold: the mounts are base.toml's
+// [profile.home] tmpfs list, /tmp, and one anchor per tmpfs-covered ancestor
+// of a mount (anchor.go), so the count grows with how deep a target the human
+// named. `snug --dry-run` enumerates them; read it there, never from a comment
+// or from base.toml alone.
+//
+// The multiplier is under the same control tmpfs_size_mib already is: a
+// payload cannot deepen the mount set, because an anchor is derived from a
+// policy resolved before the sandbox exists.
 const DefaultTmpfsSize uint64 = 1 << 30
 
 // tmpfsSize substitutes DefaultTmpfsSize for an unset (zero) preference. It is
