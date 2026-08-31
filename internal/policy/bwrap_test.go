@@ -181,7 +181,9 @@ func TestBwrapArgsAreOrderIndependent(t *testing.T) {
 // Ancestors must be emitted before descendants, or a read-only parent bind
 // shadows the writable child and the sandbox silently loses its project.
 func TestParentBindPrecedesChildBind(t *testing.T) {
-	p := mustResolveDefaults(t)
+	// Needs a parent bind, so it names @parent-ro: since issue #550 the
+	// default selection has none, which is the whole point of that change.
+	p := mustResolve(t, withParentRo()...)
 	args := p.BwrapArgs(1000, 1000)
 
 	parent, child := -1, -1

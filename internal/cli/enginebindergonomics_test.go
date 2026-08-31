@@ -34,11 +34,14 @@ import (
 //     graft is a fixed root, never a tail (issue #284 reopened through it
 //     otherwise) — but the fix it now offers is uniform: bind the target
 //     itself and address the subdirectory inside the container.
-//   - CheckEngineBindSource, asked about the bare target directly, still
-//     accepts it exactly while @parent-ro's own bind sits directly inside a
-//     mount root (true two levels below $HOME and under $TMPDIR/<dir>/, false
-//     at three) — a fact about the fallback rule, superseded for the real
-//     proxy path by the graft.
+//   - CheckEngineBindSource, asked about the bare target directly, accepts it
+//     exactly while a BIND covers the target's parent — which since issue #550
+//     means exactly while @parent-ro is selected. It is not in the defaults any
+//     more, so the `sel` column is the whole point of the table: the same
+//     layout accepts under `defaults + @parent-ro` and refuses under
+//     `defaults`. A fact about the fallback rule, superseded for the real proxy
+//     path by the graft, and the reason a user forwarding a SIBLING directory
+//     (which the graft does not cover) is told to select @parent-ro.
 func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 	// Extra fixture directories for the deeper layouts. envFakeEnv's own set
 	// stops at /home/u/proj/sub, and Resolve refuses a target it cannot stat.
@@ -49,9 +52,13 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 		"/tmp/build-123", "/tmp/build-123/proj",
 	}
 
+	withParent := append(profile.BuiltinDefaults(), "@parent-ro")
 	cases := []struct {
 		name   string
 		target string
+		// sel is the profile selection this row resolves, before
+		// @podman-socket is added. nil means the shipped defaults.
+		sel []policy.ProfileName
 		// wantRoot is whether `-v $SNUG_TARGET:/work` is accepted. wantInside
 		// is not a field: a path inside the target is refused in EVERY row,
 		// which is the point, and writing it per-case would let a future edit
@@ -63,13 +70,27 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 		why string
 	}{
 		{
-			name:     "two levels below $HOME: @parent-ro binds /home/u/proj, directly in the home tmpfs",
+			name:     "two levels below $HOME, defaults: nothing binds /home/u/proj",
 			target:   "/home/u/proj/sub",
+			wantRoot: false,
+			why:      "/home/u/proj",
+		},
+		{
+			name:     "the same layout with -p @parent-ro: its bind anchors the parent",
+			target:   "/home/u/proj/sub",
+			sel:      withParent,
 			wantRoot: true,
 		},
 		{
 			name:     "two levels below $HOME, different spelling",
 			target:   "/home/u/src/proj",
+			wantRoot: false,
+			why:      "/home/u/src",
+		},
+		{
+			name:     "different spelling, with -p @parent-ro",
+			target:   "/home/u/src/proj",
+			sel:      withParent,
 			wantRoot: true,
 		},
 		{
@@ -85,8 +106,15 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 			why:      "/home/u/x",
 		},
 		{
-			name:     "under $TMPDIR, @parent-ro's bind directly in the /tmp tmpfs",
+			name:     "under $TMPDIR, defaults: /tmp is snug's own tmpfs and nothing binds build-123",
 			target:   "/tmp/build-123/proj",
+			wantRoot: false,
+			why:      "/tmp/build-123",
+		},
+		{
+			name:     "under $TMPDIR, with -p @parent-ro",
+			target:   "/tmp/build-123/proj",
+			sel:      withParent,
 			wantRoot: true,
 		},
 	}
@@ -105,7 +133,11 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 				Target: tc.target, Home: "/home/u",
 				Shell: "/usr/bin/bash", Command: []string{"/bin/sh"},
 			}
-			sel := append(profile.BuiltinDefaults(), "@podman-socket")
+			base := tc.sel
+			if base == nil {
+				base = profile.BuiltinDefaults()
+			}
+			sel := append(append([]policy.ProfileName{}, base...), "@podman-socket")
 			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, env)
 			if err != nil {
 				t.Fatalf("Resolve(target=%s): %v", tc.target, err)

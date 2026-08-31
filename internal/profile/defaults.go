@@ -10,8 +10,25 @@ import "github.com/gomoni/snug/internal/policy"
 // `snug profile tree` and in every Mount's provenance as though it were a hole
 // in the sandbox, and it duplicated an idea `config.toml` already expressed.
 //
-// The list is chosen so that snug is usable by just running it: a shell, the
-// target writable, its parent readable, nothing else.
+// The list is chosen so that snug is usable by just running it: a shell and the
+// target writable, nothing else.
+//
+// `@parent-ro` IS NOT HERE, AND THAT IS THE POINT OF THE LIST. Every name in it
+// has a blast radius fixed by the grant itself: `@sys` is a fixed enumeration,
+// `@home` is an empty tmpfs, `@cwd-rw` is the directory the user named. The
+// target's PARENT is a directory the user did NOT name, and what it holds is a
+// property of their layout — every sibling project, their .git/config, their
+// .env files, and any socket or FIFO sitting in the tree (issues #287 and #296
+// are the escapes that shape found). A grant nobody asked for cannot be the one
+// that is always on.
+//
+// What it costs, stated rather than papered over: a target one level below a
+// repository root (`snug ~/src/proj/sub`) no longer sees the `.git` above it,
+// and needs `snug -p @parent-ro ~/src/proj/sub`. The profile still ships and
+// that one word is the whole fix. It is not made a default again on the git
+// argument, because the grant answers that argument badly in both directions —
+// a target two levels below the root still misses `.git`, and a target one
+// level below is handed every sibling of the repository as well.
 //
 // It deliberately does NOT include `@net`. "Make it usable out of the box" is
 // exactly the pressure that would push networking in here later, and it must be
@@ -49,5 +66,5 @@ import "github.com/gomoni/snug/internal/policy"
 // is why the conversion sweep in internal/cli looks for ProfileName(x) rather than
 // for every place a name is written down.
 func BuiltinDefaults() []policy.ProfileName {
-	return []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
+	return []policy.ProfileName{"@sys", "@home", "@cwd-rw"}
 }

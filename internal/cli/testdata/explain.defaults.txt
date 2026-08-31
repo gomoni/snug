@@ -9,13 +9,13 @@ because a tool that prints an absolute path inside should print one that means
 the same thing outside.
 
 Selected profiles:
-  @sys @home @cwd-rw @parent-ro
+  @sys @home @cwd-rw
 A profile only ever GRANTS. There is no rule anywhere that takes something
 away, so adding a profile can only ever make the sandbox see more, and the way
 to see less is to select fewer.
 
 FILESYSTEM
-  The root is an empty tmpfs. It has 12 paths read-only, 9 writable, and
+  The root is an empty tmpfs. It has 11 paths read-only, 9 writable, and
   4 files snug generates itself rather than binding from your host.
   Everything else on this machine is not missing by a rule — it was never
   granted, so there is nothing there to deny.

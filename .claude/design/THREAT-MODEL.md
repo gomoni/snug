@@ -54,8 +54,9 @@ that keeps some slice of host state out of the sandbox unless a profile — a
 That means `~/.ssh`, `~/.aws` and similar are never available. The same
 principle covers `~/Documents` or `~/Downloads`.
 
-Access is supposed to be minimal (`rw` only to the target dir) and explicit
-(`@parent-ro` grants read access to the parent of the target directory).
+Access is supposed to be minimal (`rw` only to the target dir) and explicit —
+reading the target's parent, and with it every sibling project, takes selecting
+`@parent-ro`, which a bare `snug <dir>` does not.
 
 ### 2.2 Access to secrets is proxied
 
@@ -190,8 +191,9 @@ does not give you a clean one — deleting the store directory does.
 
 Passing in a socket that snug does not control is outside the tool's scope. In
 general `snug` very rarely refuses a configuration because it is insecure — the
-only exception is `@parent-ro` refusing to run if the parent happens to be
-`$HOME`.
+one refusal that is a judgement rather than a conflict is a target sitting
+directly in `$HOME`, or in any directory a profile replaces with an empty
+tmpfs.
 
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.

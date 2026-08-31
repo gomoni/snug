@@ -155,7 +155,9 @@ except OSError as e:
 PY
 `, sock, exposedPub, namespace, message, freshSock)
 
-	r := run(t, nil, proj, script).mustRun(t)
+	// The socket sits under the target's PARENT, which is @parent-ro's grant and
+	// has not been a default since issue #550 — so the profile is named here.
+	r := run(t, []string{"-p", "@parent-ro"}, proj, script).mustRun(t)
 
 	// The load-bearing precondition: prove the payload had NOTHING before it
 	// deliberately pointed itself at the mounted socket. Without this, a bug

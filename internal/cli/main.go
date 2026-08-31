@@ -195,8 +195,9 @@ A leading @ marks a profile snug ships — "@sys", "@net", "@claude". Yours, fro
 ~/.config/snug/profiles.d, are written without it, so a grant's origin is legible
 wherever a profile name appears and the two sets can never collide.
 
-A bare "snug <dir>" selects the defaults setting: @sys @home @cwd-rw @parent-ro.
-See "snug config" for the effective list and where it came from.
+A bare "snug <dir>" selects the "defaults" setting. Built-in: `+defaultsLine()+`.
+A config file replaces that list, so see "snug config" for the effective one and
+where it came from.
 
 Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
 command line, nowhere. To grant less, select fewer profiles. See .claude/design/INDEX.md.
@@ -863,4 +864,21 @@ func stdioTerminals() policy.StdioSet {
 		}
 	}
 	return s
+}
+
+// defaultsLine renders the BUILT-IN default selection for the usage screen —
+// built-in and not effective: this screen prints before any config file is read,
+// so it names the list snug ships and points at `snug config` for the one this
+// user actually gets (redteam: with `defaults` set in config.toml the old
+// wording, "selects the defaults setting: ...", was false for that user).
+// DERIVED rather than typed into the help text, because the text is a promise
+// about what a bare `snug <dir>` does and a typed copy is wrong the first time
+// the list changes — as it did when @parent-ro left it (issue #550).
+func defaultsLine() string {
+	names := profile.BuiltinDefaults()
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, string(n))
+	}
+	return strings.Join(out, " ")
 }

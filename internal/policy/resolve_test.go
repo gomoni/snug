@@ -315,7 +315,7 @@ func testRegistry() map[ProfileName]*Profile {
 // selects. internal/policy cannot import internal/profile (that is the
 // dependency the other way round), so the list is repeated here; if it ever
 // diverges, the goldens are describing a sandbox no user gets.
-var testDefaults = []ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
+var testDefaults = []ProfileName{"@sys", "@home", "@cwd-rw"}
 
 // testCtx is an INTERACTIVE run: all three descriptors are terminals, which is
 // what a human typing `snug <dir>` at a terminal produces, and what every
@@ -339,6 +339,14 @@ func testCtxWithPodmanShim() Context {
 		{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 	}
 	return ctx
+}
+
+// withParentRo is the default selection PLUS @parent-ro, for the tests that are
+// about that profile. It stopped being a default in issue #550 — the only
+// default grant whose blast radius was not fixed by the grant — so a test that
+// wants the target's parent must name it, exactly as a user does.
+func withParentRo() []ProfileName {
+	return append(append([]ProfileName{}, testDefaults...), "@parent-ro")
 }
 
 // mustResolveDefaults resolves what a bare `snug <dir>` produces.
@@ -693,7 +701,10 @@ func TestSanitiseMonotonicityRestsOnRejectMasking(t *testing.T) {
 // parent-ro's ro {target_parent}. That re-grants the SAME host tree at stronger
 // access — a superset, not a mask — and the default selection depends on it.
 func TestReGrantingTheSameTreeIsAllowed(t *testing.T) {
-	p := mustResolveDefaults(t)
+	// @parent-ro is SELECTED here, not inherited from the defaults: issue #550
+	// took it out of them, and this test is about the profile's join with
+	// @cwd-rw rather than about what a bare `snug <dir>` picks.
+	p := mustResolve(t, withParentRo()...)
 
 	parent := p.Mounts["/home/u/proj"]
 	target := p.Mounts["/home/u/proj/sub"]
@@ -899,12 +910,49 @@ func TestUngrantedPathsAreAbsent(t *testing.T) {
 	}
 }
 
+// THE DEFAULT SELECTION DOES NOT GRANT THE TARGET'S PARENT (issue #550).
+//
+// Every other default is bounded by construction — @sys is a fixed
+// enumeration, @home is an empty tmpfs, @cwd-rw is the directory the user
+// named on the command line. The parent is the one nobody named, and what it
+// holds depends on where the target happens to sit: every sibling project,
+// their .git/config, their .env files, and any socket or FIFO in the tree
+// (issues #287 and #296 are the escapes that shape found).
+//
+// The assertion is on REACHABILITY, not on the absence of a profile name: a
+// selection that stopped naming @parent-ro while some other grant kept the
+// parent visible would pass a name check and fail this one.
+func TestTheDefaultSelectionDoesNotGrantTheTargetsParent(t *testing.T) {
+	p := mustResolveDefaults(t)
+
+	for _, path := range []string{
+		"/home/u/proj",       // the parent itself
+		"/home/u/proj/other", // a sibling of the target
+		"/home/u/proj/.git",  // the repository the target sits in
+		"/home/u/proj/.env",  // the file everybody has and nobody means to share
+	} {
+		if reachable(p, path) {
+			t.Errorf("a bare `snug <dir>` reaches %s. The target's parent is the one grant "+
+				"nobody asked for, and it left the defaults in issue #550 — `-p @parent-ro` "+
+				"is how a user who wants it says so", path)
+		}
+	}
+
+	// CONTROL: the same paths ARE reachable once the user names the profile,
+	// so this test cannot pass because the fixture stopped having a parent.
+	withIt := mustResolve(t, withParentRo()...)
+	if !reachable(withIt, "/home/u/proj/other") {
+		t.Error("control: -p @parent-ro no longer grants the target's parent either, so the " +
+			"assertion above proves nothing about the default selection")
+	}
+}
+
 // parent-ro grants the target's PARENT, so the target's siblings are readable by
 // design — that is the point of the profile (../other-package in a monorepo).
 // What must stay out of reach is everything above the parent. Pinning this down
 // means a future change to parent-ro cannot quietly widen it by one level.
 func TestParentRoGrantsTheParentAndNoHigher(t *testing.T) {
-	p := mustResolveDefaults(t)
+	p := mustResolve(t, withParentRo()...)
 
 	if !reachable(p, "/home/u/proj/other") {
 		t.Error("a sibling of the target should be readable: parent-ro grants the parent")

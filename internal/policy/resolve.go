@@ -1103,6 +1103,35 @@ func refuseWritableProfileStore(set map[ProfileName]*Profile, names []ProfileNam
 	return nil
 }
 
+// aGrantBinds reports whether the selection also BINDS guest — the case where
+// the refusal's "this selection resolves" sentence would be false. It is exactly
+// `-p @parent-ro` with the target one level inside an ephemeral directory: that
+// profile's "the target's parent" and @home's tmpfs name the same path, and the
+// fold would report a kind conflict if the refusal were not standing in front of
+// it.
+//
+// The message tells the user what to type next, so it has to be about the
+// selection the user typed rather than about the default one (redteam: line 1
+// said "nothing collides" while line 5 said the opposite, for a run with
+// -p @parent-ro on the command line).
+func aGrantBinds(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, guest string) bool {
+	for _, name := range names {
+		prof := set[name]
+		for _, specs := range [][]string{prof.RO, prof.RW} {
+			for _, spec := range specs {
+				_, g, err := splitSpec(spec, vars)
+				if err != nil {
+					continue // the fold reports this properly a moment later
+				}
+				if g == guest {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // splitSpec parses "path" or "host:guest" and expands {variables} in both.
 func splitSpec(spec string, vars map[string]string) (host, guest string, err error) {
 	s, err := expandVars(spec, vars)
@@ -1199,7 +1228,8 @@ func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileN
 				continue
 			}
 			if target == g || parent == g {
-				return ephemeralTargetError(target, parent, g, home, string(name))
+				return ephemeralTargetError(target, parent, g, home, string(name),
+					aGrantBinds(set, names, vars, g))
 			}
 		}
 	}

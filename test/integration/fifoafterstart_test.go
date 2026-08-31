@@ -67,7 +67,7 @@ printf '%%s' %[4]s > %[3]s
 echo WRITE-OK
 `, started, freshFifo, pipe, marker)
 
-	full := []string{proj, "--", "/bin/bash", "-c", script}
+	full := []string{"-p", "@parent-ro", proj, "--", "/bin/bash", "-c", script}
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, snugBin, full...)
@@ -209,7 +209,10 @@ data=$(cat %[2]s)
 echo "PAYLOAD-READ-MARKER:${data}"
 `, freshFifo, pipe)
 
-	r := run(t, nil, proj, script).mustRun(t)
+	// -p @parent-ro: the FIFO sits in the target's PARENT, which stopped being a
+	// default grant in issue #550. The residual this test measures belongs to
+	// the profile, not to the default selection.
+	r := run(t, []string{"-p", "@parent-ro"}, proj, script).mustRun(t)
 
 	if !strings.Contains(r.out, "Read-only file system") {
 		t.Errorf("mkfifo of a FRESH node inside the read-only @parent-ro bind did not report a "+

@@ -958,16 +958,17 @@ in the refusal text and in the code, and it is pinned by
 `TestABindOfADirectoryHoldingAnEndpointIsStillAccepted` so that closing it
 means changing a test that says the old behaviour out loud.
 
-**And the residual is reachable with NO profile at all**, through `@parent-ro`
-alone — the default selection a plain `snug <dir>` uses. `$SC/proj` is
-`@parent-ro`'s grant (identity-mapped: same absolute path inside as out), so a
-FIFO planted there before the sandbox starts is visible inside at the same
-path:
+**And the residual is reachable through `@parent-ro` alone**, with no endpoint
+grant anywhere — one profile name and nothing else. `$SC/proj` is that
+profile's grant (identity-mapped: same absolute path inside as out), so a FIFO
+planted there before the sandbox starts is visible inside at the same path.
+Since issue #550 it takes the `-p`, which is the change in this check and not a
+change in the residual:
 
 ```bash
 mkfifo $SC/proj/escape.fifo
 cat $SC/proj/escape.fifo &        # the host reader, holding it open
-./bin/snug $SC/proj/sub -- /bin/sh -c \
+./bin/snug -p @parent-ro $SC/proj/sub -- /bin/sh -c \
   "mkfifo $SC/proj/newfifo 2>&1; printf hi > $SC/proj/escape.fifo"
 wait
 ```
@@ -1122,26 +1123,34 @@ that name from it, and this file prints `run-<pid>` in several expected outputs
 — so a pid-free rename is a change with three consumers, not one line. #31
 carries the row; #272 carries the reproduction.
 
-## 5. What `@parent-ro` actually grants
+## 5. What `@parent-ro` actually grants, and that a bare run does not
+
+**A bare `snug <dir>` does not reach the target's parent** (issue #550). The
+default selection is `@sys @home @cwd-rw`:
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
-Expect `sibling  sub` — **both**. This is correct and intentional: `@parent-ro`
-grants the target's *parent*, so the target's siblings are readable. That is
-what makes `../other-package` work in a monorepo.
+Expect exactly `sub`, and **no `sibling`**. The parent path exists inside only
+because the target has to be mounted somewhere — it is the skeleton `bwrap`
+creates for the mount point, not a grant of the parent. The sibling is not
+hidden by a rule; it was never granted, so there is nothing there to deny.
 
-What must not be reachable is anything **above** the parent, which is what
-check 4 confirms with `$SC/other` and `$SC/CANARY-TOP`.
-
-If you do not want siblings readable, drop `@parent-ro`:
+Ask for it and it is there:
 
 ```bash
-./bin/snug --no-defaults -p @sys -p @cwd-rw $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
+./bin/snug -p @parent-ro $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
 ```
 
-Expect `No such file or directory`.
+Expect `sibling  sub` — **both**. This is correct and intentional: `@parent-ro`
+grants the target's *parent*, so the target's siblings are readable. That is
+what makes `../other-package` work in a monorepo, and it is why the grant is
+opt-in: what it reaches is a property of where your project sits, not of the
+grant.
+
+What must not be reachable even then is anything **above** the parent, which is
+what check 4 confirms with `$SC/other` and `$SC/CANARY-TOP`.
 
 ## 6. The environment is rebuilt, not inherited
 
@@ -2784,11 +2793,12 @@ tmpfs grants, so a *bind* of an unrelated directory walked straight through it �
 `redteam` agent.
 
 Confirm the legitimate nesting still works, since the fix could easily have
-broken it — the default selection lays `@cwd-rw`'s writable target over `@parent-ro`'s
-read-only parent, which is re-granting the same tree, not masking:
+broken it — `@cwd-rw`'s writable target lies over `@parent-ro`'s read-only
+parent, which is re-granting the same tree, not masking. `@parent-ro` is named
+here because it is not in the defaults:
 
 ```bash
-./bin/snug $SC/proj/sub -- /bin/sh -c 'ls /usr/share/misc | wc -l; touch ./x && echo "target writable ok"'
+./bin/snug -p @parent-ro $SC/proj/sub -- /bin/sh -c 'ls /usr/share/misc | wc -l; touch ./x && echo "target writable ok"'
 ```
 
 Also try an unknown key, which must be fatal rather than ignored:
@@ -2997,18 +3007,21 @@ server — the same trap `TestGoldenContainers` sidesteps for `$SNUG_PODMAN`.
 
 ## 9. A project directly in an ephemeral directory is refused (issue #179)
 
-`~/myproject` is an extremely common layout and snug will not sandbox it. The old
-refusal was a raw kind conflict that named two profiles and no working command:
+`~/myproject` is an extremely common layout and snug will not sandbox it. The
+refusal is a RULING, not a mount conflict — since issue #550 the default
+selection binds no parent at all, so this selection resolves cleanly and is
+refused anyway — and the message says which of the two it is:
 
 ```console
 $ mkdir ~/proj && ./bin/snug --dry-run ~/proj
 snug: refusing to sandbox /home/michal/proj: it sits directly in /home/michal, which @home provides as an empty, ephemeral tmpfs.
-       So the parent snug would grant IS that directory, and a read-only bind of it
-       cannot coexist with the tmpfs. Move the project one level down:
+       Move the project one level down:
            mv /home/michal/proj /home/michal/src/ && snug /home/michal/src/proj
-       A selection without @parent-ro does resolve; snug does not offer it here. A
-       project sitting directly in an ephemeral directory is the wrong thing to
-       sandbox, and one answer beats a fork somebody guesses at.
+       This selection RESOLVES — nothing collides — and snug refuses the shape
+       anyway: a project living directly in the directory snug replaces with an
+       empty tmpfs is the wrong thing to sandbox, and one answer beats a fork
+       somebody guesses at. (Add -p @parent-ro and it collides too: that grant's
+       "the target's parent" IS the tmpfs.)
 ```
 
 The target being one of those directories is a different sentence, because there
@@ -3042,9 +3055,17 @@ $ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw ~/proj | head -
 snug: refusing to sandbox /home/michal/proj: ...
 ```
 
-   The message says a selection without `@parent-ro` *does* resolve, rather than
-   implying none exists. Hiding a true option would be worse than the message it
-   replaced.
+   The message says this selection `RESOLVES`, rather than implying none does.
+   Hiding a true option would be worse than the message it replaced.
+
+   Name `-p @parent-ro` and the message changes, because for THAT selection the
+   first sentence would be false — `@parent-ro`'s "the target's parent" and
+   `@home`'s tmpfs are the same path:
+
+```console
+$ ./bin/snug --dry-run -p @parent-ro ~/proj | grep COLLIDES
+       This selection ALSO COLLIDES — a grant in it binds the same path the tmpfs
+```
 
 3. **`/tmp` targets still work**, and this is the check that matters most because
    it is how this file and the whole integration suite build targets. snug's own
@@ -3076,8 +3097,12 @@ shape this project has a standing complaint about, so
 claims that path**. That is how `@tmp-shared` works. What is not intended is
 `@parent-ro` reaching `/tmp` by accident of where the target sits:
 
+`@parent-ro` is named on the command line because since issue #550 it is not in
+the defaults — a bare `snug "$(mktemp -d)"` claims no parent, so nothing reaches
+`/tmp` and this row does not appear at all:
+
 ```console
-$ ./bin/snug --dry-run "$(mktemp -d)" | sed -n '/^  ro     \/tmp /,/^  ro     \/usr/p'
+$ ./bin/snug --dry-run -p @parent-ro "$(mktemp -d)" | sed -n '/^  ro     \/tmp /,/^  ro     \/usr/p'
   ro     /tmp                                           @parent-ro
                      ← this is the HOST's /tmp, not snug's private one — a
                        profile claimed the path, so the tmpfs snug would have
@@ -3085,16 +3110,18 @@ $ ./bin/snug --dry-run "$(mktemp -d)" | sed -n '/^  ro     \/tmp /,/^  ro     \/
                        READ-ONLY, which most tooling breaks on
 ```
 
-A `mktemp -d` target has `/tmp` as its parent, so this is the ordinary shape, not
-an exotic one — it is how `VERIFY.md` and the integration suite build targets.
+A `mktemp -d` target has `/tmp` as its parent, so any run that names
+`@parent-ro` on such a target hits this — and that is how `VERIFY.md` and the
+integration suite build targets.
 
 What to check:
 
 1. The row is marked. Before #223 it rendered as a bare `ro /tmp @parent-ro`,
    indistinguishable from any other read-only bind.
-2. **The writable surface is seven for this run, not the eight this file and
-   CLAUDE.md quote.** `/tmp` is the host's and read-only. That is the whole point
-   of the mark: a guarantee that quietly stopped holding.
+2. **The writable surface is eight for this run, not the nine the same target
+   gets without the profile** (`snug --explain`: "21 paths read-only, 8 writable"
+   against "20 paths read-only, 9 writable"). `/tmp` is the host's and read-only.
+   That is the whole point of the mark: a guarantee that quietly stopped holding.
 3. An ordinary target gets **no** mark:
 
 ```console
@@ -3107,7 +3134,7 @@ $ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
 4. `@tmp-shared`'s writable takeover keeps the "this is the host's" note and
    loses the READ-ONLY clause, because that clause would be false.
 5. Every tmpfs snug emits is bounded, not just `/tmp` (issue #281): the default
-   selection resolves to `@sys @home @cwd-rw @parent-ro`, and `[profile.home]`
+   selection resolves to `@sys @home @cwd-rw`, and `[profile.home]`
    grants five more tmpfs mounts on top of `/tmp` itself.
 
 ```console

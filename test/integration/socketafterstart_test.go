@@ -115,7 +115,7 @@ print("SENT-OK")
 PY
 `, started, freshSock, sockPath, marker)
 
-	full := []string{proj, "--", "/bin/bash", "-c", script}
+	full := []string{"-p", "@parent-ro", proj, "--", "/bin/bash", "-c", script}
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, snugBin, full...)

@@ -508,7 +508,7 @@ parked-payload window `runStaged` deliberately removed ([INDEX](INDEX.md)
 {
   "schema": 1,
   "target": "/home/u/proj",
-  "profiles": ["@sys", "@home", "@cwd-rw", "@parent-ro"],
+  "profiles": ["@sys", "@home", "@cwd-rw"],
   "chdir": "/home/u/proj",
   "sandbox": {
     "init_pid": 1323242,

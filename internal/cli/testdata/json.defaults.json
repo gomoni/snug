@@ -13,8 +13,7 @@
     "selected": [
       "@sys",
       "@home",
-      "@cwd-rw",
-      "@parent-ro"
+      "@cwd-rw"
     ],
     "implied": []
   },
@@ -301,19 +300,6 @@
       "size_bytes": 1073741824
     },
     {
-      "guest": "/home/u/proj",
-      "host": "/home/u/proj",
-      "kind": "bind",
-      "access": "ro",
-      "from": [
-        "@parent-ro"
-      ],
-      "optional": false,
-      "authored": false,
-      "executable": false,
-      "yielded": false
-    },
-    {
       "guest": "/home/u/.local/share",
       "host": "",
       "kind": "tmpfs",
@@ -504,7 +490,7 @@
       "name": "SNUG_PROFILES",
       "entries": [
         {
-          "value": "@cwd-rw,@home,@parent-ro,@sys",
+          "value": "@cwd-rw,@home,@sys",
           "verb": "(snug)",
           "from": null,
           "authored_by": "",
@@ -752,9 +738,6 @@
       "1073741824",
       "--tmpfs",
       "/home/u/.config",
-      "--ro-bind",
-      "/home/u/proj",
-      "/home/u/proj",
       "--size",
       "1073741824",
       "--tmpfs",
@@ -789,7 +772,7 @@
       "1",
       "--setenv",
       "SNUG_PROFILES",
-      "@cwd-rw,@home,@parent-ro,@sys",
+      "@cwd-rw,@home,@sys",
       "--setenv",
       "SNUG_TARGET",
       "/home/u/proj/sub",

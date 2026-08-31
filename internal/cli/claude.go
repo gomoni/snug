@@ -918,7 +918,9 @@ func claudeAuthoredPair(a policy.ClaudeAuthoredSetting) string {
 // disabling something.
 // readableAncestors is the set of read-only bind grants that are proper
 // ancestors of the target, i.e. the grants through which a SIBLING of the target
-// becomes readable. @parent-ro is the one in the default selection.
+// becomes readable. @parent-ro is the profile that grants one, and since
+// issue #550 it is not in the default selection — so on a bare `snug <dir>`
+// this returns nothing and the guidance takes its absence arm.
 //
 // Proper ancestors only, and binds only. The target itself is not one (it is the
 // writable grant the guidance already names), and /usr and /etc are not the
@@ -959,14 +961,14 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("credentials) and personal data are not hidden — they were never mounted, and\n")
 	b.WriteString("read as **absent**. Do not try to reach them; there is nothing there and it\n")
 	b.WriteString("wastes your turns.\n\n")
-	// The sibling clause is DERIVED, because the unconditional version was false
-	// under the DEFAULT selection. It read "every other project on this machine
-	// [is] not hidden — [it was] never mounted, and read as absent", and the
-	// defaults are `@sys @home @cwd-rw @parent-ro`: @parent-ro binds the target's
-	// PARENT read-only, so every sibling project is readable. Reported from
-	// inside a real run (issue #461): "Sibling project directories alongside the
-	// target — other projects of mine, unrelated to the one snug was pointed at —
-	// are present and fully readable from inside the sandbox."
+	// The sibling clause is DERIVED, because a constant is false for one of the
+	// two selections. `-p @parent-ro` binds the target's PARENT read-only, and
+	// then every sibling project is readable; without it none is mounted at all.
+	// The unconditional sentence — "every other project on this machine [is] not
+	// hidden, [it was] never mounted, and reads as absent" — was contradicted
+	// from inside a real run (issue #461): "Sibling project directories alongside
+	// the target — other projects of mine, unrelated to the one snug was pointed
+	// at — are present and fully readable from inside the sandbox."
 	//
 	// This file's own claim is that it "describes what is actually true", and an
 	// agent told a path is absent does not try to read it while an agent told

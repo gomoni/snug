@@ -103,10 +103,40 @@ func TestTheSafeSelectionIsRefusedToo(t *testing.T) {
 			"cleanly, and the maintainer's ruling on #179 is that it is refused anyway: a " +
 			"project directly in an ephemeral directory is the wrong thing to sandbox")
 	}
-	if !strings.Contains(err.Error(), "does resolve") {
-		t.Errorf("the refusal hides the fact that a selection without @parent-ro works. A "+
-			"message that conceals a true option is the kind of thing this repo files issues "+
-			"about:\n%v", err)
+	// MEASURED, with the check lifted: this selection runs correctly — target
+	// read-write, $HOME the empty tmpfs holding only the XDG directories and the
+	// target, ~/.ssh absent. So the refusal is a ruling and not a conflict, and
+	// a message that reported a mount collision here would be a false reason
+	// for a true refusal.
+	if !strings.Contains(err.Error(), "RESOLVES") {
+		t.Errorf("the refusal hides the fact that this selection works. A message that "+
+			"conceals a true option — or invents a technical cause for a usability rule — "+
+			"is the kind of thing this repo files issues about:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "cannot coexist") {
+		t.Errorf("the refusal claims a mount collision. Since issue #550 took @parent-ro "+
+			"out of the defaults there is none in this selection:\n%v", err)
+	}
+}
+
+// REDTEAM: the message printed "This selection RESOLVES — nothing collides" and
+// then, five lines later, "with -p @parent-ro it also collides" — for a run with
+// -p @parent-ro on the command line. Both sentences are about the selection the
+// user typed, so only one of them can be printed.
+func TestTheRefusalDescribesTheSelectionTheUserTyped(t *testing.T) {
+	reg := testRegistry()
+	sel := append(append([]ProfileName{}, testDefaults...), "@parent-ro")
+	_, err := Resolve(reg, sel, ephemeralCtx("/home/u/proj"), newFakeEnv())
+	if err == nil {
+		t.Fatal("`-p @parent-ro ~/proj` was accepted; #179 refuses the shape whatever the selection")
+	}
+	if !strings.Contains(err.Error(), "ALSO COLLIDES") {
+		t.Errorf("@parent-ro's \"the target's parent\" IS the tmpfs here, and the refusal does "+
+			"not say so:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "nothing collides") {
+		t.Errorf("the refusal tells a user who selected @parent-ro that nothing collides, "+
+			"which is false for that selection:\n%v", err)
 	}
 }
 
@@ -228,7 +258,7 @@ func TestTheEphemeralTargetRefusalEscapesEveryPathItPrints(t *testing.T) {
 		{"pro\u202ej", "RLO reverses the rest of the line"},
 	} {
 		target := "/home/u/" + tc.base
-		err := ephemeralTargetError(target, "/home/u", "/home/u", "/home/u", "@home")
+		err := ephemeralTargetError(target, "/home/u", "/home/u", "/home/u", "@home", false)
 		if err == nil {
 			t.Fatalf("%q: no error to inspect", tc.base)
 		}

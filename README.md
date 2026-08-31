@@ -53,7 +53,12 @@ will be constructed. Both page through `$PAGER` on a terminal.
  * `@sys`: read-only `/usr`, `/bin`, and 14 enumerated `/etc` entries.
  * `@home`: tmpfs `$HOME` plus `.cache`, `.config`, `.local/state`, `.local/share` and `XDG` env variables.
  * `@cwd-rw`: the target directory is read-write.
- * `@parent-ro`: the target's parent is read-only. Without this parent will be hidden.
+
+Not a default, and it has to be typed: `@parent-ro` grants the target's PARENT
+read-only, for tools that read next to the project — a monorepo root, a sibling
+checkout. It is a wide grant, and `base.toml` states the cost: every sibling
+project under that parent, their `.git/config` and their `.env` files, become
+readable by whatever runs inside. Without it the parent is an empty skeleton.
 
 ```bash
 # Entering a sandbox
@@ -64,11 +69,12 @@ snug ~/src/myproject
 🔒 snug:~/src/myproject> ls ~/.ssh
 ls: cannot access '/home/you/.ssh': No such file or directory
 
-# The parent directory is read-only
-🔒 snug:~/src/myproject$ echo "hello" > ../hello
-bash: ../hello: Read-only file system
+# The parent was never granted: an empty skeleton, and writes to it evaporate
+🔒 snug:~/src/myproject$ ls ..
+myproject
+🔒 snug:~/src/myproject$ echo "hello" > ../hello   # succeeds; the host never sees it
 
-# cwd is read write because of @cwd-ro
+# cwd is read write because of @cwd-rw
 🔒 snug:~/src/myproject$ cat hello
 hello from host
 🔒 snug:~/src/myproject$ echo "hello from snug" > hello
@@ -404,7 +410,7 @@ ENVIRONMENT  (--clearenv, then:)
   HOME             /home/u                         (snug)
   PATH             /usr/bin /bin /usr/sbin /sbin   (snug)    base
   PS1              🔒 snug:\w\$                     (snug)
-  SNUG_PROFILES    @cwd-rw,@home,@parent-ro,@sys   (snug)
+  SNUG_PROFILES    @cwd-rw,@home,@sys              (snug)
   XDG_CONFIG_HOME  /home/u/.config                 set       @home
 ```
 
