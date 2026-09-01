@@ -459,9 +459,37 @@ kill(PID, SIGKILL)         blocked  EPERM
 setuid(1) become helper    blocked  EPERM
 ```
 
-**The wall is a property of the socket being a PATHNAME node, and nothing says so
-by accident. [M]** Every block above — including the `connect` refusal that is the
-helper's whole control channel — is DAC on an inode. An **abstract-namespace**
+**Two independent facts produce those blocks, and the harness above confounds
+them. [M]** The payload was inner uid 2 *and* carried an empty capability set. Map
+the payload to inner uid **0** — the natural result of `--map-root-user`, which is
+one way to satisfy cost 2's corollary below — keep its capabilities, and the wall
+is not there at all:
+
+```
+read helper secret (0600 in 0700)  ALLOWED  'the-credential-0123456789'
+list /proc/PID/fd                  ALLOWED  ['0', '1', '2', '3']
+read /proc/PID/environ             ALLOWED  'SHELL=/u'
+connect helper socket              ALLOWED  b'served\n'
+setuid(1) then read secret         ALLOWED  "now uid=1, secret='the-credential-0123456789'"
+```
+
+Root-in-U walks a `0600` file in a `0700` directory with `CAP_DAC_OVERRIDE` and
+*becomes* the helper with `CAP_SETUID`; only `/proc/PID/mem` still refuses (EIO,
+and for an unrelated reason). The identical payload at inner uid 0 with snug's own
+cap hygiene — `CapEff 0000000000000000 CapBnd 0000000000000000`, `--no-new-privs`
+— is blocked on all five again, EACCES/EPERM. **So state the precondition instead
+of inheriting it: the wall requires the payload to hold an empty effective AND
+bounding set with no-new-privs, and at inner uid 0 that is the ONLY wall.**
+Today's payload satisfies both halves independently — inner uid 1000, uid_map
+`1000 0 1` (`internal/sandbox/exec.go:410`), `CapEff` zero from `--cap-drop ALL`
+(`internal/policy/bwrap.go:162`) — so a range-mapped payload keeps a **non-zero**
+inner uid, and `CapEff == 0 && CapBnd == 0 && inner uid != 0` is asserted at exec
+rather than assumed.
+
+**Given that precondition, the wall is a property of the socket being a PATHNAME
+node, and nothing says so by accident. [M]** Every block above — including the
+`connect` refusal that is the helper's whole control channel — is then DAC on an
+inode. An **abstract-namespace**
 AF_UNIX socket has no inode, so `connect()` checks no permission: it is scoped
 only by the network namespace, which the helper and the payload **share**. The
 same harness with `bind("\0snug-helper-abstract")` instead of a path:
@@ -512,9 +540,12 @@ Four costs, and the first is the one that bounds the whole idea:
    writes on a shared bind is owned by a host uid the human is not, and cannot
    read or delete without help. Helpers write nothing, or the mount is idmapped.
    Corollary: the **payload keeps the human's own uid** so it can write the
-   target; helpers take the subuids.
-3. **It is DAC.** A group bit, a world-writable directory on a shared path, or a
-   file the payload can plant where the helper opens it, all reopen it.
+   target — at a non-zero inner id (`1000 0 1`), never `--map-root-user`; helpers
+   take the subuids.
+3. **It is DAC — and only while the payload holds no capability over the range.**
+   A group bit, a world-writable directory on a shared path, or a file the payload
+   can plant where the helper opens it, all reopen it; so does one leaked
+   capability, or a payload mapped to inner uid 0, per the precondition above.
 4. **It changes who can READ the secret, not who can SPEND it.** The payload asks
    the helper to act; that is the helper's purpose. §5.1 survives unchanged.
 
