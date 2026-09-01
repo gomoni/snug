@@ -234,10 +234,25 @@ is inside.
   from P0 returns **EPERM [M-prior]**, and the conclusion once drawn from that —
   that the broker forces the stage topology onto `@claude`, giving the profile
   most likely to be running hostile input a `CAP_SYS_ADMIN` ancestor for the whole
-  run — does not follow. **The listener must be in the sandbox's netns; the
-  transport to the host need not be.**
+  run — does not follow. **With `ANTHROPIC_UNIX_SOCKET` no part of the broker is
+  in the sandbox's netns at all:** a pathname AF_UNIX socket is a filesystem
+  object, not a netns object, so the listener sits in P0 in the host netns and
+  reaches the sandbox as a bind mount. The netns question arises only for the
+  *fallback relay* below, which must be in the sandbox's netns and carries no
+  credential. Stating those as one sentence is how the earlier refutation reached
+  its conclusion.
 - **No `deriveTopology` change, no new lattice point, no `CAP_SYS_ADMIN`
-  ancestor.** A two-turn tool loop completed behind a one-rule allowlist inside
+  ancestor** — `internal/cli/identity.go:169-177` is the shipped precedent at the
+  same topology: `sshproxy.New` (which listens and `chmod`s `0600` before
+  returning), `go p.Serve()` in P0, then `pol.BindSocket`.
+- **The broker is an egress hole in a sandbox whose screen says there is none,
+  and the screen must say so.** `internal/cli/dryrun.go`'s `NetIsolated` arm
+  prints "No egress. No host loopback." A mediated route off the box exists for a
+  run with no `@net`; §3.1.1's body-exfiltration analysis is the sharp end of it,
+  but `describeNetwork` needs a broker clause the way it grew `renderHTTPDoors`
+  after issue #541, or three renderings of one policy disagree again. This is the
+  `ENGINE-NETNS.md` §0 shape: a limitation and a hole are the same fact facing two
+  directions. A two-turn tool loop completed behind a one-rule allowlist inside
   `bwrap --unshare-net`, with an empty routing table, dead DNS and
   `connect: Network is unreachable` to `1.1.1.1:443` as printed negative controls
   **[M-prior]**.
@@ -313,12 +328,15 @@ operations that create durable state.*
 
 Two placements, and the choice is not free:
 
-- **A helper beside the payload, under a different uid** (§5.2). Cheap — no
-  second sandbox — and the wall is DAC, measured in §5.2. Correct where the
-  helper is snug's own code and small.
-- **A sibling sandbox.** Separate pid and mount namespaces, so §7.6's
-  `/proc/<pid>/mem` read has no pid to name. Required where the thing being run
-  is the *vendor's* binary rather than snug's code. Costs a sandbox launch —
+- **A goroutine in P0**, reached through a `0600` socket bind-mounted in. Not
+  *beside* the payload: outside its pid and mount namespaces, so §7.6's
+  `/proc/<pid>/mem` read has no pid to name. Correct where the helper is snug's
+  own code and small — `internal/sshproxy` and the container proxy are both this
+  shape already. **A helper under a different uid inside the payload's own
+  namespaces is refused; §5.2 has the measurements and the four reasons.**
+- **A sibling sandbox.** Separate pid and mount namespaces, same reason.
+  Required where the thing being run is the *vendor's* binary rather than snug's
+  code, because P0 is snug's own process. Costs a sandbox launch —
   **0.06 s** for a sibling with no network **[M]**, 245 ms with `@net`
   **[M-prior]**, where the difference is `pasta`.
 
@@ -440,7 +458,7 @@ accounting rather than authentication:
 - one in-flight call per sibling and per output pipe, because two calls sharing a
   credential fetch is where call A's argv reaches call B's tool.
 
-### 5.2 The uid wall — what snug can hide from the payload, and what it cannot
+### 5.2 The uid wall — measured, and then refused
 
 A user namespace can map a *range*, and processes under different uids inside one
 sandbox are walled from each other by ordinary DAC. **[M]** Helper as inner uid 1
@@ -459,11 +477,15 @@ kill(PID, SIGKILL)         blocked  EPERM
 setuid(1) become helper    blocked  EPERM
 ```
 
-**Two independent facts produce those blocks, and the harness above confounds
-them. [M]** The payload was inner uid 2 *and* carried an empty capability set. Map
-the payload to inner uid **0** — the natural result of `--map-root-user`, which is
-one way to satisfy cost 2's corollary below — keep its capabilities, and the wall
-is not there at all:
+**That table is a measurement and not an explanation, and snug does not build
+what it appears to license.** Four things are wrong with reading it as a
+mechanism, in ascending order of how fatal they are.
+
+**One — it confounds two causes, and at the uid the deployment would use, only
+the second is doing anything. [M]** The payload above was inner uid 2 *and*
+carried an empty capability set. Map the payload to inner uid **0** — the natural
+result of `--map-root-user`, which is one way to satisfy cost 2 below — keep its
+capabilities, and the wall is not there at all:
 
 ```
 read helper secret (0600 in 0700)  ALLOWED  'the-credential-0123456789'
@@ -473,26 +495,87 @@ connect helper socket              ALLOWED  b'served\n'
 setuid(1) then read secret         ALLOWED  "now uid=1, secret='the-credential-0123456789'"
 ```
 
-Root-in-U walks a `0600` file in a `0700` directory with `CAP_DAC_OVERRIDE` and
-*becomes* the helper with `CAP_SETUID`; only `/proc/PID/mem` still refuses (EIO,
-and for an unrelated reason). The identical payload at inner uid 0 with snug's own
-cap hygiene — `CapEff 0000000000000000 CapBnd 0000000000000000`, `--no-new-privs`
-— is blocked on all five again, EACCES/EPERM. **So state the precondition instead
-of inheriting it: the wall requires the payload to hold an empty effective AND
-bounding set with no-new-privs, and at inner uid 0 that is the ONLY wall.**
-Today's payload satisfies both halves independently — inner uid 1000, uid_map
-`1000 0 1` (`internal/sandbox/exec.go:410`), `CapEff` zero from `--cap-drop ALL`
-(`internal/policy/bwrap.go:162`) — so a range-mapped payload keeps a **non-zero**
-inner uid, and `CapEff == 0 && CapBnd == 0 && inner uid != 0` is asserted at exec
-rather than assumed.
+`CAP_DAC_OVERRIDE` walks a `0600` file in a `0700` directory and `CAP_SETUID`
+*becomes* the helper; only `/proc/PID/mem` refuses, EIO, for an unrelated reason.
+The identical payload at inner uid 0 with snug's own cap hygiene —
+`CapEff 0000000000000000 CapBnd 0000000000000000`, `--no-new-privs` — is blocked
+on all five again. So the precondition is *the payload holds an empty effective
+AND bounding set with no-new-privs, at a non-zero inner uid*; at inner uid 0 the
+capability set is the whole wall and DAC is decoration. Today's payload satisfies
+both halves independently — inner uid 1000, uid_map `1000 0 1`
+(`internal/sandbox/exec.go:410`), `CapEff` zero from `--cap-drop ALL`
+(`internal/policy/bwrap.go:162`).
 
-**Given that precondition, the wall is a property of the socket being a PATHNAME
-node, and nothing says so by accident. [M]** Every block above — including the
-`connect` refusal that is the helper's whole control channel — is then DAC on an
-inode. An **abstract-namespace**
-AF_UNIX socket has no inode, so `connect()` checks no permission: it is scoped
-only by the network namespace, which the helper and the payload **share**. The
-same harness with `bind("\0snug-helper-abstract")` instead of a path:
+**Two — the baseline is wrong. Five of those eight rows need no uid at all.**
+The harness put helper and payload in one pid namespace; snug never has to.
+bwrap creates the payload's pid namespace and `--proc /proc` mounts a procfs *of
+that namespace*, so every process snug starts outside it — P0, the stage,
+anything left in NP, a sibling sandbox — has no pid the payload can name.
+`internal/sandbox/exec.go:385` states it for the NP level: `/proc/<pid>` is
+**ENOENT** there, "so neither its fd directory nor its mem is reachable". That
+covers `/proc/PID/{mem,fd,environ}` and both `kill()` rows by namespace, with no
+subuid, no argv change and no golden diff. What the uid split adds over the
+namespace split is only the secret file and the socket — and:
+
+**Three — `bwrap` has no `--chown`. [M]** `bwrap --help` (0.11.2) offers
+`--perms`, `--chmod OCTAL PATH` and `--size`, and nothing that sets an owner. So
+snug cannot ask the sandbox builder to create a helper-owned file or socket: both
+must be created by the helper at run time, inside a directory on a writable tmpfs
+that the payload owns — where the payload cannot *write* the secret but can
+`unlink` or `rename` the directory entry and substitute its own. The wall's own
+control channel becomes a path the payload controls, which §5.4 already refuses
+under "no path-typed field crosses the boundary".
+
+**Four — the implementation route either invents a re-exec verb or hands
+`@claude` the ancestor §3.1.2 exists to avoid.** The payload's user namespace is
+always a *descendant* of one snug already made that maps exactly **one** id:
+flat path `internal/sandbox/exec.go:443` clones NP with
+`UidMappings{ContainerID: 0, HostID: os.Getuid(), Size: 1}`; staged path
+`internal/stage/fds.go:41` mapped by `stage.go:215`. A range cannot be added
+below a one-id namespace — `user_namespaces(7)`'s rule that a child's map must be
+a subset of the parent's **[R]**; the delegation has to happen at NP's own
+creation, by `newuidmap`, from P0, before any current code runs, and then
+`__inpidns` must create a *second* userns, write its multi-range map and hand the
+fd to `bwrap --userns FD`. That is a new verb, a new fd, and
+`internal/stage/subuid.go` shared out of the stage package. The route that looks
+cheap — reuse `Topology.Subuid = SubuidFull` — is **a new lattice point in
+effect**: `NeedsStage()` is `t.Netns >= NetnsStage || t.Subuid >= SubuidFull`
+(`internal/policy/topology.go:130`), whose own comment keeps the disjunct so
+"a future producer of SubuidFull must not silently lose its stage". A second
+producer therefore gives the profile most likely to be running hostile input the
+privileged ancestor §3.1.2 declines, and instantiates `{NetnsSandbox,
+SubuidFull}` — the combination that comment says "never decides the answer for
+anything Resolve produces", i.e. an untested arm of `runStaged`.
+
+**The decision: the payload's user namespace does not change.**
+`--unshare-user` stays, `--userns FD` is not reached for, `deriveTopology` is
+untouched, no golden file moves — and the absence of a golden diff is the point,
+because the change being refused is exactly the one that would produce one.
+`internal/policy/unshareflags_test.go:27` is what makes that structural: it
+asserts `--unshare-user` for every `NetnsOwner`, and `--userns FD` "cannot
+combine with --unshare-user" **[M]**. Relaxing that test is the review's focal
+point if a maintainer ever overrides this, along with rendering the fd through
+`BwrapArgs`' deterministic stub allocator (`internal/policy/bwrap.go:16`) rather
+than appending it in `internal/sandbox` — otherwise the only golden diff is the
+*removal* of `--unshare-user`, with nothing naming what replaced it.
+
+**And the niche is empty.** A wall is needed only for a secret-holding process
+that must share the payload's *mount* or *net* namespace, and nothing specified
+here does: `internal/sshproxy` and the container proxy already hold their
+credentials in **P0**, unaddressable from the payload by construction
+(`internal/cli/identity.go:177` is the shape — `sshproxy.New`, `go p.Serve()`,
+`pol.BindSocket`), and §3.4's sibling sandbox covers "run the vendor's binary"
+with its own mount, pid and net namespaces. **NP is not a third option for a
+third-party binary:** it maps uid 0 to the human's host uid, so a process left
+there carries the human's full host DAC — strictly more authority than P0.
+
+Two results from the harness survive the refusal and are load-bearing elsewhere.
+
+**The helper's channel is a `0600` PATHNAME node or an inherited `socketpair`,
+never an abstract name. [M]** An abstract-namespace AF_UNIX socket has no inode,
+so `connect()` checks no permission: it is scoped only by the network namespace,
+which anything beside the payload **shares**. The same harness with
+`bind("\0snug-helper-abstract")`:
 
 ```
 [helper]  uid=1 bound abstract @snug-helper-abstract
@@ -500,54 +583,28 @@ same harness with `bind("\0snug-helper-abstract")` instead of a path:
   connect ABSTRACT socket   ALLOWED  got b'SECRET-SERVED\n'   <-- WALL BYPASSED
 ```
 
-So the helper's channel is a `0600` pathname node, or an inherited connected
-`socketpair`, and **never an abstract name** — see §7.7, and note that §5.5's
-preference for an inherited descriptor over a pathname is satisfied by the
-socketpair, never by an abstract address.
+See §7.7, and note that §5.5's preference for an inherited descriptor over a
+pathname is satisfied by the socketpair, never by an abstract address.
 
-**And the host side can tell them apart. [M]** `SO_PEERCRED` translates through
-the user namespace into the *listener's* ids: a host listener sees inner uid 1 as
-host uid 1001 and inner uid 2 as 1002. So snug pins its socket to one caller two
-ways and should do both — `chown` to the helper's delegated host uid with mode
-`0600`, so the **kernel** refuses everyone else at `connect()` with no code at
-all, and check `SO_PEERCRED` as the assertion that the chown is still what you
-think it is.
+**A host listener can tell two callers apart. [M]** `SO_PEERCRED` translates
+through the user namespace into the *listener's* ids: a host listener sees inner
+uid 1 as host uid 1001 and inner uid 2 as 1002. Where snug ever has two distinct
+host uids to distinguish — the container proxy's engine side, not the payload —
+it pins its socket two ways and should do both: `chown` with mode `0600`, so the
+**kernel** refuses at `connect()` with no code at all, and `SO_PEERCRED` as the
+assertion that the chown is still what you think it is. It buys nothing inside
+one sandbox, where every caller is one uid (§7.8).
 
-**The privilege this needs is already in the tree.** A delegated range needs
-`newuidmap`, which is capability-bearing, and snug already depends on it:
-`stage.Start`'s `SubuidFull` handshake (`internal/stage/subuid.go`), preflights
-that are FATAL with the fix named, and `snug fix subuid`
-(`internal/cli/fixcmd.go:88`). What is missing is only that bwrap makes its own
-userns for the payload and maps **exactly one id** into it **[M]** — a
-single-line `/proc/self/uid_map`, which is the load-bearing part; the parent-uid
-column varies with where snug is nested and is not the fact. `internal/sandbox/exec.go:410`
-records a one-id map under the staged topology too. `bwrap --userns FD` exists for
-exactly that.
+Finally, two costs that would have applied and are worth keeping because they
+bound the *whole* idea, not just this route:
 
-**The wall is a property of the mechanism, not of the sandbox.** A run with no
-snug-started helper is unchanged and needs no range. A profile that runs one
-**requires** the range and **refuses** where the host has none, naming
-`snug fix subuid`. That is invariant 5 satisfied without making subuid universal:
-the guarantee does not vary by host, the *availability of the profile* does.
-
-Four costs, and the first is the one that bounds the whole idea:
-
-1. **It separates only processes snug STARTS.** A child the payload spawns
-   inherits the payload's uid and nothing can make it drop. This splits *snug's
+1. **It would separate only processes snug STARTS.** A child the payload spawns
+   inherits the payload's uid and nothing can make it drop. That splits *snug's
    helper* from *the payload*; it can never split *the agent* from *the shell the
    agent ran*.
-2. **Ownership leaks into the human's filesystem.** Anything a subuid helper
-   writes on a shared bind is owned by a host uid the human is not, and cannot
-   read or delete without help. Helpers write nothing, or the mount is idmapped.
-   Corollary: the **payload keeps the human's own uid** so it can write the
-   target — at a non-zero inner id (`1000 0 1`), never `--map-root-user`; helpers
-   take the subuids.
-3. **It is DAC — and only while the payload holds no capability over the range.**
-   A group bit, a world-writable directory on a shared path, or a file the payload
-   can plant where the helper opens it, all reopen it; so does one leaked
-   capability, or a payload mapped to inner uid 0, per the precondition above.
-4. **It changes who can READ the secret, not who can SPEND it.** The payload asks
-   the helper to act; that is the helper's purpose. §5.1 survives unchanged.
+2. **It changes who can READ the secret, not who can SPEND it.** The payload asks
+   the helper to act; that is the helper's purpose. §5.1 survives unchanged, and
+   this is why the refusal above costs the design nothing.
 
 ### 5.3 Descriptors the payload sends must be validated
 
@@ -590,6 +647,11 @@ interpreter ran is not a negative result.
   planted in the shared target, because validation happens in snug's namespace and
   `open` happens in the tool's. File **content** crosses; snug materialises it at
   a path only snug names.
+- **A control node snug wants owned by someone other than the payload cannot be
+  created by the sandbox builder at all. [M]** `bwrap` 0.11.2 has `--perms` and
+  `--chmod` and no `--chown`, so any such file or socket is created at run time by
+  its owner, inside a directory whose ancestors the payload must not be able to
+  `rename` or `unlink` — see §5.2.
 - **Per-invocation, and it dies with the call.** A tool whose config directory
   persists turns "install an extension" into code that runs beside the credential
   on every later invocation.
@@ -878,9 +940,9 @@ readable by every other process there via `/proc/<pid>/mem`, which the seccomp
 `ptrace` denial does not cover — re-measured inside a default `snug` sandbox on
 this tree: a sibling's sentinel string was recovered by walking
 `/proc/<pid>/maps` and reading `/proc/<pid>/mem`, with `CapEff` zero. Execute-only modes do not help and the payload can
-`LD_PRELOAD` a stub's children. This is what §5.2's uid wall and §3.4's sibling
-each answer, by different means, and it is why a stub that *holds* the token is
-never a placement.
+`LD_PRELOAD` a stub's children. The answer is not a uid — §5.2 refuses that — but
+**not being in that pid namespace**: P0 or a sibling sandbox, which is why a stub
+that *holds* the token is never a placement.
 
 ### 7.7 An abstract-namespace socket for anything inside the sandbox
 
@@ -899,8 +961,10 @@ Where everything runs as one uid there is no caller identity to authenticate:
 `SO_PEERCRED` reports the same uid, `/proc/<pid>/fd` hands a sibling any
 descriptor, and checking `/proc/<pid>/exe` fails because the wrapper is
 world-readable and re-runnable. Passing the socket as an inherited descriptor
-instead of a pathname does not narrow it. §5.2 is the only answer, and it works
-only for processes snug starts.
+instead of a pathname does not narrow it. A second uid *would* answer it for
+processes snug starts, and §5.2 refuses that route on four separate grounds — so
+the answer is that nothing needing caller authentication runs inside the payload's
+namespaces at all.
 
 ---
 
