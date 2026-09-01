@@ -115,7 +115,7 @@ Three facts fall out, and each is load-bearing for §4:
 
 1. **It is a credential source that outranks the staged OAuth token.** The
    guidance string tells the user to *unset* it in order to use claude.ai OAuth
-   — i.e. when configured, it wins. `SECRETS.md` §1.1 measured the identical
+   — i.e. when configured, it wins. `SECRETS.md` §6.2 measured the identical
    precedence for `ANTHROPIC_API_KEY` (with it set, Claude Code sends
    `x-api-key` and does **not** send the OAuth bearer).
 2. **It is trust-gated**, and snug carries the trust bit. The guard string
@@ -578,7 +578,7 @@ sessions". So on any host whose `~/.claude/settings.json` contained
 — which is a **documented, recommended** way to configure the key — the bound
 file put a long-lived, typically org-scoped API key into the sandbox's process
 environment, where `/proc/self/environ` makes it passively readable by every
-process and every child, and where `SECRETS.md` §1.1 measured that it becomes
+process and every child, and where `SECRETS.md` §6.2 measured that it becomes
 the credential actually in use. The profile's own stated guarantee was false
 whenever the host used that spelling, and nothing on any screen said so.
 

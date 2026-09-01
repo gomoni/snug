@@ -14,7 +14,7 @@ import (
 // run of the sandbox had planted, and the proxy pinned whatever key that link
 // pointed at.
 //
-// Found by comparing SECRETS.md §4 against the code: §4 asserted the rule "a
+// Found by comparing SECRETS.md against the code: what is now §4.2 asserted the rule "a
 // secret reference must never be expandable from {…} variables the sandbox can
 // influence" as though it already held. It did not. Not reachable from any
 // builtin — nothing snug ships sets [identity] — which is why this was latent
