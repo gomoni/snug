@@ -32,7 +32,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`GIT-CONFIG.md`](GIT-CONFIG.md) | Why `~/.gitconfig` is generated rather than bound, measured: `includeIf` evaluated by snug, `hasconfig:` refused, the whitelist and what is deliberately off it, and the seven wildmatch divergences the oracle test now catches. |
 | [`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) | Why the container engine's `policy.json` is a PROJECTION of the host's rather than a permissive file snug writes over it: the measured containers/image schema rules snug mirrors, why a non-empty `dir` scope refuses, why `sigstoreSigned` refuses, and where the key copies live. |
 | [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) | Why `~/.claude/settings.json` is generated rather than bound: the key inventory measured against claude 2.1.232, the ten-scalar allowlist, the `env` door to `ANTHROPIC_API_KEY` it closed, and the plugin-hook channel it does **not** close (issue #68). |
-| [`SECRETS.md`](SECRETS.md) | **DRAFT — nothing built.** Which credentials reach a sandbox, why each is or is not allowed, the severity model, and brokering versus injection. |
+| [`SECRETS.md`](SECRETS.md) | Which credentials reach a sandbox and why: the credential-versus-capability rule, the severity model, the four mechanisms (no credential, broker, smaller credential, wrapper) with the test that picks one, what snug owes when it runs a tool on the payload's behalf, and the shapes that are refused with the measurement that refused them. |
 | [`CONTAINER-CLIENT.md`](CONTAINER-CLIENT.md) | Which container CLI actually works inside the sandbox, measured — and the `podman` stub that replaces a host-escape shim. |
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
@@ -1127,7 +1127,7 @@ Every surface below is off by default and reached by naming a profile. Each is a
 
 ### 7.1 ssh — the filtering agent proxy
 
-**Recommendation: `ssh_mode = "agent-proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.4 generalises this shape into the pattern the rest of the credential work is measured against.
+**Recommendation: `ssh_mode = "agent-proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.2 generalises this shape into the pattern the rest of the credential work is measured against.
 
 | Mode | What it does |
 |---|---|
@@ -1367,7 +1367,7 @@ was for one commit — it removes Claude Code's "Quick safety check" for a fresh
 clone of an unfamiliar repository, and measured A/B on a target whose only
 content is `.claude/settings.json` with a `SessionStart` hook, the hook then
 **fires** at startup with the staged Anthropic OAuth token in the same sandbox.
-`SECRETS.md` §3.5 carries the table. Both arms are in `--dry-run`'s `CLAUDE`
+Both arms are in `--dry-run`'s `CLAUDE`
 block and both are goldened (`internal/cli/testdata/claude-block*.txt`).
 
 **`~/.claude.json` is NOT staged, and the justification for staging it — "without it Claude re-onboards and shows the login prompt" — is measured false** (claude 2.1.232, issue #19): with the file absent Claude Code connects and works, while removing `.credentials.json` gives "Not logged in · Please run /login" at once. What the file was actually buying is smaller and is not a credential — it suppresses the theme picker and, for the target, Claude Code's trust dialog, both of which block on **every** run because `$HOME` is a fresh tmpfs, and the theme picker's answer is written to `~/.claude/settings.json` — itself GENERATED and writable now (issue #17) — so it could not persist across runs either way, for the identical reason `~/.claude.json`'s own answer cannot. Three generated keys buy exactly that. What is no longer handed over is 62 KB of host inventory: every project path on the machine, `oauthAccount` (email, org name and UUID, account UUID), `machineID`, `userID`, `mcpServers`, and the host's per-project `allowedTools`. Two costs, both intended and both stated in the injected `CLAUDE.md`, in `base.toml`'s abuse block and in `--dry-run`'s `CLAUDE` block: MCP servers configured on the host are not configured inside, and a tool approved in a host session is asked again in the sandbox. The generated file is also **unconditional** — it reads nothing from the host, so the sandbox's Claude state no longer varies with the host's.
@@ -1376,7 +1376,7 @@ block and both are goldened (`internal/cli/testdata/claude-block*.txt`).
 
 Staging means the sandbox writes to a private copy on a tmpfs. **This has a real cost, and it is paid rather than mitigated: a token refreshed inside the sandbox does not persist to the host, and nothing copies it back.** There is no sync-back — verified by a fixed-string sweep of the tree for `syncBack`, `SyncBack`, `writeBack` and `WriteBack`, which finds nothing. This paragraph described one for a milestone ("at teardown it compares the staged copy to the host original and, if the sandbox wrote a structurally valid credentials file, copies it back atomically") and no such code was ever written; a design doc describing a mechanism that does not exist is worse than one that omits it, because the reader budgets for a risk nobody is running and stops looking for the one they are. If it is ever built, the structural-validation guard is the design and R4 is the row it belongs in. **`~/.claude.json` would still never be synced back**, and that is now trivially true rather than a rule to enforce: nothing host-derived goes in — one boolean comes *out* of the host's file and no bytes go the other way — so there is nothing to sync out. The reason it must stay that way is unchanged: the file's `mcpServers` slot names programs, and writing it from sandbox-authored bytes would inject a tool that runs *outside* the sandbox on your next host-side session.
 
-Everything else under `~/.claude` (history, projects, sessions, transcripts) stays ephemeral. [`SECRETS.md`](SECRETS.md) §1.1 places each of these on the severity model. The one that was not a file — `@claude` naming `ANTHROPIC_API_KEY` in its `env` list, putting an org key into `/proc/self/environ` — has since been removed; Claude authenticates from the staged credentials file instead.
+Everything else under `~/.claude` (history, projects, sessions, transcripts) stays ephemeral. [`SECRETS.md`](SECRETS.md) §2 places each of these on the severity model. The one that was not a file — `@claude` naming `ANTHROPIC_API_KEY` in its `env` list, putting an org key into `/proc/self/environ` — has since been removed; Claude authenticates from the staged credentials file instead.
 
 ### 9.4 The injected `~/.claude/CLAUDE.md`
 
@@ -1690,7 +1690,7 @@ The issues carry the *known gaps with severities*; this is the list of things th
 **Open questions**, each a decision that real use is most likely to reverse:
 
 - **Q1 — Should a door work for a server that only binds a port?** §4.6a requires the payload to accept on the inherited descriptor, which excludes Java, .NET and anything in a container. Issue #476 carries the staged adapter that would close that gap, and the accounting for what it costs.
-- **Q2 — Credential sync-back scope.** Should it extend beyond Claude's credentials to, say, a `gh` token refresh? Current answer: no, add cases only with a demonstrated need and a structural validator each time. [`SECRETS.md`](SECRETS.md) §5 is where this is settled.
+- **Q2 — Credential sync-back scope.** Should it extend beyond Claude's credentials to, say, a `gh` token refresh? Current answer: no, add cases only with a demonstrated need and a structural validator each time. [`SECRETS.md`](SECRETS.md) §6.2 is where this is settled.
 - **Q3 — Multiple simultaneous sandboxes on the same target.** Two `snug` runs against the same directory both get write access and will fight. `bwrap` has a `--lock-file`. Leaning: warn by default, `--exclusive` to refuse.
 - **Q4 — Should the 32-bit compat arch be FILTERED rather than killed?** §5.4 kills it, which costs every 32-bit binary. A per-arch syscall table would let the compat ABI run under the same denials as the native one. Nothing needs it today and no shipped profile has a 32-bit payload, so the question is whether one ever appears — not whether the kill is safe.
 - **Q5 — `bwrap` PR #766 (`--netns FD`)** would let `bwrap` *join* a preexisting netns. It changes nothing for the topology snug uses today but would simplify the engine-in-netns work considerably by removing an `unshare(1)` sandwich. Watch item, not a dependency.

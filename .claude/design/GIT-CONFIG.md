@@ -81,7 +81,7 @@ repo-said-so@example.com          # the repository won
 
 The repository is the material being sandboxed. Letting it choose the identity
 the sandbox commits under is the same class of defect as letting it choose the
-credential — see `SECRETS.md` §4.1, which states the rule that a secret selector
+credential — see `SECRETS.md` §4.2, which states the rule that a secret selector
 must not be steerable by the target.
 
 **Asking git outside a repository never fires the condition.** Same fixture,

@@ -8,7 +8,7 @@ import (
 )
 
 // TestExitStatusFromInsideIsNotAByteChannel pins today's wanted behaviour:
-// `snug <dir> -- sh -c 'exit 137'` returns 137. SECRETS.md:785 measures why
+// `snug <dir> -- sh -c 'exit 137'` returns 137. SECRETS.md §5.4 measures why
 // this is worth pinning rather than assuming: "Exit status is a byte channel,
 // and it is fast … a stub that did not propagate status would be useless,
 // because `gh` callers branch on it. Arbitrary code in the sibling does
