@@ -78,6 +78,14 @@ commit` executes.
 **It does not name a holder.** With several live runs there is no such thing as
 the holder. Where a consumer needs to name one it names *a* live run.
 
+**It does defer the orphan sweep, and that is a cost worth naming.** The sweep
+acts only when `LOCK_EX` succeeds, so a run SIGKILLed while a peer is still live
+on the same target leaves an init that is swept when the target falls quiet
+rather than at once. The record naming that init is per-run, so nothing is
+lost track of — the sweep is delayed, not blinded. Making per-record owner
+liveness the licence for a SIGKILL would replace one of `orphansweep.go`'s four
+documented conditions, which is a larger decision than this one.
+
 ## 4. Threat model
 
 The lock file lives on a host path never bound into any sandbox, and its name is
