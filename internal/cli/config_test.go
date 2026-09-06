@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -182,5 +184,99 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 	// the reader learns to skim the block.
 	if len(got) != len(want) {
 		t.Errorf("rendered %d verbs, want exactly %d: %v", len(got), len(want), got)
+	}
+}
+
+// A config.toml that will not decode used to print go-toml's bare
+// *StrictMissingError.Error() — "strict mode: fields in the document are
+// missing in the target struct" — and nothing else: no line, no key, no
+// suggestion. Issue #558 reported it against a config.toml holding a
+// [profile.npm] table, where the sentence names neither the mistake nor the
+// file the table belongs in.
+//
+// The assertions are on configDecodeMessage rather than loadUserConfig because
+// that function exits the process. The fixture is #558's config verbatim.
+func TestConfigDecodeMessageNamesTheKeyAndTheFix(t *testing.T) {
+	const reported = `defaults = ["@sys", "@home", "@net", "@cwd-rw", "@git-ro"]
+
+[profile.npm]
+description = "Share npm directory from home."
+ro = ["{home}/.npm-packages:{home}/.npm-host"]
+
+[profile.npm.environ.merge]
+PATH = ["{home}/.npm-host/bin"]
+`
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader(reported))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatal("control: the reported config decoded; the rest of this test proves nothing")
+	}
+
+	msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+	for _, want := range []string{
+		// The path, so a reader with several config files knows which one.
+		"/home/u/.config/snug/config.toml",
+		// The position. This is the whole of what the old message lacked.
+		"3| [profile.npm]",
+		// Both accepted keys, because there are only two and listing them is
+		// the cheapest possible "what did you mean".
+		"defaults", "tmpfs_size_mib",
+		// The category error: the table is not misspelled, it is in the wrong
+		// file, and no caret says that.
+		"/home/u/.config/snug/profiles.d/*.toml",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message does not contain %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "strict mode: fields in the document") {
+		t.Errorf("message still carries go-toml's positionless sentence:\n%s", msg)
+	}
+}
+
+// The control, and it is the half that keeps the test above honest: an ordinary
+// misspelled key gets the caret and the key list, and must NOT get the
+// profiles.d line — that sentence is advice about a different mistake, and
+// printing it for every typo would make it noise.
+func TestConfigDecodeMessageDoesNotMentionProfilesDirForAPlainTypo(t *testing.T) {
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader("tmpfs_size_mb = 512\n"))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatal("control: tmpfs_size_mb decoded, so it is not an unknown key")
+	}
+
+	msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+	if !strings.Contains(msg, "1| tmpfs_size_mb = 512") {
+		t.Errorf("message does not point at the misspelled key:\n%s", msg)
+	}
+	if !strings.Contains(msg, "tmpfs_size_mib") {
+		t.Errorf("message does not name the spelling that works:\n%s", msg)
+	}
+	if strings.Contains(msg, "profiles.d") {
+		t.Errorf("a misspelled scalar was told to go and write a profile file:\n%s", msg)
+	}
+}
+
+// Everything that is NOT a strict-mode error — a syntax error, an incomplete
+// array — keeps go-toml's own message. It already carries a position, and
+// there is no fix for snug to name.
+func TestConfigDecodeMessagePassesThroughNonStrictErrors(t *testing.T) {
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader("defaults = [\n"))
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatal("control: an unterminated array decoded")
+	}
+
+	msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+	if !strings.Contains(msg, err.Error()) {
+		t.Errorf("message dropped go-toml's own text %q:\n%s", err.Error(), msg)
+	}
+	if strings.Contains(msg, "accepts two keys") {
+		t.Errorf("a syntax error was answered with the unknown-key advice:\n%s", msg)
 	}
 }

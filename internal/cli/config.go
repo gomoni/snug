@@ -123,6 +123,63 @@ func configPath() string {
 	return filepath.Join(xdg, "snug", "config.toml")
 }
 
+// configDecodeMessage is the whole stderr screen for a config.toml that will
+// not decode, ending in a newline. Pure, and separate from loadUserConfig for
+// that reason: loadUserConfig exits the process, so the text it prints could
+// not otherwise be asserted on at this tier.
+//
+// The interesting case is the strict one. go-toml's *StrictMissingError has an
+// Error() of exactly "strict mode: fields in the document are missing in the
+// target struct" — no path, no line, no key — and that sentence was the entire
+// message this path produced (issue #558, reported against a config.toml
+// holding a [profile.npm] table). Its String() is the useful rendering:
+// numbered source lines with a caret under the offending key. internal/profile
+// /file.go already reaches for String() when a profiles.d file fails the same
+// way; this is the same treatment for the file one directory up.
+//
+// The rendering carries config-file text verbatim, so it is escaped PER LINE —
+// see badFileErrorLines for why that is the right shape and what it does not
+// close. The fixed indentation here is the same containment: every line of
+// foreign text is printed seven spaces in, and the file's author does not
+// choose the prefix.
+func configDecodeMessage(path string, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "snug: %s: ", policy.VisibleText(path))
+
+	var se *toml.StrictMissingError
+	if !errors.As(err, &se) {
+		fmt.Fprintf(&b, "%s\n", policy.VisibleText(err.Error()))
+		return b.String()
+	}
+
+	fmt.Fprint(&b, "unknown key (snug decodes config.toml strictly, so a key it\n"+
+		"       does not understand is an error rather than a silently ignored\n"+
+		"       setting):\n")
+	for _, line := range strings.Split(strings.TrimRight(se.String(), "\n"), "\n") {
+		fmt.Fprintf(&b, "       %s\n", policy.VisibleText(line))
+	}
+
+	// Naming the fix, not just the fault. config.toml has two keys and they are
+	// cheap to list, so the message lists them rather than sending the reader
+	// to documentation this repository deliberately does not have.
+	fmt.Fprint(&b, "       config.toml accepts two keys: defaults and tmpfs_size_mib.\n")
+
+	// The category error, which no caret conveys on its own: a [profile.x]
+	// table in config.toml is not a typo, it is a table in the wrong file.
+	// config.toml only NAMES profiles; profiles.d/*.toml DEFINES them. The
+	// directory is derived from the config path rather than looked up again,
+	// which keeps this function pure and names the reader's own directory.
+	for _, de := range se.Errors {
+		if k := de.Key(); len(k) > 0 && k[0] == "profile" {
+			fmt.Fprintf(&b, "       A profile is DEFINED in %s/*.toml, not here.\n"+
+				"       config.toml only NAMES profiles, in defaults.\n",
+				policy.VisibleText(filepath.Join(filepath.Dir(path), "profiles.d")))
+			break
+		}
+	}
+	return b.String()
+}
+
 func loadUserConfig() userConfig {
 	cfg := userConfig{}
 	path := configPath()
@@ -165,12 +222,7 @@ func loadUserConfig() userConfig {
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		// go-toml quotes the offending LINE of the file back at you, so this
-		// message carries config-file text verbatim. Whole-string rather than
-		// per-line here (unlike badfiles.go): a decode error from this path is
-		// one line, and there is no diagram to preserve.
-		fmt.Fprintf(os.Stderr, "snug: %s: %v\n", policy.VisibleText(path),
-			policy.VisibleText(err.Error()))
+		fmt.Fprint(os.Stderr, configDecodeMessage(path, err))
 		os.Exit(exitPolicy)
 	}
 	if cfg.TmpfsSizeMiB != nil {

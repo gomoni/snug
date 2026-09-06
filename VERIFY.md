@@ -3552,6 +3552,14 @@ printf 'defaults = ["@sys", "@cwd-rw"]\n' > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config | head -6            # control: accepted
 printf 'defaults = ["@sys", "a b"]\n'    > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+
+# door 3, the other failure: a key config.toml does not have. Issue #558 was
+# reported against the first of these — a profile TABLE written into
+# config.toml, which is not a typo but a table in the wrong file.
+printf '[profile.npm]\nro = ["{home}/.npm:{home}/.npm-host"]\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+printf 'tmpfs_size_mb = 512\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
 rm -rf $X
 ```
 
@@ -3568,6 +3576,13 @@ block — the name never gets as far as the registry.
 The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
 run exits **77** naming `entry 2` and the config file, rather than silently
 resolving the built-in list.
+
+Both unknown-key runs exit **77** and neither prints go-toml's positionless
+`strict mode: fields in the document are missing in the target struct`. Each
+quotes the numbered source line with a caret under the offending key, and names
+the two keys config.toml accepts. Only the `[profile.npm]` run adds the
+`profiles.d/*.toml` sentence — the misspelled `tmpfs_size_mb` must NOT get it,
+or the advice becomes noise on every typo.
 
 ## 9f. A container never sees the HOST's real /etc/resolv.conf (issue #126)
 
