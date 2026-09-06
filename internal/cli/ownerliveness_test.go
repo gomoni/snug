@@ -13,13 +13,13 @@ import (
 // of a live run's per-target lock file made the next run's sweep SIGKILL that
 // run's sandbox init.
 //
-// Every case here satisfies all four of the sweep's original conditions on
-// purpose. The lock is genuinely not held (there is no lock file at all,
-// which is what the `rm` leaves behind), the record's name genuinely hashes
-// its target, and the pid, start time and six namespace inodes genuinely name
-// the victim. Under the code this file was written against, that is a kill.
-// What must stop it is the one signal an unlink cannot detach: the owning
-// snug's own process.
+// Every case here satisfies every other condition the sweep applies, on
+// purpose: the record's name genuinely hashes its target, and the pid, start
+// time and six namespace inodes genuinely name the victim. The lock is not
+// held either (there is no lock file at all, which is what the `rm` leaves
+// behind), and that is no longer even asked — which is why the owner is the
+// only thing left that can stop the kill, and why these cases are the whole of
+// what protects a live run.
 
 func TestSweepDoesNotKillALiveRunWhoseLockFileWasRemoved(t *testing.T) {
 	dir, root := stateDirForTest(t)

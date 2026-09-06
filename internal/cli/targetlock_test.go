@@ -11,9 +11,10 @@ import (
 )
 
 // liveOnTarget is what every test below asserts through, because it is the
-// only question the target lock is asked in production: sweepOneOrphan and
-// `snug engine gc` both want "is any run live on this directory", and both get
-// it by asking for LOCK_EX and reading EWOULDBLOCK as yes.
+// only question the target lock is asked in production: `snug proxy`
+// (liveRunsFor) and `snug engine gc` both want "is any run live on this
+// directory", and both get it by asking for LOCK_EX and reading EWOULDBLOCK as
+// yes.
 //
 // It resolves the target itself, so a test may pass a symlink and get the same
 // answer lockTarget would give — that identity is the whole subject of one of

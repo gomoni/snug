@@ -21,7 +21,7 @@ import (
 // nothing would pass any test that only checked for survivors, and one that
 // killed everything would pass any test that only checked for corpses.
 //
-// The four conditions are tested one at a time, each with the OTHER three
+// The three conditions are tested one at a time, each with the OTHER two
 // satisfied, so a passing case cannot be passing for a neighbour's reason.
 func TestSweepKillsAnOrphanedInitWhoseRunIsGone(t *testing.T) {
 	dir, root := stateDirForTest(t)
@@ -31,8 +31,8 @@ func TestSweepKillsAnOrphanedInitWhoseRunIsGone(t *testing.T) {
 	sweepOrphanedSandboxesIn(root, dir)
 
 	if !waitDead(victim.pid, 5*time.Second) {
-		t.Errorf("the sweep left pid %d alive: its target lock was not held, so its run is "+
-			"gone and it is exactly what issue #236 accumulates", victim.pid)
+		t.Errorf("the sweep left pid %d alive: the snug that owned its run is gone, so it is "+
+			"exactly what issue #236 accumulates", victim.pid)
 	}
 	if _, err := os.Stat(filepath.Join(dir, targetStateName("/tmp/orphaned-target", os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the stale state file survived the sweep (err=%v). Nothing else removes it: a "+
@@ -41,28 +41,104 @@ func TestSweepKillsAnOrphanedInitWhoseRunIsGone(t *testing.T) {
 	}
 }
 
-// THE CONTROL THAT MATTERS. A live run holds its per-target lock for its whole
-// life, and the sweep must never touch it. Without this case the test above is
+// THE CONTROL THAT MATTERS, and the shared lock's own case. A live run's init
+// must come through the sweep untouched — without that half the test above is
 // satisfied by a sweep that kills every init it can find, which is the version
-// of this feature that must never ship.
-func TestSweepLeavesALiveRunAlone(t *testing.T) {
+// of this feature that must never ship — while a peer SIGKILLed beside it on
+// the SAME target is reaped now rather than when the target falls quiet.
+//
+// The held lock is what tells the two implementations apart. A run holds it
+// SHARED, so a live peer keeps it held for every record on that target; a
+// sweep that returned early on "held" reaped neither of these two records, and
+// one that ignores the owner gate reaps both. Only the per-record owner check
+// separates them.
+func TestSweepReapsADeadPeerWhileALivePeerHoldsTheTargetLock(t *testing.T) {
 	dir, root := stateDirForTest(t)
-	victim := liveProcess(t)
-	target := "/tmp/live-target"
-	writeStateFor(t, dir, target, victim)
+	const target = "/tmp/shared-lock-target"
+
+	// The live peer: a record whose owning snug is a real running process,
+	// with the target lock held SHARED exactly as that run holds it.
+	livePeer := liveProcess(t)
+	owner := liveProcess(t)
+	liveSt := stateFor(target, livePeer)
+	liveSt.Owner = liveOwner(owner)
+	writeState(t, dir, target, liveSt)
 	holdTargetLock(t, dir, target)
+
+	// The dead peer: same target, same held lock, its own snug started and
+	// reaped. Its init is the orphan the SIGKILL window leaves behind.
+	deadPeer := liveProcess(t)
+	deadSt := stateFor(target, deadPeer)
+	deadSt.Owner = spawnAndReap(t)
+	writeState(t, dir, target, deadSt)
+
+	liveName := targetStateName(target, liveSt.Owner.PID)
+	deadName := targetStateName(target, deadSt.Owner.PID)
+	if liveName == deadName {
+		t.Fatalf("control failed: both fixtures published at %q, so this cannot tell one "+
+			"record from two", liveName)
+	}
 
 	sweepOrphanedSandboxesIn(root, dir)
 
-	settle()
-	if !processAlive(victim.pid) {
-		t.Fatalf("the sweep killed pid %d while its target lock was HELD — that is a live "+
-			"sandbox, and the lock is the same fact `snug engine gc` reads before it reclaims "+
-			"a store", victim.pid)
+	if !waitDead(deadPeer.pid, 5*time.Second) {
+		t.Errorf("the sweep left pid %d alive: its own snug (pid %d) is gone, and deferring it "+
+			"until the target falls quiet leaves an orphaned init running for the whole life "+
+			"of the live peer beside it", deadPeer.pid, deadSt.Owner.PID)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, os.Getpid()))); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, deadName)); !os.IsNotExist(err) {
+		t.Errorf("the dead peer's record %q survived the sweep (err=%v): its run is over, and "+
+			"records for a busy target accumulated behind the old lock check", deadName, err)
+	}
+	settle()
+	if !processAlive(livePeer.pid) {
+		t.Fatalf("the sweep killed pid %d, the init of a run whose snug (pid %d) is still "+
+			"running — per-record reaping must not become a sweep that kills everything on a "+
+			"target with one dead run on it", livePeer.pid, owner.pid)
+	}
+	if _, err := os.Stat(filepath.Join(dir, liveName)); err != nil {
 		t.Errorf("the sweep removed a LIVE run's state file (err=%v) — it is the only thing "+
 			"naming that run's init, so removing it blinds every later sweep to it", err)
+	}
+}
+
+// The ".starting" twin of the case above, because sweepOneStartingOrphan
+// carried its own copy of the early return: a run SIGKILLed in the window
+// before it publishes state.json is exactly the one whose init nothing else
+// names, and a live peer on the target must not defer it.
+func TestSweepReapsADeadPeersStartingRecordUnderAHeldTargetLock(t *testing.T) {
+	dir, root := stateDirForTest(t)
+	const target = "/tmp/shared-lock-starting-target"
+
+	livePeer := liveProcess(t)
+	owner := liveProcess(t)
+	liveSt := initStateFor(target, livePeer)
+	liveSt.Owner = liveOwner(owner)
+	writeInitStateFile(t, dir, target, liveSt)
+	holdTargetLock(t, dir, target)
+
+	deadPeer := liveProcess(t)
+	deadSt := initStateFor(target, deadPeer)
+	deadSt.Owner = spawnAndReap(t)
+	writeInitStateFile(t, dir, target, deadSt)
+
+	sweepOrphanedSandboxesIn(root, dir)
+
+	if !waitDead(deadPeer.pid, 5*time.Second) {
+		t.Errorf("the sweep left pid %d alive, the init named ONLY by a \".starting\" record "+
+			"whose own snug (pid %d) is gone", deadPeer.pid, deadSt.Owner.PID)
+	}
+	if _, err := os.Stat(filepath.Join(dir, initStateName(target, deadSt.Owner.PID))); !os.IsNotExist(err) {
+		t.Errorf("the dead peer's \".starting\" record survived the sweep (err=%v)", err)
+	}
+	settle()
+	if !processAlive(livePeer.pid) {
+		t.Fatalf("the sweep killed pid %d, the init a LIVE run (snug pid %d) has only just "+
+			"published a \".starting\" record for", livePeer.pid, owner.pid)
+	}
+	if _, err := os.Stat(filepath.Join(dir, initStateName(target, liveSt.Owner.PID))); err != nil {
+		t.Errorf("the sweep removed a live run's \".starting\" record (err=%v): between OnInit "+
+			"and state.json it is the only thing naming that init", err)
 	}
 }
 
@@ -98,12 +174,17 @@ func TestSweepDoesNotKillARecycledPid(t *testing.T) {
 }
 
 // The namespace guard (#285), and it is why the record carries six inodes at
-// all. The starttime guard proves only that the pid was not RECYCLED — not that
-// it is a sandbox init. A state file whose init_pid/init_starttime name any
-// live same-uid process (a forged one, or a hostile one in a future where the
-// uid-private state dir is exposed) must NOT be honoured when that process does
-// not live in the namespaces the file recorded, or the sweep is an
-// arbitrary-pid kill primitive.
+// all. The starttime guard proves only that the pid was not RECYCLED — not
+// that it is a sandbox init. A record whose init_pid/init_starttime name an
+// ordinary live process must NOT be honoured when that process does not live
+// in the namespaces the record carries, or a record left over from a target
+// whose numbers have since been handed out again is an arbitrary-pid kill.
+//
+// What it does NOT buy is resistance to a FORGER: a same-uid writer of this
+// record reads the six inodes out of /proc/<victim>/ns/* and they match. That
+// actor is outside the threat model (killOrphanInit's own doc comment states
+// the bound), so the case below is the STALE record, which is the one this
+// check catches.
 //
 // Two victims differing ONLY in whether their recorded namespaces match their
 // real ones, so the survival of the foreign one is attributable to the
@@ -138,9 +219,9 @@ func TestSweepDoesNotKillAPidInForeignNamespaces(t *testing.T) {
 	settle()
 	if !processAlive(foreign.pid) {
 		t.Errorf("the sweep killed pid %d although its recorded namespace inodes do not match "+
-			"the ones it actually runs in — the starttime matched, but that only rules out pid "+
-			"reuse; a state file naming an unrelated live process must not turn the sweep into "+
-			"an arbitrary-pid kill (#285)", foreign.pid)
+			"the ones it actually runs in — the starttime matched, but a stale record naming a "+
+			"number since handed to an unrelated process must not turn the sweep into an "+
+			"arbitrary-pid kill (#285)", foreign.pid)
 	}
 	// The stale file is removed either way: its run is gone, and the sweep's file
 	// removal is unconditional. Not killing the pid does not mean keeping the file.

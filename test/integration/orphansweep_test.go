@@ -20,14 +20,18 @@ import (
 // four namespace objects, and on the wider end of that window still running
 // the payload — and the NEXT `snug` run must kill it.
 //
-// THE ORPHAN IS MADE DETERMINISTICALLY, which is what makes this a test rather
-// than a lottery. Measured: the run's state file lands at ~165 ms and the
-// orphan window runs from ~150 ms to ~350 ms on this host, so waiting for the
-// state file to appear and killing immediately afterwards lands inside the
-// window — 5 attempts out of 5 produced an orphan. The retry loop below is for
-// a host whose timings differ, and it SKIPS rather than passing if no orphan
-// can be produced at all: "the sweep removed nothing" must never be reported
-// as success.
+// THE ORPHAN IS A LOTTERY AGAIN, and the Skip below is the ordinary outcome.
+// When this was written the run's state file landed at ~165 ms and the orphan
+// window ran from ~150 ms to ~350 ms, so killing the moment the state file
+// appeared hit it 5 times out of 5. That no longer reproduces: 5 attempts
+// through this helper, 5 through sweeppeer_test.go's own loop, and 3 by-hand
+// kills polling every 2 ms for whichever record landed first all produced a
+// sandbox that died WITH its snug. The retry loop stays, and it SKIPS rather
+// than passing when no orphan can be produced: "the sweep removed nothing"
+// must never be reported as success. What the sweep does to an orphan once
+// there is one is asserted deterministically by
+// TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock, which
+// plants the record rather than waiting for this window.
 //
 // The state file is also the only place the init's pid is written down, which
 // is the same fact the sweep depends on.
@@ -95,8 +99,8 @@ func TestTheSweepDoesNotTouchALiveSandbox(t *testing.T) {
 	// A kill would have landed well inside this second.
 	time.Sleep(1 * time.Second)
 	if !processAlive(livePID) {
-		t.Fatalf("another snug run killed the init (pid %d) of a LIVE sandbox — its target "+
-			"lock is held for the whole run, which is what the sweep reads:\n%s",
+		t.Fatalf("another snug run killed the init (pid %d) of a LIVE sandbox — the snug that "+
+			"owns that run is still running, which is what the sweep reads per record:\n%s",
 			livePID, bg.output())
 	}
 	if _, err := os.Stat(statePath); err != nil {

@@ -272,10 +272,9 @@ func removeTargetFile(name string) error {
 // lock says whether ANY run is live here and nothing is read while it is
 // unheld: every record beside an unheld lock describes a corpse. With the
 // lock held, a record still may not be its own run's — a peer's SIGKILL
-// leaves a record behind that the sweep only removes once the whole target
-// falls quiet — so each is put through stateowner.go's owner check, the same
-// gate the sweep's kill uses and failing in the same direction: an owner that
-// cannot be confirmed dead is listed.
+// leaves one behind until a sweep reaches it — so each is put through
+// stateowner.go's owner check, the same gate the sweep's kill uses and failing
+// in the same direction: an owner that cannot be confirmed dead is listed.
 //
 // An error is reserved for a directory that fails the ownership or mode
 // guard, or a record beside a HELD lock that cannot be read or does not
@@ -368,9 +367,12 @@ func targetStateNamesIn(snugRoot *os.Root, real string) ([]string, error) {
 //
 // EXCLUSIVE is what makes this a question about runs at all, and it is the one
 // line in this function that cannot be relaxed. A LOCK_SH probe succeeds
-// alongside every shared holder, so against a live run it would answer
-// "nobody holds it" — and this answer is what licenses sweepOneOrphan to
-// SIGKILL the init the record names.
+// alongside every shared holder, so against a live run it would answer "nobody
+// holds it" — and liveRunsFor, the caller, would then report that nothing is
+// sandboxing a directory a sandbox is live on, which is what `snug proxy`
+// prints. `snug engine gc` asks the same question with its own copy of the
+// exclusive probe (targetLive and anyRunLive, enginegc.go) for the same
+// reason.
 //
 // It opens with O_CREATE for the same reason lockTarget does: the lock file is
 // the thing being probed, and a probe that refused to create it would report
@@ -378,13 +380,12 @@ func targetStateNamesIn(snugRoot *os.Root, real string) ([]string, error) {
 // empty, 0600, inside an already-verified 0700 directory.
 //
 // The Nlink recheck is openAndHoldTargetLock's, for the same window and the
-// same reason, and the CONSEQUENCE here is the sharper one: this probe's
-// answer decides whether killOrphanInit fires. An exclusive lock taken on an
-// inode sweepOneStaleLock has already unlinked would report "nobody holds
-// it" while a live run holds the file that now carries the name — and the
-// sweep would kill that live run's init. So a swept descriptor is retried
-// against the name, and an exhausted retry is an ERROR, not "not held":
-// every caller reads err as "not our business" and leaves the record alone.
+// same reason: an exclusive lock taken on an inode sweepOneStaleLock has
+// already unlinked reports "nobody holds it" while a live run holds the file
+// that now carries the name. So a swept descriptor is retried against the
+// name, and an exhausted retry is an ERROR, not "not held": the caller reads
+// err as "cannot tell", which is not the same fact and must not be acted on
+// as one.
 //
 // WHAT THAT RETRY DOES NOT COVER, stated because the paragraph above reads
 // like a closed hole and is not one: it covers snug's OWN sweep, which
@@ -411,14 +412,15 @@ func targetStateNamesIn(snugRoot *os.Root, real string) ([]string, error) {
 // inodes establish IDENTITY, and a record genuinely names its live init, so
 // all three pass by construction.
 //
-// WHAT THE CONSEQUENCE IS BOUNDED BY. The kill this answer used to license on
-// its own is now gated on a second signal that lives outside the filesystem:
-// killOrphanInit refuses to signal an init unless the snug that OWNED the run
-// is provably gone (stateowner.go). An `rm` or an `mv` of the lock file still
-// makes this function answer "not held", so `snug engine gc` will still
-// reclaim that target's store — but it no longer reaches a live sandbox's
-// init. Same-uid tampering is where runtimedir.go's own sweep already draws
-// this line.
+// WHAT THE CONSEQUENCE IS BOUNDED BY. The kill that answer once licensed is
+// not reached from here at all any more: the orphan sweep asks this question
+// of nothing (a SHARED lock answers about the target, never about the one
+// record being judged), and killOrphanInit signals no init unless the snug
+// that OWNED that run is provably gone (stateowner.go). An `rm` or an `mv` of
+// the lock file still makes this function answer "not held", so `snug engine
+// gc` will still reclaim that target's store and `snug proxy` will still say
+// nothing is live there — but neither reaches a live sandbox's init. Same-uid
+// tampering is where runtimedir.go's own sweep already draws this line.
 func targetLockIsHeld(snugRoot *os.Root, snugPath, real string) (bool, error) {
 	name := targetLockName(real)
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {

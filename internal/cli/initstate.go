@@ -64,10 +64,10 @@ type initState struct {
 	InitStarttime uint64            `json:"init_starttime"`
 	Namespaces    map[string]uint64 `json:"namespaces"`
 
-	// Owner carries the same second liveness signal state.json does, for the
-	// same reason and read by the same gate — see stateowner.go and issue
-	// #489. A gate present in only one of the two records would leave the
-	// hole open for whichever window the other covers.
+	// Owner carries the same liveness signal state.json does, for the same
+	// reason and read by the same gate — see stateowner.go and issue #489. A
+	// gate present in only one of the two records would leave the hole open
+	// for whichever window the other covers.
 	Owner stateOwner `json:"owner"`
 }
 

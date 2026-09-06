@@ -14,11 +14,17 @@ package cli
 // because another run got there first. What the lock still buys is the
 // question every reader actually asks — "is anything live on this target" —
 // because flock(2) refuses LOCK_EX while any LOCK_SH is held. So the two
-// readers take LOCK_EX and read EWOULDBLOCK as "yes": the orphan sweep
-// (targetLockIsHeld, targetstate.go) and `snug engine gc` (targetLive,
-// enginegc.go). A reader that took LOCK_SH would succeed against a live run
-// and answer "nothing is live" — which for the sweep licenses a SIGKILL and
-// for gc licenses reclaiming a store out from under a running engine.
+// readers take LOCK_EX and read EWOULDBLOCK as "yes": `snug proxy`
+// (targetLockIsHeld, via liveRunsFor in targetstate.go) and `snug engine gc`
+// (targetLive, enginegc.go). A reader that took LOCK_SH would succeed against
+// a live run and answer "nothing is live" — which for proxy reports no
+// sandbox on a directory one is live on, and for gc licenses reclaiming a
+// store out from under a running engine.
+//
+// The orphan sweep is deliberately NOT among them. It judges one record at a
+// time, and this lock cannot answer about one record: it stays held until the
+// LAST run on the target exits, so a shared answer would defer the sweep of a
+// SIGKILLed run for the whole life of any peer beside it (orphansweep.go).
 //
 // The abuse sentence: a hostile process inside the sandbox can use this to
 // ___ — nothing. The lock file lives on a host path (/run/user/<uid>/snug/…,
@@ -26,8 +32,8 @@ package cli
 // sandbox, and its name is the SHA-256 of the realpath the host user named,
 // computed on the host before the sandbox exists. The payload can neither reach
 // the file nor influence which file snug locks, so it can neither release its
-// own run's hold — which would make the orphan sweep read that run as dead and
-// SIGKILL its init — nor steer snug to lock an unrelated path.
+// own run's hold — which would make `snug engine gc` reclaim the store its
+// engine is writing — nor steer snug to lock an unrelated path.
 //
 // Its DIRECTORY is resolved from the uid alone (targetLockBase), NOT from
 // $XDG_RUNTIME_DIR/$TMPDIR the way the per-run socket directory (runtimedir.go)
@@ -35,8 +41,8 @@ package cli
 // cross-run agreement, and a run in an interactive shell ($XDG_RUNTIME_DIR set)
 // and a reader under cron/systemd/ssh-non-login (unset) must land on the SAME
 // lock inode, or the reader probes a file no live run holds — a fail-OPEN that
-// needs no attacker, and one whose consequence is a SIGKILL of a live
-// sandbox's init. runtimedir.go's per-run lock never needs cross-run
+// needs no attacker, and one whose consequence is a store reclaimed under a
+// running engine. runtimedir.go's per-run lock never needs cross-run
 // agreement, so it keeps the env-derived base; the target lock cannot.
 
 import (
@@ -134,9 +140,9 @@ func targetLockName(realpath string) string {
 // targetKeyPrefix is the shared stem of every per-target file: the lock and,
 // since issue #123, the run-state JSON beside it. One function so the two can
 // never drift onto different hashes of the same path — a drift that would not
-// fail loudly, it would simply mean the orphan sweep probed a lock beside a
-// state file no run on that target had written, and every leftover init went
-// unswept.
+// fail loudly, it would simply mean `snug proxy` and `snug engine gc` probed a
+// lock beside a state file no run on that target had written, and read an idle
+// target where a run was live.
 //
 // The hash itself is internal/targetkey's Hash — see that package's doc
 // comment for why every target-derived name on disk, including the engine
@@ -267,8 +273,8 @@ const targetLockRetryDelay = 2 * time.Millisecond
 // symmetric with what issues #119 and #122 first wrote it for. Holding an
 // inode nothing points at any more is holding NOTHING a reader will look at:
 // every reader opens by NAME, so this run would announce itself on an orphan
-// while the name carried a fresh, unheld file — and the next run's sweep,
-// finding that name unheld, is licensed to SIGKILL this run's init.
+// while the name carried a fresh, unheld file — and `snug engine gc`, finding
+// that name unheld, would reclaim the store under this run's engine.
 func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string, mode int) (*os.File, error) {
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {
 		lock, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)

@@ -5484,12 +5484,10 @@ output — they are keyed by the target hash alone, which is exactly what makes
 them shared — so a `0` here with an empty list above it is the filter having
 eaten too much, not the property under test.
 
-### 14c. The per-target lock still answers "is a run live"
+### 14c. A second run's startup sweep does not touch a live run
 
-The lock is shared now, so it no longer refuses anything — but it is the one
-fact the orphan sweep and `snug engine gc` read, and a shared holder must still
-block an exclusive request. Start a run, then have a second `snug` on a
-DIFFERENT directory perform its startup sweep:
+Start a run, then have a second `snug` on a DIFFERENT directory perform its
+startup sweep:
 
 ```bash
 T=$(mktemp -d); mkdir -p "$T/proj" "$T/other"
@@ -5500,11 +5498,46 @@ sleep 1; kill -0 $FIRST && echo "first run survived the sweep: ok"
 kill $FIRST 2>/dev/null; wait $FIRST 2>/dev/null
 ```
 
-Expect `first run survived the sweep: ok`. A sweep that read the shared lock
-with `LOCK_SH` would succeed beside the live holder, answer "nobody holds it",
-and SIGKILL that run's init.
+Expect `first run survived the sweep: ok`. What spares it is the record's own
+owner: the sweep asks, per record, whether the `snug` process that owned that
+run is still running, and consults no target lock at all (`orphansweep.go`).
+The lock answers a different question, for `snug proxy` and `snug engine gc`,
+and it is shared — a probe that asked for `LOCK_SH` would succeed beside the
+live holder, answer "nobody holds it", and let gc reclaim the store under a
+running engine.
 
-### 14d. From outside, `nsenter` is still yours
+### 14d. An orphan is reaped while a peer on the same target is live
+
+The sweep must not wait for the target to fall quiet. Two runs on ONE
+directory, `SIGKILL` the first, and let a third run sweep while the second is
+still going:
+
+```bash
+T=$(mktemp -d); mkdir -p "$T/proj" "$T/other"
+D=/run/user/$(id -u)/snug
+H=$(printf %s "$(readlink -f "$T/proj")" | sha256sum | cut -d' ' -f1)
+./bin/snug "$T/proj" -- /bin/sh -c 'touch A; while :; do sleep 1; done' & A=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/proj" -- /bin/sh -c 'touch B; while :; do sleep 1; done' & B=$!
+while [ ! -e "$T/proj/B" ]; do sleep 0.05; done
+ls $D/target-sha256_$H.*.json | wc -l        # 2 records, one target
+kill -9 $A; wait $A 2>/dev/null
+./bin/snug "$T/other" -- /bin/true           # sweeps while B is live
+sleep 1
+ls $D/target-sha256_$H.*.json | wc -l        # 1: A's record is gone
+test -e $D/target-sha256_$H.$A.json && echo "the dead run's record SURVIVED: bug"
+kill -0 $B && echo "the live peer survived: ok"
+kill $B 2>/dev/null; wait $B 2>/dev/null
+```
+
+Expect `2`, then `1` with no `SURVIVED` line, then `the live peer survived:
+ok`. The middle assertion is the half that regressed: the target lock is SHARED
+and B still holds it, so a sweep that returned early on "held" left A's record
+— and, where the `SIGKILL` lands inside bwrap's startup window, A's
+still-running init — in place for the whole of B's life. The automated form is
+`TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock`.
+
+### 14e. From outside, `nsenter` is still yours
 
 Nothing here is a permission snug grants or withholds. A same-uid host process
 can join a running sandbox's namespaces with `nsenter` and always could — the
@@ -6481,7 +6514,10 @@ filter let it through — 404 above is the ENGINE answering, on a host with no
 The per-target lock is held on an INODE and consulted by NAME, so one `rm` — or
 one `mv`, which leaves no `(deleted)` trail anywhere — detaches the two and made
 the next run's sweep read a live run as dead and SIGKILL its sandbox init. The
-kill is now gated on the owning snug's own process, which no rename reaches.
+kill is now gated on the owning snug's own process, which no rename reaches —
+and that gate is the only one: the sweep does not consult the lock at all, since
+a shared lock answers about the target rather than about the record it is
+judging (§14d).
 
 ```bash
 TGT=$(mktemp -d); OTHER=$(mktemp -d)

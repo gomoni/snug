@@ -154,14 +154,14 @@ func TestStateReaderRefusesADirectoryItDoesNotOwn(t *testing.T) {
 	}
 }
 
-// TestTargetLockIsHeldSeesAShodRunAndACorpse pins the fact the orphan sweep
-// acts on: "is any run live on this target".
+// TestTargetLockIsHeldSeesAShodRunAndACorpse pins the fact `snug proxy` and
+// `snug engine gc` act on: "is any run live on this target".
 //
 // The SHARED control is the one that matters and it is why this test cannot be
 // written with LOCK_EX alone. A run holds the target lock SHARED, so a probe
 // that asked for LOCK_SH would succeed alongside it and answer "nobody holds
-// it" — and that answer is what licenses sweepOneOrphan to SIGKILL the init the
-// record names. targetLockIsHeld asks for LOCK_EX for exactly this reason, and
+// it" — which reports no sandbox on a directory one is live on, and licenses
+// gc to reclaim a store under a running engine. targetLockIsHeld asks for LOCK_EX for exactly this reason, and
 // the LOCK_SH holder below is what tells the two implementations apart: both
 // pass against an idle target, and only the exclusive probe passes against a
 // live run.

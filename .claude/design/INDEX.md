@@ -36,7 +36,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
 | [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | **DRAFT — nothing built.** Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
-| [`TARGET-LOCK.md`](TARGET-LOCK.md) | The per-target `flock` keyed on `sha256(realpath)` and resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open). A run takes it SHARED: it records that a sandbox is live on the target for the orphan sweep and `snug engine gc`, and refuses nothing. |
+| [`TARGET-LOCK.md`](TARGET-LOCK.md) | The per-target `flock` keyed on `sha256(realpath)` and resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open). A run takes it SHARED: it records that a sandbox is live on the target for `snug proxy` and `snug engine gc`, and refuses nothing. The orphan sweep asks no target-wide question — it judges each run record on its own owner. |
 
 Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
 
@@ -1530,8 +1530,11 @@ the target directory, the engine store and runroot under a `@podman*` profile,
 and the shared-tmp directory under `@tmp-shared` — which `--dry-run` enumerates
 and `SECRETS.md` §8 costs. The per-target `flock` still exists and is still
 keyed on `sha256(realpath)` in the per-uid runtime directory resolved from the
-uid alone, but a run takes it SHARED and it refuses nothing: it is how the
-orphan sweep and `snug engine gc` learn that a sandbox is live.
+uid alone, but a run takes it SHARED and it refuses nothing: it is how `snug
+proxy` and `snug engine gc` learn that a sandbox is live. The orphan sweep does
+not read it — shared, it stays held until the last run on the target exits, so
+it cannot answer about the one record being judged; per-run liveness is that
+record's own owning `snug` process.
 [`TARGET-LOCK.md`](TARGET-LOCK.md) owns the subject.
 
 ### 11.1 Exit codes

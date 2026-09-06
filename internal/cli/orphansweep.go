@@ -29,26 +29,38 @@ import (
 // #85 made for the run DIRECTORY: nothing can be cleaned up at the instant of
 // a SIGKILL, so the next run cleans it up instead.
 //
-// WHY IT CANNOT KILL A LIVE SANDBOX. Four independent conditions, all
-// required:
+// WHY IT CANNOT KILL A LIVE SANDBOX. Three conditions, all required, and
+// every one of them is a fact about the RECORD rather than about its target:
 //
-//   - The per-target lock is not held. A live run takes that lock in run()
-//     BEFORE it starts anything and holds it for the whole run; the kernel
-//     releases it when that process dies, however it dies. So "not held"
-//     means every snug that ever locked this target is gone — the same fact
-//     `snug engine gc` reads before it reclaims a store.
 //   - The state file's NAME matches the target it names. The name is
 //     sha256(realpath), derived and never stored, so a file hand-placed to
 //     make this function kill an arbitrary pid has to carry a target whose
 //     hash is its own filename.
-//   - The recorded start time still matches /proc/<pid>/stat field 22. That is
-//     the pid-reuse guard: a pid recycled since the state was written has a
-//     different start time and is left alone.
+//   - The recorded start time still matches /proc/<pid>/stat field 22, and the
+//     six recorded namespace inodes still match /proc/<pid>/ns/*. That is the
+//     pid-reuse guard: a number recycled since the record was written names a
+//     task with a different start time, in different namespaces, and is left
+//     alone.
 //   - The snug that OWNED the run is provably gone (stateowner.go, issue
-//     #489). The first condition is read by NAME while the lock is held on an
-//     INODE, so one same-uid `rm` — or `mv`, which leaves no trail at all —
-//     detaches the two and makes a live run read as unheld. The owner is a
-//     process rather than a file, and no rename reaches it.
+//     #489). This is the only liveness signal, and it is a process rather than
+//     a file: no unlink, rename or edit of anything in the state directory
+//     reaches it.
+//
+// THE PER-TARGET LOCK IS NOT ONE OF THEM, and returning early while it was
+// held is the defect this shape replaced. A run holds that lock SHARED
+// (TARGET-LOCK.md), so it stays held until the LAST run on the target exits,
+// and "some run is live on this directory" stopped being "this record's run is
+// live" the moment two sandboxes could sit on one directory. A run SIGKILLed
+// beside a live peer therefore had neither its record nor its orphaned init
+// touched for the whole of that peer's life — invariant 4 failing on an
+// ordinary sequence with no attacker, and issue #236's accumulation again on
+// any target somebody keeps busy. Each record is now judged on its own owner,
+// which is the stronger of the two signals in any case: the lock is held on an
+// INODE and read by NAME, so one same-uid `rm` or `mv` detaches its answer
+// from the run it describes (targetstate.go measures both), which is what
+// issue #489 was. test/integration's
+// TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock is the
+// regression test, with the live peer's own init as its negative half.
 //
 // AN INIT THAT NEVER ANSWERS --info-fd AT ALL — parked in read() on one of
 // BWRAP's OWN eventfds, its uid-map sync — used to be listed here as
@@ -101,11 +113,11 @@ func sweepOrphanedSandboxesIn(snugRoot *os.Root, snugPath string) {
 	if err != nil {
 		return
 	}
-	// Two passes, and the ORDER is load-bearing rather than tidy: the record
-	// sweeps below probe the per-target lock through targetLockIsHeld, which
-	// opens it with O_CREATE. A lock removed before them is recreated behind
-	// them, and the sweep would leave the directory exactly as full as it
-	// found it.
+	// Two passes, and the ORDER is load-bearing rather than tidy:
+	// sweepOneStaleLock is handed every interrupted write sharing its stem,
+	// and readdir may return a ".tmp-" entry AFTER the ".lock" it belongs
+	// beside. So the whole directory is classified first and the locks are
+	// swept once that map is complete.
 	interrupted := map[string][]string{}
 	var locks []string
 	for _, e := range entries {
@@ -269,11 +281,6 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 		return
 	}
 
-	held, err := targetLockIsHeld(snugRoot, snugPath, st.Target)
-	if err != nil || held {
-		return // a live run, or a lock we could not probe: not our business
-	}
-
 	// The record is the only thing that names this init — pid, start time,
 	// six namespace inodes — and nothing else on the host does (a sweep
 	// hunting the process itself would have to key on a process NAME, which
@@ -312,11 +319,6 @@ func sweepOneStartingOrphan(snugRoot *os.Root, snugPath, name string) {
 	}
 
 	if !initStateNameMatches(st.Target, name) {
-		return
-	}
-
-	held, err := targetLockIsHeld(snugRoot, snugPath, st.Target)
-	if err != nil || held {
 		return
 	}
 
@@ -399,11 +401,21 @@ const (
 //
 //   - starttime, which proves the pinned pid is the one the state file named
 //     and not a pre-open reuse of that number;
-//   - the six namespace inodes, because starttime alone does NOT prove the
-//     process is a sandbox init — a forged or hostile state file naming any
-//     live same-uid process would otherwise turn this sweep into an
-//     arbitrary-pid kill. Require the process to live in exactly the namespaces
-//     the file recorded (procNamespaceInodes, runstate.go).
+//
+//   - the six namespace inodes, because starttime alone does not prove the
+//     pinned process is a sandbox init at all. Requiring it to live in exactly
+//     the namespaces the record carries (procNamespaceInodes, runstate.go)
+//     catches the STALE record: a number recycled onto an ordinary host
+//     process, which cannot be in a sandbox init's six namespaces.
+//
+//     It does not catch a FORGER, and stating it as an anti-forgery guard
+//     overclaims it. The only actor that can write this record is a same-uid
+//     one, and it reads those six inodes out of /proc/<victim>/ns/* as easily
+//     as snug does — a record naming a live victim then passes every check
+//     here. Writing into the uid-owned 0700 state directory is same-uid host
+//     tampering, which is outside the threat model exactly as it is for
+//     runtimeDir (#61); this check buys pid-reuse and staleness, not
+//     resistance to the one actor able to author the file.
 //
 // Fail CLOSED throughout: ESRCH or any mismatch means "not provably our init",
 // and leaving an orphan is the less-bad outcome than killing a process we
@@ -470,15 +482,17 @@ func killOrphanInit(st runState, statePath string) orphanVerdict {
 			return orphanGone
 		}
 	}
-	// THE SECOND LIVENESS SIGNAL (issue #489). Everything above establishes
-	// IDENTITY — this really is the init the record named — and identity is
-	// not liveness of the RUN. The caller reached here because the per-target
-	// lock read as unheld, and one same-uid `rm` or `mv` of the lock file
-	// makes it read that way about a run that is very much alive
-	// (targetstate.go measures both). So the kill is gated on a signal no
-	// unlink can detach: the owning snug's own process. Fails CLOSED —
-	// anything short of a positive confirmation keeps the record and the
-	// init, which is the direction this whole function already fails in.
+	// THE LIVENESS SIGNAL (issue #489). Everything above establishes IDENTITY
+	// — this really is the init the record named — and identity is not
+	// liveness of the RUN. Nothing else asks: the caller does not consult the
+	// per-target lock, which is shared and answers about the TARGET, so beside
+	// a live peer it would defer this kill for the peer's whole life. It would
+	// be the weaker signal even where it applied — one same-uid `rm` or `mv`
+	// of the lock file makes it read as unheld about a run that is very much
+	// alive (targetstate.go measures both) — and the owning snug's own process
+	// is the one signal no rename reaches. Fails CLOSED: anything short of a
+	// positive confirmation keeps the record and the init, which is the
+	// direction this whole function already fails in.
 	if !ownerProvablyGone(st.Owner) {
 		return orphanUnresolved
 	}

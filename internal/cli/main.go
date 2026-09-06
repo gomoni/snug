@@ -477,8 +477,9 @@ func run(cfg config) int {
 		// Housekeeping, placed HERE because it kills processes and a dry run
 		// must never reach it (a dry run starts nothing and stops nothing —
 		// issue #21). It does NOT depend on this run's own lock proving
-		// anything: the sweep probes each target's lock exclusively for
-		// itself, and skips every target something holds. See orphansweep.go
+		// anything, and it consults no target's lock at all: each record is
+		// judged on whether the snug that owned THAT run is provably gone, so
+		// a peer live on the same target defers nothing. See orphansweep.go
 		// for why it cannot reach a live sandbox.
 		sweepOrphanedSandboxes()
 	}

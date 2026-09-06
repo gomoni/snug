@@ -47,8 +47,8 @@ type runState struct {
 	Sandbox runStateSandbox `json:"sandbox"`
 
 	// Owner is the snug process that holds this target's lock, and it is the
-	// sweep's second liveness signal — the one an `rm` or an `mv` of the lock
-	// file cannot detach from the run (issue #489). See stateowner.go.
+	// sweep's liveness signal for this run — the one an `rm` or an `mv` of the
+	// lock file cannot detach from it (issue #489). See stateowner.go.
 	Owner stateOwner `json:"owner"`
 
 	// RunDir is this run's own runtime directory, and it is here for one

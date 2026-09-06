@@ -83,8 +83,9 @@ func TestWriteTargetStateRefusesARecordThatNamesNoOwner(t *testing.T) {
 
 // The invariant-4 half, and the defect the pid in the name exists to fix: run
 // A is SIGKILLed while run B is live on the same target. Both runs' inits must
-// still be named by a record of their own, and the sweep must kill BOTH once
-// the target falls quiet.
+// still be named by a record of their own, and the sweep must kill BOTH — each
+// on its own owner's liveness, which is what lets it act on one record while a
+// peer on that target is live (orphansweep_test.go's held-lock case).
 //
 // Under the target-keyed name run B's record landed on run A's file, so this
 // test finds run A's victim alive: nothing on the host names it.
@@ -251,8 +252,8 @@ func TestProxyNeedsNoPidWhenOneRunIsLive(t *testing.T) {
 
 // A dead peer's record must not be offered as a candidate. The target lock
 // says only that SOMETHING is live here, and a run SIGKILLed beside a live one
-// leaves its record on disk until the whole target falls quiet — so per-record
-// liveness is the owner check, the same gate the sweep's kill uses.
+// leaves a record on disk until some sweep reaches it — so per-record liveness
+// is the owner check, the same gate the sweep's kill uses.
 func TestProxyDoesNotOfferARunWhoseOwnerIsGone(t *testing.T) {
 	snugDir := useTargetLockBase(t)
 	if err := os.MkdirAll(snugDir, 0o700); err != nil {

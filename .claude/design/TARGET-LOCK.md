@@ -2,21 +2,24 @@
 
 A run takes a shared advisory `flock` naming its target directory. The lock
 records that **a** sandbox is live on that target. It is bookkeeping for two
-consumers — the orphan sweep (invariant 4) and `snug engine gc` — and it is not
-an exclusion rule: several sandboxes may be live on one target at once, and that
-is the supported shape.
+consumers — `snug proxy` and `snug engine gc` — and it is not an exclusion
+rule: several sandboxes may be live on one target at once, and that is the
+supported shape.
 
 ## 1. What it is for
 
 Two things need to ask "is any run live on this target", and neither can ask by
 walking `/proc`:
 
-- **The orphan sweep.** Invariant 4 says nothing survives the user. The sweep
-  removes the runtime state of runs that are gone, and it must not remove the
-  state of one that is merely quiet.
+- **`snug proxy <dir>`.** A human names a directory and expects a door into a
+  sandbox on it. With no live run there is nothing to open, and `liveRunsFor`
+  reads no record at all beside an unheld lock: every one of them describes a
+  corpse.
 - **`snug engine gc`.** The engine store is keyed by the target hash alone
   (issue #276 removed the profile set from the key), so collecting it is safe
   only while no sandbox on that target can be writing it.
+
+The orphan sweep is deliberately not one of them — §3.
 
 Both take `LOCK_EX`. A run takes `LOCK_SH`. `LOCK_EX` fails while any shared
 lock is held, so "no run is live here" is exactly "`LOCK_EX` succeeded", with
@@ -78,13 +81,15 @@ commit` executes.
 **It does not name a holder.** With several live runs there is no such thing as
 the holder. Where a consumer needs to name one it names *a* live run.
 
-**It does defer the orphan sweep, and that is a cost worth naming.** The sweep
-acts only when `LOCK_EX` succeeds, so a run SIGKILLed while a peer is still live
-on the same target leaves an init that is swept when the target falls quiet
-rather than at once. The record naming that init is per-run, so nothing is
-lost track of — the sweep is delayed, not blinded. Making per-record owner
-liveness the licence for a SIGKILL would replace one of `orphansweep.go`'s four
-documented conditions, which is a larger decision than this one.
+**It does not gate the orphan sweep, and a shared lock could not.** The sweep
+judges one record at a time, and this lock stays held until the LAST run on the
+target exits, so consulting it would leave a run SIGKILLed beside a live peer
+unswept — record and orphaned init both — for the whole of that peer's life,
+which is invariant 4 failing on an ordinary sequence with no attacker. Per-run
+liveness is the record's own owner (`stateowner.go`): the snug process that
+took this lock, checked by pid plus `/proc/<pid>/stat` field 22, and the one
+signal a `rm` or `mv` of the lock file cannot detach from the run it describes.
+`orphansweep.go` carries the three conditions the sweep does apply.
 
 ## 4. Threat model
 
