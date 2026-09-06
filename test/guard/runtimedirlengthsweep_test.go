@@ -23,13 +23,13 @@ import (
 // TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused) — over
 // the 107-byte limit.
 //
-// attachEnv (attach_test.go) is now the suite default: every $XDG_RUNTIME_DIR
+// suiteEnv (sandboxhelpers_test.go) is now the suite default: every $XDG_RUNTIME_DIR
 // it hands out is rooted at os.MkdirTemp("", …) instead, which is 5 bytes plus
 // a fixed prefix plus the same 1-10 digit suffix — test-name-agnostic, so no
 // test can grow into this failure by being renamed. This sweep is the ratchet
-// that keeps the property true: with attachEnv fixed, "no XDG_RUNTIME_DIR
+// that keeps the property true: with suiteEnv fixed, "no XDG_RUNTIME_DIR
 // built from t.TempDir()" is a purely static, AST-checkable claim, and a rule
-// enforced by an exception list is what rots (attachEnv's own doc comment) —
+// enforced by an exception list is what rots (suiteEnv's own doc comment) —
 // there is deliberately no allow-list of "test names known to be short
 // enough" here.
 
@@ -102,7 +102,7 @@ func runtimeDirEnvShape(e ast.Expr) (isRuntimeDirEntry, fromTempDir bool) {
 }
 
 // TestIntegrationXDGRuntimeDirIsNeverBuiltFromTempDir is the sweep, over
-// test/integration only — attachEnv's own package.
+// test/integration only — suiteEnv's own package.
 func TestIntegrationXDGRuntimeDirIsNeverBuiltFromTempDir(t *testing.T) {
 	type site struct {
 		file string
@@ -139,7 +139,7 @@ func TestIntegrationXDGRuntimeDirIsNeverBuiltFromTempDir(t *testing.T) {
 		t.Fatal("no _test.go file was parsed, so this check measures nothing")
 	}
 	// POSITIVE CONTROL: test/integration is known to build "XDG_RUNTIME_DIR="
-	// entries (attachEnv, containerEngineEnv, shortRuntimeDir and their
+	// entries (suiteEnv, containerEngineEnv, shortRuntimeDir and their
 	// callers). Finding none means the shape detector broke, not that the
 	// suite stopped setting the variable.
 	if len(checked) == 0 {
@@ -151,7 +151,7 @@ func TestIntegrationXDGRuntimeDirIsNeverBuiltFromTempDir(t *testing.T) {
 		t.Errorf("%s:%d builds $XDG_RUNTIME_DIR from t.TempDir(). t.TempDir() names its directory "+
 			"after the calling test (truncated to 64 chars) — on this suite's longer test names "+
 			"that pushes the container proxy's socket path past AF_UNIX's 108-byte sun_path (see "+
-			"this file's own doc comment for the measurement). Use attachEnv, containerEngineEnv or "+
+			"this file's own doc comment for the measurement). Use suiteEnv, containerEngineEnv or "+
 			"shortRuntimeDir instead.", s.file, s.line)
 	}
 }

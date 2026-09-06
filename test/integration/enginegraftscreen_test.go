@@ -82,7 +82,7 @@ func TestDryRunNamesTheEnginesHostTreeGrafts(t *testing.T) {
 	}
 
 	// ── the control: what a live engine actually mounted ──────────────────
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 120`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 120`)
 	bg.ready(t)
 	bg.waitForState(t)
 	enginePID := findEnginePID(t, os.Getuid(), bg.pid())

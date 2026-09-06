@@ -248,14 +248,14 @@ func describeResolvedEngine() string {
 	return r.versionLine + " at " + r.path
 }
 
-// containerEngineEnv is baseEnv (via attachEnv's own isolation, so
+// containerEngineEnv is baseEnv (via suiteEnv's own isolation, so
 // $XDG_RUNTIME_DIR never collides with another test's live run) plus
 // $SNUG_PODMAN pointed at hostEngine's resolved binary. Every test in this
 // file that starts a real engine uses it.
 func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	t.Helper()
 	podman := hostEngine(t)
-	base, xdg := attachEnv(t)
+	base, xdg := suiteEnv(t)
 	out := append(base, "SNUG_PODMAN="+podman)
 	// SNUG_PODMAN_ROOT is passed through from the AMBIENT environment when a
 	// developer set it, and never invented (issue #393 spec §1): a system
@@ -1805,7 +1805,7 @@ func TestNoAbstractSocketsWithEngineInN(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1971,7 +1971,7 @@ func TestEngineNetnsReapedOnSIGKILL(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2092,7 +2092,7 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 
 	t.Run("control: engine starts when nothing is faked", func(t *testing.T) {
 		proj, _ := target(t)
-		bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 5`)
+		bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 5`)
 		bg.ready(t)
 		bg.waitForState(t)
 		// bg's own t.Cleanup kills it; reaching here means the payload started,
@@ -2270,7 +2270,7 @@ func TestEngineCapBoundingInU(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2806,7 +2806,7 @@ func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 	// /build is gated on policy.PodmanBuild — see
 	// TestHostLoopbackClosedFromContainer's own note on what @podman-socket
 	// alone does to a client mid-upload.
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -3049,7 +3049,7 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 
 	home, marker := hostileContainersConfHome(t)
 	wrapper, toolchainRoot := engineWithHome(t, home)
-	base, _ := attachEnv(t)
+	base, _ := suiteEnv(t)
 	// SNUG_PODMAN_ROOT is not optional: the wrapper is the engine binary for
 	// this run and it lives outside every grant, so without the graft G4
 	// refuses the run outright. See engineWithHome's own doc comment.
@@ -3320,7 +3320,7 @@ func findConmonPID(t *testing.T, root int, timeout time.Duration) int {
 // CONTROL of confirming the token is actually alive on the host — this
 // helper only starts things, per CLAUDE.md's rule that a positive control has
 // to sit next to the assertion it backs, not be buried in shared setup.
-func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string) (bg *attachSandbox, token string) {
+func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string) (bg *bgSandbox, token string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, holderBin(t)), 0o755); err != nil {
 		t.Fatal(err)
@@ -3330,7 +3330,7 @@ func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string
 	if err := os.WriteFile(filepath.Join(proj, "holder.py"), []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bg = startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg = startBgSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
 	bg.ready(t)
 	bg.waitForState(t)
 	return bg, token
@@ -3377,7 +3377,7 @@ func TestEngineHasItsOwnPidNamespace(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -4168,7 +4168,7 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 

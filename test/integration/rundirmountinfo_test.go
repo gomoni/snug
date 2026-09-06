@@ -87,7 +87,7 @@ echo PROBE-DONE
 		"ssh_mode = \"agent-proxy\"\n"+
 		"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "pinned"}, idProj, `sleep 120`)
+	bg := startBgSandbox(t, env, []string{"-p", "pinned"}, idProj, `sleep 120`)
 	bg.ready(t)
 	bg.waitForState(t)
 

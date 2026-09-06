@@ -43,7 +43,7 @@ import (
 // t.TempDir() with no ancestor relation to anything else a caller in this
 // file builds — see the header comment's FIXTURE HAZARD paragraph. os/exec
 // keeps the LAST duplicate key in an env slice (baseEnv's own doc comment),
-// so appending these after attachEnv's own baseEnv-derived slice is enough
+// so appending these after suiteEnv's own baseEnv-derived slice is enough
 // to override it.
 func scratchHomeEnv(t *testing.T) []string {
 	t.Helper()
@@ -88,7 +88,7 @@ func TestEngineBinaryInsideAWritableGrantIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base, _ := attachEnv(t)
+	base, _ := suiteEnv(t)
 	env := append(append([]string{}, base...), scratchHomeEnv(t)...)
 	env = append(env, "SNUG_PODMAN="+wrapper)
 
@@ -150,7 +150,7 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base, _ := attachEnv(t)
+	base, _ := suiteEnv(t)
 	env := append(append([]string{}, base...), scratchHomeEnv(t)...)
 	env = append(env, "SNUG_PODMAN="+wrapper, "SNUG_PODMAN_ROOT="+toolchainRoot)
 
@@ -221,7 +221,7 @@ func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testin
 		t.Fatal(err)
 	}
 
-	base, _ := attachEnv(t)
+	base, _ := suiteEnv(t)
 	env := append(append([]string{}, base...), scratchHomeEnv(t)...)
 	env = append(env, "SNUG_PODMAN="+link)
 

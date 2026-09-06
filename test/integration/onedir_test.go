@@ -153,7 +153,7 @@ func TestOneLiveSandboxPerDirectoryHoldsAcrossXDGRuntimeDir(t *testing.T) {
 
 	// Holder: $XDG_RUNTIME_DIR SET (interactive-shell shape). shortRuntimeDir,
 	// not t.TempDir(): every $XDG_RUNTIME_DIR built in this suite is short-
-	// rooted uniformly (attachEnv's own comment), not case by case on whether
+	// rooted uniformly (suiteEnv's own comment), not case by case on whether
 	// this particular run happens to bind a proxy socket under it.
 	holderEnv := baseEnv("XDG_RUNTIME_DIR=" + shortRuntimeDir(t))
 	// Contender: $XDG_RUNTIME_DIR ABSENT (cron/ssh shape). baseEnv carries the

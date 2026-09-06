@@ -28,10 +28,10 @@ import (
 	"time"
 )
 
-// startingPath is attachSandbox.statePath's (attach_test.go) sibling for the
+// startingPath is bgSandbox.statePath's (attach_test.go) sibling for the
 // ".starting" kill record: the identical "sha256_"+sha256(realpath) stem
 // (issue #349), ".starting" instead of ".json".
-func (s *attachSandbox) startingPath(t *testing.T) string {
+func (s *bgSandbox) startingPath(t *testing.T) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(s.proj)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestTheKillRecordLandsBeforeTheEngineIsUp(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 
 	// bg.ready(t) is deliberately NOT called before the checks below: a
 	// @podman-socket run is GATED (issue #125) — the payload, and therefore

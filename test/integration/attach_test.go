@@ -50,169 +50,6 @@ var attachTopologies = []struct {
 	{"net", []string{"-p", "@net"}},
 }
 
-// attachEnv gives one test its own isolated $XDG_RUNTIME_DIR, so `snug
-// attach`'s discovery only ever sees runs THIS test started — the same
-// isolation baseEnv already gives XDG_CONFIG_HOME, applied to the directory
-// state.json now lives under.
-//
-// Rooted at os.MkdirTemp("", …), not t.TempDir(): the container proxy's
-// socket lands at "<XDG_RUNTIME_DIR>/snug/run-<pid>/podman.sock", and
-// t.TempDir() names its directory after the calling test function — long
-// enough, on this suite's longest test names, to push that path past
-// AF_UNIX's ~108-byte sun_path. Every one of attachEnv's callers inherits
-// this, which is what makes the length a suite-wide default rather than a
-// per-test opt-in: an opt-in leaves every other call site one rename away
-// from a failure that only reproduces on the random suffix os.MkdirTemp
-// happened to draw.
-func attachEnv(t *testing.T) (env []string, xdgRuntime string) {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "snug-attach")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	xdgRuntime = dir
-	return baseEnv("XDG_RUNTIME_DIR=" + xdgRuntime), xdgRuntime
-}
-
-// bgProc is a background process this test starts and must both be able to
-// wait for AND kill+wait for in cleanup, without the "exec: Wait was already
-// called" panic that a bare *exec.Cmd gives a caller who does both.
-type bgProc struct {
-	cmd  *exec.Cmd
-	once sync.Once
-	err  error
-}
-
-func startBgProc(t *testing.T, cmd *exec.Cmd) *bgProc {
-	t.Helper()
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	p := &bgProc{cmd: cmd}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		p.wait()
-	})
-	return p
-}
-
-func (p *bgProc) wait() error {
-	p.once.Do(func() { p.err = p.cmd.Wait() })
-	return p.err
-}
-
-func (p *bgProc) pid() int { return p.cmd.Process.Pid }
-
-// attachSandbox is a background `snug <dir> -- <payload>` this test can
-// attach to. Unlike run()/cli(), it does not block: the payload is expected
-// to outlive this test's own assertions.
-type attachSandbox struct {
-	proc    *bgProc
-	logPath string
-	proj    string
-}
-
-func startAttachSandbox(t *testing.T, env []string, args []string, proj, payload string) *attachSandbox {
-	t.Helper()
-	argv := append(append([]string{}, args...), proj, "--", "/bin/bash", "-c",
-		"printf '%s\\n' "+payloadMarker+"\n"+payload)
-	cmd := exec.Command(snugBin, argv...)
-	cmd.Env = env
-
-	log, err := os.CreateTemp(t.TempDir(), "snug-bg-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { log.Close() })
-	cmd.Stdout, cmd.Stderr = log, log
-
-	proc := startBgProc(t, cmd)
-	return &attachSandbox{proc: proc, logPath: log.Name(), proj: proj}
-}
-
-func (s *attachSandbox) log() string {
-	b, _ := os.ReadFile(s.logPath)
-	return string(b)
-}
-
-func (s *attachSandbox) pid() int { return s.proc.pid() }
-
-// ready is the combined positive control every test below needs before its
-// own assertions: the payload actually STARTED (payloadMarker) and the run
-// PUBLISHED its state (state.json), so `snug attach` has something to find.
-// Without both, every assertion downstream would be equally true of a
-// sandbox that never came up.
-func (s *attachSandbox) ready(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if strings.Contains(s.log(), payloadMarker) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the background sandbox's payload never started:\n%s", s.log())
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-// uidRuntimeSnugDir mirrors internal/cli's targetLockBase: the directory the
-// per-target lock and, since issue #123, the per-target state file live in,
-// resolved FROM THE UID ALONE.
-//
-// Recomputed here rather than imported, deliberately, and the reason is the
-// bug itself: these tests launch the real binary, so a helper that read
-// $XDG_RUNTIME_DIR would be making exactly the assumption #123 removed. A run
-// and its `snug attach` must land on this directory whatever environment each
-// was started with, and that is what these tests are checking.
-func uidRuntimeSnugDir(t *testing.T) string {
-	t.Helper()
-	uid := os.Getuid()
-	canonical := fmt.Sprintf("/run/user/%d", uid)
-	if fi, err := os.Stat(canonical); err == nil && fi.IsDir() {
-		return filepath.Join(canonical, "snug")
-	}
-	return filepath.Join("/tmp", fmt.Sprintf("snug-%d", uid), "snug")
-}
-
-// statePath is where THIS run's state file lives: named from "sha256_"
-// followed by the sha256 of the TARGET's realpath (issue #349), beside the
-// target lock of the same name (issue #123). Note what it no longer takes —
-// the test's $XDG_RUNTIME_DIR — because the answer no longer depends on it.
-func (s *attachSandbox) statePath(t *testing.T) string {
-	t.Helper()
-	real, err := filepath.EvalSymlinks(s.proj)
-	if err != nil {
-		t.Fatalf("resolving the target %s: %v", s.proj, err)
-	}
-	sum := sha256.Sum256([]byte(real))
-	return filepath.Join(uidRuntimeSnugDir(t), "target-sha256_"+hex.EncodeToString(sum[:])+".json")
-}
-
-func (s *attachSandbox) waitForState(t *testing.T) {
-	t.Helper()
-	p := s.statePath(t)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("state.json never appeared at %s:\n%s", p, s.log())
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-// runDir is this run's own runtime directory: its sockets and its run lock.
-// It is still $XDG_RUNTIME_DIR-derived and still per-run — only the STATE file
-// moved out of it (issue #123), because only the state file has to be found by
-// a second process that may not share this one's environment.
-func (s *attachSandbox) runDir(xdgRuntime string) string {
-	return filepath.Join(xdgRuntime, "snug", fmt.Sprintf("run-%d", s.pid()))
-}
-
 // attachScript runs `snug attach proj -- bash -c script` and returns it in
 // the same sandboxRun shape run()/mustRun already use, so every existing
 // convention (mustRun's "the payload never ran" guard) applies here too.
@@ -247,10 +84,10 @@ func TestAttachRunsInsideTheRunningSandbox(t *testing.T) {
 			if topo.name == "net" {
 				requirePasta(t)
 			}
-			env, _ := attachEnv(t)
+			env, _ := suiteEnv(t)
 			proj, secret := target(t)
 
-			bg := startAttachSandbox(t, env, topo.args, proj,
+			bg := startBgSandbox(t, env, topo.args, proj,
 				`echo IN-SANDBOX-TMPFS-HOME > "$HOME/home-marker"; sleep 300`)
 			bg.ready(t)
 			bg.waitForState(t)
@@ -329,10 +166,10 @@ touch ./attach-write-ok 2>&1 && echo TARGET-WRITABLE
 func TestAttachedProcessCarriesNoHostEnvironmentVariable(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -363,10 +200,10 @@ func TestAttachedProcessCarriesNoHostEnvironmentVariable(t *testing.T) {
 func TestAttachedProcessHasTheRunsSeccompFilterInstalled(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -395,10 +232,10 @@ command -v unshare >/dev/null && (unshare -U /bin/true && echo NESTED-USERNS-CRE
 func TestAttachedProcessHasAnEmptyCapabilityBoundingSet(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -436,7 +273,7 @@ func TestAttachedProcessCannotReachHostLoopback(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -453,7 +290,7 @@ func TestAttachedProcessCannotReachHostLoopback(t *testing.T) {
 	}
 	c.Close()
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@net"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@net"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -585,7 +422,7 @@ func plantForgedRunState(t *testing.T, target string, initPID int, initStarttime
 func TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	target := t.TempDir()
 
 	plantForgedRunState(t, target, os.Getpid(), selfStartTime(t), selfNamespaceInodes(t))
@@ -612,7 +449,7 @@ func TestAttachRefusesAPidWhoseUserNamespaceIsOurOwn(t *testing.T) {
 func TestAttachRefusesAfterPidReuse(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	target := t.TempDir()
 
 	realStart := selfStartTime(t)
@@ -702,12 +539,12 @@ echo "APID=$APID"
 func TestKnownOpenResidualPayloadReachesAnAttachedProcessDescriptor(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
 	marker := "snugattachmarker" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
 
-	bg := startAttachSandbox(t, env, nil, proj, attachFindMarkerScript(marker)+`
+	bg := startBgSandbox(t, env, nil, proj, attachFindMarkerScript(marker)+`
 ls /proc/$APID/fd 2>&1
 echo ---ENVIRON---
 tr '\0' '\n' < /proc/$APID/environ 2>&1
@@ -838,7 +675,7 @@ func TestRelayedStdioKeepsTheHostInodeOutOfTheSandbox(t *testing.T) {
 	}
 
 	// ── SANDBOX CASE ──────────────────────────────────────────────────────
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 	marker := "snugattach22b" + strconv.Itoa(os.Getpid()) + strconv.FormatInt(time.Now().UnixNano(), 36)
 
@@ -849,7 +686,7 @@ func TestRelayedStdioKeepsTheHostInodeOutOfTheSandbox(t *testing.T) {
 	// open for the whole session. A bounded timeout is what turns "blocks
 	// forever" into a verdict; a timeout with NO output is itself part of
 	// the finding (there is nothing here to read AT ALL), not a test bug.
-	bg := startAttachSandbox(t, env, nil, proj, attachFindMarkerScript(marker)+`
+	bg := startBgSandbox(t, env, nil, proj, attachFindMarkerScript(marker)+`
 READBACK=$(timeout 2 cat /proc/$APID/fd/1 2>&1)
 echo "READBACK=[$READBACK]"
 sleep 60
@@ -916,10 +753,10 @@ func findAttachedByComm(clientPID int, comm string, timeout time.Duration) (int,
 func TestAttachedProcessDiesWithASIGKILLedSnug(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -974,14 +811,14 @@ func waitDone(p *bgProc) <-chan struct{} {
 func TestAttachedProcessDiesWithASIGKILLedAttachClient(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
 	// A payload that keeps proving liveness AFTER the kill, the same
 	// heartbeat shape orphan_test.go uses, so "the sandbox is untouched" is
 	// checked by an ONGOING write rather than by the mere continued
 	// existence of a pid.
-	bg := startAttachSandbox(t, env, nil, proj,
+	bg := startBgSandbox(t, env, nil, proj,
 		`while :; do date +%s%N > "$SNUG_TARGET/heartbeat"; sleep 0.1; done`)
 	bg.ready(t)
 	bg.waitForState(t)
@@ -1060,10 +897,10 @@ func TestAttachedProcessDiesWithASIGKILLedAttachClient(t *testing.T) {
 func TestAttachLeavesNoProcessAndNoFileBehind(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
-	env, xdg := attachEnv(t)
+	env, xdg := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1115,10 +952,10 @@ func TestAttachLeavesNoProcessAndNoFileBehind(t *testing.T) {
 func TestAttachSurvivesGoRuntimeThreadChurn(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1325,10 +1162,10 @@ func attachWithStdin(t *testing.T, env []string, proj string, stdin *os.File, ma
 func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1397,7 +1234,7 @@ func TestAttachReturnsPromptlyWhenStdinNeverReachesEOF(t *testing.T) {
 func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
 	otherDir := t.TempDir()
@@ -1412,7 +1249,7 @@ func TestAttachFindsTheRunByASymlinkToItsTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bg := startAttachSandbox(t, env, nil, proj,
+	bg := startBgSandbox(t, env, nil, proj,
 		`echo IN-SANDBOX-TMPFS-SYMLINK-PROOF > "$HOME/attach-symlink-proof"; sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
@@ -1503,10 +1340,10 @@ func openTestPTY(t *testing.T) (master, slave *os.File) {
 func TestAttachPTYReturnsPromptlyWhenThePTYIsNeverClosed(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1841,10 +1678,10 @@ const drainCutoffMessage = "snug: attach: the attached command exited, but somet
 func TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave(t *testing.T) {
 	budget(t, 90*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -1905,10 +1742,10 @@ func TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave(t *testing.T) {
 func TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe(t *testing.T) {
 	budget(t, 90*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2003,10 +1840,10 @@ func selfStatPidSessionTTY(t *testing.T, line string) (pid, session, ttyNr strin
 func TestAttachPTYGivesJobControl(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2087,10 +1924,10 @@ func TestAttachPTYGivesJobControl(t *testing.T) {
 func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2133,10 +1970,10 @@ func TestAttachPipeStdinGetsNoControllingTTY(t *testing.T) {
 func TestAttachForwardsInitialWinsize(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2209,10 +2046,10 @@ func isRawTermios(t *unix.Termios) bool {
 func TestAttachRestoresClientTerminalOnExit(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2407,10 +2244,10 @@ func TestAttachPTYNeverExposesTheMasterToTheAttachedProcess(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2522,7 +2359,7 @@ func TestAttachPTYDeniesTIOCSTIWithEPERM(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
 	// python3 -c, deliberately NOT a heredoc (<<'PYEOF'): a heredoc
@@ -2547,7 +2384,7 @@ echo ---END---
 `
 
 	// ── THE CASE: the run's own (default, filtered) seccomp profile ─────
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2567,9 +2404,9 @@ echo ---END---
 	}
 
 	// ── CONTROL: an otherwise identical session with NO seccomp filter ──
-	envCtl, _ := attachEnv(t)
+	envCtl, _ := suiteEnv(t)
 	projCtl, _ := target(t)
-	bgCtl := startAttachSandbox(t, envCtl, []string{"--no-seccomp"}, projCtl, `sleep 300`)
+	bgCtl := startBgSandbox(t, envCtl, []string{"--no-seccomp"}, projCtl, `sleep 300`)
 	bgCtl.ready(t)
 	bgCtl.waitForState(t)
 
@@ -2643,10 +2480,10 @@ func TestAttachPTYDevTTYIsTheAllocatedPTYNotTheHostTerminal(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
 	requirePython(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2717,10 +2554,10 @@ echo ---END---
 func TestAttachPTYOutputIsCookedForARawModeClient(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2777,7 +2614,7 @@ func TestAttachFindsARunStartedUnderADifferentEnvironment(t *testing.T) {
 	// for XDG_RUNTIME_DIR (runtimedir_test.go's own comment) — TMPDIR is not
 	// the socket's root and stays as t.TempDir().
 	holderEnv := baseEnv("XDG_RUNTIME_DIR="+shortRuntimeDir(t), "TMPDIR="+t.TempDir())
-	bg := startAttachSandbox(t, holderEnv, nil, proj,
+	bg := startBgSandbox(t, holderEnv, nil, proj,
 		`echo IN-SANDBOX-TMPFS-HOME > "$HOME/home-marker"; sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
@@ -2847,10 +2684,10 @@ func TestAttachFindsARunStartedUnderADifferentEnvironment(t *testing.T) {
 func TestAttachPreExitOutputIsNeverTruncated(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
-	env, _ := attachEnv(t)
+	env, _ := suiteEnv(t)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, nil, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, nil, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 

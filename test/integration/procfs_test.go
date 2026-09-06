@@ -241,7 +241,7 @@ func TestTheEngineRunsAndAnOrdinaryRunKeepsItsMasks(t *testing.T) {
 	}
 
 	// ── half one: an engine run starts, and its /proc is its own ──────────
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 120`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 120`)
 	bg.ready(t)
 	// waitForState is the assertion that the engine came up: a run whose
 	// engine never created its socket dies here rather than reaching the
