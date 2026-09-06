@@ -34,7 +34,7 @@ func TestSweepKillsAnOrphanedInitWhoseRunIsGone(t *testing.T) {
 		t.Errorf("the sweep left pid %d alive: its target lock was not held, so its run is "+
 			"gone and it is exactly what issue #236 accumulates", victim.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName("/tmp/orphaned-target"))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName("/tmp/orphaned-target", os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the stale state file survived the sweep (err=%v). Nothing else removes it: a "+
 			"state file is published per run and was removed by nobody, which is how one "+
 			"development box reached 1099 of them", err)
@@ -60,7 +60,7 @@ func TestSweepLeavesALiveRunAlone(t *testing.T) {
 			"sandbox, and the lock is the same fact `snug engine gc` reads before it reclaims "+
 			"a store", victim.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, os.Getpid()))); err != nil {
 		t.Errorf("the sweep removed a LIVE run's state file (err=%v) — it is the only thing "+
 			"naming that run's init, so removing it blinds every later sweep to it", err)
 	}
@@ -91,7 +91,7 @@ func TestSweepDoesNotKillARecycledPid(t *testing.T) {
 			"that record describes a process that has already exited, and this pid is "+
 			"somebody else's", victim.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the state file survived (err=%v): its run is gone regardless of what "+
 			"happened to the pid, so the file is stale and must still be removed", err)
 	}
@@ -144,7 +144,7 @@ func TestSweepDoesNotKillAPidInForeignNamespaces(t *testing.T) {
 	}
 	// The stale file is removed either way: its run is gone, and the sweep's file
 	// removal is unconditional. Not killing the pid does not mean keeping the file.
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(foreignTarget))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(foreignTarget, os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the foreign-namespace state file survived the sweep (err=%v); the pid must be "+
 			"spared but the stale file must still be removed", err)
 	}
@@ -161,7 +161,7 @@ func TestSweepIgnoresAStateFileWhoseNameDoesNotMatchItsTarget(t *testing.T) {
 
 	// Written under a DIFFERENT target's name, which is what a hand-placed
 	// file looks like.
-	name := targetStateName("/tmp/a-completely-different-target")
+	name := targetStateName("/tmp/a-completely-different-target", os.Getpid())
 	blob, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestSweepFindsARunStateRecordNamedByThePreIssue349Prefix(t *testing.T) {
 	victim := liveProcess(t)
 	const target = "/tmp/legacy-prefix-target"
 	name := legacyTargetKeyPrefix(target) + ".json"
-	if name == targetStateName(target) {
+	if name == targetStateName(target, os.Getpid()) {
 		t.Fatalf("control failed: the legacy name and the current name are identical (%q) — "+
 			"this fixture proves nothing about legacy tolerance", name)
 	}
@@ -248,7 +248,7 @@ func TestSweepIgnoresALegacyNamedRecordWhoseNameDoesNotMatchItsTarget(t *testing
 // killing on a half-decoded record is worse still.
 func TestSweepIgnoresAStateFileItCannotParse(t *testing.T) {
 	dir, root := stateDirForTest(t)
-	name := targetStateName("/tmp/unparseable-target")
+	name := targetStateName("/tmp/unparseable-target", os.Getpid())
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestSweepKeepsARecordWhenNamespacesCannotBeRead(t *testing.T) {
 		t.Fatalf("control: the sweep did not kill pid %d, an ordinary orphan in the same "+
 			"directory — without this, a sweep that never ran would pass this test too", control.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(controlTarget))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(controlTarget, os.Getpid()))); !os.IsNotExist(err) {
 		t.Fatalf("control: the ordinary orphan's record survived the sweep (err=%v)", err)
 	}
 
@@ -351,7 +351,7 @@ func TestSweepKeepsARecordWhenNamespacesCannotBeRead(t *testing.T) {
 	// orphanUnresolved, not orphanGone, so sweepOneOrphan must not reach its
 	// removal. No signal was ever sent either — killOrphanInit returns before
 	// PidfdSendSignal on every path that yields orphanUnresolved.
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, os.Getpid()))); err != nil {
 		t.Errorf("the record for an unresolvable namespace read was removed (err=%v): the pid "+
 			"may still be alive and nothing else on the host names it, so this is issue #236's "+
 			"accumulation happening again from inside the cleanup path", err)
@@ -551,7 +551,20 @@ func writeStateFor(t *testing.T, dir, target string, v testVictim) {
 
 func writeState(t *testing.T, dir, target string, st runState) {
 	t.Helper()
-	writeStateAtName(t, dir, targetStateName(target), st)
+	writeStateAtName(t, dir, targetStateName(target, recordOwnerPID(st.Owner)), st)
+}
+
+// recordOwnerPID is the pid a fixture's record lands at, since the name
+// carries the pid that published it: the record's own owner, or this test
+// process where the fixture deliberately names none. An OWNERLESS record
+// still has a well-formed name — writeTargetState refuses to publish one, so
+// the only way it exists on disk is a body edited after the fact, and editing
+// the body does not rename the file.
+func recordOwnerPID(o stateOwner) int {
+	if o.PID > 0 {
+		return o.PID
+	}
+	return os.Getpid()
 }
 
 // writeStateAtName is writeState with the filename chosen by the caller

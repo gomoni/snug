@@ -46,7 +46,7 @@ func initStateFor(target string, v testVictim) initState {
 // happens to be.
 func writeInitStateFile(t *testing.T, dir, target string, st initState) {
 	t.Helper()
-	writeInitStateFileAtName(t, dir, initStateName(target), st)
+	writeInitStateFileAtName(t, dir, initStateName(target, recordOwnerPID(st.Owner)), st)
 }
 
 // writeInitStateFileAtName is writeInitStateFile with the filename chosen by
@@ -81,7 +81,7 @@ func TestSweepKillsAnInitNamedOnlyByTheKillRecord(t *testing.T) {
 			"which is exactly the run that never reached state.json at all — issue #236's "+
 			"whole point", victim.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, initStateName(target))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, initStateName(target, os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the .starting record survived the sweep (err=%v)", err)
 	}
 
@@ -91,7 +91,7 @@ func TestSweepKillsAnInitNamedOnlyByTheKillRecord(t *testing.T) {
 	// this assertion would catch it via the pid check above; this one
 	// confirms the fixture itself never created a competing record that
 	// could explain the kill some other way.
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, os.Getpid()))); !os.IsNotExist(err) {
 		t.Fatalf("test fixture bug: a state.json exists for %s, so the pid's death is not "+
 			"attributable to the .starting record alone", target)
 	}
@@ -110,7 +110,7 @@ func TestTheKillRecordIsRemovedOnceStateJSONLands(t *testing.T) {
 	if err := writeInitState(target, pid); err != nil {
 		t.Fatalf("writeInitState: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target, os.Getpid()))); err != nil {
 		t.Fatalf("PRECONDITION: writeInitState did not publish a .starting record: %v", err)
 	}
 
@@ -126,11 +126,11 @@ func TestTheKillRecordIsRemovedOnceStateJSONLands(t *testing.T) {
 		t.Fatalf("removeInitState: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target, os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("the .starting record survived after state.json was published and "+
 			"removeInitState ran (err=%v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(snugDir, targetStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(snugDir, targetStateName(target, os.Getpid()))); err != nil {
 		t.Errorf("state.json itself is missing after a successful writeRunState (err=%v)", err)
 	}
 }
@@ -162,12 +162,12 @@ func TestTheKillRecordSurvivesAFailedStateWrite(t *testing.T) {
 	// the property under test, reproduced directly rather than through
 	// run(), which this package cannot drive without a real sandbox.
 
-	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(snugDir, initStateName(target, os.Getpid()))); err != nil {
 		t.Errorf("the .starting record is gone even though writeRunState FAILED (err=%v) — a "+
 			"SIGKILL right after this point would leave the init with no record naming it at "+
 			"all, which is issue #236's own accumulation happening again", err)
 	}
-	if _, err := os.Stat(filepath.Join(snugDir, targetStateName(target))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(snugDir, targetStateName(target, os.Getpid()))); !os.IsNotExist(err) {
 		t.Errorf("state.json exists despite writeRunState having failed (err=%v)", err)
 	}
 }
@@ -200,7 +200,7 @@ func TestKillRecordAndStateFileAgreeOnTheInitIdentity(t *testing.T) {
 		t.Fatalf("writeRunState: %v", err)
 	}
 
-	initBlob, err := os.ReadFile(filepath.Join(snugDir, initStateName(target)))
+	initBlob, err := os.ReadFile(filepath.Join(snugDir, initStateName(target, os.Getpid())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestKillRecordAndStateFileAgreeOnTheInitIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runBlob, err := os.ReadFile(filepath.Join(snugDir, targetStateName(target)))
+	runBlob, err := os.ReadFile(filepath.Join(snugDir, targetStateName(target, os.Getpid())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestKillRecordAndStateFileAgreeOnTheInitIdentity(t *testing.T) {
 // sweepOneOrphan (which calls decodeRunState, not decodeInitState) by
 // accident.
 func TestSweepIgnoresTheKillRecordInTheStateJSONBranch(t *testing.T) {
-	name := initStateName("/tmp/some-init-target")
+	name := initStateName("/tmp/some-init-target", os.Getpid())
 	if strings.HasSuffix(name, ".json") {
 		t.Fatalf("initStateName produced %q, which sweepOrphanedSandboxesIn's \".json\" dispatch "+
 			"would route to sweepOneOrphan instead of sweepOneStartingOrphan", name)
@@ -316,7 +316,7 @@ func TestSweepRefusesAKillRecordWhoseNameDoesNotHashItsTarget(t *testing.T) {
 	st := initStateFor("/tmp/some-init-target", victim)
 
 	// Written under a DIFFERENT target's name.
-	name := initStateName("/tmp/a-completely-different-init-target")
+	name := initStateName("/tmp/a-completely-different-init-target", os.Getpid())
 	blob, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -349,7 +349,7 @@ func TestSweepFindsAKillRecordNamedByThePreIssue349Prefix(t *testing.T) {
 	victim := liveProcess(t)
 	const target = "/tmp/legacy-prefix-init-target"
 	name := legacyTargetKeyPrefix(target) + ".starting"
-	if name == initStateName(target) {
+	if name == initStateName(target, os.Getpid()) {
 		t.Fatalf("control failed: the legacy name and the current name are identical (%q)", name)
 	}
 	writeInitStateFileAtName(t, dir, name, initStateFor(target, victim))

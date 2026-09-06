@@ -4472,7 +4472,7 @@ Start a **staged** run (`@net` is what selects that arm) and look at the tree:
 ```bash
 ./bin/snug -p @net $SC/proj/sub -- /bin/sleep 60 & SNUG=$!
 sleep 2
-SP=/run/user/$(id -u)/snug/target-sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
+SP=/run/user/$(id -u)/snug/target-sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).$SNUG.json
 INIT=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
 BWRAP=$(awk '/^PPid:/{print $2}' /proc/$INIT/status)
 for p in $SNUG $BWRAP $INIT; do
@@ -4527,19 +4527,18 @@ hand:
 
 ```bash
 D=/run/user/$(id -u)/snug
-KEY=$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
-rm -f $D/target-$KEY.json $D/target-$KEY.starting
+KEY=sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
 ./bin/snug -p @podman-socket $SC/proj/sub -- /bin/sleep 20 & SNUG=$!
-while [ ! -e $D/target-$KEY.starting ] && [ ! -e $D/target-$KEY.json ]; do sleep 0.002; done
+while [ ! -e $D/target-$KEY.$SNUG.starting ] && [ ! -e $D/target-$KEY.$SNUG.json ]; do sleep 0.002; done
 ls -1 $D/target-$KEY.* | sed "s|$D/||"
-cat $D/target-$KEY.starting
+cat $D/target-$KEY.$SNUG.starting
 ```
 
 Expect the record and **no** `.json` beside it — that absence is the point:
 
 ```
-target-b18f2a2a....starting
-target-b18f2a2a....lock
+target-sha256_b18f2a2a....<snug pid>.starting
+target-sha256_b18f2a2a....lock
 {
   "schema": 1,
   "target": "/tmp/.../proj/sub",
@@ -4565,8 +4564,8 @@ sleep 8; ls -1 $D/target-$KEY.* | sed "s|$D/||"; wait $SNUG
 Expect the swap — `.starting` gone, `state.json` there, never both:
 
 ```
-target-b18f2a2a....json
-target-b18f2a2a....lock
+target-sha256_b18f2a2a....<snug pid>.json
+target-sha256_b18f2a2a....lock
 ```
 
 **Why this order and not the reverse**: the removal happens only after
@@ -5387,7 +5386,7 @@ Expect `still alive: ok`.
 
 `13c` covers the run directory. The per-TARGET files are elsewhere and were
 covered by nothing: one `target-sha256_<hex>.lock` per target ever sandboxed,
-kept for the life of the boot, plus `target-sha256_<hex>.json.tmp-<pid>`
+kept for the life of the boot, plus `target-sha256_<hex>.<pid>.json.tmp-<pid>`
 whenever a SIGKILL interrupts a state write (`writeTargetFile` removes only the
 temp name carrying its own pid).
 
@@ -5401,8 +5400,9 @@ ls /run/user/$(id -u)/snug | wc -l           # before
 ls /run/user/$(id -u)/snug
 ```
 
-Expect exactly the current run's own two files, `target-sha256_<hex>.json` and
-`target-sha256_<hex>.lock`, and nothing else. Measured on one development box
+Expect exactly the current run's own two files, `target-sha256_<hex>.<pid>.json`
+(the pid being the `snug` that published it) and `target-sha256_<hex>.lock`, and
+nothing else. Measured on one development box
 after two days of suite runs: **741 -> 2**, of which 738 were lock files and one
 was a `.json.tmp-<pid>`.
 
@@ -6475,8 +6475,8 @@ TGT=$(mktemp -d); OTHER=$(mktemp -d)
 sleep 3
 D=/run/user/$(id -u)/snug
 H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
-INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
-OWNER=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['owner']['pid'])")
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['sandbox']['init_pid'])")
+OWNER=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['owner']['pid'])")
 echo "init=$INIT owner=$OWNER snug=$SNUG"   # expect: owner == snug
 rm $D/target-sha256_$H.lock
 ./bin/snug $OTHER -- true                    # an unrelated run; its sweep runs
@@ -6504,7 +6504,7 @@ TGT=$(mktemp -d); OTHER=$(mktemp -d)
 sleep 3
 D=/run/user/$(id -u)/snug
 H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
-INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['sandbox']['init_pid'])")
 kill -9 $SNUG
 ./bin/snug $OTHER -- true
 test -d /proc/$INIT && echo STILL-ALIVE-BUG || echo SWEPT

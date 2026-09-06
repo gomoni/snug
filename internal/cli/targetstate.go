@@ -1,10 +1,11 @@
 package cli
 
-// targetstate.go publishes and reads a run's state.json, KEYED BY THE TARGET
-// DIRECTORY rather than by the run, in the same env-independent directory the
-// per-target lock already lives in (issue #123).
+// targetstate.go publishes and reads a run's state.json, NAMED FROM THE
+// TARGET DIRECTORY it sandboxes and the pid that owns it, in the same
+// env-independent directory the per-target lock already lives in (issue
+// #123).
 //
-// Why the target and not the run. Both readers arrive with a DIRECTORY and no
+// Why the target is in the name. Both readers arrive with a DIRECTORY and no
 // run to speak of: the orphan sweep walks the directory of records looking for
 // leftovers, and `snug proxy <dir>` is handed a path by a human. The state
 // file used to live under `runtimeBase()`, which reads $XDG_RUNTIME_DIR and
@@ -16,20 +17,33 @@ package cli
 // `target-<sha256(realpath)>.lock` and already resolved from the uid alone
 // (targetLockBase, issue #122); the state file was the odd one out.
 //
-// Two things follow from the target key, and both are simplifications:
+// Two things follow from the target key:
 //
-//   - Lookup is not a SCAN. There is no directory listing and no per-entry
-//     parse-and-skip: the target's realpath hashes to exactly one filename.
-//   - LIVENESS is the target lock itself, rather than a second parallel flock
-//     on each run directory that could in principle disagree with it. A stale
-//     state file cannot be mistaken for a live run: the lock is the truth, the
-//     JSON beside it only what a live holder published.
+//   - A reader never has to open a record to find out whose it is. The
+//     target's realpath hashes to one stem, so the candidates are the names
+//     matching that stem and nothing else in the directory is touched.
+//   - "Is ANYTHING live on this target" is the target lock itself, rather than
+//     a second parallel flock on each run directory that could in principle
+//     disagree with it. A stale state file cannot be mistaken for a live run
+//     on its own: the lock is the truth about the target, the JSON beside it
+//     only what a holder published.
 //
-// WHAT THE TARGET KEY COSTS, now that several runs may be live on one
-// directory: the name identifies the TARGET, not a run, so the last run to
-// publish overwrites its peers' records. `snug proxy` therefore reaches the
-// most recently started sandbox rather than one the human chose, and the
-// orphan sweep can only ever name one init per target.
+// WHY THE OWNING PID IS IN THE NAME. Several runs may be live on one target
+// at once (TARGET-LOCK.md), so the target alone does not name a run. Keyed by
+// the target alone the second run to publish OVERWROTE its peer's record, and
+// the consequence was not cosmetic: the overwritten run's init was then named
+// by nothing, so no later sweep could ever kill it — invariant 4 failing on a
+// sequence that needs no attacker (SIGKILL run A while run B is live). The
+// name is `target-<hash>.<pid>.json`, and `.starting` beside it, where pid is
+// the OWNING SNUG process.
+//
+// THAT PID IS AN ADDRESS, NEVER A LIVENESS CLAIM, and the trap is the obvious
+// one: a record whose owner died and whose pid number has since been handed
+// to an unrelated process is indistinguishable, BY NAME, from a live run's.
+// So no reader here treats the name as evidence of anything. Liveness is the
+// target lock for the target, and stateowner.go's recorded pid + start time
+// for the individual run — the same two checks as before this file learned to
+// hold more than one record, applied per record instead of to the only one.
 //
 // What did NOT move: the per-run directory under runtimeBase() still exists
 // and is still env-derived. It holds this run's sockets (the ssh-agent proxy,
@@ -50,28 +64,68 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
 
-// targetStateName is targetLockName's sibling: the same sha256 of the same
-// realpath, so the pair sort together and a human reading the directory can
-// see that one names the other. Deliberately derived rather than stored — the
-// name IS the index, and nothing has to be kept consistent with anything.
-func targetStateName(realpath string) string {
-	return targetKeyPrefix(realpath) + ".json"
+// targetStateName is the filename of the run-state record published by the
+// snug process pid for realpath: targetLockName's stem, so the whole of a
+// target's files sort together, then the owning pid, then ".json". Derived
+// rather than stored — the name IS the index — and see this file's own doc
+// comment for why the pid is in it and why it establishes nothing about
+// whether that run is still alive.
+func targetStateName(realpath string, pid int) string {
+	return fmt.Sprintf("%s.%d.json", targetKeyPrefix(realpath), pid)
 }
 
-// targetStateNameMatches reports whether name is realpath's run-state
-// filename under either generation targetKeyPrefix has produced: the current
-// "target-sha256_<hex>.json" or the pre-issue-#349 "target-<hex>.json" a
-// binary written before the digest was labelled. sweepOrphanedSandboxesIn is
-// the only caller — without this, every run-state record a pre-upgrade
-// binary wrote is invisible to the sweep forever, and the orphan init it
-// names is never killed.
+// targetStateNameMatches reports whether name is a run-state record belonging
+// to realpath, under any generation of the name snug has written.
+// sweepOrphanedSandboxesIn and the readers below are the callers — without
+// this, a record an older binary wrote is invisible to the sweep forever, and
+// the orphan init it names is never killed.
 func targetStateNameMatches(realpath, name string) bool {
-	return name == targetStateName(realpath) || name == legacyTargetKeyPrefix(realpath)+".json"
+	return targetRecordNameMatches(realpath, name, ".json")
+}
+
+// targetRecordNameMatches reports whether name is one of realpath's records
+// with the given suffix. Three generations are recognised and only the first
+// is ever written:
+//
+//	target-sha256_<hex>.<pid><suffix>   the current name
+//	target-sha256_<hex><suffix>         before the owning pid was in it
+//	target-<hex><suffix>                before issue #349 labelled the digest
+//
+// The older two are recognised for one reason: a record this function does
+// not claim is a record no sweep will remove and an init no sweep will kill,
+// forever. They cost nothing to keep — a run that wrote one is a run whose
+// owner is not live, which killOrphanInit's gate already resolves.
+//
+// The pid component is checked for shape, not for meaning. Requiring it to
+// round-trip through strconv keeps a hand-placed "target-<hash>.x.json" from
+// reading as this target's record; whether the number belongs to anything
+// alive is a question no filename can answer.
+func targetRecordNameMatches(realpath, name, suffix string) bool {
+	rest, ok := strings.CutSuffix(name, suffix)
+	if !ok {
+		return false
+	}
+	for _, stem := range []string{targetKeyPrefix(realpath), legacyTargetKeyPrefix(realpath)} {
+		if rest == stem {
+			return true
+		}
+		digits, cut := strings.CutPrefix(rest, stem+".")
+		if !cut {
+			continue
+		}
+		if n, err := strconv.Atoi(digits); err == nil && n > 0 && strconv.Itoa(n) == digits {
+			return true
+		}
+	}
+	return false
 }
 
 // openTargetStateDir opens the uid-derived snug runtime directory the target
@@ -108,9 +162,23 @@ func openTargetStateDir(create bool) (*os.Root, string, error) {
 	return snugRoot, snugPath, nil
 }
 
-// writeTargetState publishes st for the target it names.
+// writeTargetState publishes st for the target it names, at the name
+// addressing st's own owner.
+//
+// The pid comes out of the record rather than from os.Getpid() so that the
+// name and the record cannot disagree about whose run this is: every reader
+// that finds a record by name goes on to judge it by st.Owner, and a name
+// addressing one pid over a body naming another would send the sweep's
+// liveness gate at the wrong process. It returns an error rather than
+// publishing at pid 0 for the same reason a record with no owner is refused
+// downstream — an unaddressable record is worse than none.
 func writeTargetState(real string, st runState) error {
-	return writeTargetFile(targetStateName(real), st)
+	if st.Owner.PID <= 0 {
+		return fmt.Errorf("run state: refusing to publish a record for %s that names no owning "+
+			"snug process (pid %d): the file name addresses that pid, and the orphan sweep's "+
+			"liveness gate reads it", real, st.Owner.PID)
+	}
+	return writeTargetFile(targetStateName(real, st.Owner.PID), st)
 }
 
 // writeTargetFile publishes payload's JSON rendering at final, inside the
@@ -122,11 +190,12 @@ func writeTargetState(real string, st runState) error {
 // Written through a temporary file and renamed into place, both inside the
 // already-verified Root. O_EXCL on the final name would be wrong here and
 // that is the one real difference from the per-run file this replaces: the
-// name is derived from the TARGET, so a previous run on the same directory
-// has almost certainly left one behind. That file is not a conflict — its
-// owner is dead, which the lock says — so the correct behaviour is to replace
-// it. Replacing it by rename rather than by truncate-and-write is what stops
-// a reader that arrives mid-write from reading half a file.
+// name is derived from the target and the OWNING PID, and a pid is reused, so
+// a long-dead run on the same directory may have left this exact name behind.
+// That file is not a conflict — nothing that could still be reading it can be
+// this pid's run — so the correct behaviour is to replace it. Replacing it by
+// rename rather than by truncate-and-write is what stops a reader that
+// arrives mid-write from reading half a file.
 func writeTargetFile(final string, payload any) error {
 	snugRoot, snugPath, err := openTargetStateDir(true)
 	if err != nil {
@@ -140,9 +209,12 @@ func writeTargetFile(final string, payload any) error {
 	}
 	blob = append(blob, '\n')
 
-	// The pid keeps two concurrent writers apart. They cannot both hold the
-	// target lock, so this is defence against a bug rather than against a
-	// race the design allows.
+	// The pid separates writers in different PROCESSES — which final's own pid
+	// component already does, so this is belt and braces. What NEITHER
+	// separates is two writers inside ONE process: they share the pid and
+	// therefore this name, and internal/sandbox's initReporter measured what
+	// that costs — the second writer's opening Remove deleted the first
+	// writer's file, and the first's rename then failed with ENOENT.
 	tmp := fmt.Sprintf("%s.tmp-%d", final, os.Getpid())
 	_ = snugRoot.Remove(tmp) // a previous crash's leftover, not an error
 
@@ -186,69 +258,106 @@ func removeTargetFile(name string) error {
 	return nil
 }
 
-// readTargetState returns the state a LIVE run published for real.
+// liveRunsFor returns the record of every run on real whose owning snug is
+// not provably gone, sorted by that owner's pid so two calls list the same
+// candidates in the same order.
 //
-// live is false, with no error, for every ordinary way there is nothing
-// running: snug has never run on this host, this target has no state file, or
-// the file is there but every run that wrote one is gone (the lock is not
-// held). Those are the zero case and the caller renders one message for them —
-// the distinction issue #124 was about, applied to the new layout from the
-// start.
+// An empty slice with no error is every ordinary way there is nothing
+// running: snug has never run on this host, this target has no record, or
+// records are there but every run that wrote one is over. Those are the zero
+// case and the caller renders one message for them — the distinction issue
+// #124 was about.
+//
+// TWO LIVENESS QUESTIONS, because one no longer answers the other. The target
+// lock says whether ANY run is live here and nothing is read while it is
+// unheld: every record beside an unheld lock describes a corpse. With the
+// lock held, a record still may not be its own run's — a peer's SIGKILL
+// leaves a record behind that the sweep only removes once the whole target
+// falls quiet — so each is put through stateowner.go's owner check, the same
+// gate the sweep's kill uses and failing in the same direction: an owner that
+// cannot be confirmed dead is listed.
 //
 // An error is reserved for a directory that fails the ownership or mode
-// guard, or a state file that exists beside a HELD lock and cannot be read or
-// does not validate. That last one is deliberately NOT the zero case: a live
-// run whose published state is unreadable is a fault worth naming, not an
-// absence to report as "nothing is sandboxing this directory".
-func readTargetState(real string) (st runState, live bool, err error) {
+// guard, or a record beside a HELD lock that cannot be read or does not
+// validate. That last one is deliberately NOT the zero case, and with several
+// runs it is deliberately not a skip either: dropping an unreadable record
+// would hide a live sandbox from a human who asked what is running here.
+func liveRunsFor(real string) ([]runState, error) {
 	snugRoot, snugPath, err := openTargetStateDir(false)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return runState{}, false, nil
+			return nil, nil
 		}
-		return runState{}, false, err
+		return nil, err
 	}
 	defer snugRoot.Close()
 
 	held, err := targetLockIsHeld(snugRoot, snugPath, real)
 	if err != nil {
-		return runState{}, false, err
+		return nil, err
 	}
 	if !held {
-		// Either no run has ever locked this target, or the one that did is
-		// gone. A state file may well still be sitting there; it describes a
-		// corpse, and the next run on this target will replace it.
-		return runState{}, false, nil
+		return nil, nil
 	}
 
-	name := targetStateName(real)
-	f, err := snugRoot.Open(name)
+	names, err := targetStateNamesIn(snugRoot, real)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// The lock is held but nothing has been published yet: a run that
-			// is still starting, or one whose OnInfo could not write (which
-			// warns at the source — see internal/cli/main.go). Nothing to
-			// report yet, and not a fault of this reader's.
-			return runState{}, false, nil
+		return nil, fmt.Errorf("run state: listing %s: %w", snugPath, err)
+	}
+
+	var runs []runState
+	for _, name := range names {
+		full := filepath.Join(snugPath, name)
+		f, oerr := snugRoot.Open(name)
+		if oerr != nil {
+			if errors.Is(oerr, fs.ErrNotExist) {
+				// Swept between the listing and here, which the sweep is
+				// entitled to do to a record whose run is over.
+				continue
+			}
+			return nil, fmt.Errorf("run state: opening %s: %w", full, oerr)
 		}
-		return runState{}, false, fmt.Errorf("run state: opening %s: %w", filepath.Join(snugPath, name), err)
+		st, derr := decodeRunState(f)
+		f.Close()
+		if derr != nil {
+			return nil, fmt.Errorf("run state: %s: %w", full, derr)
+		}
+		if st.Target != real {
+			// The stem is a hash of the target, so this can only mean a
+			// collision or a hand-edited file. Refuse rather than hand back
+			// whatever it names: every caller acts on this record against the
+			// directory it asked about, and a record for a DIFFERENT
+			// directory would send `snug proxy` at another project's run.
+			return nil, fmt.Errorf("run state: %s names target %q, not %q — refusing to "+
+				"report a run for a different directory", full, st.Target, real)
+		}
+		if ownerProvablyGone(st.Owner) {
+			continue
+		}
+		runs = append(runs, st)
 	}
-	defer f.Close()
+	sort.Slice(runs, func(i, j int) bool { return runs[i].Owner.PID < runs[j].Owner.PID })
+	return runs, nil
+}
 
-	st, err = decodeRunState(f)
+// targetStateNamesIn lists the run-state records in snugRoot belonging to
+// real, by name alone: nothing is opened, so a directory full of other
+// targets' records costs one readdir.
+func targetStateNamesIn(snugRoot *os.Root, real string) ([]string, error) {
+	entries, err := fs.ReadDir(snugRoot.FS(), ".")
 	if err != nil {
-		return runState{}, false, fmt.Errorf("run state: %s: %w", filepath.Join(snugPath, name), err)
+		return nil, err
 	}
-	if st.Target != real {
-		// The name is a hash of the target, so this can only mean a collision
-		// or a hand-edited file. Refuse rather than hand back whatever it
-		// names: every caller acts on this record against the directory it
-		// asked about, and a record for a DIFFERENT directory would send
-		// `snug proxy` at another project's run.
-		return runState{}, false, fmt.Errorf("run state: %s names target %q, not %q — refusing to "+
-			"report a run for a different directory", filepath.Join(snugPath, name), st.Target, real)
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if targetStateNameMatches(real, e.Name()) {
+			names = append(names, e.Name())
+		}
 	}
-	return st, true, nil
+	return names, nil
 }
 
 // targetLockIsHeld reports whether ANY run is live on real, by asking for
@@ -351,34 +460,67 @@ func probeTargetLockOnce(snugRoot *os.Root, snugPath, name string) (held, retry 
 	return false, false, nil
 }
 
-// selectLiveRun returns the state a live run published for real, or an error
-// naming the ordinary "nothing is sandboxing this directory" case.
+// selectLiveRun returns the one live run on real the caller asked for.
 //
-// Since issue #123 this is a LOOKUP, not a search: the state file is named
-// from sha256(realpath) in the same uid-derived directory as the target lock,
-// so there is exactly one candidate and no listing to walk.
+// wantPID is `snug proxy --pid`: 0 means the human named no run. With exactly
+// one live run that is unambiguous and the run is returned. With SEVERAL it
+// REFUSES and lists them, rather than picking the newest or the first — which
+// sandbox a door is opened into is a decision, and snug making it silently is
+// invariant 5's shape (the human would believe a hole was opened somewhere it
+// was not). A wantPID matching no live run refuses with the same list, so a
+// pid copied from a run that has since exited says so instead of quietly
+// serving a different sandbox.
 //
-// WHAT IT CANNOT TELL YOU, now that a target may carry several live runs at
-// once: which one. The name is keyed by the target alone, so the run that
-// published LAST is the run this returns, and an earlier run on the same
-// directory is invisible here. Its one caller, `snug proxy`, therefore
-// reaches the most recently started sandbox of that directory rather than a
-// sandbox the human picked.
+// The pid is the OWNING SNUG process, not the sandbox's init: it is the one
+// number the human can see with `ps`, and the one the record's own owner
+// field carries.
 //
 // real must already be canonicalised (filepath.EvalSymlinks, via
-// canonicalTarget), because the file name is a hash OF that canonical form: a
-// symlink to the target, or any other spelling, hashes elsewhere and finds
-// nothing. That is the same coherence issue #119 fixed for the lock.
-func selectLiveRun(real string) (runState, error) {
-	st, live, err := readTargetState(real)
+// canonicalTarget), because the record names are a hash OF that canonical
+// form: a symlink to the target, or any other spelling, hashes elsewhere and
+// finds nothing. That is the same coherence issue #119 fixed for the lock.
+func selectLiveRun(real string, wantPID int) (runState, error) {
+	runs, err := liveRunsFor(real)
 	if err != nil {
 		return runState{}, err
 	}
-	if !live {
+	if len(runs) == 0 {
 		return runState{}, fmt.Errorf("no live snug run found for %s — nothing is currently sandboxing "+
 			"this directory", real)
 	}
-	return st, nil
+	if wantPID > 0 {
+		for _, st := range runs {
+			if st.Owner.PID == wantPID {
+				return st, nil
+			}
+		}
+		return runState{}, fmt.Errorf("no live snug run on %s has pid %d.\n%s",
+			real, wantPID, liveRunCandidates(real, runs))
+	}
+	if len(runs) == 1 {
+		return runs[0], nil
+	}
+	return runState{}, fmt.Errorf("%d snug runs are live on %s. Which sandbox a door is opened "+
+		"into is not something snug should guess at, so name one with --pid.\n%s",
+		len(runs), real, liveRunCandidates(real, runs))
+}
+
+// liveRunCandidates renders the runs a refusal is offering to choose between,
+// one per line with the command that picks it — the fix has to be on screen,
+// not merely the flag's name.
+//
+// The start time goes beside each pid because the pid alone does not identify
+// a run for longer than the kernel takes to reuse the number: it is the pair
+// that the records themselves are judged on, so it is the pair a human is
+// shown deciding between two of them.
+func liveRunCandidates(real string, runs []runState) string {
+	var b strings.Builder
+	for _, st := range runs {
+		fmt.Fprintf(&b, "\n        pid %d  started %d      snug proxy %s --pid %d",
+			st.Owner.PID, st.Owner.Starttime, real, st.Owner.PID)
+	}
+	b.WriteString("\n\n      \"started\" is /proc/<pid>/stat field 22, in clock ticks since boot.")
+	return b.String()
 }
 
 // canonicalTarget resolves abs (already filepath.Abs'd) to the same realpath

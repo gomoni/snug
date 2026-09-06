@@ -299,7 +299,7 @@ func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 		t.Errorf("the shared runtime directory mode is %#o, want 0700", fi.Mode().Perm())
 	}
 
-	statePath := filepath.Join(snugDir, targetStateName(target))
+	statePath := filepath.Join(snugDir, targetStateName(target, os.Getpid()))
 	fi, err := os.Stat(statePath)
 	if err != nil {
 		t.Fatalf("state.json was not written to the target-keyed path %s: %v", statePath, err)
@@ -345,17 +345,17 @@ func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 // error" is also what a reader that had stopped checking anything at all would
 // do. So the same call, against a runtime directory that EXISTS with the wrong
 // mode, must still refuse.
-func TestReadTargetStateTreatsAMissingRuntimeDirAsZeroRuns(t *testing.T) {
+func TestLiveRunsForTreatsAMissingRuntimeDirAsZeroRuns(t *testing.T) {
 	t.Run("missing-snug-dir-is-zero-runs", func(t *testing.T) {
 		useTargetLockBase(t) // points at a fresh dir; the snug/ subdir is NOT created
-		_, live, err := readTargetState("/some/target")
+		runs, err := liveRunsFor("/some/target")
 		if err != nil {
-			t.Errorf("readTargetState on a host where snug has never run returned an error "+
+			t.Errorf("liveRunsFor on a host where snug has never run returned an error "+
 				"instead of zero runs: %v\nThat error reaches the user as a raw path error where "+
 				"`snug proxy` should have said no live run was found (issue #124).", err)
 		}
-		if live {
-			t.Error("readTargetState reported a live run under a directory that does not exist")
+		if len(runs) != 0 {
+			t.Errorf("liveRunsFor reported %d live runs under a directory that does not exist", len(runs))
 		}
 	})
 
@@ -368,15 +368,15 @@ func TestReadTargetStateTreatsAMissingRuntimeDirAsZeroRuns(t *testing.T) {
 		// A previous run's file, left behind on purpose: writeTargetState
 		// never unlinks, exactly as the lock never does. The LOCK is the
 		// truth, so this must read as "nothing live", not as a live run.
-		if err := os.WriteFile(filepath.Join(snugDir, targetStateName(target)),
+		if err := os.WriteFile(filepath.Join(snugDir, targetStateName(target, os.Getpid())),
 			[]byte(`{"schema":1,"target":"/some/target"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, live, err := readTargetState(target)
+		runs, err := liveRunsFor(target)
 		if err != nil {
 			t.Errorf("a stale state file beside an unheld lock produced an error: %v", err)
 		}
-		if live {
+		if len(runs) != 0 {
 			t.Error("a state file whose run is gone read as a live run — the lock is what says " +
 				"a run is alive, and nothing holds this one")
 		}
@@ -394,8 +394,8 @@ func TestReadTargetStateTreatsAMissingRuntimeDirAsZeroRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, _, err := readTargetState("/some/target"); err == nil {
-			t.Fatal("PRECONDITION: readTargetState accepted a runtime directory with mode 0755. " +
+		if _, err := liveRunsFor("/some/target"); err == nil {
+			t.Fatal("PRECONDITION: liveRunsFor accepted a runtime directory with mode 0755. " +
 				"The ownership/mode guard is what makes the zero-run cases above safe to report " +
 				"as empty rather than as an error — if nothing is refused any more, those " +
 				"subtests pass for the wrong reason.")
@@ -429,6 +429,10 @@ func TestRunStateIsPublishedWhereAReaderInAnyEnvironmentLooks(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
 
+	owner, err := currentOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
 	st := runState{
 		Schema: runStateSchema,
 		Target: target,
@@ -436,6 +440,10 @@ func TestRunStateIsPublishedWhereAReaderInAnyEnvironmentLooks(t *testing.T) {
 			InitPID: os.Getpid(), InitStarttime: 1,
 			Namespaces: map[string]uint64{"mnt": 1, "pid": 2, "net": 3, "ipc": 4, "uts": 5, "cgroup": 6},
 		},
+		// This test process, which is genuinely running: the record's name is
+		// derived from the owner's pid, and the reader below filters out
+		// records whose owner is provably gone.
+		Owner: owner,
 	}
 	if err := writeTargetState(target, st); err != nil {
 		t.Fatal(err)
@@ -443,9 +451,9 @@ func TestRunStateIsPublishedWhereAReaderInAnyEnvironmentLooks(t *testing.T) {
 
 	// The run must look live to a reader, so hold the target lock the way a
 	// live run does — SHARED, from a separate open file description.
-	holder, err := os.OpenFile(filepath.Join(snugDir, targetLockName(target)), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
+	holder, herr := os.OpenFile(filepath.Join(snugDir, targetLockName(target)), os.O_CREATE|os.O_RDWR, 0o600)
+	if herr != nil {
+		t.Fatal(herr)
 	}
 	defer holder.Close()
 	if err := unix.Flock(int(holder.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
@@ -458,22 +466,23 @@ func TestRunStateIsPublishedWhereAReaderInAnyEnvironmentLooks(t *testing.T) {
 	t.Setenv("TMPDIR", "")
 	os.Unsetenv("TMPDIR")
 
-	got, live, err := readTargetState(target)
+	runs, err := liveRunsFor(target)
 	if err != nil {
 		t.Fatalf("reading a run's state with the writer's environment removed failed: %v", err)
 	}
-	if !live {
-		t.Fatal("a run published under $XDG_RUNTIME_DIR was invisible to a reader without it — " +
-			"that is issue #123: the next run's sweep cannot find this run's record")
+	if len(runs) != 1 {
+		t.Fatalf("a run published under $XDG_RUNTIME_DIR was invisible to a reader without it "+
+			"(%d records found) — that is issue #123: the next run's sweep cannot find this "+
+			"run's record", len(runs))
 	}
-	if got.Target != target {
-		t.Errorf("read back target %q, want %q", got.Target, target)
+	if runs[0].Target != target {
+		t.Errorf("read back target %q, want %q", runs[0].Target, target)
 	}
 
 	// CONTROL: the lookup is not simply answering yes. A DIFFERENT target,
 	// under the identical environment, must not be found.
-	if _, live, err := readTargetState("/some/other/target"); err != nil || live {
-		t.Errorf("a target with no run of its own read as live (live=%v, err=%v) — the lookup "+
-			"is not discriminating, so the assertion above proves nothing", live, err)
+	if other, err := liveRunsFor("/some/other/target"); err != nil || len(other) != 0 {
+		t.Errorf("a target with no run of its own read as live (%d records, err=%v) — the lookup "+
+			"is not discriminating, so the assertion above proves nothing", len(other), err)
 	}
 }

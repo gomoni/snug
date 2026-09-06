@@ -55,8 +55,8 @@ func TestSweepRemovesTheLeftoverOfAnInterruptedStateWrite(t *testing.T) {
 	target := "/tmp/a-target-whose-write-was-killed"
 	// writeTargetFile removes only the temp name carrying its OWN pid, so a
 	// write a SIGKILL interrupted leaves a name no later run can match.
-	leftover := targetStateName(target) + ".tmp-999999"
-	starting := initStateName(target) + ".tmp-999998"
+	leftover := targetStateName(target, os.Getpid()) + ".tmp-999999"
+	starting := initStateName(target, os.Getpid()) + ".tmp-999998"
 	for _, n := range []string{targetLockName(target), leftover, starting} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -79,7 +79,7 @@ func TestSweepKeepsAnInterruptedWriteWhoseTargetLockIsHeld(t *testing.T) {
 	dir, root := stateDirForTest(t)
 	target := "/tmp/a-target-mid-write"
 	holdTargetLock(t, dir, target)
-	leftover := targetStateName(target) + ".tmp-999999"
+	leftover := targetStateName(target, os.Getpid()) + ".tmp-999999"
 	if err := os.WriteFile(filepath.Join(dir, leftover), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestLivenessSurvivesTheLockFileBeingSwept(t *testing.T) {
 func TestSweepRemovesAnInterruptedWriteWithNoLockFileBesideIt(t *testing.T) {
 	dir, root := stateDirForTest(t)
 	target := "/tmp/a-target-whose-lock-was-already-swept"
-	leftover := targetStateName(target) + ".tmp-999999"
+	leftover := targetStateName(target, os.Getpid()) + ".tmp-999999"
 	if err := os.WriteFile(filepath.Join(dir, leftover), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
