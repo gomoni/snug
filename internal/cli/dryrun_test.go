@@ -997,6 +997,81 @@ func TestDryRunSharedBlockNamesTheSurfaceASecondSandboxWouldMeet(t *testing.T) {
 	}
 }
 
+// TestDryRunSharedBlockOmitsWhatBelongsToThisRunAlone is the false-positive
+// half. The block filters for writable, and this run's OWN sockets are
+// writable: /snug/podman.sock lives under run-<pid>/ and /snug/engine/sock
+// under snug-<uid>-<pid>/, so a peer sandbox is handed its own and can meet
+// this one on neither. Listing them among "what another sandbox on this
+// target shares with you" is a false row on the screen whose whole job is to
+// be trusted.
+//
+// The discriminator is the RunScoped flag set where those paths are
+// CONSTRUCTED, never a pid parsed back out of the path — which is why the
+// positive control below is the same two guest paths WITHOUT the flag. If the
+// filter ever became "a path that looks run-shaped", the control would be
+// dropped too and this test would say so.
+func TestDryRunSharedBlockOmitsWhatBelongsToThisRunAlone(t *testing.T) {
+	pol := &policy.Policy{
+		Target: "/home/u/proj",
+		Podman: policy.PodmanSocket,
+		Mounts: map[string]policy.Mount{
+			"/home/u/proj": {Guest: "/home/u/proj", Kind: policy.KindBind,
+				Host: "/home/u/proj", Access: policy.AccessRW},
+			"/snug/podman.sock": {Guest: "/snug/podman.sock", Kind: policy.KindBind,
+				Host: "/run/user/1000/snug/run-4242/podman.sock", Access: policy.AccessRW,
+				RunScoped: true},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/store": {Mount: policy.Mount{
+				Guest: "/snug/engine/store", Kind: policy.KindGraft,
+				Host: "/home/u/.local/share/snug/engines/sha256_abc/storage", Access: policy.AccessRW}},
+			"/snug/engine/sock": {Mount: policy.Mount{
+				Guest: "/snug/engine/sock", Kind: policy.KindGraft,
+				Host: "/tmp/snug-1000-4242/sock", Access: policy.AccessRW, RunScoped: true}},
+		},
+	}
+	got := captureFile(t, func(w io.Writer) { describeShared(w, pol) })
+
+	for _, absent := range []string{"/run/user/1000/snug/run-4242/podman.sock", "/tmp/snug-1000-4242/sock"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("the SHARED block lists %s, whose host side exists for THIS run alone: a "+
+				"second sandbox on this target is handed its own and cannot meet this one "+
+				"there, so the row is a false positive:\n%s", absent, got)
+		}
+	}
+	// The two rows a peer genuinely meets must survive, or the filter is
+	// simply dropping /snug.
+	for _, want := range []string{"/home/u/proj", "/home/u/.local/share/snug/engines/sha256_abc/storage"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the SHARED block no longer names %s, which IS keyed by the target and IS "+
+				"shared:\n%s", want, got)
+		}
+	}
+
+	// POSITIVE CONTROL on the flag rather than on the paths: the identical
+	// guest paths, unmarked, must be listed. Without this the assertions above
+	// are equally satisfied by a block that filtered on the path text.
+	unmarked := &policy.Policy{
+		Target: "/home/u/proj",
+		Mounts: map[string]policy.Mount{
+			"/snug/podman.sock": {Guest: "/snug/podman.sock", Kind: policy.KindBind,
+				Host: "/run/user/1000/snug/run-4242/podman.sock", Access: policy.AccessRW},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/sock": {Mount: policy.Mount{
+				Guest: "/snug/engine/sock", Kind: policy.KindGraft,
+				Host: "/tmp/snug-1000-4242/sock", Access: policy.AccessRW}},
+		},
+	}
+	ctl := captureFile(t, func(w io.Writer) { describeShared(w, unmarked) })
+	for _, want := range []string{"/run/user/1000/snug/run-4242/podman.sock", "/tmp/snug-1000-4242/sock"} {
+		if !strings.Contains(ctl, want) {
+			t.Errorf("the control policy marks nothing RunScoped and %s is still omitted, so the "+
+				"exclusion is not keyed on the flag:\n%s", want, ctl)
+		}
+	}
+}
+
 // TestDryRunSharedBlockOnAPolicyWithNothingWritable is the zero case: a screen
 // that printed an empty list under "the writable host paths it could meet this
 // one on are below" would read as a rendering failure, not as a guarantee.

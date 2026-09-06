@@ -16,33 +16,39 @@ import (
 	"github.com/gomoni/snug/test/modroot"
 )
 
-// authoredField is the field name both Mount and Graft declare and both
-// exemptions key on. The sweep below is written against the NAME rather than
-// against a resolved type: a write to `Authored` on any struct in this module
-// is worth a human look, and matching by name needs no type checker and so no
-// new dependency in a go.mod whose every entry runs with the authority of the
+// The two Mount fields whose WRITERS are part of a security argument written
+// down somewhere, and therefore have to be enumerable rather than asserted.
+// The sweep below is written against the NAME rather than against a resolved
+// type: a write to either of these on any struct in this module is worth a
+// human look, and matching by name needs no type checker and so no new
+// dependency in a go.mod whose every entry runs with the authority of the
 // thing building the sandbox.
-const authoredField = "Authored"
+const (
+	authoredField  = "Authored"
+	runScopedField = "RunScoped"
+)
 
-// authoredBearingTypes are the types that declare the field. They matter for
-// exactly one detection the field name cannot make on its own: an UNKEYED
-// composite literal writes every field positionally without ever spelling one.
-var authoredBearingTypes = map[string]bool{"Mount": true, "Graft": true}
+// fieldBearingTypes are the types that declare both fields. They matter for
+// exactly one detection a field name cannot make on its own: an UNKEYED
+// composite literal writes every field positionally without ever spelling one,
+// so a literal of one of these types is reported whichever field is being
+// swept.
+var fieldBearingTypes = map[string]bool{"Mount": true, "Graft": true}
 
-// authoredSite is one place the module writes the field, with the spelling
+// fieldWriteSite is one place the module writes the field, with the spelling
 // that found it — the spelling is in the failure message because "a fourth
 // writer exists" and "a fourth writer exists AS A COMPOSITE LITERAL" send a
 // reader to different lines.
-type authoredSite struct {
+type fieldWriteSite struct {
 	file string // module-root-relative, forward slashes
 	line int
 	how  string
 }
 
-func (s authoredSite) String() string { return fmt.Sprintf("%s:%d (%s)", s.file, s.line, s.how) }
+func (s fieldWriteSite) String() string { return fmt.Sprintf("%s:%d (%s)", s.file, s.line, s.how) }
 
-// findAuthoredWrites parses every non-test .go file under root and returns
-// every write to a field named Authored.
+// findFieldWrites parses every non-test .go file under root and returns every
+// write to a field with the given name.
 //
 // It replaces a regexp (`\.Authored\s*=[^=]`) run over `internal/` only, which
 // issue #291 measured green against THREE separate fourth writers: a composite
@@ -67,8 +73,8 @@ func (s authoredSite) String() string { return fmt.Sprintf("%s:%d (%s)", s.file,
 // (`m2 := m1`) that carries an already-true field to a new guest path. The
 // copy is the interesting residual and it is why TestJoinDoesNotInheritAuthored
 // exists: propagation, not authorship, was issue #291's live finding.
-func findAuthoredWrites(root string) ([]authoredSite, []string, error) {
-	var sites []authoredSite
+func findFieldWrites(root, field string) ([]fieldWriteSite, []string, error) {
+	var sites []fieldWriteSite
 	var filesSeen []string
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -114,7 +120,7 @@ func findAuthoredWrites(root string) ([]authoredSite, []string, error) {
 		if rerr != nil {
 			return rerr
 		}
-		found, perr := authoredWritesInSource(rel, src)
+		found, perr := fieldWritesInSource(rel, src, field)
 		if perr != nil {
 			return perr
 		}
@@ -134,19 +140,19 @@ func findAuthoredWrites(root string) ([]authoredSite, []string, error) {
 	return sites, filesSeen, nil
 }
 
-// authoredWritesInSource is the detector proper, split out from the walk so
-// the positive control below can drive it against source text it authors
-// itself rather than against files it would have to create on disk.
-func authoredWritesInSource(name string, src []byte) ([]authoredSite, error) {
+// fieldWritesInSource is the detector proper, split out from the walk so the
+// positive control below can drive it against source text it authors itself
+// rather than against files it would have to create on disk.
+func fieldWritesInSource(name string, src []byte, field string) ([]fieldWriteSite, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, name, src, 0)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 
-	var sites []authoredSite
+	var sites []fieldWriteSite
 	add := func(pos token.Pos, how string) {
-		sites = append(sites, authoredSite{file: name, line: fset.Position(pos).Line, how: how})
+		sites = append(sites, fieldWriteSite{file: name, line: fset.Position(pos).Line, how: how})
 	}
 
 	// Elided element types: `[]Mount{{...}}` and `map[string]Mount{k: {...}}`
@@ -174,12 +180,12 @@ func authoredWritesInSource(name string, src []byte) ([]authoredSite, error) {
 		switch v := n.(type) {
 		case *ast.AssignStmt:
 			for _, lhs := range v.Lhs {
-				if isAuthoredSelector(lhs) {
+				if isFieldSelector(lhs, field) {
 					add(lhs.Pos(), "assignment")
 				}
 			}
 		case *ast.UnaryExpr:
-			if v.Op == token.AND && isAuthoredSelector(v.X) {
+			if v.Op == token.AND && isFieldSelector(v.X, field) {
 				add(v.Pos(), "address taken")
 			}
 		case *ast.CompositeLit:
@@ -191,7 +197,7 @@ func authoredWritesInSource(name string, src []byte) ([]authoredSite, error) {
 					continue
 				}
 				keyed = true
-				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == authoredField {
+				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == field {
 					add(kv.Pos(), "keyed composite literal")
 				}
 			}
@@ -200,7 +206,7 @@ func authoredWritesInSource(name string, src []byte) ([]authoredSite, error) {
 				if typeName == "" {
 					typeName = elidedType[v]
 				}
-				if authoredBearingTypes[typeName] {
+				if fieldBearingTypes[typeName] {
 					add(v.Pos(), "unkeyed composite literal of "+typeName)
 				}
 			}
@@ -210,9 +216,9 @@ func authoredWritesInSource(name string, src []byte) ([]authoredSite, error) {
 	return sites, nil
 }
 
-func isAuthoredSelector(e ast.Expr) bool {
+func isFieldSelector(e ast.Expr, field string) bool {
 	sel, ok := e.(*ast.SelectorExpr)
-	return ok && sel.Sel != nil && sel.Sel.Name == authoredField
+	return ok && sel.Sel != nil && sel.Sel.Name == field
 }
 
 // baseTypeName names the struct a composite literal builds, unwrapping the
@@ -250,7 +256,8 @@ func elementTypeName(e ast.Expr) string {
 }
 
 // TestAuthoredWriteDetectorCatchesEverySpelling is the mandatory positive
-// control, and it is the whole reason this rewrite exists. The regexp it
+// control for the detector, driven on the Authored field and covering it for
+// every field it is pointed at.  It is the whole reason this rewrite exists. The regexp it
 // replaces could not fail on three of the shapes below, and NOTHING said so —
 // the test passed, which reads as proof.
 //
@@ -309,7 +316,7 @@ func f(m *Mount) *bool { return &m.Authored }`, "address taken"},
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := authoredWritesInSource("fixture.go", []byte(tc.src))
+			got, err := fieldWritesInSource("fixture.go", []byte(tc.src), authoredField)
 			if err != nil {
 				t.Fatalf("the fixture does not parse, so this control measures nothing: %v", err)
 			}
@@ -329,7 +336,7 @@ func f(m *Mount) *bool { return &m.Authored }`, "address taken"},
 	clean := `package p
 type Mount struct{ Authored bool }
 func f(m Mount) bool { if m.Authored { return true }; return m.Authored == false }`
-	got, err := authoredWritesInSource("clean.go", []byte(clean))
+	got, err := fieldWritesInSource("clean.go", []byte(clean), authoredField)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +375,7 @@ func TestAuthoredWritersAreTheThreeTheCommentsName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sites, filesSeen, err := findAuthoredWrites(root)
+	sites, filesSeen, err := findFieldWrites(root, authoredField)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,5 +572,82 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 		t.Error("a mount that came from PROFILE TEXT is Authored — it would be exempt from " +
 			"rejectMasking's RULE 3 and from rejectEndpointSource, which is exactly the " +
 			"loophole both comments claim is impossible")
+	}
+}
+
+// TestRunScopedWritersAreTheTwoFunctionsTheFieldNames is the Authored sweep
+// pointed at Mount.RunScoped, for the same reason and against the same
+// failure mode: the field's own doc comment argues that no profile can set it,
+// and prose cannot notice a third writer arriving.
+//
+// What rests on it is one screen rather than a rule — the SHARED block of
+// `snug --dry-run` OMITS a RunScoped row, on the ground that the host path
+// exists for this run alone and a peer sandbox is handed its own. A writer
+// that marked a path a peer DOES meet would delete a true row from the one
+// screen a human reads to find out what two sandboxes on one directory share,
+// and nothing would say so: the block would simply be shorter.
+//
+// Both writers are POST-RESOLUTION, which is the other half of the argument
+// and the reason Policy.join needs no meet for this field the way it does for
+// Authored (issue #291 part 1c): a profile's grant is folded before either
+// runs, so join never sees the field set at all.
+func TestRunScopedWritersAreTheTwoFunctionsTheFieldNames(t *testing.T) {
+	root, err := modroot.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites, _, err := findFieldWrites(root, runScopedField)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var files []string
+	for _, s := range sites {
+		files = append(files, s.file)
+	}
+	// engine/paths.go twice: the engine's socket directory and its config
+	// directory are two halves of one run directory, grafted separately. The
+	// store and the runroot beside them are NOT here on purpose — they are
+	// keyed by the target hash alone, so they are exactly what a peer meets
+	// this run on.
+	want := []string{
+		"internal/engine/paths.go", // GraftPathsInto — the engine's sock dir
+		"internal/engine/paths.go", // GraftPathsInto — the engine's conf dir
+		"internal/policy/types.go", // Policy.BindSocket — this run's sockets
+	}
+	if len(files) != len(want) {
+		t.Fatalf("RunScoped is written at %v (%d sites), want exactly %v.\n"+
+			"A RunScoped mount is left OUT of the SHARED block, so a new writer is a new way\n"+
+			"for a writable host path to disappear from the screen that enumerates what a\n"+
+			"second sandbox on this directory can reach. Marking a path is a claim that no\n"+
+			"peer can be handed the same one; say why where you add it to this list.",
+			sites, len(sites), want)
+	}
+	for i := range files {
+		if files[i] != want[i] {
+			t.Errorf("RunScoped is written in %s (%s); the writers the field's comment names are %v",
+				files[i], sites[i].how, want)
+		}
+	}
+}
+
+// A resolved policy carries no RunScoped mount, whatever profiles it selects.
+// The sweep above says only that the two writers are where the comment says;
+// this says the fold itself never reaches them, which is what makes "no
+// profile can set it" a fact about the shipped path rather than about a
+// function list.
+func TestResolveProducesNoRunScopedMount(t *testing.T) {
+	p := mustResolveDefaults(t)
+	for guest, m := range p.Mounts {
+		if m.RunScoped {
+			t.Errorf("Resolve produced a RunScoped mount at %s (from %v): the field marks a host "+
+				"path snug created for this run, and a profile grant is not one — a mount that "+
+				"acquired it in the fold would vanish from the SHARED block", guest, m.From)
+		}
+	}
+	for guest, g := range p.Grafts {
+		if g.RunScoped {
+			t.Errorf("Resolve produced a RunScoped graft at %s (from %v)", guest, g.From)
+		}
 	}
 }

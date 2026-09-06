@@ -198,6 +198,14 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 		Mount: policy.Mount{
 			Guest: policy.EngineSockGuest, Host: ps.SockDir,
 			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
+			// RunScoped, unlike the store and runroot above: SockDir and
+			// ConfDir are halves of a run directory named
+			// snug-<uid>-<pid>, so a second snug on this target gets its
+			// own and cannot meet this one here. The store and runroot are
+			// keyed by the target hash ALONE (engineKey), so they are
+			// exactly what a peer DOES meet this run on, and marking them
+			// would delete that row from the SHARED screen.
+			RunScoped: true,
 		},
 		Why: "create or replace the socket the container proxy dials — the engine must be " +
 			"able to bind it, which is why this half of the run directory is writable and the " +
@@ -210,6 +218,7 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 		Mount: policy.Mount{
 			Guest: policy.EngineConfGuest, Host: ps.ConfDir,
 			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
+			RunScoped: true,
 		},
 		Why: "READ every configuration file snug generated for it — and only read them: this " +
 			"is the half of the run directory that is read-only, so an engine that is talked " +

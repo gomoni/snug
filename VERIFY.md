@@ -5470,6 +5470,20 @@ With a `@podman*` profile selected, the engine store appears in the list and one
 more sentence follows it: the store is keyed by the target alone, so a layer one
 sandbox's engine pulls is a layer the other's engine runs.
 
+What must NOT appear is this run's own sockets. They are writable and they are
+host-backed, but their host side is named after this run, so a second sandbox is
+handed its own and meets this one on neither:
+
+```bash
+./bin/snug --dry-run -p @cwd-rw -p @podman-socket "$T/proj" \
+  | sed -n '/^SHARED/,/^$/p' | grep -c -e podman.sock -e engine/sock
+```
+
+Expect `0`. The engine STORE and RUNROOT rows are still there in the same
+output — they are keyed by the target hash alone, which is exactly what makes
+them shared — so a `0` here with an empty list above it is the filter having
+eaten too much, not the property under test.
+
 ### 14c. The per-target lock still answers "is a run live"
 
 The lock is shared now, so it no longer refuses anything — but it is the one

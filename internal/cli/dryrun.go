@@ -300,14 +300,25 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 // describeGrafts prints "nothing — the stage mounts a fresh proc/tmpfs here; no
 // host path is opened" for those, and each run's engine makes its own.
 //
-// WHAT THIS SCREEN CANNOT DECIDE FOR THE READER, and therefore does not claim:
-// which of these rows a peer actually lands on. That turns on how the HOST side
-// of each row is keyed — the target bind by the grant, the engine store and
-// runroot by the target hash alone (internal/engine's paths.go), this run's
-// sockets by the run — and the peer's policy is not in hand here. So the rows
-// are printed with their host paths and the discriminator is stated, rather
-// than a subset being asserted as "shared" on a rule this function would have
-// to invent.
+// A RunScoped mount or graft is skipped for a stronger reason and it is the
+// one exclusion this function makes: its host path exists for THIS run alone —
+// /snug/podman.sock under the run directory, /snug/engine/sock under
+// snug-<uid>-<pid> — so a peer is handed its own and cannot meet this one
+// there, whatever policy the peer resolves. The flag is set where those paths
+// are CONSTRUCTED (policy.BindSocket, internal/engine's GraftPathsInto), not
+// derived here by reading a pid back out of a path: a naming convention is a
+// guess, and a false row on the screen whose job is to be trusted costs more
+// than marking the paths where snug already knows the answer.
+//
+// WHAT THIS SCREEN STILL CANNOT DECIDE FOR THE READER, and therefore does not
+// claim: which of the REMAINING rows a peer actually lands on. That turns on
+// how the host side of each is keyed — the target bind by the grant, the
+// engine store and runroot by the target hash alone (internal/engine's
+// paths.go) — and the peer's own policy is not in hand here. A peer that
+// selects no `@podman*` profile has no engine store to meet this one on. So
+// those rows are printed with their host paths and the discriminator is
+// stated, rather than a subset being asserted as "shared" on a rule this
+// function would have to invent.
 //
 // Every path goes through visibleValue like the rest of this screen: a target
 // path is a string a human typed and a graft's guest path is snug's own, but
@@ -318,7 +329,7 @@ func describeShared(out io.Writer, p *policy.Policy) {
 	var rows []shared
 
 	for _, m := range p.SortedMounts() {
-		if m.Kind == policy.KindBind && m.Access == policy.AccessRW {
+		if m.Kind == policy.KindBind && m.Access == policy.AccessRW && !m.RunScoped {
 			rows = append(rows, shared{m.Guest, "host " + visibleValue(m.Host)})
 		}
 	}
@@ -329,7 +340,7 @@ func describeShared(out io.Writer, p *policy.Policy) {
 	sort.Strings(guests)
 	for _, g := range guests {
 		gr := p.Grafts[g]
-		if gr.Access == policy.AccessRW && gr.Host != "" {
+		if gr.Access == policy.AccessRW && gr.Host != "" && !gr.RunScoped {
 			rows = append(rows, shared{g, "engine view, host " + visibleValue(gr.Host)})
 		}
 	}
@@ -339,12 +350,13 @@ func describeShared(out io.Writer, p *policy.Policy) {
 	fmt.Fprintln(out, "         /tmp, its own pids and its own environment.")
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "         It could meet this one on nothing: this policy grants no writable")
-		fmt.Fprintln(out, "         host path at all.")
+		fmt.Fprintln(out, "         host path a second sandbox could be handed too.")
 		return
 	}
-	fmt.Fprintln(out, "         The writable host paths it could meet this one on are below. A path")
-	fmt.Fprintln(out, "         whose HOST side is derived from the target directory is the same file")
-	fmt.Fprintln(out, "         for both; one named after THIS run (its sockets) is not.")
+	fmt.Fprintln(out, "         The writable host paths it could meet this one on are below. This")
+	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is named after")
+	fmt.Fprintln(out, "         this run, so a second sandbox is handed its own. Whether a peer")
+	fmt.Fprintln(out, "         reaches a row below still depends on what it grants itself.")
 	for _, r := range rows {
 		fmt.Fprintf(out, "           %-40s %s\n", visibleValue(r.path), r.note)
 	}
