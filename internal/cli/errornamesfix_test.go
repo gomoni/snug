@@ -27,10 +27,10 @@ import (
 // a strong one is worse than none. It cannot tell whether a named fix is the
 // RIGHT fix — only a human reading the message can, and this change turned up an
 // instance of exactly that: the brief for #180 proposed making the target-lock
-// flock error say "another sandbox holds this, use snug attach", which would have
-// been WRONG, because EWOULDBLOCK is caught one branch earlier and already
-// returns targetBusyError with that advice. What this checks is that a message
-// says more than what failed — the floor, not the ceiling.
+// flock error say "another sandbox holds this", which would have been WRONG,
+// because EWOULDBLOCK is caught one branch earlier and never reaches that
+// message. What this checks is that a message says more than what failed — the
+// floor, not the ceiling.
 //
 // Deliberately scoped to these two files. Widening it to the package would
 // either need a large exempt list assembled without reading each site, or would

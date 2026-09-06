@@ -134,9 +134,9 @@ func TestMustCreateSubdirRefusesReuse(t *testing.T) {
 	}
 }
 
-// TestOpenExistingSubdirCreatesNothing is the property `snug attach`'s
-// discovery depends on: looking for a run must never bring a directory into
-// existence.
+// TestOpenExistingSubdirCreatesNothing is the property every reader of another
+// run's published state depends on: looking for a run must never bring a
+// directory into existence.
 func TestOpenExistingSubdirCreatesNothing(t *testing.T) {
 	base := t.TempDir()
 

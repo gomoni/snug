@@ -682,7 +682,11 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 		if serr != nil {
 			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, serr)
 		}
-		lock, lerr := openAndHoldTargetLock(snugRoot, snugPath, name, real)
+		// LOCK_EX, where a run takes LOCK_SH: the exclusive request is what
+		// both detects a live run (flock refuses it while any shared holder
+		// is there) and KEEPS the target not-live for as long as this
+		// descriptor is held, which is the half a reclaim cannot do without.
+		lock, lerr := openAndHoldTargetLock(snugRoot, snugPath, name, real, unix.LOCK_EX)
 		if lerr != nil {
 			var busy *targetBusyError
 			if errors.As(lerr, &busy) {
@@ -830,7 +834,11 @@ func anyRunLive() (bool, error) {
 		if oerr != nil {
 			continue
 		}
-		flockErr := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		// LOCK_EX, not LOCK_SH: a run holds this file SHARED for its whole
+		// life, so a shared probe would succeed beside it and this scan would
+		// report "no run is live" while one is — licensing a store reclaim
+		// under a running engine.
+		flockErr := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if flockErr == nil {
 			unix.Flock(int(f.Fd()), unix.LOCK_UN)
 			f.Close()

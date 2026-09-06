@@ -241,7 +241,13 @@ func TestTheEngineRunsAndAnOrdinaryRunKeepsItsMasks(t *testing.T) {
 	}
 
 	// ── half one: an engine run starts, and its /proc is its own ──────────
-	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 120`)
+	//
+	// The probe is that run's OWN payload, which is what makes it a probe of
+	// THIS sandbox's procfs: a second `snug` on the same target would be an
+	// independent sandbox with its own mount namespace, so its answer would be
+	// about a different /proc than the engine found below sits beside.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj,
+		sizeScript(demonstrable)+"\nsleep 120\n")
 	bg.ready(t)
 	// waitForState is the assertion that the engine came up: a run whose
 	// engine never created its socket dies here rather than reaching the
@@ -258,12 +264,9 @@ func TestTheEngineRunsAndAnOrdinaryRunKeepsItsMasks(t *testing.T) {
 	// The exemption is what makes that work, so the engine run must NOT have
 	// the closures. Asserted from inside that same sandbox rather than from
 	// the screen: this is what the payload actually reads.
-	engineOut := attachScript(t, env, proj, sizeScript(demonstrable))
-	if !strings.Contains(engineOut.out, "PROBE-DONE") {
-		t.Fatalf("the engine-run probe did not finish:\n%s", engineOut.out)
-	}
+	engineOut := waitForLogLine(t, bg, "PROBE-DONE", 30*time.Second)
 	for _, p := range demonstrable {
-		if got := sizeOf(t, engineOut.out, p); got == 0 {
+		if got := sizeOf(t, engineOut, p); got == 0 {
 			t.Errorf("%s reads 0 bytes inside an ENGINE run. The closures are exempted there "+
 				"because the engine cannot otherwise mount its own procfs — if this fires, "+
 				"either the exemption stopped applying (and the engine above is about to "+

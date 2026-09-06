@@ -269,7 +269,7 @@ const initWalkGrace = 500 * time.Millisecond
 // event until this returns. On an UNGATED run that means a bwrap which never
 // answers stalls P0 for this long with the payload already running; the signal
 // guard is armed by then, so a Ctrl-C in that window is queued rather than
-// lost, and the run then reports itself unattachable exactly as it did when P0
+// lost, and the run then reports its init unrecorded exactly as it did when P0
 // read this descriptor itself.
 const bwrapInfoTimeout = 10 * time.Second
 

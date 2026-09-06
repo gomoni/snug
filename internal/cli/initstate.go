@@ -4,11 +4,11 @@ package cli
 // bwrap answers --info-fd, naming its init, long before runOneSandbox reports
 // "enginestarted" — the mount settle and, on a container run, the engine's
 // whole cold start sit in between — and exec.go's publishInfo only runs AFTER
-// that, and after a gated run's release byte, on purpose (issue #125: an
-// attachable sandbox is a sandbox `snug attach` could put a process into
-// before its gate opened). For that whole interval state.json does not exist
-// yet, so sweepOneOrphan's kill has nothing to read and a SIGKILLed snug
-// leaves an init the next run cannot find.
+// that, and after a gated run's release byte, on purpose (issue #125: a record
+// naming a sandbox whose payload the gate is still holding announces a run that
+// does not yet exist). For that whole interval state.json does not exist yet,
+// so sweepOneOrphan's kill has nothing to read and a SIGKILLed snug leaves an
+// init the next run cannot find.
 //
 // This file is written the moment sandbox.Options.OnInit fires — before any
 // of that — and removed the moment writeRunState succeeds, so the two files
@@ -27,9 +27,9 @@ package cli
 // only just answered --info-fd — its own comment in internal/stage/serve.go
 // measures the init's mount namespace at that instant still holding the whole
 // host tree at /oldroot with a writable root, settling ~150ms later to the
-// sandbox's own read-only view. A record any attach path could read would
-// therefore hand out a sandbox before it exists, up to that ~150ms early on
-// every run and the whole of the engine's cold start on a gated one.
+// sandbox's own read-only view. A record anything could act on would therefore
+// describe a sandbox before it exists, up to that ~150ms early on every run and
+// the whole of the engine's cold start on a gated one.
 //
 // The abuse sentence: a same-uid process can read this file and learn a
 // sandbox init's pid and namespace ids 1-2s earlier than state.json would

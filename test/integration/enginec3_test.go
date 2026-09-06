@@ -16,14 +16,16 @@ package integration
 //  2. AccessRO in the model is read-only in the KERNEL. Tier C attaches the
 //     config graft with mount_setattr(MOUNT_ATTR_RDONLY); a graft recorded
 //     read-only and attached writable would pass every unit test in the repo.
-//  3. `snug attach` joins the payload's namespaces, and the engine's pid
-//     namespace is not among them (issue #145). #125's design pass calls this
-//     criterion 2's residual: the window is smaller, not closed.
+//  3. the PAYLOAD's own /proc must not enumerate the engine, whose pid
+//     namespace is not one of the payload's (issue #145). #125's design pass
+//     calls this criterion 2's residual: the window is smaller, not closed.
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,18 +48,25 @@ func engineGraftGuests() []string {
 // found by matching a real process rather than by arithmetic on snug's pid:
 // the payload is bwrap's child through a pid namespace, and the engine is the
 // stage's, so neither is a fixed hop from anything.
-func startEngineRun(t *testing.T, marker string) (proj string, payloadPID, enginePID int) {
+// script, when given, replaces the default `sleep 60` body; it runs AFTER the
+// marker is printed and must keep the payload alive long enough for the
+// caller's assertions.
+func startEngineRun(t *testing.T, marker string, script ...string) (proj string, payloadPID, enginePID int) {
 	t.Helper()
 	env, _ := containerEngineEnv(t)
 	requireSandbox(t)
 	proj, _ = target(t)
 
+	body := "sleep 60"
+	if len(script) == 1 {
+		body = script[0]
+	}
 	cmd := exec.Command(snugBin, "-p", "@podman-socket", proj, "--",
 		// The trailing `true` is load-bearing: a shell EXECS the last command
 		// of a -c script in place, so `echo M; sleep 60` leaves a process whose
 		// argv is `sleep 60` and carries no marker at all — the payload then
 		// looks absent (measured, 15s of timeout).
-		"/bin/sh", "-c", "echo "+marker+"; sleep 60; true")
+		"/bin/sh", "-c", "echo "+marker+"; "+body+"; true")
 	cmd.Env = env
 	log, err := os.CreateTemp(t.TempDir(), "snug-c3-")
 	if err != nil {
@@ -225,31 +234,61 @@ func hasOpt(opts, want string) bool {
 	return false
 }
 
-// TestAttachCannotReachTheEngineChildsProcFD is C3's last assertion, and it is
-// the residual the design pass names rather than a boundary it closes: `snug
-// attach` joins the payload's namespaces, and CLAUDE.md's own list records that
-// /proc/<pid>/fd reaches a sibling's files and /proc/<pid>/mem its memory,
-// neither of them syscall-shaped, so no seccomp filter can name them. What
-// stops attach reaching the engine is that the engine is in a PID NAMESPACE the
-// payload's /proc does not enumerate (issue #145).
+// TestThePayloadCannotReachTheEngineChildsProcFD is C3's last assertion, and it
+// is the residual the design pass names rather than a boundary it closes:
+// CLAUDE.md's own list records that /proc/<pid>/fd reaches a sibling's files and
+// /proc/<pid>/mem its memory, neither of them syscall-shaped, so no seccomp
+// filter can name them. What stops the payload reaching the engine is that the
+// engine is in a PID NAMESPACE the payload's /proc does not enumerate (#145).
+//
+// The prober is the PAYLOAD itself. It used to be `snug attach`, which joined
+// the payload's namespaces and was therefore a proxy for it; with attach gone
+// the proxy is unnecessary, and the payload is the process the threat model
+// actually cares about.
+//
+// It needs a number it cannot compute — the engine's HOST pid — so the host
+// hands it over through the target directory, which both sides can write.
 //
 // TWO CONTROLS, because there are two ways this could pass for the wrong
 // reason. The engine must be reachable from the HOST at the same instant (so
-// the process really exists and really has an fd table), and attach's own
-// /proc must be readable (so a refusal is not simply attach failing to start).
+// the process really exists and really has an fd table), and the payload's own
+// /proc must be readable (so a negative is not simply a broken probe).
 //
 // The assertion is by IDENTITY, not by absence of a number: the engine's HOST
 // pid can legitimately name a different process inside the sandbox's own pid
 // namespace, and asserting "/proc/<hostpid> does not exist" would then be
-// asserting a coincidence. What must be true is that no process attach can see
-// is the engine.
-func TestAttachCannotReachTheEngineChildsProcFD(t *testing.T) {
+// asserting a coincidence. What must be true is that no process the payload can
+// see is the engine.
+func TestThePayloadCannotReachTheEngineChildsProcFD(t *testing.T) {
 	budget(t, 120*time.Second)
-	marker := "snugc3attach"
-	proj, _, enginePID := startEngineRun(t, marker)
+	marker := "snugc3payload"
+
+	// The needle is assembled from two variables rather than written out, and
+	// that is not style: this script is the probe's own argv, so a literal
+	// `system service` in it makes the probe match ITSELF. Measured — the first
+	// version of this test reported the probing shell as the engine.
+	// The probe's answers come back through the target directory rather than
+	// through the run's stdout, so the host reads them by name and does not
+	// have to hold the background process's log.
+	probe := `
+while [ ! -f enginepid ]; do sleep 0.05; done
+{
+a=sys; b=tem; c=ser; d=vice
+echo "SELFFD=$(ls /proc/self/fd 2>&1 | wc -l)"
+echo "NPROC=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
+echo "ENGINEFD=$(ls /proc/$(cat enginepid)/fd 2>&1 | head -1)"
+for p in /proc/[0-9]*; do
+  [ "$p" = "/proc/$$" ] && continue
+  tr '\0' ' ' < $p/cmdline 2>/dev/null | grep -q "$a$b $c$d" && echo "SAWENGINE=$p"
+done
+echo PROBEDONE
+} > .probe.tmp 2>&1
+mv .probe.tmp probeout
+sleep 30`
+	proj, _, enginePID := startEngineRun(t, marker, probe)
 
 	// CONTROL A: from the host, this pid has a readable fd table. Without it,
-	// "attach cannot read it" is a statement about a dead process.
+	// "the payload cannot read it" is a statement about a dead process.
 	if _, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", enginePID)); err != nil {
 		t.Fatalf("CONTROL: the engine's own /proc/%d/fd is not readable from the HOST either "+
 			"(%v), so the assertion below is about a process that is not there", enginePID, err)
@@ -269,29 +308,22 @@ func TestAttachCannotReachTheEngineChildsProcFD(t *testing.T) {
 			"below greps for, so the probe would report nothing whatever it could see", joined)
 	}
 
-	env, _ := containerEngineEnv(t)
-	// The needle is assembled from two variables rather than written out, and
-	// that is not style: this script is the probe's own argv, so a literal
-	// `system service` in it makes the probe match ITSELF. Measured — the
-	// first version of this test reported the attach shell as the engine.
-	script := fmt.Sprintf(`
-a=sys; b=tem; c=ser; d=vice
-echo "SELFFD=$(ls /proc/self/fd 2>&1 | wc -l)"
-echo "NPROC=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
-echo "ENGINEFD=$(ls /proc/%d/fd 2>&1 | head -1)"
-for p in /proc/[0-9]*; do
-  [ "$p" = "/proc/$$" ] && continue
-  tr '\0' ' ' < $p/cmdline 2>/dev/null | grep -q "$a$b $c$d" && echo "SAWENGINE=$p"
-done
-echo DONE
-`, enginePID)
-	out, code := cli(t, env, "attach", proj, "--", "/bin/sh", "-c", script)
-	if !strings.Contains(out, "DONE") {
-		t.Fatalf("PRECONDITION: `snug attach` did not run the probe (exit %d):\n%s", code, out)
+	handToPayload(t, proj, "enginepid", strconv.Itoa(enginePID))
+	probeOut := filepath.Join(proj, "probeout")
+	if werr := waitForFile(probeOut, 60*time.Second); werr != nil {
+		t.Fatalf("PRECONDITION: the payload's probe never finished (%v)", werr)
+	}
+	body, rerr := os.ReadFile(probeOut)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	out := string(body)
+	if !strings.Contains(out, "PROBEDONE") {
+		t.Fatalf("PRECONDITION: the payload's probe did not run to the end:\n%s", out)
 	}
 
-	// CONTROL C: attach's own procfs works, so a negative below is a boundary
-	// rather than an unreadable /proc.
+	// CONTROL C: the payload's own procfs works, so a negative below is a
+	// boundary rather than an unreadable /proc.
 	// CONTROL D: the sweep had processes to walk. `for p in /proc/[0-9]*`
 	// finding nothing would make the negative below trivially true.
 	if strings.Contains(out, "NPROC=0") {
@@ -299,12 +331,12 @@ echo DONE
 			"its identity sweep never ran:\n%s", out)
 	}
 	if strings.Contains(out, "SELFFD=0") {
-		t.Fatalf("CONTROL: attach cannot read its OWN /proc/self/fd, so it could not read the "+
-			"engine's for reasons that have nothing to do with the engine:\n%s", out)
+		t.Fatalf("CONTROL: the payload cannot read its OWN /proc/self/fd, so it could not read "+
+			"the engine's for reasons that have nothing to do with the engine:\n%s", out)
 	}
 
 	if strings.Contains(out, "SAWENGINE=") {
-		t.Errorf("`snug attach` can see the container engine's own process. The engine holds "+
+		t.Errorf("the payload can see the container engine's own process. The engine holds "+
 			"CAP_SYS_ADMIN in U and the full delegated subuid range, and /proc/<pid>/fd and "+
 			"/proc/<pid>/mem are not syscall-shaped, so a process that can see it can read its "+
 			"files and its memory (issue #125's criterion 2, issue #145):\n%s", out)

@@ -338,10 +338,10 @@ func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
 			"and snug refuses to use one whose owner and mode it cannot verify", err)
 	}
 	// Closed once the lock inside it is held. It was kept open for a reader
-	// that no longer exists: issue #123 moved `snug attach`'s state.json to
-	// the TARGET-keyed path, so nothing writes into this directory through a
-	// Root any more, and runStateRoot — the function that handed it out — had
-	// no callers left at all. A descriptor held open for a dead reader is not
+	// that no longer exists: issue #123 moved state.json to the TARGET-keyed
+	// path, so nothing writes into this directory through a Root any more, and
+	// runStateRoot — the function that handed it out — had no callers left at
+	// all. A descriptor held open for a dead reader is not
 	// defence in depth, it is a fact nobody is checking.
 	defer runRoot.Close()
 

@@ -54,8 +54,8 @@ func TestSweepDoesNotKillALiveRunWhoseLockFileWasRemoved(t *testing.T) {
 			victim.pid, owner.pid)
 	}
 	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
-		t.Errorf("the sweep removed a live run's state file (err=%v): `snug attach` reads that "+
-			"file, so removing it makes a running sandbox unreachable", err)
+		t.Errorf("the sweep removed a live run's state file (err=%v): it is the only thing "+
+			"naming that run's init, so removing it blinds every later sweep to it", err)
 	}
 }
 

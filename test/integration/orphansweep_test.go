@@ -100,8 +100,9 @@ func TestTheSweepDoesNotTouchALiveSandbox(t *testing.T) {
 			livePID, bg.output())
 	}
 	if _, err := os.Stat(statePath); err != nil {
-		t.Errorf("another snug run removed a LIVE run's state file %s (err=%v) — `snug attach` "+
-			"reads that file", statePath, err)
+		t.Errorf("another snug run removed a LIVE run's state file %s (err=%v) — it is the only "+
+			"thing naming that run's init, so removing it blinds every later sweep to it",
+			statePath, err)
 	}
 }
 

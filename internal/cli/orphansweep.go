@@ -35,16 +35,15 @@ import (
 //   - The per-target lock is not held. A live run takes that lock in run()
 //     BEFORE it starts anything and holds it for the whole run; the kernel
 //     releases it when that process dies, however it dies. So "not held"
-//     means the owning snug is gone — the same fact `snug <dir>`'s own
-//     refusal and `snug attach`'s liveness check already read.
+//     means every snug that ever locked this target is gone — the same fact
+//     `snug engine gc` reads before it reclaims a store.
 //   - The state file's NAME matches the target it names. The name is
 //     sha256(realpath), derived and never stored, so a file hand-placed to
 //     make this function kill an arbitrary pid has to carry a target whose
 //     hash is its own filename.
-//   - The recorded start time still matches /proc/<pid>/stat field 22. This
-//     is the pid-reuse guard `snug attach` already relies on: a pid that has
-//     been recycled since the state was written has a different start time
-//     and is left alone.
+//   - The recorded start time still matches /proc/<pid>/stat field 22. That is
+//     the pid-reuse guard: a pid recycled since the state was written has a
+//     different start time and is left alone.
 //   - The snug that OWNED the run is provably gone (stateowner.go, issue
 //     #489). The first condition is read by NAME while the lock is held on an
 //     INODE, so one same-uid `rm` — or `mv`, which leaves no trail at all —
@@ -257,7 +256,8 @@ func sweepOneOrphan(snugRoot *os.Root, snugPath, name string) {
 	if decErr != nil {
 		// A file this version cannot parse is left alone rather than removed:
 		// it may have been written by a NEWER snug whose run is still live,
-		// and deleting another run's record would break its `snug attach`.
+		// and deleting that record would blind every later sweep to its
+		// init.
 		return
 	}
 
@@ -403,8 +403,7 @@ const (
 //     process is a sandbox init — a forged or hostile state file naming any
 //     live same-uid process would otherwise turn this sweep into an
 //     arbitrary-pid kill. Require the process to live in exactly the namespaces
-//     the file recorded, the same identity `attach` checks before it joins
-//     (attach.go, procNamespaceInodes).
+//     the file recorded (procNamespaceInodes, runstate.go).
 //
 // Fail CLOSED throughout: ESRCH or any mismatch means "not provably our init",
 // and leaving an orphan is the less-bad outcome than killing a process we

@@ -57,12 +57,12 @@ func TestSweepLeavesALiveRunAlone(t *testing.T) {
 	settle()
 	if !processAlive(victim.pid) {
 		t.Fatalf("the sweep killed pid %d while its target lock was HELD — that is a live "+
-			"sandbox, and the lock is the same fact `snug <dir>`'s refusal and `snug attach`'s "+
-			"liveness check read", victim.pid)
+			"sandbox, and the lock is the same fact `snug engine gc` reads before it reclaims "+
+			"a store", victim.pid)
 	}
 	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
-		t.Errorf("the sweep removed a LIVE run's state file (err=%v) — `snug attach` reads that "+
-			"file, so removing it makes a running sandbox unreachable", err)
+		t.Errorf("the sweep removed a LIVE run's state file (err=%v) — it is the only thing "+
+			"naming that run's init, so removing it blinds every later sweep to it", err)
 	}
 }
 
@@ -244,8 +244,8 @@ func TestSweepIgnoresALegacyNamedRecordWhoseNameDoesNotMatchItsTarget(t *testing
 }
 
 // A file this snug cannot parse may have been written by a NEWER one whose run
-// is live; removing it would break that run's `snug attach`, and killing on a
-// half-decoded record is worse still.
+// is live; removing it would blind every later sweep to that run's init, and
+// killing on a half-decoded record is worse still.
 func TestSweepIgnoresAStateFileItCannotParse(t *testing.T) {
 	dir, root := stateDirForTest(t)
 	name := targetStateName("/tmp/unparseable-target")
@@ -571,6 +571,12 @@ func writeStateAtName(t *testing.T, dir, name string, st runState) {
 
 // holdTargetLock takes the per-target flock and keeps it for the test, which
 // is what a live run does for its whole life.
+//
+// LOCK_SH, because that is the mode a run uses and because it is the only mode
+// that can tell the sweep's probe apart from a broken one. An EXCLUSIVE fixture
+// blocks a LOCK_SH probe and a LOCK_EX probe identically, so a sweep that had
+// regressed to asking for LOCK_SH — and would therefore walk straight past
+// every real live run — would pass every test built on one.
 func holdTargetLock(t *testing.T, dir, target string) {
 	t.Helper()
 	path := filepath.Join(dir, targetLockName(target))
@@ -578,7 +584,7 @@ func holdTargetLock(t *testing.T, dir, target string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
 		t.Fatalf("the fixture could not take the target lock it is meant to hold: %v", err)
 	}
 	// A flock is held by the OPEN FILE DESCRIPTION, not by the process, so

@@ -42,28 +42,15 @@ func (m SubuidMode) String() string {
 	return "none"
 }
 
-// There is deliberately no AttachMode here any more.
-//
-// One shipped, on the argument that landing the floor and the Join law early
-// would force Phase 2 to change a golden rather than invent the lattice at the
-// same time it used it. Phase 2's review reversed the premise: attach is not a
-// topology. A topology is the process shape THIS run requires — what snug
-// builds before the sandbox exists and what authority the host process tree
-// carries as a result. A second client joining a namespace afterwards changes
-// none of that; it is a property of the client, decided by the client, at a
-// time when the shape is already fixed.
-//
-// The listener it was reserved for is cut with it (SUPERVISOR-DESIGN.md §3.3,
-// and the settlement comment on #61). Measured: a same-uid host process joins
-// a running sandbox's namespaces by descriptor, on both topologies, with no
-// listener and nothing for snug to grant — so a mode recording "can this be
-// attached to" would have been a field that never described anything snug
-// controls.
-//
-// Nothing consumed it. Not resolution, not the stage, not --dry-run, which
-// renders subuid and never rendered this. It was a lattice with no reader, and
-// the cost of keeping it was that Topology.String() and every Join law test
-// asserted a claim about the model that the model did not make.
+// There is deliberately no field here for "can a second process join this
+// sandbox", and the reason outlives the command that once asked. Measured: a
+// same-uid host process joins a running sandbox's namespaces by descriptor, on
+// both topologies, with no listener and nothing for snug to grant — the kernel
+// gates it by uid. A mode recording it would describe something snug does not
+// control, and nothing would consume it: not resolution, not the stage, not
+// --dry-run. The cost of the one that shipped was that Topology.String() and
+// every Join law test asserted a claim about the model that the model did not
+// make.
 
 // Topology is the process shape a resolved Policy requires — how many
 // long-lived processes snug runs, what namespaces it must build ahead of the

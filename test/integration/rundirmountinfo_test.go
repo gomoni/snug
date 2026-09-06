@@ -87,41 +87,43 @@ echo PROBE-DONE
 		"ssh_mode = \"agent-proxy\"\n"+
 		"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
 
-	bg := startBgSandbox(t, env, []string{"-p", "pinned"}, idProj, `sleep 120`)
+	// The probe is the payload itself, because the assertion is about THIS
+	// run's mount table: a second `snug` on the same target is an independent
+	// sandbox whose proxy socket comes out of its OWN run directory, so it
+	// would name its own pid and the assertion below would be vacuous.
+	bg := startBgSandbox(t, env, []string{"-p", "pinned"}, idProj,
+		"grep ssh-agent.sock /proc/self/mountinfo\necho PROBE-DONE\nsleep 120\n")
 	bg.ready(t)
 	bg.waitForState(t)
 
-	got := attachScript(t, env, idProj, "grep ssh-agent.sock /proc/self/mountinfo\necho PROBE-DONE\n")
-	if !strings.Contains(got.out, "PROBE-DONE") {
-		t.Fatalf("the identity-run probe did not finish:\n%s", got.out)
-	}
+	out := waitForLogLine(t, bg, "PROBE-DONE", 30*time.Second)
 	// CONTROL: the socket really is mounted. The disclosure below is a
 	// property of that mount, so an absent mount would make the assertion
 	// vacuous rather than passing.
-	if !strings.Contains(got.out, "/snug/ssh-agent.sock") {
+	if !strings.Contains(out, "/snug/ssh-agent.sock") {
 		t.Fatalf("the ssh-agent proxy socket is not in the payload's mount table, so there is "+
-			"no mount for this arm to be about:\n%s", got.out)
+			"no mount for this arm to be about:\n%s", out)
 	}
 
 	// The accepted disclosure, asserted against the pid of the snug process
 	// this test started rather than against "some number".
 	want := fmt.Sprintf("/snug/run-%d/", bg.pid())
-	if !strings.Contains(got.out, want) {
+	if !strings.Contains(out, want) {
 		t.Errorf("the proxy socket's source does not name %s. If the run directory stopped "+
 			"carrying the supervisor's pid, #272 is fixed and this test is the one that has to "+
 			"be rewritten — deliberately, which is why it pins the old behaviour:\n%s",
-			want, got.out)
+			want, out)
 	}
 
 	// And the number really is a pid rather than a coincidence of the path:
 	// the field it appears in is the source root, so it is the HOST path.
-	if m := regexp.MustCompile(`/snug/run-(\d+)/ssh-agent\.sock`).FindStringSubmatch(got.out); m != nil {
+	if m := regexp.MustCompile(`/snug/run-(\d+)/ssh-agent\.sock`).FindStringSubmatch(out); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil && n != bg.pid() {
 			t.Errorf("the run directory in the payload's mountinfo names pid %d, but the snug "+
 				"supervising this sandbox is %d — one of the two is not what this test thinks "+
 				"it is", n, bg.pid())
 		}
 	} else {
-		t.Errorf("no /snug/run-<pid>/ssh-agent.sock source in the mount table:\n%s", got.out)
+		t.Errorf("no /snug/run-<pid>/ssh-agent.sock source in the mount table:\n%s", out)
 	}
 }

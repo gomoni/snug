@@ -1,37 +1,49 @@
 package cli
 
-// targetlock.go is issue #119: one live sandbox per target directory. A real
-// `snug <dir>` run takes a per-target advisory flock before it creates
-// anything, and refuses — naming `snug attach <dir>` — if another live run
-// already holds it. It sits next to runtimedir.go because it reuses that
-// file's *os.Root + flock machinery (vdir.SecureSubdir / verifyOwnedAndPrivate),
-// which stays package-private on purpose: a runtime directory reached by a
-// bare path lookup is exactly the shape issue #61(c)/#85 closed.
+// targetlock.go is the per-target advisory flock: the one fact that says
+// whether ANY run is live on a target directory. A real `snug <dir>` run takes
+// it SHARED before it creates anything and holds it for the whole run; the
+// kernel releases it when that process dies, however it dies. It sits next to
+// runtimedir.go because it reuses that file's *os.Root + flock machinery
+// (vdir.SecureSubdir / verifyOwnedAndPrivate), which stays package-private on
+// purpose: a runtime directory reached by a bare path lookup is exactly the
+// shape issue #61(c)/#85 closed.
+//
+// SHARED, not exclusive, and that is the whole of the mode's meaning: several
+// sandboxes on one directory are a supported shape, so a run must not refuse
+// because another run got there first. What the lock still buys is the
+// question every reader actually asks — "is anything live on this target" —
+// because flock(2) refuses LOCK_EX while any LOCK_SH is held. So the two
+// readers take LOCK_EX and read EWOULDBLOCK as "yes": the orphan sweep
+// (targetLockIsHeld, targetstate.go) and `snug engine gc` (targetLive,
+// enginegc.go). A reader that took LOCK_SH would succeed against a live run
+// and answer "nothing is live" — which for the sweep licenses a SIGKILL and
+// for gc licenses reclaiming a store out from under a running engine.
 //
 // The abuse sentence: a hostile process inside the sandbox can use this to
 // ___ — nothing. The lock file lives on a host path (/run/user/<uid>/snug/…,
 // or /tmp/snug-<uid>/… where that does not exist) that is never bound into the
 // sandbox, and its name is the SHA-256 of the realpath the host user named,
 // computed on the host before the sandbox exists. The payload can neither reach
-// the file nor influence which file snug locks, so it can neither release the
-// lock to race a second sandbox onto the same target nor steer snug to lock an
-// unrelated path.
+// the file nor influence which file snug locks, so it can neither release its
+// own run's hold — which would make the orphan sweep read that run as dead and
+// SIGKILL its init — nor steer snug to lock an unrelated path.
 //
 // Its DIRECTORY is resolved from the uid alone (targetLockBase), NOT from
 // $XDG_RUNTIME_DIR/$TMPDIR the way the per-run socket directory (runtimedir.go)
 // is. That difference is issue #122: the target lock's whole purpose is
 // cross-run agreement, and a run in an interactive shell ($XDG_RUNTIME_DIR set)
-// and a run under cron/systemd/ssh-non-login (unset) must land on the SAME lock
-// inode or two live sandboxes acquire on one target — a fail-OPEN that needs no
-// attacker. runtimedir.go's per-run lock never needs cross-run agreement, so it
-// keeps the env-derived base; the target lock cannot.
+// and a reader under cron/systemd/ssh-non-login (unset) must land on the SAME
+// lock inode, or the reader probes a file no live run holds — a fail-OPEN that
+// needs no attacker, and one whose consequence is a SIGKILL of a live
+// sandbox's init. runtimedir.go's per-run lock never needs cross-run
+// agreement, so it keeps the env-derived base; the target lock cannot.
 
 import (
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -88,47 +100,24 @@ func targetLockBase() (base, snugName string, err error) {
 	}
 
 	return "", "", fmt.Errorf("target lock: no per-user runtime directory: neither %s nor %s "+
-		"exists, so there is no env-independent place to serialise runs on this target — "+
+		"exists, so there is no env-independent place to announce this run on its target — "+
 		"refusing rather than using a $XDG_RUNTIME_DIR/$TMPDIR path that differs between an "+
-		"interactive shell and cron/systemd and would let two sandboxes race one target (issue #122)",
+		"interactive shell and cron/systemd, which would leave this run invisible to the next "+
+		"one's orphan sweep and to `snug engine gc` (issue #122)",
 		canonical, fallbackTmpRoot)
 }
 
-// targetBusyError is returned by lockTarget when another live run already
-// holds the per-target lock. run() turns it into the invariant-5 refusal;
-// its message names `snug attach` and identifies the live holder.
+// targetBusyError says that at least one run holds the per-target lock — A
+// live run, never THE live run, because the run lock is shared and a target
+// may carry several at once. It is a sentinel rather than a message: its one
+// consumer, `snug engine gc`'s liveHoldForReclaim arm, reads it as "live" and
+// discards the text. A run is never refused for it; runs no longer contend.
 type targetBusyError struct {
 	target string // canonical realpath of the target directory
-	holder int    // pid of the live holder, 0 when it could not be read
 }
 
 func (e *targetBusyError) Error() string {
-	if e.holder > 0 {
-		return fmt.Sprintf("a sandbox is already live for %s (held by snug pid %d)", e.target, e.holder)
-	}
-	return fmt.Sprintf("a sandbox is already live for %s", e.target)
-}
-
-// message renders the full multi-line refusal. display is the directory
-// argument the user actually typed (defaulting to "."), so the suggested
-// `snug attach <dir>` copy-pastes.
-func (e *targetBusyError) message(display string) string {
-	holder := "snug"
-	if e.holder > 0 {
-		holder = fmt.Sprintf("snug (pid %d)", e.holder)
-	}
-	return fmt.Sprintf(`snug: a sandbox is already live for this directory.
-
-      target:  %s
-      held by: %s
-
-      A second, independent sandbox writing the same target is a footgun: the
-      target bind is the one writable thing that persists, and two runs racing
-      writes to it is exactly what you do not want.
-
-      To open another shell in the sandbox that is already running:
-          snug attach %s
-`, e.target, holder, display)
+	return fmt.Sprintf("a run is live for %s", e.target)
 }
 
 // targetLockName is the single path component the per-target lock lives at,
@@ -145,8 +134,9 @@ func targetLockName(realpath string) string {
 // targetKeyPrefix is the shared stem of every per-target file: the lock and,
 // since issue #123, the run-state JSON beside it. One function so the two can
 // never drift onto different hashes of the same path — a drift that would not
-// fail loudly, it would simply mean `snug attach` looked up a state file no
-// run had written.
+// fail loudly, it would simply mean the orphan sweep probed a lock beside a
+// state file no run on that target had written, and every leftover init went
+// unswept.
 //
 // The hash itself is internal/targetkey's Hash — see that package's doc
 // comment for why every target-derived name on disk, including the engine
@@ -170,24 +160,26 @@ func legacyTargetKeyPrefix(realpath string) string {
 }
 
 // lockTarget takes the per-target advisory lock for abs, an already-absolute
-// target path. On success it returns an unlock func the caller holds (via
+// target path, SHARED — see this file's own comment for why the mode is the
+// whole point. On success it returns an unlock func the caller holds (via
 // defer) for the life of the run; the returned *os.File is captured by that
 // closure, which is what keeps the descriptor — and therefore the flock —
 // alive until the process exits.
 //
-// Three outcomes:
+// Two outcomes:
 //
-//   - Acquired: unlock is non-nil, err is nil.
-//   - Busy: err is a *targetBusyError naming the live holder; unlock is a
-//     no-op. run() refuses.
+//   - Acquired: unlock is non-nil, err is nil. Another run already holding
+//     the target is this case, not a refusal.
 //   - Target cannot be canonicalised (it does not exist yet): unlock is a
-//     no-op and err is nil. There is nothing to serialise against — a
+//     no-op and err is nil. There is nothing to announce ourselves to — a
 //     directory that does not exist cannot be sandboxed by any concurrent
 //     run — so this defers the "no such directory" report to policy.Resolve,
 //     which owns it and phrases it well.
 //
-// A hard error (a runtime directory that fails the ownership/mode checks, a
-// filesystem error) is returned as-is.
+// A hard error refuses the run: a runtime directory that fails the
+// ownership/mode checks, a filesystem error, or an exclusive holder that
+// outlasts the retry budget. The last is rephrased here rather than returned
+// as-is, because targetBusyError's text is written for `snug engine gc`.
 func lockTarget(abs string) (unlock func(), err error) {
 	noop := func() {}
 
@@ -217,15 +209,22 @@ func lockTarget(abs string) (unlock func(), err error) {
 	}
 	defer snugRoot.Close()
 
-	lock, err := openAndHoldTargetLock(snugRoot, filepath.Join(base, snugName), targetLockName(real), real)
+	lock, err := openAndHoldTargetLock(snugRoot, filepath.Join(base, snugName), targetLockName(real), real, unix.LOCK_SH)
 	if err != nil {
+		// The one thing that can hold a target EXCLUSIVELY for longer than the
+		// retry budget is `snug engine gc` reclaiming this target's store, and
+		// targetBusyError's own text — written for gc, which discards it —
+		// says "a run is live", which would send the reader looking for a
+		// sandbox that is not the problem.
+		var busy *targetBusyError
+		if errors.As(err, &busy) {
+			return noop, fmt.Errorf("target lock: %s is held exclusively by something else, most "+
+				"likely `snug engine gc` reclaiming this target's container store - another "+
+				"`snug` run is NOT a reason for this (runs share the lock). Wait for the gc to "+
+				"finish and start again: %w", real, err)
+		}
 		return noop, err
 	}
-
-	// We hold it. Record our pid so the next contender can name us. The lock
-	// is the truth; this write is only a courtesy for the refusal message, so
-	// a failure to write it is not fatal.
-	writeHolderPID(lock)
 
 	return func() { lock.Close() }, nil
 }
@@ -244,19 +243,33 @@ const targetLockAttempts = 4
 // minutes and is refused after the last attempt regardless.
 const targetLockRetryDelay = 2 * time.Millisecond
 
-// openAndHoldTargetLock opens the per-target lock file and takes LOCK_EX on
-// it, returning the held descriptor. dir is the lock file's directory, used
-// only for messages; real is the target, used only to name a live holder.
+// openAndHoldTargetLock opens the per-target lock file and takes mode
+// (unix.LOCK_SH or unix.LOCK_EX) on it, returning the held descriptor. dir is
+// the lock file's directory, used only for messages; real is the target, used
+// only to name it in an error.
+//
+// The mode is a parameter because its two callers want opposite things from
+// the same file. lockTarget passes LOCK_SH: a run announces itself and must
+// coexist with every other run on the target. `snug engine gc`'s
+// liveHoldForReclaim passes LOCK_EX, and needs BOTH halves of what that gives
+// it — the failure tells it a run is live, and the success keeps the target
+// not-live for as long as it holds the descriptor, which is the property a
+// store reclaim cannot proceed without.
 //
 // The retry is the CREATING side of the argument in sweepOneStaleLock's doc
 // comment, and it is lockRunDir's Nlink check one directory up rather than a
 // new idea: between the open and the flock, a concurrently starting snug's
 // sweep can hold this same file's lock and unlink it, and flock on an
 // unlinked descriptor succeeds exactly as it does on a live one. Nlink is
-// what separates them. Serialising on an inode nothing points at any more is
-// how two runs would both "hold the lock" for one target — the failure issues
-// #119 and #122 exist to prevent.
-func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string) (*os.File, error) {
+// what separates them.
+//
+// The consequence of skipping it is unchanged by the mode, and it is not
+// symmetric with what issues #119 and #122 first wrote it for. Holding an
+// inode nothing points at any more is holding NOTHING a reader will look at:
+// every reader opens by NAME, so this run would announce itself on an orphan
+// while the name carried a fresh, unheld file — and the next run's sweep,
+// finding that name unheld, is licensed to SIGKILL this run's init.
+func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string, mode int) (*os.File, error) {
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {
 		lock, err := snugRoot.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
@@ -264,33 +277,33 @@ func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string) (*os.File,
 				"this file is not; check free space and inodes on that filesystem", dir, name, err)
 		}
 
-		if flockErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
-			// EWOULDBLOCK: something holds it. Almost always a live run —
-			// but sweepOneStaleLock takes LOCK_EX on every unheld lock file
-			// it finds, so a concurrently starting snug's sweep holds this
-			// one for the length of an fstat and an unlink, and from here
-			// that is indistinguishable from a run. A redteam round measured
-			// the false refusal: 401 lock files, 3413 acquisitions, one
-			// spurious "a sandbox is already live" in 20 ms.
+		if flockErr := unix.Flock(int(lock.Fd()), mode|unix.LOCK_NB); flockErr != nil {
+			// EWOULDBLOCK: an EXCLUSIVE holder is in the way — for a LOCK_SH
+			// caller that is the only thing that can be, since runs no longer
+			// exclude each other. The short ones are snug's own housekeeping:
+			// sweepOneStaleLock takes LOCK_EX on every unheld lock file it
+			// finds, and both liveness probes take it for one flock pair, so a
+			// concurrently starting snug can hold this file for the length of
+			// an fstat and an unlink. A redteam round measured the false
+			// refusal that came of believing the first EWOULDBLOCK: 401 lock
+			// files, 3413 acquisitions, one spurious refusal in 20 ms.
 			//
-			// So EWOULDBLOCK is retried on the same budget as the swept case
-			// rather than believed the first time. A REAL holder keeps the
-			// lock for its whole run, so the retries cost it nothing but the
-			// sleeps below and it refuses exactly as before.
+			// So it is retried on the same budget as the swept case. What
+			// outlasts the budget is `snug engine gc` holding the target for a
+			// whole store reclaim, which is what the message names.
 			if errors.Is(flockErr, unix.EWOULDBLOCK) {
 				if attempt < targetLockAttempts-1 {
 					lock.Close()
 					time.Sleep(targetLockRetryDelay)
 					continue
 				}
-				holder := readHolderPID(lock)
 				lock.Close()
-				return nil, &targetBusyError{target: real, holder: holder}
+				return nil, &targetBusyError{target: real}
 			}
 			lock.Close()
-			return nil, fmt.Errorf("target lock: flock on %s/%s: %w - NOT the busy case, which is handled above "+
-				"and names `snug attach`; this is flock itself failing, which usually means the "+
-				"filesystem does not support it. Put the runtime directory on a local filesystem", dir, name, flockErr)
+			return nil, fmt.Errorf("target lock: flock on %s/%s: %w - NOT the contended case, which is "+
+				"handled above; this is flock itself failing, which usually means the filesystem does "+
+				"not support it. Put the runtime directory on a local filesystem", dir, name, flockErr)
 		}
 
 		linked, lerr := stillLinked(lock)
@@ -310,55 +323,4 @@ func openAndHoldTargetLock(snugRoot *os.Root, dir, name, real string) (*os.File,
 	return nil, fmt.Errorf("target lock: %s/%s was removed by a concurrent sweep on %d consecutive attempts - "+
 		"snug refuses rather than running unserialised against another run on the same target",
 		dir, name, targetLockAttempts)
-}
-
-// writeHolderPID truncates the lock file and writes this process's decimal
-// pid as the first line. Best effort: the flock, not the file content, is
-// what tells a live run from a dead one.
-func writeHolderPID(lock *os.File) {
-	if err := lock.Truncate(0); err != nil {
-		return
-	}
-	if _, err := lock.Seek(0, 0); err != nil {
-		return
-	}
-	fmt.Fprintf(lock, "%d\n", os.Getpid())
-}
-
-// readHolderPID reads the decimal pid a live holder wrote. It returns 0 on
-// any problem — an empty file (the holder acquired the lock but has not yet
-// written its pid), a torn read, an unparseable line, or a pid that is no
-// longer there — because the message this feeds degrades cleanly to
-// "held by: snug" without a pid.
-//
-// The last of those is the one worth naming: the pid in the file is written
-// once and never cleared, so a file left by a run that has since exited still
-// carries it. A refusal that prints a dead pid sends the reader to `ps` for a
-// process that does not exist, and a redteam round produced exactly that
-// (`held by: snug (pid 999999)` for a corpse). Nothing is deduced from the
-// answer either way — the flock is the truth; this is the courtesy half.
-func readHolderPID(lock *os.File) int {
-	if _, err := lock.Seek(0, 0); err != nil {
-		return 0
-	}
-	buf := make([]byte, 32)
-	n, _ := lock.Read(buf)
-	if n <= 0 {
-		return 0
-	}
-	line := strings.TrimSpace(strings.SplitN(string(buf[:n]), "\n", 2)[0])
-	pid, err := strconv.Atoi(line)
-	if err != nil || pid <= 0 {
-		return 0
-	}
-	// Signal 0 is the existence check and nothing else: it delivers nothing
-	// and only reports whether a process with this number is there for this
-	// uid to signal. A number that has been recycled since the file was
-	// written passes it, and that is acceptable here — this feeds a message,
-	// never a decision, and "held by: snug (pid N)" pointing at the wrong
-	// live process is a far smaller wrong than pointing at a corpse.
-	if err := unix.Kill(pid, 0); err != nil {
-		return 0
-	}
-	return pid
 }

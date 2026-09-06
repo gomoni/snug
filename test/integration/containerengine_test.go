@@ -1805,13 +1805,17 @@ func TestNoAbstractSocketsWithEngineInN(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	script := fmt.Sprintf(`
+	// The probe runs as this sandbox's OWN payload, which is what makes it a
+	// probe of THIS engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own, so its answers would be
+	// about a different process than the enginePID found below.
+	//
+	// It needs a number the payload cannot compute — the engine's HOST pid —
+	// so the host hands it over through the one thing both sides can write:
+	// the target directory. The payload blocks on the file appearing, which is
+	// also what keeps the sandbox alive until the probe has run.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
+while [ ! -f enginepid ]; do sleep 0.05; done
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -1821,26 +1825,29 @@ class UnixHTTP(http.client.HTTPConnection):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(self.path); self.sock = s
 sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
-print("version: %%d" %% r.status)
+print("version: %d" % r.status)
 EOF
 echo "---SS---"
 ss -xl
 echo "---PROC---"
-ls -d /proc/%d 2>&1
+ls -d /proc/$(cat enginepid) 2>&1
 echo DONE
-`, enginePID)
+sleep 300
+`)
+	bg.ready(t)
+	bg.waitForState(t)
 
-	r := attachScript(t, env, proj, script)
-	if !strings.Contains(r.out, "DONE") {
-		t.Fatalf("the probe did not run to the end:\n%s", r.out)
-	}
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+	handToPayload(t, proj, "enginepid", strconv.Itoa(enginePID))
+	out := waitForLogLine(t, bg, "DONE", 30*time.Second)
+
 	// CONTROL: the engine actually answers, so this is a live-engine
 	// observation and not a probe that ran against nothing.
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine did not answer /version from inside the sandbox:\n%s", r.out)
+	if !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine did not answer /version from inside the sandbox:\n%s", out)
 	}
 
-	_, ssSection, procSection := cutTwice(r.out, "---SS---", "---PROC---")
+	_, ssSection, procSection := cutTwice(out, "---SS---", "---PROC---")
 	// Abstract sockets are rendered by ss as "@name" in the local-address
 	// column. Any "@" in this section is an abstract listener the sandbox can
 	// see, which must be none.
@@ -1853,13 +1860,13 @@ echo DONE
 	}
 	if strings.TrimSpace(ssSection) == "" {
 		t.Errorf("`ss -xl` produced no output at all — this test cannot tell an empty listing "+
-			"from a broken probe:\n%s", r.out)
+			"from a broken probe:\n%s", out)
 	}
 
 	if !strings.Contains(procSection, "No such file or directory") {
 		t.Errorf("the engine's own pid (%d, host-visible: a nested pid namespace does not hide "+
 			"its members from an ancestor's procfs) IS visible in the sandbox's own /proc — the "+
-			"sandbox's pid namespace does not actually exclude it:\n%s", enginePID, r.out)
+			"sandbox's pid namespace does not actually exclude it:\n%s", enginePID, out)
 	}
 }
 
@@ -2270,15 +2277,10 @@ func TestEngineCapBoundingInU(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	// CONTROL: it really is running and answering, not a stale pid reused by
-	// something else.
-	r := attachScript(t, env, proj, `
+	// The /version control is the payload's own first act, so it is a probe of
+	// THIS sandbox's engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -2290,9 +2292,17 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
 print("version: %d" % r.status)
 EOF
+sleep 300
 `)
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, r.out)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: it really is running and answering, not a stale pid reused by
+	// something else.
+	if out := waitForLogLine(t, bg, "version: 200", 30*time.Second); !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, out)
 	}
 
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", enginePID))
@@ -3377,15 +3387,10 @@ func TestEngineHasItsOwnPidNamespace(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	// CONTROL: the engine really is running and answering /version, not a
-	// stale pid some unrelated process reused.
-	r := attachScript(t, env, proj, `
+	// The /version control is the payload's own first act, so it is a probe of
+	// THIS sandbox's engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -3397,9 +3402,17 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
 print("version: %d" % r.status)
 EOF
+sleep 300
 `)
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, r.out)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: the engine really is running and answering /version, not a
+	// stale pid some unrelated process reused.
+	if out := waitForLogLine(t, bg, "version: 200", 30*time.Second); !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, out)
 	}
 
 	engineNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", enginePID))

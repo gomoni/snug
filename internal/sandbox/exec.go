@@ -42,24 +42,22 @@ type Options struct {
 	HTTPDoors []*os.File
 
 	// OnInfo, if non-nil, is called exactly once, as soon as bwrap has
-	// reported its own info-fd JSON. It is the hook `snug attach`'s run-state
-	// file is written through, which is why WHEN it runs is a security
-	// question and not a convenience:
+	// reported its own info-fd JSON. It is the hook the run-state record is
+	// written through, and WHEN it runs is deliberate:
 	//
 	//   unstaged — from a background goroutine, before the payload's own
 	//     program has been exec'd, never blocking bwrap's startup.
 	//   staged — from the calling goroutine, and on a container run strictly
-	//     AFTER the parked payload has been released (issue #125). Publishing
-	//     it earlier would make the sandbox attachable while its payload is
-	//     still parked, and `snug attach` would then put a process inside a
-	//     sandbox the gate exists to keep empty.
+	//     AFTER the parked payload has been released (issue #125), so no
+	//     record announces a sandbox whose payload the gate is still holding.
 	//
 	// If bwrap never answers — an old bwrap, a failed start, a topology this
 	// package could not wire the descriptor through for — OnInfo is simply
 	// never called, and this package warns instead (same rule as every other
 	// place this file degrades: named, not silent). A run whose OnInfo is
-	// never reached is a run `snug attach` will not find; it is not a run
-	// that failed to start.
+	// never reached is a run no record names, so a SIGKILL of the caller
+	// leaves its init for nothing to clean up; it is not a run that failed to
+	// start.
 	OnInfo func(RunInfo)
 
 	// OnInit, if non-nil, is called with the sandbox init's HOST pid the
@@ -125,24 +123,17 @@ type Options struct {
 }
 
 // RunInfo is what a running sandbox reports about itself, once, at startup:
-// bwrap's own --info-fd answer plus whether — and with what identity — a
-// seccomp filter actually got installed. "Actually got installed" matters
-// more than "was requested": a filter this package could not build (an
-// unsupported GOARCH, an assembly failure) degrades to no filter with a
-// warning, per invariant 5, and RunInfo reflects what is REALLY running, not
-// what the caller asked for.
+// bwrap's own --info-fd answer, naming the init and the namespaces it created.
+// Its consumer is internal/cli's writeRunState, which turns it into the record
+// the next run's orphan sweep uses to decide whether a leftover init is
+// provably this run's before signalling it.
 type RunInfo struct {
 	InitPID    int
 	Namespaces map[string]uint64 // "mnt", "pid", "net", "ipc", "uts", "cgroup"
-
-	SeccompActive bool
-	// SeccompDigest is FilterDigest(prog) over the bytes actually installed.
-	// Empty when SeccompActive is false.
-	SeccompDigest string
 }
 
 // infoFDTimeout bounds how long Run waits for bwrap's --info-fd answer
-// before giving up and warning that this run will not be attachable. bwrap
+// before giving up and warning that this run goes unrecorded. bwrap
 // writes it before exec'ing the payload (measured), so this is generous
 // against a slow host rather than against anything the payload could do.
 const infoFDTimeout = 10 * time.Second
@@ -186,23 +177,18 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 
 	flags := p.BwrapFlags(uid, gid, func(guest string) int { return dataFDs[guest] })
 
-	var runInfo RunInfo
 	if !opts.NoSeccomp {
-		// Built here rather than through FilterFD so the exact bytes that get
-		// installed are also the bytes RunInfo.SeccompDigest is computed
-		// over — the identity `snug attach` will later rebuild and compare
-		// (FilterDigest's doc comment). Two callers hashing two different
-		// copies of "the filter" is exactly the kind of drift that would
-		// make attach's digest check meaningless.
+		// Built here rather than through FilterFD because the warning below
+		// needs the failure ITSELF: FilterFD collapses "no syscall table for
+		// this architecture" and "the assembler failed" into one error, and
+		// invariant 5's exception for seccomp is only bearable if the message
+		// says which one happened.
 		prog, ok, ferr := BuildFilter()
 		switch {
 		case ferr != nil || !ok:
 			// The only subsystem permitted to degrade. Loudly: a user who
 			// believes a guarantee that no longer holds is worse off than one
-			// who got an error. RunInfo.SeccompActive stays false, which is
-			// what makes the run-state file honest about a filter this
-			// process could not actually install, as opposed to one a human
-			// asked to skip (--no-seccomp).
+			// who got an error.
 			msg := "seccomp filter unavailable"
 			if ferr != nil {
 				msg = fmt.Sprintf("seccomp filter unavailable (%v)", ferr)
@@ -218,15 +204,13 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 			}
 			flags = append(flags, "--seccomp", strconv.Itoa(nextFD()))
 			extra = append(extra, f)
-			runInfo.SeccompActive = true
-			runInfo.SeccompDigest = FilterDigest(prog)
 		}
 	}
 
-	// bwrap's --info-fd answer (§7 of the attach design): one JSON object,
-	// written before the payload is exec'd, carrying bwrap's own child pid
-	// and six namespace inodes. This is how `snug attach` learns what to
-	// join — no procfs scanning, no PPid walking, no race. The descriptor
+	// bwrap's --info-fd answer: one JSON object, written before the payload is
+	// exec'd, carrying bwrap's own child pid and six namespace inodes. This is
+	// how the run's own record learns what to name — no procfs scanning, no
+	// PPid walking, no race. The descriptor
 	// travels exactly like the --seccomp memfd above: through `extra`, via
 	// nextFD(), added to `flags` before the args-memfd snapshot below.
 	//
@@ -333,7 +317,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	}
 
 	if p.Topology.NeedsStage() {
-		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, release, runInfo)
+		return runStaged(p, bwrap, argv, extra, stdin, stdout, stderr, opts, infoR, release)
 	}
 
 	// NOT bwrap directly: /proc/self/exe re-executed as the __inpidns verb,
@@ -489,7 +473,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// measured reason that is not optional.
 	var named initReporter
 	bwrapPid := cmd.Process.Pid
-	reportInfo(infoR, runInfo, opts, &named, func(reported int) (int, bool) {
+	reportInfo(infoR, opts, &named, func(reported int) (int, bool) {
 		return hostInitPID(bwrapPid, reported, opts)
 	})
 	watchForInit(bwrapPid, opts, &named)
@@ -561,7 +545,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 // after the stage has left, and the stage answers the question over the control
 // socket. Both halves measured; see stage.WaitNetReady.
 func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
-	stdin, stdout, stderr *os.File, opts Options, infoR, release *os.File, runInfo RunInfo) (int, error) {
+	stdin, stdout, stderr *os.File, opts Options, infoR, release *os.File) (int, error) {
 	// The read end of bwrap's --info-fd pipe belongs to the STAGE on this arm,
 	// not to this process (issue #125): P1 forks bwrap, so P1 is the process
 	// that must be able to kill bwrap's parked init, and it cannot kill a pid it
@@ -682,11 +666,12 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	}
 
 	// AFTER the release, never before, and on both shapes. OnInfo publishes the
-	// run-state file that makes a run attachable, and attaching to a sandbox
-	// whose payload is still parked would put a process inside it before the
-	// gate opened — precisely what the gate exists to prevent. On an ungated run
-	// this ordering costs nothing: the payload is already running.
-	publishInfo(info, runInfo, opts)
+	// run-state record, and a record naming a sandbox whose payload is still
+	// parked would announce a run that does not yet exist — the orphan sweep
+	// reads that record, and a run this process is still assembling is not one
+	// a peer should be judging. On an ungated run the ordering costs nothing:
+	// the payload is already running.
+	publishInfo(info, opts)
 
 	// From here on a payload exists, forked by the STAGE, not by this process.
 	// guard.wait is what closes issue #13's window on this topology: the
@@ -735,9 +720,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 
 // reportInfo reads bwrap's --info-fd answer in the background and calls
 // opts.OnInfo once it has one — NEVER blocking the caller, which by the time
-// this is called already has a running payload. base carries the seccomp
-// fields Run already computed, since bwrap's own JSON says nothing about the
-// filter.
+// this is called already has a running payload.
 //
 // THE UNSTAGED ARM ONLY. On the staged arm the read end lives in
 // the stage (issue #125), which parses it and forwards the answer in the
@@ -747,12 +730,13 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 //
 // infoR is closed here, once, regardless of outcome: this is its only
 // reader and its only closer.
-func reportInfo(infoR *os.File, base RunInfo, opts Options, named *initReporter, translate func(int) (int, bool)) {
+func reportInfo(infoR *os.File, opts Options, named *initReporter, translate func(int) (int, bool)) {
 	go func() {
 		defer infoR.Close()
 		info, err := bwrapinfo.Read(infoR, infoFDTimeout)
 		if err != nil {
-			opts.warn(fmt.Sprintf("this run will not be attachable (%v)", err))
+			opts.warn(fmt.Sprintf("this run's sandbox init is not recorded (%v); a SIGKILL of "+
+				"snug would leave it for nothing to clean up", err))
 			return
 		}
 		// bwrap's number is relative to bwrap's own pid namespace. Everything
@@ -761,14 +745,15 @@ func reportInfo(infoR *os.File, base RunInfo, opts Options, named *initReporter,
 		if translate != nil {
 			pid, ok := translate(info.InitPID)
 			if !ok {
-				opts.warn("this run will not be attachable (the sandbox init could not be " +
-					"named on the host; bwrap's own answer is relative to its pid namespace)")
+				opts.warn("this run's sandbox init is not recorded (it could not be named on " +
+					"the host; bwrap's own answer is relative to its pid namespace); a SIGKILL " +
+					"of snug would leave it for nothing to clean up")
 				return
 			}
 			info.InitPID = pid
 		}
 		named.report(opts, info.InitPID)
-		publishInfo(info, base, opts)
+		publishInfo(info, opts)
 	}()
 }
 
@@ -817,16 +802,19 @@ func notifyInit(opts Options, pid int) {
 }
 
 // publishInfo turns bwrap's answer — however it arrived — into a RunInfo and
-// hands it to opts.OnInfo. One place, so that a run's attachability record is
-// built identically whichever process read the descriptor.
+// hands it to opts.OnInfo. One place, so that a run's record is built
+// identically whichever process read the descriptor.
 //
 // An InitPID of 0 means bwrap never answered. That is warn-only, and it stays
-// warn-only: the run is simply not attachable. On a GATED run it cannot get
-// this far — the stage refuses to leave a parked payload it cannot name (see
-// internal/stage's runOneSandbox), so the run has already failed by here.
-func publishInfo(info bwrapinfo.Info, base RunInfo, opts Options) {
+// warn-only: the run itself is fine, but no record names its init, so a
+// SIGKILL of this snug leaves an orphan the next run's sweep cannot find. On a
+// GATED run it cannot get this far — the stage refuses to leave a parked
+// payload it cannot name (see internal/stage's runOneSandbox), so the run has
+// already failed by here.
+func publishInfo(info bwrapinfo.Info, opts Options) {
 	if info.InitPID <= 0 {
-		opts.warn("this run will not be attachable (bwrap did not report its --info-fd answer)")
+		opts.warn("this run's sandbox init is not recorded (bwrap did not report its --info-fd " +
+			"answer); a SIGKILL of snug would leave it for nothing to clean up")
 		return
 	}
 	// bwrap OMITS a namespace it did not itself unshare, so the staged arm's
@@ -837,16 +825,14 @@ func publishInfo(info bwrapinfo.Info, base RunInfo, opts Options) {
 	fillMissingNamespaceIDs(info.InitPID, info.Namespaces)
 	if opts.OnInfo != nil {
 		opts.OnInfo(RunInfo{
-			InitPID:       info.InitPID,
-			Namespaces:    info.Namespaces,
-			SeccompActive: base.SeccompActive,
-			SeccompDigest: base.SeccompDigest,
+			InitPID:    info.InitPID,
+			Namespaces: info.Namespaces,
 		})
 	}
 }
 
-// fillMissingNamespaceIDs is the fix for a gap the attach design's own §7
-// assumed away: bwrap's --info-fd JSON omits a "<kind>-namespace" key
+// fillMissingNamespaceIDs is the fix for a gap bwrap's --info-fd contract
+// leaves open: its JSON omits a "<kind>-namespace" key
 // ENTIRELY for any namespace bwrap did not itself create with its own
 // --unshare-* flag — it says nothing about a namespace the process merely
 // INHERITED. Measured directly against this host's bwrap: with
@@ -856,15 +842,15 @@ func publishInfo(info bwrapinfo.Info, base RunInfo, opts Options) {
 // already inside it, never unsharing net itself) the key is absent
 // entirely, which json.Decoder silently zero-values. Zero is not a real
 // namespace inode on any Linux kernel, so every recorded "net" entry for an
-// @net (staged) run was 0 — and since `snug attach`'s own live check reads
-// the REAL inode from /proc and refuses on ANY mismatch (§4.1 step 4), this
-// silently made every @net sandbox permanently unattachable.
+// @net (staged) run was 0 — and writeRunState refuses to publish a record
+// with any id at 0, so no @net run was recorded at all and every orphan one
+// left behind was invisible to the next run's sweep.
 //
 // The fix reads whatever bwrap's report left at 0 directly from
 // /proc/<pid>/ns/<kind> — fstat on an opened descriptor, never readlink (the
-// same reasoning internal/cli/attach.go's own procNamespaceInodes gives: not
-// trusting the kernel to have rendered a string consistently with what a
-// later setns will actually join). It runs for every kind, not only "net",
+// same reasoning internal/cli's own procNamespaceInodes gives: not trusting
+// the kernel to have rendered a string consistently with what a later
+// comparison will read). It runs for every kind, not only "net",
 // on the same "do not special-case one topology's shape" reasoning the rest
 // of this file already follows — if a future bwrap release omits a
 // DIFFERENT key for some other reason, this closes that too rather than

@@ -206,9 +206,9 @@ AFTER /tmp/snugvrt.XXXXXX/snug
 
 The run's own directory exists while the sandbox is up and is gone after it
 exits; the shared `snug` directory stays, by design — it is the parent every
-run and every `snug attach` looks in, and it holds nothing. No profile is
-selected here because none is needed: every real run publishes its state so
-`snug attach` can find it. The SOCKET half of the control needs a profile that
+run and the next run's orphan sweep look in, and it holds nothing. No profile
+is selected here because none is needed: every real run publishes its state so
+a later sweep can find its init. The SOCKET half of the control needs a profile that
 has one — an identity, or an engine on a host where `@podman-socket` is not
 refused — and is covered by `TestDryRunLeavesNoRunDirectoryOrSocket` in
 `test/integration`.
@@ -1141,8 +1141,8 @@ hidden by a rule; it was never granted, so there is nothing there to deny.
 `rename(2)` refuses only when the dentry being renamed IS a mount point, so
 without an anchor a payload renames the *parent*, the target's mount travels
 with it, and the freed path is recreated as the payload's own directory — after
-which `$SNUG_TARGET`, and a human's `snug attach`, read payload-authored content
-while every screen still prints the real project path.
+which `$SNUG_TARGET` reads payload-authored content while every screen still
+prints the real project path.
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c '
@@ -3956,26 +3956,29 @@ started the engine under — and the engine is root in the sandbox's user
 namespace with the full delegated subuid range. Writable, it could rewrite what
 it was started under.
 
-### 9n. `snug attach` cannot reach the engine (issue #125, C3)
+### 9n. The payload cannot reach the engine (issue #125, C3)
 
 `/proc/<pid>/fd` reaches a sibling's files and `/proc/<pid>/mem` its memory,
 neither of them syscall-shaped, so no seccomp filter can name them. What keeps
-`snug attach` away from the engine is that the engine holds its own **pid
+the payload away from the engine is that the engine holds its own **pid
 namespace** (issue #145) and the payload's `/proc` does not enumerate it.
 
-With a container run live:
+Start a container run, find the engine from the HOST, and hand its pid to the
+payload through the target directory — the one thing both sides can write:
 
 ```bash
 ENG=$(pgrep -f 'system service' | head -1)
 ls /proc/$ENG/fd | head -3          # from the HOST: works
 
-snug attach $SC/proj/sub -- /bin/sh -c '
+./bin/snug -p @podman-socket $SC/proj/sub -- /bin/sh -c '
+  while [ ! -f enginepid ]; do sleep 0.05; done
   a=sys; b=tem; c=ser; d=vice
   for p in /proc/[0-9]*; do
     [ "$p" = "/proc/$$" ] && continue
     tr "\0" " " < $p/cmdline 2>/dev/null | grep -q "$a$b $c$d" && echo "SAW $p"
   done
-  echo SWEPT'
+  echo SWEPT' &
+sleep 5; echo $ENG > $SC/proj/sub/enginepid; wait
 ```
 
 Expect `SWEPT` and no `SAW` line. Note the needle is assembled from two
@@ -4454,7 +4457,7 @@ another, and the first is untouched. The sweep acts only on a state file whose
 per-target lock is **not held** — a live run holds that lock for its whole life
 and the kernel releases it only when that process dies — and only when the
 recorded start time still matches `/proc/<pid>/stat` field 22, which is the
-pid-reuse guard `snug attach` already relies on.
+pid-reuse guard the record carries a start time for.
 
 ### 11c-ter. The init is nameable before bwrap reports it, on both arms (issue #236)
 
@@ -4509,11 +4512,11 @@ upstream's window. The other one, a **gated** run's parked payload waiting on
 snug's `--block-fd` (a **pipe**, which is what tells the two apart from
 outside), IS reached now, by the record 11c-ter checks.
 
-### 11c-ter. The kill record exists before the sandbox is attachable (issue #236)
+### 11c-ter. The kill record exists before `state.json` does (issue #236)
 
 `state.json` is published only once the sandbox is up — and on a gated run only
-after the release byte, because a state file is an invitation to `snug attach`
-and attaching to a parked payload would defeat the gate. On a container run
+after the release byte, because a record naming a sandbox whose payload the gate
+is still holding announces a run that does not yet exist. On a container run
 that is the engine's whole cold start with no host record naming the init, so a
 `SIGKILL` there left a leftover 11c-bis could not find. `target-<hash>.starting`
 closes it: written the instant bwrap names its init, removed once `state.json`
@@ -4550,8 +4553,8 @@ target-b18f2a2a....lock
 ```
 
 Five keys and no sixth. It names who to kill and says **nothing** about seccomp,
-environment, profiles or command — a record any attach path could act on would
-hand out a sandbox whose root is still writable and whose `/oldroot` is still
+environment, profiles or command — a record anything could act on early would
+describe a sandbox whose root is still writable and whose `/oldroot` is still
 the host tree (`internal/stage/serve.go` measures 816 mounts, root `rw`, at
 `t+0ms`). Then let the engine come up:
 
@@ -5422,246 +5425,80 @@ and two runs then hold "the" lock for one target.
 
 ---
 
-## 14. `snug attach` — a second shell in the *same* sandbox, equally confined
+## 14. A second session is a second sandbox
 
-`snug attach [dir]` joins a live run by its **target directory** (bare `attach`
-uses the current directory). It **gates nothing**: any same-uid host process can
-join these namespaces anyway, measured five ways on both topologies, and the help
-text says so. Its value is therefore not a permission but that it enters
-*confined* — the run's own seccomp filter, an empty capability set, the run's
-environment — where a naive `nsenter` enters with none of them. These checks prove
-attach lands in the right sandbox **and** arrives confined.
+There is no way to put a process inside a sandbox that is already running. Run
+`snug` again on the same directory and you get another sandbox: its own user,
+mount, pid, ipc, uts and net namespaces, its own tmpfs `$HOME`, its own `/tmp`,
+its own environment. What the two share is the host-backed writable surface
+their profiles grant, and `--dry-run`'s SHARED block enumerates it.
 
-The sub-checks run in order and share `$T` (the target) and `$SNUG` (the run's
-pid) from 14a. Start there.
-
-### 14a. It lands in the SAME sandbox — the decisive check, the private tmpfs
+### 14a. Two runs on one directory both start
 
 ```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'echo proof-$$ > /tmp/attach-proof; while :; do sleep 1; done' &
-SNUG=$!
-sleep 2
-./bin/snug attach "$T" -- /bin/sh -c 'cat /tmp/attach-proof'      # prints proof-<pid>
+T=$(mktemp -d); mkdir -p "$T/proj"
+./bin/snug "$T/proj" -- /bin/sh -c 'echo first > "$HOME/whose-home"; touch A; while :; do sleep 1; done' &
+FIRST=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/proj" -- /bin/sh -c 'touch B; ls "$HOME/whose-home"; cat A >/dev/null && echo SEES-TARGET'
+echo "exit=$?"; ls "$T/proj"
+kill $FIRST 2>/dev/null; wait $FIRST 2>/dev/null
 ```
 
-Expect the same bytes the run wrote. `/tmp` is the sandbox's **private tmpfs**; a
-marker written *after* it started can only be read by a process in its mount
-namespace. A fresh, unrelated `snug` has an empty `/tmp` — so this is what
-distinguishes "the same sandbox" from "a sandbox that looks like it".
+Expect the second run to exit 0, `A` and `B` both present, `SEES-TARGET`, and
+`ls: cannot access '/…/whose-home': No such file or directory` — the two share
+the target and nothing else. The first run is still alive throughout, which is
+what the automated `TestTwoLiveSandboxesOnOneDirectory` also checks.
 
-### 14b. The namespaces are literally the same
+### 14b. The shared surface is on the screen, with its abuse sentence
 
 ```bash
-echo "run:";    ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/1/ns/{mnt,net,pid,user,ipc,uts}'
-echo "attach:"; ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/self/ns/{mnt,net,pid,user,ipc,uts}'
+./bin/snug --dry-run -p @cwd-rw "$T/proj" | sed -n '/^SHARED/,/^$/p'
 ```
 
-The inode numbers match. attach joins by these exact inodes and **refuses on any
-mismatch**, so equality is enforced by construction — this is how you see it for
-yourself. (`/proc/1` inside is bwrap's own init; the attached process shares its
-pid namespace, so `pid` matches too.)
+Expect the writable host paths listed with their host sides, then, verbatim:
 
-### 14c. The attached process is confined exactly as the payload
+```
+         Where they do meet, the other sandbox writes files THIS one's tools
+         execute or obey — .git/hooks/*, Makefile, CLAUDE.md, .envrc,
+         package.json — and this one writes files the other's tools execute or
+         obey. Neither has to cooperate: a hook one drops runs under the
+         other's credentials, on the other's next `git commit`.
+```
+
+With a `@podman*` profile selected, the engine store appears in the list and one
+more sentence follows it: the store is keyed by the target alone, so a layer one
+sandbox's engine pulls is a layer the other's engine runs.
+
+### 14c. The per-target lock still answers "is a run live"
+
+The lock is shared now, so it no longer refuses anything — but it is the one
+fact the orphan sweep and `snug engine gc` read, and a shared holder must still
+block an exclusive request. Start a run, then have a second `snug` on a
+DIFFERENT directory perform its startup sweep:
 
 ```bash
-./bin/snug attach "$T" -- /bin/sh -c 'grep -E "NoNewPrivs|Seccomp:|CapEff|CapBnd" /proc/self/status'
+T=$(mktemp -d); mkdir -p "$T/proj" "$T/other"
+./bin/snug "$T/proj" -- /bin/sh -c 'touch A; while :; do sleep 1; done' & FIRST=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/other" -- /bin/true
+sleep 1; kill -0 $FIRST && echo "first run survived the sweep: ok"
+kill $FIRST 2>/dev/null; wait $FIRST 2>/dev/null
 ```
 
-Expect `NoNewPrivs: 1`, `Seccomp: 2`, `CapEff: 0000000000000000`,
-`CapBnd: 0000000000000000` — identical to the payload's own four lines. A naive
-`nsenter` would show `Seccomp: 0` and a full `CapBnd` (`000001ffffffffff`). That
-difference is the entire feature.
+Expect `first run survived the sweep: ok`. A sweep that read the shared lock
+with `LOCK_SH` would succeed beside the live holder, answer "nobody holds it",
+and SIGKILL that run's init.
 
-### 14d. The installed filter is real — behaviour, not a flag
+### 14d. From outside, `nsenter` is still yours
 
-```bash
-./bin/snug attach "$T" -- /bin/sh -c 'unshare -U true 2>&1 || echo "userns refused: ok"'
-```
-
-Expect the refusal. `--seccomp` has been "passed, accepted, and never installed"
-before (bwrap stops parsing at `--`), so this asserts the filter *does something*,
-not that a flag was present.
-
-### 14e. The environment is the run's, not the host's
-
-```bash
-SECRET=leak-me ./bin/snug attach "$T" -- /bin/sh -c 'echo "SECRET=${SECRET:-not-present}"'
-```
-
-Expect `SECRET=not-present`. A host variable in attach's *own* environment must
-not reach `/proc/<pid>/environ` inside the sandbox's pid namespace — the same PID-1
-leak that once handed a payload 106 host variables, asked here of the attach path.
-
-### 14f. Teardown — the pid namespace is the leash
-
-```bash
-./bin/snug attach "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-ATT=$!
-sleep 1
-kill -9 $SNUG                                    # kill the ORIGINAL run
-sleep 1
-kill -0 $ATT 2>/dev/null && echo "BUG: attach outlived the sandbox" || echo "attach died with the sandbox: ok"
-rm -rf "$T"
-```
-
-Expect `attach died with the sandbox: ok`. Killing the run collapses the pid
-namespace, which SIGKILLs the payload and the attached command; the attach client
-then has nothing left to relay and exits. Nothing is left behind — attach adds no
-new orphan class. (Conversely, SIGKILLing the *attach client* leaves the run
-untouched; the client's bridge child carries `PR_SET_PDEATHSIG`.)
-
-### 14g. The refusals
-
-```bash
-./bin/snug attach /tmp/no-run-here 2>&1 || echo "refused: ok"
-```
-
-Expect `no live snug run found for /tmp/no-run-here — nothing is currently
-sandboxing this directory`. A stale `state.json` whose owning process is gone is
-not a match: the run directory's advisory lock must be *held* for the run to be
-attachable. Note the current build addresses runs **only** by target directory —
-two live runs on the *same* directory are reported as an ambiguity it cannot yet
-resolve; whether a second run on one directory should be refused at launch instead
-is an open decision, not a check to write against today's behaviour.
-
-### 14h. Interactive attach gives a working job-control shell
-
-Every check above drives attach non-interactively (`/bin/sh -c '...'`, stdin
-redirected) — none of them exercise the pty/job-control path at all. This one
-does, from a real terminal:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-SNUG=$!
-sleep 1
-./bin/snug attach "$T"
-```
-
-Expect an interactive shell prompt with **no** `cannot set terminal process
-group (-1): Inappropriate ioctl for device` or `no job control in this shell`
-message on entry, and ordinary job control working: `sleep 100 &`, `fg`,
-`Ctrl-Z`, `bg`, `jobs`. This is the by-hand equivalent of
-`TestAttachPTYGivesJobControl`: the pty allocated for the session becomes its
-controlling terminal (`setsid()` + `ioctl(TIOCSCTTY)` in
-`internal/attach/child.go`), which is what job control needs. Exit the shell,
-then:
-
-```bash
-kill -9 $SNUG; rm -rf "$T"
-```
-
-**Known limitation — a SIGKILLed attach client leaves your terminal raw.**
-`restoreTerminal` (`internal/cli/attachstdio.go`) is `defer`red immediately
-after the pty is set up, so it runs on every *catchable* exit from `snug
-attach` — a normal return, the attached command dying, an early error — and
-puts the client's terminal termios back exactly as it found it. `SIGKILL` is
-not catchable, so the one path that cannot run it is `snug attach` itself
-being killed with `-9` mid-session:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-SNUG=$!
-sleep 1
-./bin/snug attach "$T" &
-ATTACH=$!
-sleep 1
-kill -9 $ATTACH
-```
-
-Expect the shell you ran this from to now echo nothing you type and show no
-line editing — it is stuck in raw mode. This is a terminal-ergonomics gap,
-not a confinement one: the sandbox and its payload are entirely unaffected
-(they are torn down by the run's own `PR_SET_PDEATHSIG` machinery, not by
-this). Recover with:
-
-```bash
-reset            # or: stty sane
-kill -9 $SNUG; rm -rf "$T"
-```
-
-### 14i. Attach returns when the attached command exits, not when its leftovers do (issue #221)
-
-14h leaves the session by exiting the shell, so nothing it does distinguishes
-"attach returned because the command exited" from "attach returned because
-everything the command started also exited". This one does. The payload exits
-immediately and leaves a descendant behind holding its stdio:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- sleep 300 &
-SNUG=$!
-sleep 2
-time script -qec "./bin/snug attach $T -- /bin/bash -c \"(trap '' HUP; sleep 60) & echo attached-done\"" /dev/null
-kill -9 $SNUG; rm -rf "$T"
-```
-
-Expect `attached-done`, then a line naming what was given up on, then `real`
-about **two seconds**:
-
-```
-attached-done
-snug: attach: the attached command exited, but something it left behind still holds its stdio open; stopped draining after 2s of silence and any further output is lost
-```
-
-MEASURED on this host: **2.028s**, against **1m0.027s** with
-`internal/cli/attachstdio.go` reverted — the descendant's own `sleep 60` to the
-hundredth of a second, which is what "attach waited for the leftovers" looks
-like. The message is not decoration: a sandbox that silently truncates its own
-transcript is the screen lying, and both ways this drain can cut output are
-otherwise invisible (clean exit status, nothing on stderr).
-
-Two props in that command line, both load-bearing. `script -qec` is only there
-to supply a pty, so `newStdioRelay` takes the interactive branch from a shell
-script; run it from a terminal and `./bin/snug attach` alone does the same.
-`trap '' HUP` is what makes the descendant survive: on the pty path A becomes a
-session leader (`setsid()` + `TIOCSCTTY`, `internal/attach/child.go`), `bash -c`
-is non-interactive so job control is off and the backgrounded subshell stays in
-A's own process group, and A's exit therefore HUPs the terminal's foreground
-group — the descendant's included. Without the trap the descendant dies in a
-fraction of a second and the check passes vacuously.
-
-Why it can hang at all: A's fds 0/1/2 are `dup3`'d and `dup3` clears CLOEXEC by
-design, so a descendant inherits the pty slave (or, with stdin redirected, the
-relay pipe) and holds the far end open. The client has already reaped the
-bridge and has the exit status, and the outbound copy it is draining sees
-neither EOF nor EIO. `stdioRelay.wait` therefore arms a `drainTimeout` read
-deadline on each drain end rather than waiting on them unconditionally, and
-every ioctl on the pty master goes through `ctlFd` (`SyscallConn().Control`)
-instead of `os.File.Fd()`, which would put the master back into blocking mode
-and out of the runtime poller — where no deadline on it can work.
-
-**The bound is on SILENCE, not on elapsed time**, and the difference is what
-keeps this check from being a new bug: `drainCopy` re-arms the deadline after
-every successful read, so output that is still arriving always gets through and
-only a stream that goes quiet for `drainTimeout` with its far end still held
-open ends the drain. An absolute deadline instead cut a benign payload's
-still-flowing output mid-stream — measured by the red team at 16447 of 20019
-bytes, final line gone, no descendant involved at all. A copy parked in
-`write(2)` is deliberately not bounded by any of this: that is the client's own
-consumer applying back-pressure, which the sandbox cannot reach.
-
-The pipe half of the same property, with no pty involved:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- sleep 300 &
-SNUG=$!
-sleep 2
-time ./bin/snug attach "$T" -- /bin/bash -c "(trap '' HUP; sleep 60) & echo attached-done" < /dev/null
-kill -9 $SNUG; rm -rf "$T"
-```
-
-Same expectation, same message: **2.015s** measured here. The automated equivalents are
-`TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave` and
-`TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe`:
-
-```bash
-SNUG_REQUIRE_SANDBOX=1 go test -tags integration ./test/integration/ \
-  -run 'TestAttach(PTY|Pipe)ReturnsPromptlyWhenADescendantHolds' -count=1 -v
-```
+Nothing here is a permission snug grants or withholds. A same-uid host process
+can join a running sandbox's namespaces with `nsenter` and always could — the
+kernel gates that by uid. What snug no longer does is BUILD that path and hand
+it to you as a confined shell, because the leak runs both ways: a process in the
+payload's namespaces reads `/proc/<pid>/environ` and `/proc/<pid>/fd` of every
+other process there, in both directions, and `PR_SET_DUMPABLE 0` does not
+survive `execve`.
 
 
 ## 15. snug never writes its generated files onto the host

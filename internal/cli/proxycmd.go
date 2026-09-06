@@ -56,10 +56,9 @@ func proxyCmd(argv []string) int {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitUsage
 	}
-	// The same canonicalisation `snug attach` uses, for the same reason: a run
-	// publishes its state under the target's REALPATH, so a symlink or a
+	// A run publishes its state under the target's REALPATH, so a symlink or a
 	// trailing slash must not be able to miss a run that is right there.
-	real, exists, err := canonicalAttachTarget(abs)
+	real, exists, err := canonicalTarget(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: resolving %s: %v\n", abs, err)
 		return exitUsage

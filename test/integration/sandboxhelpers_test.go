@@ -134,8 +134,9 @@ func (s *bgSandbox) ready(t *testing.T) {
 // Recomputed here rather than imported, deliberately, and the reason is the
 // bug itself: these tests launch the real binary, so a helper that read
 // $XDG_RUNTIME_DIR would be making exactly the assumption #123 removed. A run
-// and its `snug attach` must land on this directory whatever environment each
-// was started with, and that is what these tests are checking.
+// and every later reader of its record must land on this directory whatever
+// environment each was started with, and that is what these tests are
+// checking.
 func uidRuntimeSnugDir(t *testing.T) string {
 	t.Helper()
 	uid := os.Getuid()
@@ -181,4 +182,46 @@ func (s *bgSandbox) waitForState(t *testing.T) {
 // a second process that may not share this one's environment.
 func (s *bgSandbox) runDir(xdgRuntime string) string {
 	return filepath.Join(xdgRuntime, "snug", fmt.Sprintf("run-%d", s.pid()))
+}
+
+// waitForLogLine blocks until want appears in the background sandbox's own
+// output and returns everything it has printed so far.
+//
+// It exists because a probe that needs to run INSIDE a specific live sandbox
+// has to be that sandbox's own payload. A second `snug` on the same target is a
+// second, independent sandbox — its own $HOME tmpfs, its own pids, and on a
+// container run its own engine — so it can answer no question about the first
+// one's processes or mounts.
+func waitForLogLine(t *testing.T, s *bgSandbox, want string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		out := s.log()
+		if strings.Contains(out, want) {
+			return out
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sandbox's payload never printed %q within %s:\n%s", want, timeout, out)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// handToPayload writes value at name inside the target directory, where a live
+// payload blocked on that file appearing will read it.
+//
+// The rename is not tidiness: the payload polls with `[ -f name ]` and would
+// otherwise read a file the host is still writing. It is the only channel there
+// is for a value the payload cannot compute — a host pid, say — and it is a
+// channel precisely because the target bind is writable from both sides, which
+// is the same fact --dry-run's SHARED block warns about.
+func handToPayload(t *testing.T, proj, name, value string) {
+	t.Helper()
+	tmp := filepath.Join(proj, "."+name+".tmp")
+	if err := os.WriteFile(tmp, []byte(value+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, filepath.Join(proj, name)); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -5,23 +5,61 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
 
-// TestTargetLockRefusesASecondRunOnTheSameDirectory is issue #119's core: one
-// live run holds the per-target lock, a second run on the SAME directory is
-// refused with a message that names `snug attach`, and once the first releases
-// the lock a third run may take it.
+// liveOnTarget is what every test below asserts through, because it is the
+// only question the target lock is asked in production: sweepOneOrphan and
+// `snug engine gc` both want "is any run live on this directory", and both get
+// it by asking for LOCK_EX and reading EWOULDBLOCK as yes.
 //
-// CONTROL: the first lock must actually be held — that is the only reason the
-// second is refused — and the third acquisition after release proves the
-// refusal was the lock, not some unrelated breakage.
-func TestTargetLockRefusesASecondRunOnTheSameDirectory(t *testing.T) {
+// It resolves the target itself, so a test may pass a symlink and get the same
+// answer lockTarget would give — that identity is the whole subject of one of
+// the tests below.
+func liveOnTarget(t *testing.T, target string) bool {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", target, err)
+	}
+	base, snugName, err := targetLockBase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snugPath := filepath.Join(base, snugName)
+	if err := os.MkdirAll(snugPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(snugPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	held, err := targetLockIsHeld(root, snugPath, real)
+	if err != nil {
+		t.Fatalf("probing the target lock for %s: %v", real, err)
+	}
+	return held
+}
+
+// TestTargetLockAdmitsASecondRunOnTheSameDirectory is the rule: a second
+// sandbox on one target is a supported shape, so the run lock is SHARED and
+// two runs coexist.
+//
+// The CONTROL is the half that makes this a test rather than an assertion that
+// nothing is locked at all: while both runs hold the lock, the exclusive probe
+// every reader uses must still say a run is live, and once both release it must
+// say the target is idle. A lock nobody ever takes would pass the first
+// assertion and fail these two.
+func TestTargetLockAdmitsASecondRunOnTheSameDirectory(t *testing.T) {
 	useTargetLockBase(t)
 	dir := t.TempDir()
+
+	if liveOnTarget(t, dir) {
+		t.Fatal("precondition: a target nothing has run on read as live")
+	}
 
 	unlock1, err := lockTarget(dir)
 	if err != nil {
@@ -31,38 +69,35 @@ func TestTargetLockRefusesASecondRunOnTheSameDirectory(t *testing.T) {
 		t.Fatal("first lockTarget returned a nil unlock — the lock is not held")
 	}
 
-	// A second acquisition in this same process contends with the first: flock
-	// locks are per open file description, so a second open+flock of the same
-	// file blocks even from the same pid.
-	_, err = lockTarget(dir)
-	var busy *targetBusyError
-	if err == nil {
-		t.Fatal("second lockTarget on the same directory was NOT refused")
-	}
-	if !asTargetBusy(err, &busy) {
-		t.Fatalf("second lockTarget failed for the wrong reason: %v", err)
-	}
-	msg := busy.message(dir)
-	if !strings.Contains(msg, "snug attach") {
-		t.Errorf("refusal does not name `snug attach`: %q", msg)
-	}
-	if busy.holder != os.Getpid() {
-		t.Errorf("refusal named holder pid %d, want this process %d", busy.holder, os.Getpid())
+	// A second acquisition in this same process, from a second open file
+	// description. Under the exclusive lock this used to be refused precisely
+	// BECAUSE flock is per-OFD, so this call is unchanged and only its expected
+	// outcome flipped.
+	unlock2, err := lockTarget(dir)
+	if err != nil {
+		t.Fatalf("a second run on the same directory was refused: %v\nTwo sandboxes on one "+
+			"target is the supported shape; the run lock is shared for exactly this.", err)
 	}
 
-	// Release, then a third acquisition must succeed: proves the refusal above
-	// was really the held lock.
-	unlock1()
-	unlock3, err := lockTarget(dir)
-	if err != nil {
-		t.Fatalf("third lockTarget after release failed: %v", err)
+	if !liveOnTarget(t, dir) {
+		t.Fatal("two runs held the target lock and the liveness probe said the target was idle. " +
+			"That answer is what licenses the orphan sweep to SIGKILL a run's init.")
 	}
-	unlock3()
+
+	unlock1()
+	if !liveOnTarget(t, dir) {
+		t.Fatal("one run still held the target lock and the liveness probe said idle")
+	}
+	unlock2()
+	if liveOnTarget(t, dir) {
+		t.Fatal("every holder released and the target still read as live — the probe is stuck " +
+			"saying yes, so the assertions above prove nothing")
+	}
 }
 
 // TestTargetLockIsPerTargetNotGlobal proves the lock is keyed on the target,
-// not a process- or host-wide mutex: two DIFFERENT directories both acquire at
-// the same time.
+// not a process- or host-wide mutex: a run on one directory must not make a
+// DIFFERENT directory read as live.
 func TestTargetLockIsPerTargetNotGlobal(t *testing.T) {
 	useTargetLockBase(t)
 	a := t.TempDir()
@@ -74,18 +109,21 @@ func TestTargetLockIsPerTargetNotGlobal(t *testing.T) {
 	}
 	defer unlockA()
 
-	unlockB, err := lockTarget(b)
-	if err != nil {
-		t.Fatalf("lockTarget(b) failed while a different directory was locked — the lock is not per-target: %v", err)
+	if !liveOnTarget(t, a) {
+		t.Fatal("the locked target did not read as live")
 	}
-	defer unlockB()
+	if liveOnTarget(t, b) {
+		t.Fatal("an unrelated directory read as live while another target was locked — the " +
+			"lock is not per-target")
+	}
 }
 
-// TestTargetLockTreatsASymlinkAsTheSameTarget is the realpath identity: a
-// symlink to a locked directory is refused as the same target.
+// TestTargetLockTreatsASymlinkAsTheSameTarget is the realpath identity: a run
+// locked through a symlink and a reader asking about the real path must land on
+// one inode, or the sweep looks at a lock no run holds and kills a live init.
 //
-// CONTROL: an unrelated directory still acquires, so the refusal is the shared
-// realpath and not "everything is refused".
+// CONTROL: an unrelated directory still reads as idle, so the positive is the
+// shared realpath and not "everything reads as live".
 func TestTargetLockTreatsASymlinkAsTheSameTarget(t *testing.T) {
 	useTargetLockBase(t)
 	real := t.TempDir()
@@ -94,25 +132,21 @@ func TestTargetLockTreatsASymlinkAsTheSameTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	unlock, err := lockTarget(real)
+	unlock, err := lockTarget(link)
 	if err != nil {
-		t.Fatalf("lockTarget(real) failed: %v", err)
+		t.Fatalf("lockTarget through a symlink failed: %v", err)
 	}
 	defer unlock()
 
-	_, err = lockTarget(link)
-	var busy *targetBusyError
-	if err == nil || !asTargetBusy(err, &busy) {
-		t.Fatalf("a symlink to the locked target was not refused as the same target: %v", err)
+	if !liveOnTarget(t, real) {
+		t.Fatal("a run locked through a symlink was invisible to a reader asking about the real " +
+			"path — the two resolved different lock inodes")
 	}
 
-	// CONTROL: an unrelated directory still acquires.
 	other := t.TempDir()
-	unlockOther, err := lockTarget(other)
-	if err != nil {
-		t.Fatalf("control: an unrelated directory was refused: %v", err)
+	if liveOnTarget(t, other) {
+		t.Fatal("control: an unrelated directory read as live")
 	}
-	unlockOther()
 }
 
 // TestTargetLockNonexistentTargetIsNotLocked: a target that cannot be
@@ -133,15 +167,17 @@ func TestTargetLockNonexistentTargetIsNotLocked(t *testing.T) {
 	unlock() // must be a safe no-op
 }
 
-// TestTargetLockReclaimsAfterHolderKilled is the stale-holder case #119 must
-// handle without wedging a directory: a SIGKILLed run releases its flock (the
-// kernel does it), so the next run reclaims the lock.
+// TestTargetIsIdleAfterHolderKilled is the stale-holder case: a SIGKILLed run
+// releases its flock (the kernel does it), so the target stops reading as live
+// and the orphan sweep may clean up after it. Without this the sweep would be
+// wedged out of every directory a killed run ever touched, which is the
+// accumulation invariant 4 exists against.
 //
-// CONTROL: while the holder is ALIVE, lockTarget is refused — so the reclaim
-// after the kill is genuinely a reclaim and not "always succeed". The holder
-// is a subprocess that inherits the locked descriptor and is killed by its
-// exact pid only, never by name.
-func TestTargetLockReclaimsAfterHolderKilled(t *testing.T) {
+// CONTROL: while the holder is ALIVE the target reads as live — so the idle
+// answer after the kill is genuinely the release and not "always idle". The
+// holder is a subprocess that inherits the locked descriptor and is killed by
+// its exact pid only, never by name.
+func TestTargetIsIdleAfterHolderKilled(t *testing.T) {
 	snugDir := useTargetLockBase(t)
 	dir := t.TempDir()
 
@@ -150,9 +186,9 @@ func TestTargetLockReclaimsAfterHolderKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Seed the exact lock file lockTarget will compute, hold its flock, and
-	// hand the descriptor to a sleeping child. Closing our own copy leaves the
-	// child as the sole holder.
+	// Seed the exact lock file lockTarget will compute, hold its flock SHARED
+	// — the mode a run uses — and hand the descriptor to a sleeping child.
+	// Closing our own copy leaves the child as the sole holder.
 	if err := os.MkdirAll(snugDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +197,7 @@ func TestTargetLockReclaimsAfterHolderKilled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Flock(int(held.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := unix.Flock(int(held.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
 		t.Fatalf("seeding the held lock: %v", err)
 	}
 
@@ -178,29 +214,28 @@ func TestTargetLockReclaimsAfterHolderKilled(t *testing.T) {
 			return
 		}
 		killed = true
+		// cmd.Process.Kill on a child this test has not yet Wait()ed: it stays
+		// a zombie holding its number until reaped, so the signal cannot land
+		// on a stranger.
 		cmd.Process.Kill()
 		cmd.Wait()
 	}
 	t.Cleanup(killAndWait)
 
-	// CONTROL: the holder is alive, so lockTarget must be refused.
-	_, err = lockTarget(dir)
-	var busy *targetBusyError
-	if err == nil || !asTargetBusy(err, &busy) {
-		t.Fatalf("lockTarget was not refused while a live holder existed: %v", err)
+	if !liveOnTarget(t, dir) {
+		t.Fatal("a live shared holder did not read as live")
 	}
 
-	// Kill the holder; its flock is released by the kernel. The next run must
-	// reclaim the lock rather than being wedged.
 	killAndWait()
-	unlock, err := lockTarget(dir)
-	if err != nil {
-		t.Fatalf("lockTarget did not reclaim a lock whose holder was killed — the directory is wedged: %v", err)
+	if liveOnTarget(t, dir) {
+		t.Fatal("a target whose only holder was killed still read as live — the sweep is wedged " +
+			"out of this directory forever")
 	}
-	unlock()
 }
 
-// asTargetBusy wraps errors.As to keep the assertions above terse.
+// asTargetBusy wraps errors.As to keep an assertion terse. targetBusyError is
+// no longer produced for a run — it is `snug engine gc`'s liveness sentinel
+// from openAndHoldTargetLock's exclusive arm.
 func asTargetBusy(err error, target **targetBusyError) bool {
 	return errors.As(err, target)
 }
@@ -223,58 +258,54 @@ func useTargetLockBase(t *testing.T) (snugDir string) {
 
 // TestTargetLockDirectoryIsIndependentOfXDGRuntimeDir is issue #122: the
 // per-target lock's directory must be resolved from the uid, not from
-// $XDG_RUNTIME_DIR/$TMPDIR, so a holder in an interactive shell (variable set)
-// and a contender under cron/systemd/ssh (variable unset, or a different
-// $TMPDIR) land on the SAME lock inode and the contender is refused.
+// $XDG_RUNTIME_DIR/$TMPDIR, so a run in an interactive shell (variable set) and
+// a reader under cron/systemd/ssh (variable unset, or a different $TMPDIR) land
+// on the SAME lock inode.
 //
 // On the pre-fix code the target lock lived under runtimeBase(), which reads
-// $XDG_RUNTIME_DIR then $TMPDIR: the holder and the contender resolved two
-// different inodes, both flocks succeeded, and two sandboxes ran on one target.
+// $XDG_RUNTIME_DIR then $TMPDIR: the two resolved different inodes. Under the
+// exclusive lock that was a fail-OPEN of the one-sandbox-per-target rule. Under
+// the shared lock the consequence is sharper, not gone: the reader is the
+// orphan sweep, and a live run it cannot see is a live run whose init it
+// SIGKILLs.
 //
-// CONTROL: a same-env second run is ALREADY refused (see
-// TestTargetLockRefusesASecondRunOnTheSameDirectory), so a bare "refused" does
-// not distinguish "refused because #122 is fixed" from "refused anyway". This
-// test forces the two runs to see DIFFERENT env and asserts the refusal
-// survives that difference — which only the uid-derived base can deliver.
+// CONTROL: the same reader, under the same environment, must say a DIFFERENT
+// target is idle — otherwise "live" is what this probe says about everything.
 func TestTargetLockDirectoryIsIndependentOfXDGRuntimeDir(t *testing.T) {
 	dir := t.TempDir()
+	idle := t.TempDir()
 
-	// Two env shapes that pre-fix resolved to different lock inodes:
-	//   holder    — $XDG_RUNTIME_DIR set (interactive shell)
-	//   contender — $XDG_RUNTIME_DIR unset, $TMPDIR pointed elsewhere (cron/ssh)
-	// The uid-derived base ignores both, so both must resolve the same inode.
-	assertRefusedAcrossEnv := func(t *testing.T, holderEnv, contenderEnv func(*testing.T)) {
+	assertVisibleAcrossEnv := func(t *testing.T, runEnv, readerEnv func(*testing.T)) {
 		t.Helper()
 		useTargetLockBase(t)
 
-		holderEnv(t)
+		runEnv(t)
 		unlock, err := lockTarget(dir)
 		if err != nil {
-			t.Fatalf("holder lockTarget failed: %v", err)
+			t.Fatalf("lockTarget failed: %v", err)
 		}
 		defer unlock()
 
-		contenderEnv(t)
-		_, err = lockTarget(dir)
-		var busy *targetBusyError
-		if err == nil {
-			t.Fatal("contender acquired a SECOND lock on the same target under different " +
-				"env — the target lock split across two inodes (issue #122 fail-OPEN)")
+		readerEnv(t)
+		if !liveOnTarget(t, dir) {
+			t.Fatal("a run locked under one environment was invisible to a reader under " +
+				"another — the target lock split across two inodes (issue #122)")
 		}
-		if !asTargetBusy(err, &busy) {
-			t.Fatalf("contender was refused for the wrong reason: %v", err)
+		if liveOnTarget(t, idle) {
+			t.Fatal("control: a target with no run read as live, so the assertion above is " +
+				"not discriminating")
 		}
 	}
 
-	t.Run("XDG set for holder, unset for contender", func(t *testing.T) {
-		assertRefusedAcrossEnv(t,
+	t.Run("XDG set for the run, unset for the reader", func(t *testing.T) {
+		assertVisibleAcrossEnv(t,
 			func(t *testing.T) { t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) },
 			func(t *testing.T) { os.Unsetenv("XDG_RUNTIME_DIR") },
 		)
 	})
 
 	t.Run("XDG unset for both, differing TMPDIR", func(t *testing.T) {
-		assertRefusedAcrossEnv(t,
+		assertVisibleAcrossEnv(t,
 			func(t *testing.T) {
 				os.Unsetenv("XDG_RUNTIME_DIR")
 				t.Setenv("TMPDIR", t.TempDir())

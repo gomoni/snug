@@ -4,27 +4,32 @@ package cli
 // DIRECTORY rather than by the run, in the same env-independent directory the
 // per-target lock already lives in (issue #123).
 //
-// Why it moved. `snug attach` addresses a run BY DIRECTORY, and since #119
-// there is at most one live run per directory. The lock that enforces that is
-// already named `target-<sha256(realpath)>.lock` and already resolved from the
-// uid alone (targetLockBase, issue #122). The state file was the odd one out:
-// it lived under `runtimeBase()`, which reads $XDG_RUNTIME_DIR and $TMPDIR —
-// variables that differ between an interactive shell and cron/systemd/ssh —
-// so a run started under one environment published its state where an attach
-// launched under another would never look. That is issue #123, and repointing
-// only the READER could not fix it, because the writer was env-derived too.
+// Why the target and not the run. Both readers arrive with a DIRECTORY and no
+// run to speak of: the orphan sweep walks the directory of records looking for
+// leftovers, and `snug proxy <dir>` is handed a path by a human. The state
+// file used to live under `runtimeBase()`, which reads $XDG_RUNTIME_DIR and
+// $TMPDIR — variables that differ between an interactive shell and
+// cron/systemd/ssh — so a run started under one environment published its
+// state where a reader launched under another would never look. That is issue
+// #123, and repointing only the READER could not fix it, because the writer
+// was env-derived too. The lock beside it was already named
+// `target-<sha256(realpath)>.lock` and already resolved from the uid alone
+// (targetLockBase, issue #122); the state file was the odd one out.
 //
-// Three things follow from the move, and all three are simplifications:
+// Two things follow from the target key, and both are simplifications:
 //
-//   - Discovery stops being a SCAN. There is no directory listing, no
-//     per-entry parse-and-skip, and no "more than one live run matches" branch
-//     to explain: the target's realpath hashes to exactly one filename.
-//   - LIVENESS is the target lock itself, which is the same fact the refusal
-//     in `snug <dir>` already consults. Previously it was a second, parallel
-//     flock on each run directory, so "is a run live" had two answers that
-//     could in principle disagree.
-//   - A stale state file cannot be mistaken for a live run. The lock is the
-//     truth; the JSON beside it is only what the live holder published.
+//   - Lookup is not a SCAN. There is no directory listing and no per-entry
+//     parse-and-skip: the target's realpath hashes to exactly one filename.
+//   - LIVENESS is the target lock itself, rather than a second parallel flock
+//     on each run directory that could in principle disagree with it. A stale
+//     state file cannot be mistaken for a live run: the lock is the truth, the
+//     JSON beside it only what a live holder published.
+//
+// WHAT THE TARGET KEY COSTS, now that several runs may be live on one
+// directory: the name identifies the TARGET, not a run, so the last run to
+// publish overwrites its peers' records. `snug proxy` therefore reaches the
+// most recently started sandbox rather than one the human chose, and the
+// orphan sweep can only ever name one init per target.
 //
 // What did NOT move: the per-run directory under runtimeBase() still exists
 // and is still env-derived. It holds this run's sockets (the ssh-agent proxy,
@@ -33,10 +38,10 @@ package cli
 // created it.
 //
 // The abuse sentence is runstate.go's, unchanged: a hostile process with the
-// same uid can read this file and learn a sandbox's init pid, its namespace
-// ids and its seccomp digest, none of which grants it anything it could not
-// already reach with `nsenter`. The uid-derived directory is verified owned
-// and 0700 before anything here opens a file in it.
+// same uid can read this file and learn a sandbox's init pid and its namespace
+// ids, neither of which grants it anything it could not already reach with
+// `nsenter`. The uid-derived directory is verified owned and 0700 before
+// anything here opens a file in it.
 
 import (
 	"encoding/json"
@@ -183,11 +188,12 @@ func removeTargetFile(name string) error {
 
 // readTargetState returns the state a LIVE run published for real.
 //
-// live is false, with no error, for every ordinary way there is nothing to
-// attach to: snug has never run on this host, this target has no state file,
-// or the file is there but its run is gone (the lock is not held). Those are
-// the zero case and the caller renders one message for them — the distinction
-// issue #124 was about, applied to the new layout from the start.
+// live is false, with no error, for every ordinary way there is nothing
+// running: snug has never run on this host, this target has no state file, or
+// the file is there but every run that wrote one is gone (the lock is not
+// held). Those are the zero case and the caller renders one message for them —
+// the distinction issue #124 was about, applied to the new layout from the
+// start.
 //
 // An error is reserved for a directory that fails the ownership or mode
 // guard, or a state file that exists beside a HELD lock and cannot be read or
@@ -221,8 +227,8 @@ func readTargetState(real string) (st runState, live bool, err error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			// The lock is held but nothing has been published yet: a run that
 			// is still starting, or one whose OnInfo could not write (which
-			// warns at the source — see internal/cli/main.go). Not attachable
-			// yet, and not a fault of this reader's.
+			// warns at the source — see internal/cli/main.go). Nothing to
+			// report yet, and not a fault of this reader's.
 			return runState{}, false, nil
 		}
 		return runState{}, false, fmt.Errorf("run state: opening %s: %w", filepath.Join(snugPath, name), err)
@@ -235,21 +241,27 @@ func readTargetState(real string) (st runState, live bool, err error) {
 	}
 	if st.Target != real {
 		// The name is a hash of the target, so this can only mean a collision
-		// or a hand-edited file. Refuse rather than attach to whatever it
-		// names: the whole point of the realpath match (issue #119) is that
-		// attach never joins a sandbox for a directory the user did not ask
-		// about.
+		// or a hand-edited file. Refuse rather than hand back whatever it
+		// names: every caller acts on this record against the directory it
+		// asked about, and a record for a DIFFERENT directory would send
+		// `snug proxy` at another project's run.
 		return runState{}, false, fmt.Errorf("run state: %s names target %q, not %q — refusing to "+
-			"attach to a run for a different directory", filepath.Join(snugPath, name), st.Target, real)
+			"report a run for a different directory", filepath.Join(snugPath, name), st.Target, real)
 	}
 	return st, true, nil
 }
 
-// targetLockIsHeld probes the per-target lock the same way runDirIsLive
-// probes a run directory's: LOCK_SH|LOCK_NB, released immediately.
-// EWOULDBLOCK means a live exclusive holder — the owning snug, which holds it
-// for the whole run and whose death releases it in the kernel. Success means
-// nobody holds it.
+// targetLockIsHeld reports whether ANY run is live on real, by asking for
+// LOCK_EX|LOCK_NB and releasing it immediately. EWOULDBLOCK means at least one
+// live holder — a run holds the lock SHARED for its whole life and the kernel
+// releases it on death, however that death arrives. Success means nobody holds
+// it.
+//
+// EXCLUSIVE is what makes this a question about runs at all, and it is the one
+// line in this function that cannot be relaxed. A LOCK_SH probe succeeds
+// alongside every shared holder, so against a live run it would answer
+// "nobody holds it" — and this answer is what licenses sweepOneOrphan to
+// SIGKILL the init the record names.
 //
 // It opens with O_CREATE for the same reason lockTarget does: the lock file is
 // the thing being probed, and a probe that refused to create it would report
@@ -258,7 +270,7 @@ func readTargetState(real string) (st runState, live bool, err error) {
 //
 // The Nlink recheck is openAndHoldTargetLock's, for the same window and the
 // same reason, and the CONSEQUENCE here is the sharper one: this probe's
-// answer decides whether killOrphanInit fires. A shared lock taken on an
+// answer decides whether killOrphanInit fires. An exclusive lock taken on an
 // inode sweepOneStaleLock has already unlinked would report "nobody holds
 // it" while a live run holds the file that now carries the name — and the
 // sweep would kill that live run's init. So a swept descriptor is retried
@@ -269,7 +281,7 @@ func readTargetState(real string) (st runState, live bool, err error) {
 // like a closed hole and is not one: it covers snug's OWN sweep, which
 // unlinks only while holding LOCK_EX. It does not cover an unlink by anything
 // else. One same-uid `rm` of a live run's lock file makes this function
-// create a fresh inode, take LOCK_SH on it unopposed, see Nlink == 1, and
+// create a fresh inode, take LOCK_EX on it unopposed, see Nlink == 1, and
 // answer "not held" while that run is very much alive. MEASURED, issue #489.
 //
 // AND `mv` IS THE SAME HOLE WITH NO TRAIL. A rename detaches the flock from
@@ -294,10 +306,10 @@ func readTargetState(real string) (st runState, live bool, err error) {
 // its own is now gated on a second signal that lives outside the filesystem:
 // killOrphanInit refuses to signal an init unless the snug that OWNED the run
 // is provably gone (stateowner.go). An `rm` or an `mv` of the lock file still
-// makes this function answer "not held" — a `snug` on that target will start a
-// second run, which is issues #119 and #122's guarantee and not this one's —
-// but it no longer reaches a live sandbox's init. Same-uid tampering is where
-// runtimedir.go's own sweep already draws this line.
+// makes this function answer "not held", so `snug engine gc` will still
+// reclaim that target's store — but it no longer reaches a live sandbox's
+// init. Same-uid tampering is where runtimedir.go's own sweep already draws
+// this line.
 func targetLockIsHeld(snugRoot *os.Root, snugPath, real string) (bool, error) {
 	name := targetLockName(real)
 	for attempt := 0; attempt < targetLockAttempts; attempt++ {
@@ -320,7 +332,7 @@ func probeTargetLockOnce(snugRoot *os.Root, snugPath, name string) (held, retry 
 	}
 	defer f.Close()
 
-	if flockErr := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB); flockErr != nil {
+	if flockErr := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); flockErr != nil {
 		if errors.Is(flockErr, unix.EWOULDBLOCK) {
 			return true, false, nil
 		}
@@ -337,4 +349,56 @@ func probeTargetLockOnce(snugRoot *os.Root, snugPath, name string) (held, retry 
 		return false, true, nil
 	}
 	return false, false, nil
+}
+
+// selectLiveRun returns the state a live run published for real, or an error
+// naming the ordinary "nothing is sandboxing this directory" case.
+//
+// Since issue #123 this is a LOOKUP, not a search: the state file is named
+// from sha256(realpath) in the same uid-derived directory as the target lock,
+// so there is exactly one candidate and no listing to walk.
+//
+// WHAT IT CANNOT TELL YOU, now that a target may carry several live runs at
+// once: which one. The name is keyed by the target alone, so the run that
+// published LAST is the run this returns, and an earlier run on the same
+// directory is invisible here. Its one caller, `snug proxy`, therefore
+// reaches the most recently started sandbox of that directory rather than a
+// sandbox the human picked.
+//
+// real must already be canonicalised (filepath.EvalSymlinks, via
+// canonicalTarget), because the file name is a hash OF that canonical form: a
+// symlink to the target, or any other spelling, hashes elsewhere and finds
+// nothing. That is the same coherence issue #119 fixed for the lock.
+func selectLiveRun(real string) (runState, error) {
+	st, live, err := readTargetState(real)
+	if err != nil {
+		return runState{}, err
+	}
+	if !live {
+		return runState{}, fmt.Errorf("no live snug run found for %s — nothing is currently sandboxing "+
+			"this directory", real)
+	}
+	return st, nil
+}
+
+// canonicalTarget resolves abs (already filepath.Abs'd) to the same realpath
+// policy.Resolve and the target lock both use — see the comment above
+// selectLiveRun. exists is false when abs, or a symlink it passes through,
+// does not exist on disk: a directory with no on-disk presence cannot have a
+// live run, so the caller reports that as "no live run" rather than surfacing
+// a raw EvalSymlinks error. Any OTHER failure (permission denied on an
+// intermediate component, a loop, ...) is returned as err with exists=false,
+// and the caller must not treat that as "no live run" either — it is a
+// different refusal with a different message.
+func canonicalTarget(abs string) (real string, exists bool, err error) {
+	real, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		// errors.Is, not os.IsNotExist: the predicate must survive a %w wrap,
+		// and the one place it did not was issue #124.
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return real, true, nil
 }
