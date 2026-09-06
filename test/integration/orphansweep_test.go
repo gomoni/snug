@@ -113,12 +113,21 @@ func TestTheSweepDoesNotTouchALiveSandbox(t *testing.T) {
 func makeOrphanedInit(t *testing.T) (pid int, statePath, proj string) {
 	t.Helper()
 	proj, _ = target(t)
-	statePath = targetStatePath(t, proj)
-	_ = os.Remove(statePath)
+	for _, old := range targetStateRecords(t, proj) {
+		_ = os.Remove(old)
+	}
 
 	bg := startBackgroundSnug(t, baseEnv(), proj, "sleep 300")
-	if err := waitForFile(statePath, 30*time.Second); err != nil {
-		t.Fatalf("the run never published its state file %s (%v):\n%s", statePath, err, bg.output())
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if statePath = targetStatePath(t, proj); statePath != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run never published a state file matching %s:\n%s",
+				targetStateGlob(t, proj), bg.output())
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	pid = initPIDFrom(t, statePath)
 	if pid == 0 {
@@ -135,26 +144,55 @@ func makeOrphanedInit(t *testing.T) (pid int, statePath, proj string) {
 	return pid, statePath, proj
 }
 
-// targetStatePath derives the same name snug does: "sha256_" followed by the
+// targetStateGlob derives the same name snug does: "sha256_" followed by the
 // sha256 of the target's realpath (issue #349 — the name carries its
-// algorithm), in the uid-derived directory (never $XDG_RUNTIME_DIR — issue
-// #122). Recomputed here rather than imported because this package drives the
-// built binary and links none of snug's own packages; if the two ever
-// disagree, waitForFile below times out and says so.
-func targetStatePath(t *testing.T, target string) string {
+// algorithm), then the OWNING SNUG PID, in the uid-derived directory (never
+// $XDG_RUNTIME_DIR — issue #122). Recomputed here rather than imported because
+// this package drives the built binary and links none of snug's own packages;
+// if the two ever disagree, the polls above time out and say so.
+//
+// It is a glob because several runs can be live on one target and the pid is
+// what separates their records.
+func targetStateGlob(t *testing.T, target string) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	name := "target-sha256_" + hex.EncodeToString(sum[:]) + ".json"
+	name := "target-sha256_" + hex.EncodeToString(sum[:]) + ".*.json"
 
 	base := fmt.Sprintf("/run/user/%d/snug", os.Getuid())
 	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
 		base = fmt.Sprintf("/tmp/snug-%d", os.Getuid())
 	}
 	return filepath.Join(base, name)
+}
+
+// targetStateRecords is every state record for the target, live or stale.
+func targetStateRecords(t *testing.T, target string) []string {
+	t.Helper()
+	m, err := filepath.Glob(targetStateGlob(t, target))
+	if err != nil {
+		t.Fatalf("globbing %s: %v", targetStateGlob(t, target), err)
+	}
+	return m
+}
+
+// targetStatePath is that glob resolved to the one record these tests start.
+// "" means none yet; two is a bug in the test, not in snug, so it fails.
+func targetStatePath(t *testing.T, target string) string {
+	t.Helper()
+	m := targetStateRecords(t, target)
+	switch len(m) {
+	case 0:
+		return ""
+	case 1:
+		return m[0]
+	default:
+		t.Fatalf("%d state records for %s, expected one: %v", len(m), target, m)
+		return ""
+	}
 }
 
 func initPIDFrom(t *testing.T, statePath string) int {

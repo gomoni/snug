@@ -147,30 +147,66 @@ func uidRuntimeSnugDir(t *testing.T) string {
 	return filepath.Join("/tmp", fmt.Sprintf("snug-%d", uid), "snug")
 }
 
-// statePath is where THIS run's state file lives: named from "sha256_"
-// followed by the sha256 of the TARGET's realpath (issue #349), beside the
-// target lock of the same name (issue #123). Note what it no longer takes —
-// the test's $XDG_RUNTIME_DIR — because the answer no longer depends on it.
-func (s *bgSandbox) statePath(t *testing.T) string {
+// targetRecordGlob is the pattern matching every per-run record of one
+// extension for one target: "sha256_" followed by the sha256 of the TARGET's
+// realpath (issue #349), then the OWNING SNUG PID, in the uid-derived
+// directory (never $XDG_RUNTIME_DIR — issue #123/#122).
+//
+// The pid component is why this is a glob and not a path. Several runs can be
+// live on one target, so the name has to separate them; a test that knows it
+// started exactly one uses soleTargetRecord below, which fails loudly rather
+// than picking one when that assumption is wrong.
+func targetRecordGlob(t *testing.T, dir, target, ext string) string {
 	t.Helper()
-	real, err := filepath.EvalSymlinks(s.proj)
+	real, err := filepath.EvalSymlinks(target)
 	if err != nil {
-		t.Fatalf("resolving the target %s: %v", s.proj, err)
+		t.Fatalf("resolving the target %s: %v", target, err)
 	}
 	sum := sha256.Sum256([]byte(real))
-	return filepath.Join(uidRuntimeSnugDir(t), "target-sha256_"+hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(dir, "target-sha256_"+hex.EncodeToString(sum[:])+".*"+ext)
+}
+
+// soleTargetRecord resolves that glob to the one record it must match. It
+// returns "" when there is none — callers poll for appearance — and fails the
+// test on two, because every caller's next assertion is about "the" run.
+func soleTargetRecord(t *testing.T, dir, target, ext string) string {
+	t.Helper()
+	m, err := filepath.Glob(targetRecordGlob(t, dir, target, ext))
+	if err != nil {
+		t.Fatalf("globbing for the %s record of %s: %v", ext, target, err)
+	}
+	switch len(m) {
+	case 0:
+		return ""
+	case 1:
+		return m[0]
+	default:
+		t.Fatalf("%d %s records for target %s, expected one: %v", len(m), ext, target, m)
+		return ""
+	}
+}
+
+// statePath is where THIS run's state file lives.
+func (s *bgSandbox) statePath(t *testing.T) string {
+	t.Helper()
+	if p := soleTargetRecord(t, uidRuntimeSnugDir(t), s.proj, ".json"); p != "" {
+		return p
+	}
+	return targetRecordGlob(t, uidRuntimeSnugDir(t), s.proj, ".json")
 }
 
 func (s *bgSandbox) waitForState(t *testing.T) {
 	t.Helper()
-	p := s.statePath(t)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
-			return
+		if p := soleTargetRecord(t, uidRuntimeSnugDir(t), s.proj, ".json"); p != "" {
+			if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("state.json never appeared at %s:\n%s", p, s.log())
+			t.Fatalf("state.json never appeared matching %s:\n%s",
+				targetRecordGlob(t, uidRuntimeSnugDir(t), s.proj, ".json"), s.log())
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
