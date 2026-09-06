@@ -4487,28 +4487,38 @@ print("PROBE-COMPLETE", flush=True)
 // CONTROL below is the gate instead: an ordinary create must return 201, and if
 // it does not the test skips naming what the engine said.
 //
+// containerEngineEnv IS the gate it takes, and only for the half requireRealEngine
+// does not overlap: hostEngine's podman-6.x check. The assertions here are about
+// what a REAL podman accepts, and podman 4.9.3 refuses the stock all-zero
+// NetworkingConfig this test's ergonomic floor requires —
+//
+//	stock networkingconfig: 500
+//	networks and static ip/mac address can only be used with Bridge mode networking
+//
+// — which is the ENGINE's answer to a body snug forwarded correctly, not a
+// filter result, and therefore not evidence about anything this test asserts.
+// openSUSE Tumbleweed is the only lane that guarantees podman 6.x, so on every
+// other engine this skips with the version named. It stays OFF requireRealEngine
+// for the create-not-start reason above.
+//
 // CONSEQUENCE, STATED BECAUSE IT IS A REAL GAP AND NOT A FREE CHOICE: issue
-// #393's SNUG_ENGINE_FLOOR counts test functions by a literal-string sweep over
-// containerEngineEnv|podmanBundle|bundleRoot|requireRealEngine, and this test
-// matches none of them — so it is NOT on the floor, and the floor stays 32. That
-// means a run where this test skipped on its own control is not caught by the
-// mechanism built to catch exactly that ("green by skipping", #393's own
-// defect). The trade was taken deliberately: gating on requireRealEngine would
-// make this test SKIP on the development host where it currently passes and
-// really exercises the filter, which is worse than being uncounted. The skip
-// paths below are t.Skipf with the engine's own words in them so the shortfall
-// is at least visible in the log. A second floor category for "needs create, not
-// run" belongs to #393/#395 and is filed rather than invented here.
+// #393's SNUG_ENGINE_FLOOR counts a test once it logs `snug-engine-ran:`, which
+// requireRealEngine is what emits — so this test is NOT on the floor. A run
+// where it skipped on its own control is not caught by the mechanism built to
+// catch exactly that ("green by skipping", #393's own defect). The skip paths
+// below are t.Skipf with the engine's own words in them so the shortfall is at
+// least visible in the log. A second floor category for "needs create, not run"
+// belongs to #393/#395 and is filed rather than invented here.
 func TestCreateTopLevelIsFilteredEndToEnd(t *testing.T) {
 	budget(t, 240*time.Second)
 	requireSandbox(t)
-	requireEngine(t)
+	env, _ := containerEngineEnv(t)
 	requirePython(t)
 
 	proj, _ := target(t)
 	writeTopLevelProbe(t, proj)
 
-	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 probe.py`).mustRun(t)
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 probe.py`).mustRun(t)
 
 	if !strings.Contains(r.out, "PROBE-COMPLETE") {
 		t.Fatalf("the probe did not run to the end, so a missing marker below is absent "+
