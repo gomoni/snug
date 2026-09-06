@@ -280,8 +280,7 @@ that shape came from an assumption — that snug must *become* the sandbox — w
 `SUPERVISOR-DESIGN.md` §0 removed. Read that document for the topology; do not
 reconstruct it from the list that used to be here. What it changes: the stage
 holds the namespaces and the engine, the sandbox and later payloads are its
-siblings rather than its successors, which is also what makes `snug attach`
-possible.
+siblings rather than its successors.
 
 **What carried over unchanged, and is still owed.** These are requirements, not
 topology, so they survived the move intact:

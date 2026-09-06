@@ -21,7 +21,7 @@ green in three identical consecutive runs; both are distilled into §1.
 and its sixty checks are in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1.
 
 *Read the counts carefully, because one of them moved.* `run.sh` read `pass=49`
-until a review found that four of those checks passed on a sandbox and an attach
+until a review found that four of those checks passed on a sandbox
 that **never happened** — the `pasta.avx2` shape from `CLAUDE.md`, in the script
 whose own header claimed the property. The count rose because nothing was
 actually broken; the point is that it could not have told us if it had been. Two
@@ -239,11 +239,10 @@ part (d), and cut on measurement: the namespaces this channel would let a
 client reach are joinable by descriptor by any same-uid host process already,
 confirmed five ways on both topologies, so the listener is a second route to
 authority the kernel already grants, behind a weaker gate than the kernel's.
-`snug attach` is that feature, built client-side against
-`pidfd_open` + one `setns`, and its content is confinement rather than entry
-([`ATTACH.md`](ATTACH.md)). The protocol's strictness below is therefore the
-guard on the one client that exists — P0 — and not a deposit against a second
-one.
+There is no second client and no verb that would be one: snug places no
+process into a running sandbox's namespaces, so the protocol's strictness
+below is the guard on the one client that exists — P0 — and not a deposit
+against a second one.
 
 *`--dry-run` says all of this*, and says it precisely: a line reading "no
 socket" is the half a reviewer would use to decide there is nothing here to
@@ -525,8 +524,8 @@ Every item this section used to list is now either built or cut, and each one
 is stated where it is enforced rather than here:
 
 - **The control listener is CUT**, not pending — §3.3, and the settlement on
-  issue [#61](https://github.com/gomoni/snug/issues/61). `snug attach` is the
-  feature it was for, built client-side ([`ATTACH.md`](ATTACH.md)).
+  issue [#61](https://github.com/gomoni/snug/issues/61). Nothing replaced it:
+  a second session on a target is a second sandbox, not a client of this one.
 - **The stage's own hardening is DONE**, in the one form that was measured to
   work: it drops `CAP_SYS_PTRACE` from its bounding set at the
   `__stage-setup` -> `__stage-serve` execve, `__stage-serve` refuses to serve
@@ -539,7 +538,7 @@ is stated where it is enforced rather than here:
   rejected — the reasons are on that constant and in `internal/stage`'s
   clone-flag comments, because a rejected option is only worth recording where
   someone would otherwise add it.
-- **Subuid delegation is DONE** — §3.6. `Topology.Attach` is CUT along with the
-  listener: attach is not a topology (`internal/policy/topology.go`).
+- **Subuid delegation is DONE** — §3.6. `Topology.Attach` was CUT along with
+  the listener (`internal/policy/topology.go`).
 - **The engine in the sandbox's netns is DONE** — §2's second leg, and
   [`ENGINE-WIRING.md`](ENGINE-WIRING.md) for how it composes with this stage.
