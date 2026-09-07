@@ -6,7 +6,7 @@ import (
 )
 
 // TestProfileCannotSetATmpfsSize is the structural half of issue #281's
-// scoping decision: tmpfs_size_mib is a PREFERENCE (internal/cli/config.go's
+// scoping decision: tmpfs_size is a PREFERENCE (internal/cli/config.go's
 // userConfig, ~/.config/snug/config.toml) and must never become a grant-
 // language key. DisallowUnknownFields is what makes that a hard parse error
 // rather than a silently-ignored key — the same mechanism
@@ -24,9 +24,9 @@ tmpfs = ["{home}"]
 size = 1024
 `},
 		// The config key's own name, at profile scope instead of config scope.
-		{"tmpfs_size_mib", `[profile.x]
+		{"tmpfs_size", `[profile.x]
 tmpfs = ["{home}"]
-tmpfs_size_mib = 16
+tmpfs_size = "16 MiB"
 `},
 	}
 	for _, tc := range cases {

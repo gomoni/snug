@@ -244,15 +244,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				return nil, err
 			}
 		}
-		// Identity does NOT join. Two profiles pinning different accounts is a
-		// question with no safe answer — silently picking one would mean the
-		// agent pushes as an identity the human did not choose — so it is a
-		// conflict, reported with both names.
 		if prof.Identity != nil {
-			if p.Identity != nil && *p.Identity != *prof.Identity {
-				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
-					"select only one", identityOwner, name)
-			}
 			// Before anything is expanded or read: every field here ends up
 			// inside a config file snug generates, so a control character
 			// authors a directive that is not a Mount and that nothing
@@ -299,6 +291,22 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 					expanded = real
 				}
 				id.SSHKey = expanded
+			}
+			// Identity does NOT join. Two profiles pinning different accounts
+			// is a question with no safe answer — silently picking one would
+			// mean the agent pushes as an identity the human did not choose —
+			// so it is a conflict, reported with both names.
+			//
+			// The comparison is NORMALISED against NORMALISED, and it has to
+			// happen here rather than at the top of the block for that reason.
+			// p.Identity is what a previous iteration stored, and it was
+			// normalised before it was stored; comparing it against the raw
+			// TOML made every spelling that needs normalising — an omitted
+			// ssh_mode, an ssh_key holding a {…} variable, which is base.toml's
+			// own template — refuse itself (#559).
+			if p.Identity != nil && *p.Identity != id {
+				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
+					"select only one", identityOwner, name)
 			}
 			p.Identity = &id
 			identityOwner = name

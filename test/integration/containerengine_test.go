@@ -4192,7 +4192,7 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 		t.Fatalf("reading the engine's own mountinfo (pid %d): %v", enginePID, err)
 	}
 
-	// This run set no tmpfs_size_mib, so /run tracks policy.DefaultTmpfsSize
+	// This run set no tmpfs_size, so /run tracks policy.DefaultTmpfsSize
 	// — the same number a payload's own tmpfs use, per EngineTmpfsSize's own
 	// contract.
 	got := map[string]uint64{}

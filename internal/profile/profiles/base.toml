@@ -137,7 +137,7 @@ symlink = [
 # of THIS run, not a foothold in the next one.
 #
 # Each of these is bounded: snug passes bwrap `--size`, per mount, defaulting to
-# policy.DefaultTmpfsSize and overridable by `tmpfs_size_mib` in
+# policy.DefaultTmpfsSize and overridable by `tmpfs_size` in
 # ~/.config/snug/config.toml. The number lives in that constant and is
 # deliberately not retyped here. Without the bound
 # each one defaulted to HALF OF HOST RAM, so "a place to stage files" included

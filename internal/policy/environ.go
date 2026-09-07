@@ -129,7 +129,7 @@ type Context struct {
 	Command []string
 
 	// TmpfsSizeBytes is the caller's preference, in bytes, from
-	// tmpfs_size_mib in ~/.config/snug/config.toml. 0 means the caller
+	// tmpfs_size in ~/.config/snug/config.toml. 0 means the caller
 	// expressed none, and Resolve substitutes DefaultTmpfsSize.
 	TmpfsSizeBytes uint64
 
