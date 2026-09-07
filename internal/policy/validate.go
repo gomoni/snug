@@ -1327,7 +1327,7 @@ func (p *Policy) rejectUnboundedTmpfs() error {
 		return fmt.Errorf("tmpfs at %s has no size bound, so bwrap would default it to half of host RAM.\n"+
 			"       Every KindTmpfs mount is bounded by Policy.TmpfsSizeBytes, which Resolve always\n"+
 			"       sets. A policy that reaches here was not built by Resolve: set the field, or set\n"+
-			"       tmpfs_size_mib in ~/.config/snug/config.toml and resolve again.",
+			"       tmpfs_size in ~/.config/snug/config.toml and resolve again.",
 			VisibleText(m.Guest))
 	}
 	return nil
