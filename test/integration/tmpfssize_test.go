@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -192,6 +193,84 @@ func TestConfigTmpfsSizeAcceptsBothUnitFamilies(t *testing.T) {
 	}
 }
 
+// TestConfigTmpfsSizeTableIsFatal: a TOML table at tmpfs_size decodes clean
+// and calls no UnmarshalText, so it reaches loadUserConfig as a non-nil zero.
+// The refusal must name what tmpfs_size actually takes rather than quote back
+// a `"0 B"` the file does not contain.
+func TestConfigTmpfsSizeTableIsFatal(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+	tmpfsConfigControl(t, proj)
+
+	for _, body := range []string{"[tmpfs_size]\n", "tmpfs_size = {}\n"} {
+		cfg := writeTmpfsConfig(t, body)
+		out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+cfg), "--dry-run", proj)
+		if code != exitPolicyCode {
+			t.Errorf("%q should exit %d, got %d:\n%s", body, exitPolicyCode, code, out)
+		}
+		if !strings.Contains(out, "tmpfs_size is a quoted size, not a table") {
+			t.Errorf("%q: refusal does not say what tmpfs_size takes:\n%s", body, out)
+		}
+		if strings.Contains(out, `tmpfs_size = "0 B"`) {
+			t.Errorf("%q: refusal quotes a value the file does not contain:\n%s", body, out)
+		}
+	}
+}
+
+// TestTmpfsSizeOnScreenIsTheSizeInsideTheSandbox is the honesty of --dry-run
+// as a measurement rather than as an intention. tmpfs rounds its size up to a
+// whole page, so `tmpfs_size = "1 B"` mounts 4096 bytes; before the rounding
+// moved to the config boundary, three separate screens (`snug config`,
+// --dry-run's `(max …)`, the JSON facts' size_bytes) and the bwrap argv all
+// published 1. Not reachable while the key was tmpfs_size_mib — every value
+// was a whole number of MiB and so already aligned.
+//
+// The assertion is agreement, not a constant: the page size is the host's, so
+// the test reads what snug published and compares it with what the kernel
+// delivered rather than pinning 4096.
+func TestTmpfsSizeOnScreenIsTheSizeInsideTheSandbox(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	cfg := writeTmpfsConfig(t, "tmpfs_size = \"1 B\"\n")
+	env := baseEnv("XDG_CONFIG_HOME=" + cfg)
+
+	out, code := cli(t, env, "--dry-run", proj)
+	if code != 0 {
+		t.Fatalf("--dry-run with tmpfs_size = \"1 B\" should succeed, got %d:\n%s", code, out)
+	}
+	m := regexp.MustCompile(`--size ([0-9]+)`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no --size in the rendered argv:\n%s", out)
+	}
+	published := m[1]
+	if published == "1" {
+		t.Fatalf("--dry-run published --size 1, which no tmpfs can be:\n%s", out)
+	}
+	if !strings.Contains(out, "(max "+published+" B)") &&
+		!strings.Contains(out, "(max 4 KiB)") {
+		t.Logf("note: the human column renders the same number in units:\n%s", out)
+	}
+
+	// What the kernel actually gave the mount, read from inside.
+	res := runEnv(t, env, nil, proj, `stat -f -c %s\ %b /tmp
+echo MARKER`).mustRun(t)
+	if !strings.Contains(res.out, "MARKER") {
+		t.Fatalf("the payload did not reach its own marker:\n%s", res.out)
+	}
+	var bsize, blocks uint64
+	if _, err := fmt.Sscanf(strings.TrimSpace(res.out), "%d %d", &bsize, &blocks); err != nil {
+		t.Fatalf("could not read the mount's size from %q: %v", res.out, err)
+	}
+	delivered := fmt.Sprintf("%d", bsize*blocks)
+	if delivered != published {
+		t.Errorf("snug published --size %s and the kernel delivered %s bytes on /tmp; "+
+			"--dry-run is the mechanism by which a human can trust snug at all",
+			published, delivered)
+	}
+}
+
 // TestConfigCmdNamesTheTmpfsBoundSource pins `snug config`'s own disclosure of
 // the bound, in both directions: the built-in default with its origin, and an
 // explicit config.toml value with the FILE named as the source rather than
@@ -204,7 +283,7 @@ func TestConfigCmdNamesTheTmpfsBoundSource(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("control: `snug config` with no config file should succeed, got %d:\n%s", code, out)
 	}
-	if !strings.Contains(out, "tmpfs size       1 GiB    (built-in)") {
+	if !strings.Contains(out, "tmpfs size       1 GiB      (built-in)") {
 		t.Errorf("`snug config` does not name the built-in 1 GiB default:\n%s", out)
 	}
 
@@ -219,7 +298,7 @@ func TestConfigCmdNamesTheTmpfsBoundSource(t *testing.T) {
 	if !strings.Contains(out, filepath.Join(cfg, "snug", "config.toml")) {
 		t.Errorf("`snug config` does not name the config FILE as the source of the bound:\n%s", out)
 	}
-	if strings.Contains(out, "tmpfs size       64 MiB   (built-in)") {
+	if strings.Contains(out, "tmpfs size       64 MiB     (built-in)") {
 		t.Errorf("`snug config` reports a file-set value as built-in:\n%s", out)
 	}
 }

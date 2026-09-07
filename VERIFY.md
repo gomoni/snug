@@ -3575,6 +3575,21 @@ printf 'tmpfs_size = "4 gigs"\n'  > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
 printf 'tmpfs_size = "1.5 GiB"\n' > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+printf '[tmpfs_size]\n'            > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+
+# and the amplification guard: an attacker-influenced config.toml full of
+# unknown keys must not render a screen that grows with the key count.
+python3 -c "open('$X/snug/config.toml','w').write(''.join('k%d=1\n'%i for i in range(29679)))"
+wc -c < $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config 2>&1 >/dev/null | wc -c
+
+# a size the kernel cannot deliver verbatim: tmpfs rounds up to a whole page,
+# so what --dry-run publishes has to be rounded the same way.
+printf 'tmpfs_size = "1 B"\n'      > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config | grep "^tmpfs size"
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub | grep -o -- "--size [0-9]*" | sort -u
+XDG_CONFIG_HOME=$X ./bin/snug $SC/proj/sub -- df -B1 /tmp | tail -1
 
 # and the accepted set, where the two families are 6217728 bytes apart on
 # purpose.
@@ -3619,6 +3634,25 @@ unusable tmpfs, which is the failure this refusal exists for. Only the quoted
 values carry a caret — go-toml wraps an `UnmarshalText` error with a position
 for a TOML *string* and returns it bare for an integer or a boolean, so
 `tmpfs_size = 512` gets the sentence without the source line.
+
+`[tmpfs_size]` exits **77** saying `tmpfs_size is a quoted size, not a table`.
+It is the one shape that decodes CLEAN — go-toml allocates the struct and calls
+no `UnmarshalText` — so without that arm it reached the zero check and quoted
+`tmpfs_size = "0 B"` back at an author who wrote no such thing.
+
+The 256001-byte file of 29679 unknown keys renders **643** bytes of stderr, not
+5966021: go-toml writes a fresh numbered excerpt per unknown key, three are
+shown and the rest are counted (`... and 29676 more unknown key(s) not shown`).
+`$XDG_CONFIG_HOME` can point into a hostile checkout and `loadUserConfig` runs
+on every subcommand, so the file's author must not choose how much of the
+terminal it fills.
+
+The `1 B` run is the one number a human is asked to trust. `snug config` says
+`4 KiB`, the argv says `--size 4096`, and `df -B1 /tmp` inside says `4096` —
+all three the same, because tmpfs sizes itself in whole pages and the rounding
+happens once, at the config boundary, before anything publishes the figure. On
+a host with a larger page all four numbers move together; what must never
+appear is `--size 1`.
 
 The last four runs are the positive: `128 MiB` reports `tmpfs size  128 MiB`
 and puts `--size 134217728` in the argv, `128 mb` reports `128 MB` and puts

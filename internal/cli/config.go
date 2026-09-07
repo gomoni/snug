@@ -89,7 +89,15 @@ type userConfig struct {
 // arrives here as text and meets policy.ParseSize's refusal of a bare number.
 //
 // The embedded Size carries String(), so this type renders as the size it is.
-type tomlSize struct{ policy.Size }
+//
+// text records that UnmarshalText actually ran. A TOML TABLE — `[tmpfs_size]`,
+// or `tmpfs_size = {}` — decodes clean, allocates this struct and calls
+// nothing, so without it the zero check below quoted `tmpfs_size = "0 B"` back
+// at an author who wrote no such thing.
+type tomlSize struct {
+	policy.Size
+	text bool
+}
 
 func (t *tomlSize) UnmarshalText(b []byte) error {
 	v, err := policy.ParseSize(string(b))
@@ -97,6 +105,7 @@ func (t *tomlSize) UnmarshalText(b []byte) error {
 		return err
 	}
 	t.Size = v
+	t.text = true
 	return nil
 }
 
@@ -124,13 +133,23 @@ const maxTmpfsSize = policy.Tebibyte
 
 // tmpfsSizeBytes hands the preference to policy.Context as the plain byte
 // count it wants, returning 0 (meaning "unset") when the key was absent.
-// loadUserConfig has already refused every value this must not see (zero, and
-// anything over maxTmpfsSize), so there is nothing left to fail on here.
+// loadUserConfig has already refused every value this must not see (zero, a
+// table, and anything over maxTmpfsSize), so there is nothing left to fail on
+// here.
+//
+// Rounded up to a page HERE, once, and never again: tmpfs sizes itself in
+// whole pages, so this is the last point at which the number snug publishes
+// can still be made equal to the number the kernel delivers. Everything
+// downstream — `snug config`, --dry-run's `(max …)`, the JSON facts'
+// size_bytes, bwrap's --size — reads the same rounded figure. os.Getpagesize
+// is a host lookup, which is why it happens on this side of the boundary and
+// not in internal/policy. Rounding cannot cross maxTmpfsSize: 1 TiB is itself
+// page-aligned.
 func (c userConfig) tmpfsSizeBytes() uint64 {
 	if c.TmpfsSize == nil {
 		return 0
 	}
-	return uint64(c.TmpfsSize.Size)
+	return uint64(c.TmpfsSize.Size.RoundUpTo(policy.Size(os.Getpagesize())))
 }
 
 func configPath() string {
@@ -167,7 +186,7 @@ func configDecodeMessage(path string, err error) string {
 		fmt.Fprint(&b, " unknown key (snug decodes config.toml strictly, so a key it\n"+
 			"       does not understand is an error rather than a silently ignored\n"+
 			"       setting):\n")
-		writeSourceQuote(&b, se.String())
+		writeSourceQuote(&b, strictExcerpts(se))
 
 		// Naming the fix, not just the fault. config.toml has two keys and they
 		// are cheap to list, so the message lists them rather than sending the
@@ -219,6 +238,31 @@ func configDecodeMessage(path string, err error) string {
 
 	fmt.Fprintf(&b, " %s\n", policy.VisibleText(err.Error()))
 	return b.String()
+}
+
+// maxStrictExcerpts caps how many unknown keys get a source excerpt. The
+// rendering is per-key and each one repeats several NUMBERED LINES of the
+// file, so the message grows with the number of bad keys and the file is
+// attacker-influenced: $XDG_CONFIG_HOME can point into a hostile checkout
+// (invariant 3), and loadUserConfig runs on every snug subcommand. A 256001-
+// byte config.toml holding 29679 unknown keys rendered 5966021 bytes of
+// stderr; the same file against the previous positionless message rendered
+// 199. Three excerpts is enough to see the shape of the mistake, and the count
+// line says how much was not shown.
+const maxStrictExcerpts = 3
+
+// strictExcerpts is go-toml's StrictMissingError.String() with a bound on it.
+// The separator matches the one that method writes between excerpts.
+func strictExcerpts(se *toml.StrictMissingError) string {
+	shown := min(len(se.Errors), maxStrictExcerpts)
+	parts := make([]string, 0, shown+1)
+	for i := range se.Errors[:shown] {
+		parts = append(parts, se.Errors[i].String())
+	}
+	if rest := len(se.Errors) - shown; rest > 0 {
+		parts = append(parts, fmt.Sprintf("... and %d more unknown key(s) not shown", rest))
+	}
+	return strings.Join(parts, "\n---\n")
 }
 
 // writeSourceQuote indents go-toml's numbered-source-and-caret rendering under
@@ -282,6 +326,12 @@ func loadUserConfig() userConfig {
 	// one is no longer among them: policy.ParseSize refuses a sign, so it
 	// never reaches a Size at all.
 	if cfg.TmpfsSize != nil {
+		if !cfg.TmpfsSize.text {
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size is a quoted size, not a table; "+
+				"write tmpfs_size = %q\n", policy.VisibleText(path),
+				policy.Size(policy.DefaultTmpfsSize).String())
+			os.Exit(exitPolicy)
+		}
 		switch v := cfg.TmpfsSize.Size; {
 		case v == 0:
 			// The default is NAMED, not retyped: policy.DefaultTmpfsSize is
@@ -419,7 +469,7 @@ func configCmd(args []string) int {
 	if tmpfsSource != "built-in" {
 		tmpfsOrigin = "(" + tmpfsSource + ")"
 	}
-	fmt.Printf("tmpfs size       %-8s %s\n", policy.Size(tmpfsBytes).String(), tmpfsOrigin)
+	fmt.Printf("tmpfs size       %-10s %s\n", policy.Size(tmpfsBytes).String(), tmpfsOrigin)
 	fmt.Println()
 	fmt.Println("`tmpfs_size` bounds every KindTmpfs mount snug emits (issue #281). It is a")
 	fmt.Println("preference, not a grant: it makes nothing visible that was not already, and")

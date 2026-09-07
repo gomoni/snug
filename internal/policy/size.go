@@ -172,6 +172,32 @@ func (s *Size) UnmarshalText(b []byte) error {
 	return nil
 }
 
+// RoundUpTo raises s to the next multiple of granule, and is how a byte count
+// snug PUBLISHES comes to be the byte count the kernel DELIVERS. tmpfs rounds
+// its size up to a whole page, so `tmpfs_size = "1 B"` mounts 4096 bytes while
+// --dry-run, the JSON facts and the bwrap argv all said 1 — three copies of a
+// number snug does not deliver, on the one screen whose entire job is being
+// trustable. Not reachable before the unit moved into the value: every
+// tmpfs_size_mib was a whole number of MiB and so already page-aligned.
+//
+// granule 0 or 1 is the identity. Total: a value near MaxUint64 that cannot be
+// raised without wrapping stays where it is rather than becoming a small
+// number, which is the only failure mode that would matter.
+func (s Size) RoundUpTo(granule Size) Size {
+	if granule <= 1 {
+		return s
+	}
+	rem := s % granule
+	if rem == 0 {
+		return s
+	}
+	add := granule - rem
+	if s > math.MaxUint64-add {
+		return s
+	}
+	return s + add
+}
+
 // String renders a Size the way a human reading --dry-run or `snug config`
 // wants to see it, and the way ParseSize would read back: "1 GiB", "512 MiB",
 // "128 MB". Total, cannot fail.

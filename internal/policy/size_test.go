@@ -165,3 +165,47 @@ func TestSizeUnmarshalTextIsParseSize(t *testing.T) {
 		t.Errorf("a refused UnmarshalText wrote %d into the receiver; it must leave it alone", uint64(s))
 	}
 }
+
+// TestSizeRoundUpTo covers the arithmetic behind the one number a human is
+// asked to trust: tmpfs sizes itself in whole pages, so a bound snug prints
+// that is not page-aligned is a bound the kernel does not deliver.
+func TestSizeRoundUpTo(t *testing.T) {
+	const page Size = 4096
+	cases := []struct {
+		in      Size
+		granule Size
+		want    Size
+	}{
+		{0, page, 0},
+		{1, page, 4096},
+		{3000, page, 4096}, // "3 kB"
+		{4096, page, 4096}, // already whole
+		{4097, page, 8192},
+		{100_000_000, page, 100_003_840}, // "100 MB"
+		{1 << 20, page, 1 << 20},
+		{1 << 30, page, 1 << 30},
+		// granule 0 and 1 are the identity, so a caller that cannot ask the
+		// host for a page size does not get a wrong answer.
+		{4097, 0, 4097},
+		{4097, 1, 4097},
+		// A 64 KiB page, which is a real host (ppc64le), not a hypothetical.
+		{4097, 1 << 16, 1 << 16},
+		// Total at the top: raising this would wrap, so it does not move.
+		{math.MaxUint64, page, math.MaxUint64},
+		{math.MaxUint64 - 1, page, math.MaxUint64 - 1},
+	}
+	for _, tc := range cases {
+		if got := tc.in.RoundUpTo(tc.granule); got != tc.want {
+			t.Errorf("Size(%d).RoundUpTo(%d) = %d, want %d",
+				uint64(tc.in), uint64(tc.granule), uint64(got), uint64(tc.want))
+		}
+	}
+	// The property the table samples: the result is a multiple of the granule
+	// and never below the input.
+	for n := Size(0); n < 20000; n += 7 {
+		got := n.RoundUpTo(4096)
+		if got < n || got%4096 != 0 || got-n >= 4096 {
+			t.Fatalf("Size(%d).RoundUpTo(4096) = %d", uint64(n), uint64(got))
+		}
+	}
+}

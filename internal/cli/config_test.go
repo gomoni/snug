@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -369,4 +370,114 @@ func TestConfigDecodeMessageNamesTheReplacementForTmpfsSizeMiB(t *testing.T) {
 	if strings.Contains(msg, "profiles.d") {
 		t.Errorf("a retired scalar key was told to go and write a profile file:\n%s", msg)
 	}
+}
+
+// A TOML TABLE at tmpfs_size decodes clean — go-toml allocates the struct and
+// calls nothing — so the zero check downstream cannot tell it from a written
+// zero, and used to quote `tmpfs_size = "0 B"` back at an author who wrote no
+// such thing. tomlSize.text is what separates the two.
+func TestATomlTableAtTmpfsSizeDecodesWithoutText(t *testing.T) {
+	for _, src := range []string{"[tmpfs_size]\n", "tmpfs_size = {}\n"} {
+		var cfg userConfig
+		dec := toml.NewDecoder(strings.NewReader(src))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
+			t.Fatalf("%q: control: a table at tmpfs_size is expected to decode, got %v", src, err)
+		}
+		if cfg.TmpfsSize == nil {
+			t.Fatalf("%q: control: a table at tmpfs_size left the field nil, so nothing "+
+				"downstream would look at it", src)
+		}
+		if cfg.TmpfsSize.text {
+			t.Errorf("%q: tmpfs_size reports that UnmarshalText ran; it did not", src)
+		}
+		if uint64(cfg.TmpfsSize.Size) != 0 {
+			t.Errorf("%q: tmpfs_size decoded to %d", src, uint64(cfg.TmpfsSize.Size))
+		}
+	}
+}
+
+// The message carries config-file text, and $XDG_CONFIG_HOME can point into a
+// hostile checkout (CLAUDE.md invariant 3) — so the file's author must not be
+// able to move the cursor, erase a row or reverse the reading order of the
+// screen that refuses their file (the issue #20 shape, one file over).
+func TestConfigDecodeMessageEscapesControlCharactersFromTheFile(t *testing.T) {
+	sources := []string{
+		"tmpfs_size = \"512 \u001b[1AmiB\"\n",
+		"\"k\u009b31m\" = 1\n",
+		"\"k\u202eevil\" = 1\n",
+		"defaults = [\"@sys\u001b[2K\"]\nbad = 1\n",
+	}
+	for _, src := range sources {
+		var cfg userConfig
+		dec := toml.NewDecoder(strings.NewReader(src))
+		dec.DisallowUnknownFields()
+		err := dec.Decode(&cfg)
+		if err == nil {
+			t.Fatalf("control: %q decoded", src)
+		}
+		msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+		for i, r := range msg {
+			switch {
+			case r == '\n' || r == '\t':
+			case r < 0x20 || r == 0x7f:
+				t.Errorf("%q: message carries raw control %U at byte %d:\n%q", src, r, i, msg)
+			case r >= 0x80 && r <= 0x9f, r == '\u2028', r == '\u2029', r == '\u202e':
+				t.Errorf("%q: message carries raw %U at byte %d:\n%q", src, r, i, msg)
+			}
+		}
+	}
+}
+
+// go-toml renders a fresh numbered excerpt per unknown key, so the message
+// grew with the number of bad keys in an attacker-influenced file: a 256001-
+// byte config.toml of 29679 unknown keys rendered 5966021 bytes of stderr.
+// The bound has to hold on the SHAPE, not on one measured file.
+func TestConfigDecodeMessageIsBoundedForManyUnknownKeys(t *testing.T) {
+	var few, many string
+	for i := range 4000 {
+		line := fmt.Sprintf("k%d = 1\n", i)
+		if i < 3 {
+			few += line
+		}
+		many += line
+	}
+	size := func(src string) int {
+		var cfg userConfig
+		dec := toml.NewDecoder(strings.NewReader(src))
+		dec.DisallowUnknownFields()
+		err := dec.Decode(&cfg)
+		if err == nil {
+			t.Fatal("control: a file of unknown keys decoded")
+		}
+		return len(configDecodeMessage("/home/u/.config/snug/config.toml", err))
+	}
+	// The excerpts are capped, but each one quotes the lines AROUND its key,
+	// and those lines are longer in the bigger file (k3999 vs k2). So the
+	// message may grow a little; what it must not do is grow with the KEY
+	// COUNT. Twice the small message is far below the 1000x the key count
+	// grew by.
+	small, big := size(few), size(many)
+	if big > 2*small {
+		t.Errorf("4000 unknown keys rendered %d bytes against %d for 3; the message tracks "+
+			"the key count", big, small)
+	}
+	if !strings.Contains(size2(t, many), "more unknown key(s) not shown") {
+		t.Error("the message does not say how many keys it did not show")
+	}
+}
+
+// size2 is TestConfigDecodeMessageIsBoundedForManyUnknownKeys' second look at
+// the same message, kept separate so the length assertion above reads as one
+// expression.
+func size2(t *testing.T, src string) string {
+	t.Helper()
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader(src))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatal("control: a file of unknown keys decoded")
+	}
+	return configDecodeMessage("/home/u/.config/snug/config.toml", err)
 }
