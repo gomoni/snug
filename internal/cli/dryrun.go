@@ -139,7 +139,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 			// "ephemeral" note, because --dry-run is the mechanism by which a
 			// human can trust snug and a size a payload could fill the host's
 			// RAM with is exactly what this screen exists to disclose (#281).
-			detail = fmt.Sprintf("%s (max %s)", visibleValue(m.Guest), policy.FormatBytes(p.TmpfsSizeBytes))
+			detail = fmt.Sprintf("%s (max %s)", visibleValue(m.Guest), policy.Size(p.TmpfsSizeBytes).String())
 		}
 		fmt.Fprintf(out, "  %-6s %-46s %s%s\n", kind, detail, visibleValue(strings.Join(m.From, "+")), opt)
 		for _, frag := range wrapMark(yieldedMark(p, m)) {
@@ -2547,7 +2547,7 @@ func describeGrafts(out io.Writer, rep Report, p *policy.Policy) {
 		// once so the JSON document cannot carry a different number
 		// (TestEveryFactProducerTheHumanScreenCallsIsAlsoInTheReport).
 		if bound, ok := rep.GraftTmpfsSizeBytes[gr.Guest]; ok {
-			guestField = fmt.Sprintf("%s (max %s)", guestField, policy.FormatBytes(bound))
+			guestField = fmt.Sprintf("%s (max %s)", guestField, policy.Size(bound).String())
 		}
 		fmt.Fprintf(out, "  %-10s  %-44s  %s\n",
 			gr.Kind.String()+"-"+access, guestField,

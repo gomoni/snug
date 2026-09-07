@@ -58,35 +58,57 @@ type userConfig struct {
 	// asserts no struct in this module takes the other route.
 	Defaults *[]string `toml:"defaults"`
 
-	// TmpfsSizeMiB is the bound applied to every KindTmpfs mount snug emits
-	// (issue #281), in MiB. It is a PREFERENCE, not a grant: it makes nothing
-	// visible that was not already, and it names no path — a path-keyed size
-	// here would be a grant living in the one file that may not hold one.
+	// TmpfsSize is the bound applied to every KindTmpfs mount snug emits
+	// (issue #281). It is a PREFERENCE, not a grant: it makes nothing visible
+	// that was not already, and it names no path — a path-keyed size here
+	// would be a grant living in the one file that may not hold one.
 	//
-	// MiB rather than a "1GiB"-shaped string: an integer needs no unit parser,
-	// and the KEY carries the unit. A large value is the user's own
-	// declaration about their own host, and is not a relaxation of anything
-	// the payload can reach; it is capped only so the shift into bytes cannot
-	// overflow uint64.
+	// The value carries its own unit — `tmpfs_size = "512 MiB"` — because the
+	// key that spelled it instead could only ever mean the one unit, and the
+	// human then did the conversion. policy.Size is where the units are
+	// defined and where a bare number is refused. A large value is the user's
+	// own declaration about their own host, and is not a relaxation of
+	// anything the payload can reach; it is capped only at maxTmpfsSize, and
+	// that cap is arithmetic rather than policy.
 	//
-	// A POINTER, deliberately: an explicit `tmpfs_size_mib = 0` is a plausible
+	// A POINTER, deliberately: an explicit `tmpfs_size = "0 B"` is a plausible
 	// thing for a human to write meaning "unlimited", and invariant 5 says a
 	// user who wrote something and got something else must be told. A plain
-	// int64 cannot tell a written 0 from an absent key — loadUserConfig
-	// refuses the written-0 case outright rather than silently reading it as
+	// policy.Size cannot tell a written zero from an absent key — loadUserConfig
+	// refuses the written-zero case outright rather than silently reading it as
 	// "unset".
-	TmpfsSizeMiB *int64 `toml:"tmpfs_size_mib"`
+	TmpfsSize *tomlSize `toml:"tmpfs_size"`
 }
 
-// maxTmpfsSizeMiB bounds tmpfs_size_mib so the shift into bytes cannot
-// overflow uint64: 1 TiB in MiB. A value this large is not a relaxation of
-// anything the payload can reach — it is the user's own declaration about
-// their own host's RAM — so the cap exists purely to keep the arithmetic
-// honest.
+// tomlSize is policy.Size's decoder-side shape, and it is a STRUCT for one
+// measured reason: go-toml writes a TOML integer straight into a uint64-kinded
+// field and never calls that field's UnmarshalText. With the field typed
+// policy.Size directly, `tmpfs_size = 512` decoded to 512 — five hundred and
+// twelve BYTES — from a file whose author had `tmpfs_size_mib = 512` in it the
+// day before. A struct has no integer kind to write into, so every scalar
+// arrives here as text and meets policy.ParseSize's refusal of a bare number.
+//
+// The embedded Size carries String(), so this type renders as the size it is.
+type tomlSize struct{ policy.Size }
+
+func (t *tomlSize) UnmarshalText(b []byte) error {
+	v, err := policy.ParseSize(string(b))
+	if err != nil {
+		return err
+	}
+	t.Size = v
+	return nil
+}
+
+// maxTmpfsSize bounds tmpfs_size at 1 TiB. policy.ParseSize already refuses
+// what overflows a uint64, so this is not that guard; it is the ceiling above
+// which a written value is more likely a slipped unit than a statement about
+// the host. A value this large is not a relaxation of anything the payload
+// can reach — it is the user's own declaration about their own host's RAM.
 //
 // NOT the resource bound, and that is measured rather than argued: a round on
 // this constant's own subject filled five profile-authored tmpfs to exactly
-// their 8 MiB cap EACH under tmpfs_size_mib = 8, which is what it means to say
+// their 8 MiB cap EACH under tmpfs_size = "8 MiB", which is what it means to say
 // every --size is a separate superblock limit. So what this permits is value ×
 // (number of KindTmpfs mounts), plus policy.DefaultEngineScratchSize (8 GiB,
 // fixed, no key of its own) on top of that whenever the run has an engine —
@@ -98,17 +120,17 @@ type userConfig struct {
 // reader looking for the resource bound arrives first, and finding only an
 // overflow guard is how it gets mistaken
 // for one.
-const maxTmpfsSizeMiB = 1 << 20
+const maxTmpfsSize = policy.Tebibyte
 
-// tmpfsSizeBytes converts the config's MiB preference to the bytes
-// policy.Context wants, returning 0 (meaning "unset") when the key was
-// absent. loadUserConfig has already refused every value this must not see
-// (0, negative, over maxTmpfsSizeMiB), so the conversion here cannot fail.
+// tmpfsSizeBytes hands the preference to policy.Context as the plain byte
+// count it wants, returning 0 (meaning "unset") when the key was absent.
+// loadUserConfig has already refused every value this must not see (zero, and
+// anything over maxTmpfsSize), so there is nothing left to fail on here.
 func (c userConfig) tmpfsSizeBytes() uint64 {
-	if c.TmpfsSizeMiB == nil {
+	if c.TmpfsSize == nil {
 		return 0
 	}
-	return uint64(*c.TmpfsSizeMiB) << 20
+	return uint64(c.TmpfsSize.Size)
 }
 
 func configPath() string {
@@ -136,48 +158,79 @@ func configPath() string {
 // numbered source lines with a caret under the offending key. internal/profile
 // /file.go already reaches for String() when a profiles.d file fails the same
 // way; this is the same treatment for the file one directory up.
-//
-// The rendering carries config-file text verbatim, so it is escaped PER LINE —
-// see badFileErrorLines for why that is the right shape and what it does not
-// close. The fixed indentation here is the same containment: every line of
-// foreign text is printed seven spaces in, and the file's author does not
-// choose the prefix.
 func configDecodeMessage(path string, err error) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "snug: %s: ", policy.VisibleText(path))
+	fmt.Fprintf(&b, "snug: %s:", policy.VisibleText(path))
 
 	var se *toml.StrictMissingError
-	if !errors.As(err, &se) {
-		fmt.Fprintf(&b, "%s\n", policy.VisibleText(err.Error()))
+	if errors.As(err, &se) {
+		fmt.Fprint(&b, " unknown key (snug decodes config.toml strictly, so a key it\n"+
+			"       does not understand is an error rather than a silently ignored\n"+
+			"       setting):\n")
+		writeSourceQuote(&b, se.String())
+
+		// Naming the fix, not just the fault. config.toml has two keys and they
+		// are cheap to list, so the message lists them rather than sending the
+		// reader to documentation this repository deliberately does not have.
+		fmt.Fprint(&b, "       config.toml accepts two keys: defaults and tmpfs_size.\n")
+
+		for _, de := range se.Errors {
+			k := de.Key()
+			if len(k) == 0 {
+				continue
+			}
+			switch k[0] {
+			case "profile":
+				// The category error, which no caret conveys on its own: a
+				// [profile.x] table in config.toml is not a typo, it is a table
+				// in the wrong file. config.toml only NAMES profiles;
+				// profiles.d/*.toml DEFINES them. The directory is derived from
+				// the config path rather than looked up again, which keeps this
+				// function pure and names the reader's own directory.
+				fmt.Fprintf(&b, "       A profile is DEFINED in %s/*.toml, not here.\n"+
+					"       config.toml only NAMES profiles, in defaults.\n",
+					policy.VisibleText(filepath.Join(filepath.Dir(path), "profiles.d")))
+			case "tmpfs_size_mib":
+				// The key snug used to have. A file written against it is not a
+				// typo either, and the caret above says only that the key is
+				// unknown — which reads as "this setting is gone" when the
+				// setting is still here under a name that carries its own unit.
+				fmt.Fprint(&b, "       tmpfs_size_mib is gone. The size carries its own unit now:\n"+
+					"       tmpfs_size = \"512 MiB\"\n")
+			default:
+				continue
+			}
+			break
+		}
 		return b.String()
 	}
 
-	fmt.Fprint(&b, "unknown key (snug decodes config.toml strictly, so a key it\n"+
-		"       does not understand is an error rather than a silently ignored\n"+
-		"       setting):\n")
-	for _, line := range strings.Split(strings.TrimRight(se.String(), "\n"), "\n") {
-		fmt.Fprintf(&b, "       %s\n", policy.VisibleText(line))
+	// Everything else go-toml refuses about a value it did reach: a wrong TOML
+	// type, and — because go-toml hands the raw scalar text to
+	// policy.Size.UnmarshalText — every refusal ParseSize makes. The caret
+	// rendering is the whole message here: it carries ParseSize's sentence
+	// under the offending value, which is what a bare Error() string loses.
+	var de *toml.DecodeError
+	if errors.As(err, &de) {
+		fmt.Fprint(&b, "\n")
+		writeSourceQuote(&b, de.String())
+		return b.String()
 	}
 
-	// Naming the fix, not just the fault. config.toml has two keys and they are
-	// cheap to list, so the message lists them rather than sending the reader
-	// to documentation this repository deliberately does not have.
-	fmt.Fprint(&b, "       config.toml accepts two keys: defaults and tmpfs_size_mib.\n")
-
-	// The category error, which no caret conveys on its own: a [profile.x]
-	// table in config.toml is not a typo, it is a table in the wrong file.
-	// config.toml only NAMES profiles; profiles.d/*.toml DEFINES them. The
-	// directory is derived from the config path rather than looked up again,
-	// which keeps this function pure and names the reader's own directory.
-	for _, de := range se.Errors {
-		if k := de.Key(); len(k) > 0 && k[0] == "profile" {
-			fmt.Fprintf(&b, "       A profile is DEFINED in %s/*.toml, not here.\n"+
-				"       config.toml only NAMES profiles, in defaults.\n",
-				policy.VisibleText(filepath.Join(filepath.Dir(path), "profiles.d")))
-			break
-		}
-	}
+	fmt.Fprintf(&b, " %s\n", policy.VisibleText(err.Error()))
 	return b.String()
+}
+
+// writeSourceQuote indents go-toml's numbered-source-and-caret rendering under
+// the message above it. The rendering carries config-file text verbatim, so it
+// is escaped PER LINE — see badFileErrorLines for why that is the right shape
+// and what it does not close. The fixed indentation is the same containment:
+// every line of foreign text is printed seven spaces in, and the file's author
+// does not choose the prefix.
+func writeSourceQuote(b *strings.Builder, quoted string) {
+	for _, line := range strings.Split(strings.TrimRight(quoted, "\n"), "\n") {
+		fmt.Fprintf(b, "       %s\n", policy.VisibleText(line))
+	}
 }
 
 func loadUserConfig() userConfig {
@@ -225,24 +278,23 @@ func loadUserConfig() userConfig {
 		fmt.Fprint(os.Stderr, configDecodeMessage(path, err))
 		os.Exit(exitPolicy)
 	}
-	if cfg.TmpfsSizeMiB != nil {
-		v := *cfg.TmpfsSizeMiB
-		switch {
+	// Two values survive decoding and are still not preferences. A negative
+	// one is no longer among them: policy.ParseSize refuses a sign, so it
+	// never reaches a Size at all.
+	if cfg.TmpfsSize != nil {
+		switch v := cfg.TmpfsSize.Size; {
 		case v == 0:
 			// The default is NAMED, not retyped: policy.DefaultTmpfsSize is
 			// the authority and this message derives from it, so changing the
 			// constant cannot leave a message quoting the old number.
-			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = 0 would mean an unbounded tmpfs; "+
-				"omit the key for the %s default\n", policy.VisibleText(path),
-				policy.FormatBytes(policy.DefaultTmpfsSize))
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size = %q would mean an unbounded tmpfs; "+
+				"omit the key for the %s default\n", policy.VisibleText(path), v.String(),
+				policy.Size(policy.DefaultTmpfsSize).String())
 			os.Exit(exitPolicy)
-		case v < 0:
-			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = %d is negative; it must be between "+
-				"1 and %d\n", policy.VisibleText(path), v, int64(maxTmpfsSizeMiB))
-			os.Exit(exitPolicy)
-		case v > maxTmpfsSizeMiB:
-			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size_mib = %d is too large; it must be between "+
-				"1 and %d (1 TiB)\n", policy.VisibleText(path), v, int64(maxTmpfsSizeMiB))
+		case v > maxTmpfsSize:
+			fmt.Fprintf(os.Stderr, "snug: %s: tmpfs_size = %q is too large; it must be between "+
+				"%q and %q\n", policy.VisibleText(path), v.String(),
+				policy.Size(1).String(), maxTmpfsSize.String())
 			os.Exit(exitPolicy)
 		}
 	}
@@ -272,7 +324,7 @@ func defaultProfiles() (names []policy.ProfileName, source string) {
 	return out, configPath()
 }
 
-// tmpfsSizeSetting is tmpfs_size_mib's counterpart to defaultProfiles: the
+// tmpfsSizeSetting is tmpfs_size's counterpart to defaultProfiles: the
 // effective bound in bytes, plus the source it came from so `snug config` and
 // main.go's ctx construction can agree on it. loadUserConfig has already
 // exited on every value that could reach here as something other than a valid
@@ -367,11 +419,16 @@ func configCmd(args []string) int {
 	if tmpfsSource != "built-in" {
 		tmpfsOrigin = "(" + tmpfsSource + ")"
 	}
-	fmt.Printf("tmpfs size       %-8s %s\n", policy.FormatBytes(tmpfsBytes), tmpfsOrigin)
+	fmt.Printf("tmpfs size       %-8s %s\n", policy.Size(tmpfsBytes).String(), tmpfsOrigin)
 	fmt.Println()
-	fmt.Println("`tmpfs_size_mib` bounds every KindTmpfs mount snug emits (issue #281). It is a")
+	fmt.Println("`tmpfs_size` bounds every KindTmpfs mount snug emits (issue #281). It is a")
 	fmt.Println("preference, not a grant: it makes nothing visible that was not already, and")
-	fmt.Println("names no path.")
+	fmt.Println("names no path. The unit is part of the value, and there is no default unit:")
+	fmt.Println()
+	// DERIVED, not retyped, for defaults' reason one screen up: the example a
+	// user copies has to render the same way the line above it does.
+	fmt.Printf("  tmpfs_size = %q   # kB MB GB TB are 1000-based, KiB MiB GiB TiB 1024-based\n",
+		policy.Size(policy.DefaultTmpfsSize).String())
 	fmt.Println()
 
 	fmt.Println("profile search path, in order (later layers may add names, never redefine one):")

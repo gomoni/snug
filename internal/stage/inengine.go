@@ -446,7 +446,7 @@ func EnterEngine(argv []string) error {
 	// (needing no mount at all) was simply wrong. XDG_RUNTIME_DIR is recreated empty on it for the same reason
 	// podman's own per-container netns bind-mount path looks there.
 	//
-	// Bounded to policy.EngineTmpfsSize's /run figure — tmpfs_size_mib's own
+	// Bounded to policy.EngineTmpfsSize's /run figure — tmpfs_size's own
 	// number, because what podman actually writes here (locks, sockets,
 	// /run/libpod state) is kilobytes and there is no reason to give it a
 	// ceiling of its own. Unbounded, an empty mount(2) data string here
@@ -473,10 +473,10 @@ func EnterEngine(argv []string) error {
 	// the host's /var/tmp is in it, and it dies with the engine.
 	//
 	// Bounded to policy.DefaultEngineScratchSize, a fixed 8 GiB unrelated to
-	// tmpfs_size_mib: a whole image layer unpacks here while committing, so
+	// tmpfs_size: a whole image layer unpacks here while committing, so
 	// the cap has to clear the biggest base image a user pulls rather than
 	// track a payload's own tmpfs preference — coupling the two would fail an
-	// ordinary pull the moment somebody tuned tmpfs_size_mib down. A write
+	// ordinary pull the moment somebody tuned tmpfs_size down. A write
 	// past the bound returns ENOSPC from whatever wrote it, an ordinary
 	// disk-full error, not a snug message.
 	if err := unix.Mount("tmpfs", "/var/tmp", "tmpfs", 0, fmt.Sprintf("size=%d", varTmpSize)); err != nil {

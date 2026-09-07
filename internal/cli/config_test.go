@@ -222,7 +222,7 @@ PATH = ["{home}/.npm-host/bin"]
 		"3| [profile.npm]",
 		// Both accepted keys, because there are only two and listing them is
 		// the cheapest possible "what did you mean".
-		"defaults", "tmpfs_size_mib",
+		"defaults", "tmpfs_size",
 		// The category error: the table is not misspelled, it is in the wrong
 		// file, and no caret says that.
 		"/home/u/.config/snug/profiles.d/*.toml",
@@ -253,7 +253,7 @@ func TestConfigDecodeMessageDoesNotMentionProfilesDirForAPlainTypo(t *testing.T)
 	if !strings.Contains(msg, "1| tmpfs_size_mb = 512") {
 		t.Errorf("message does not point at the misspelled key:\n%s", msg)
 	}
-	if !strings.Contains(msg, "tmpfs_size_mib") {
+	if !strings.Contains(msg, "tmpfs_size") {
 		t.Errorf("message does not name the spelling that works:\n%s", msg)
 	}
 	if strings.Contains(msg, "profiles.d") {
@@ -262,8 +262,9 @@ func TestConfigDecodeMessageDoesNotMentionProfilesDirForAPlainTypo(t *testing.T)
 }
 
 // Everything that is NOT a strict-mode error — a syntax error, an incomplete
-// array — keeps go-toml's own message. It already carries a position, and
-// there is no fix for snug to name.
+// array — gets go-toml's numbered-source-and-caret rendering and nothing else.
+// snug has no fix to name for a syntax error, and the caret is the position
+// the bare Error() string does not carry.
 func TestConfigDecodeMessagePassesThroughNonStrictErrors(t *testing.T) {
 	var cfg userConfig
 	dec := toml.NewDecoder(strings.NewReader("defaults = [\n"))
@@ -273,10 +274,99 @@ func TestConfigDecodeMessagePassesThroughNonStrictErrors(t *testing.T) {
 	}
 
 	msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
-	if !strings.Contains(msg, err.Error()) {
+	if !strings.Contains(msg, "1| defaults = [") {
+		t.Errorf("message does not quote the offending line:\n%s", msg)
+	}
+	// go-toml's own sentence, minus the "toml: " prefix its Error() adds and
+	// its String() does not.
+	if !strings.Contains(msg, "array is incomplete") {
 		t.Errorf("message dropped go-toml's own text %q:\n%s", err.Error(), msg)
 	}
 	if strings.Contains(msg, "accepts two keys") {
 		t.Errorf("a syntax error was answered with the unknown-key advice:\n%s", msg)
+	}
+}
+
+// A value the file DOES reach, refused by policy.ParseSize rather than by the
+// decoder's own type check. go-toml hands the raw scalar text to
+// tomlSize.UnmarshalText, so `tmpfs_size = 512` and `tmpfs_size = "512"` are
+// the same refusal — but only the string form comes back wrapped in a
+// *toml.DecodeError, so only that one can be quoted with a caret. The
+// positionless forms still carry the advice, which is the half that names the
+// fix.
+func TestConfigDecodeMessageCarriesAParseSizeRefusal(t *testing.T) {
+	cases := []struct {
+		line  string
+		quote bool
+	}{
+		{`tmpfs_size = "512"`, true},
+		{`tmpfs_size = "4 GB!"`, true},
+		{`tmpfs_size = 512`, false},
+		{`tmpfs_size = true`, false},
+	}
+	for _, tc := range cases {
+		var cfg userConfig
+		dec := toml.NewDecoder(strings.NewReader(tc.line + "\n"))
+		dec.DisallowUnknownFields()
+		err := dec.Decode(&cfg)
+		if err == nil {
+			t.Fatalf("control: %s decoded", tc.line)
+		}
+		msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+		if tc.quote && !strings.Contains(msg, "1| "+tc.line) {
+			t.Errorf("%s: message does not quote the offending line:\n%s", tc.line, msg)
+		}
+		if !strings.Contains(msg, `as in "512 MiB"`) {
+			t.Errorf("%s: message does not name a value that works:\n%s", tc.line, msg)
+		}
+		if strings.Contains(msg, "accepts two keys") {
+			t.Errorf("%s: a bad VALUE was answered with the unknown-KEY advice:\n%s", tc.line, msg)
+		}
+	}
+}
+
+// The trap that made tomlSize a struct, as a regression test. go-toml writes a
+// TOML integer straight into a uint64-kinded field without calling its
+// UnmarshalText: with the config field typed policy.Size directly,
+// `tmpfs_size = 512` decoded to 512 BYTES and started a sandbox with a
+// 512-byte tmpfs on every KindTmpfs mount. The reader who writes that line is
+// the reader migrating from tmpfs_size_mib = 512, which is exactly who must
+// not get it silently.
+func TestABareIntegerTmpfsSizeIsRefusedRatherThanReadAsBytes(t *testing.T) {
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader("tmpfs_size = 512\n"))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatalf("tmpfs_size = 512 decoded to %d bytes; a bare integer has no unit",
+			uint64(cfg.TmpfsSize.Size))
+	}
+	if !strings.Contains(err.Error(), "no unit") {
+		t.Errorf("refusal does not say what is missing: %v", err)
+	}
+}
+
+// tmpfs_size_mib is not a typo — it is the key snug used to have, and a file
+// carrying it was correct until this change. The caret alone says "unknown
+// key", which reads as "this setting is gone" when the setting is still here
+// under a name that carries its own unit.
+func TestConfigDecodeMessageNamesTheReplacementForTmpfsSizeMiB(t *testing.T) {
+	var cfg userConfig
+	dec := toml.NewDecoder(strings.NewReader("tmpfs_size_mib = 512\n"))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cfg)
+	if err == nil {
+		t.Fatal("control: tmpfs_size_mib decoded, so it is still a key")
+	}
+
+	msg := configDecodeMessage("/home/u/.config/snug/config.toml", err)
+	if !strings.Contains(msg, "tmpfs_size_mib is gone") {
+		t.Errorf("message does not say the old key is gone:\n%s", msg)
+	}
+	if !strings.Contains(msg, `tmpfs_size = "512 MiB"`) {
+		t.Errorf("message does not show what to write instead:\n%s", msg)
+	}
+	if strings.Contains(msg, "profiles.d") {
+		t.Errorf("a retired scalar key was told to go and write a profile file:\n%s", msg)
 	}
 }

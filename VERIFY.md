@@ -700,7 +700,7 @@ the sandbox:
 | `/tmp` | tmpfs | no |
 | `$HOME` | tmpfs | no |
 | `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` | tmpfs | no |
-| `/dev/shm` | tmpfs, bounded by `tmpfs_size_mib` | no |
+| `/dev/shm` | tmpfs, bounded by `tmpfs_size` | no |
 
 Do not trust that table — it is prose, and prose drifts. It said **seven** for a
 milestone after `@home` grew `{home}/.local/share`. Enumerate the set instead:
@@ -739,7 +739,7 @@ A line you do not recognise is a finding. A missing line means a grant went
 away, which is a documentation bug at least.
 
 `/dev/shm` is writable because POSIX shared memory needs it, and it is contained
-on a private tmpfs sized by `tmpfs_size_mib`. Confirm both halves yourself
+on a private tmpfs sized by `tmpfs_size`. Confirm both halves yourself
 rather than believing it:
 
 ```bash
@@ -3560,6 +3560,30 @@ printf '[profile.npm]\nro = ["{home}/.npm:{home}/.npm-host"]\n' > $X/snug/config
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
 printf 'tmpfs_size_mb = 512\n' > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+
+# the retired key, which is not a typo: a config.toml written against
+# tmpfs_size_mib was correct before the size grew a unit of its own.
+printf 'tmpfs_size_mib = 512\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+
+# door 4: a key config.toml DOES have, holding a value it does not. A bare
+# number is the dangerous one — 512 is a valid byte count, and 512 bytes is
+# what the reader who just deleted `_mib` did not mean.
+printf 'tmpfs_size = 512\n'       > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+printf 'tmpfs_size = "4 gigs"\n'  > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+printf 'tmpfs_size = "1.5 GiB"\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
+
+# and the accepted set, where the two families are 6217728 bytes apart on
+# purpose.
+printf 'tmpfs_size = "128 MiB"\n' > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config | grep "^tmpfs size"
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub | grep -o -- "--size 134217728" | head -1
+printf 'tmpfs_size = "128 mb"\n'  > $X/snug/config.toml
+XDG_CONFIG_HOME=$X ./bin/snug config | grep "^tmpfs size"
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub | grep -o -- "--size 128000000" | head -1
 rm -rf $X
 ```
 
@@ -3577,12 +3601,29 @@ The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
 run exits **77** naming `entry 2` and the config file, rather than silently
 resolving the built-in list.
 
-Both unknown-key runs exit **77** and neither prints go-toml's positionless
+All three unknown-key runs exit **77** and none prints go-toml's positionless
 `strict mode: fields in the document are missing in the target struct`. Each
 quotes the numbered source line with a caret under the offending key, and names
-the two keys config.toml accepts. Only the `[profile.npm]` run adds the
-`profiles.d/*.toml` sentence — the misspelled `tmpfs_size_mb` must NOT get it,
-or the advice becomes noise on every typo.
+the two keys config.toml accepts: `defaults` and `tmpfs_size`. Only the
+`[profile.npm]` run adds the `profiles.d/*.toml` sentence — the misspelled
+`tmpfs_size_mb` must NOT get it, or the advice becomes noise on every typo.
+`tmpfs_size_mib` gets neither that sentence nor silence: it adds
+`tmpfs_size_mib is gone` and the line `tmpfs_size = "512 MiB"` to write instead.
+
+The three door-4 runs exit **77** as well. `512` says `"512" has no unit` and
+`4 gigs` says `unknown unit "gigs"`; both then name the whole accepted set —
+`B, kB, MB, GB, TB (1000-based) or KiB, MiB, GiB, TiB (1024-based)`. `1.5 GiB`
+says it is a fraction and names `1536 MiB`. **No run prints `--size 512`**: a
+bare integer that decoded as 512 bytes would be a working sandbox with an
+unusable tmpfs, which is the failure this refusal exists for. Only the quoted
+values carry a caret — go-toml wraps an `UnmarshalText` error with a position
+for a TOML *string* and returns it bare for an integer or a boolean, so
+`tmpfs_size = 512` gets the sentence without the source line.
+
+The last four runs are the positive: `128 MiB` reports `tmpfs size  128 MiB`
+and puts `--size 134217728` in the argv, `128 mb` reports `128 MB` and puts
+`--size 128000000` there. The two differ by 6217728 bytes and neither is read as
+the other.
 
 ## 9f. A container never sees the HOST's real /etc/resolv.conf (issue #126)
 
