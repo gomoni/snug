@@ -2763,6 +2763,17 @@ kill $HOSTPY
 Expect `REFUSED` here too, from inside a sandbox whose own snug0 now carries
 the host's link-local address as a sealed local route.
 
+**And the seal did not close ordinary egress along with the host's own
+addresses.** The positive control for the whole section — every `REFUSED`
+above is worth nothing if it turns out this sandbox has no network at all:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
+  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 https://example.com/ || echo UNREACHABLE"
+```
+
+Expect `200` (or another ordinary HTTP status) — not `UNREACHABLE`.
+
 ## 8. Profile order is irrelevant
 
 ```bash

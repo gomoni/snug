@@ -70,8 +70,8 @@ func TestDryRunJSONIsTheWholeOfStdout(t *testing.T) {
 			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 				t.Fatalf("stdout is not one parseable JSON document: %v\nstdout:\n%s", err, stdout)
 			}
-			if doc.Snug.Format != 1 {
-				t.Errorf("snug.format is %d, want 1", doc.Snug.Format)
+			if doc.Snug.Format != 2 {
+				t.Errorf("snug.format is %d, want 2", doc.Snug.Format)
 			}
 			if doc.Snug.Outcome != tc.outcome {
 				t.Errorf("snug.outcome is %q, want %q", doc.Snug.Outcome, tc.outcome)
@@ -410,8 +410,8 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 			if err := json.Unmarshal(raw["snug"], &meta); err != nil {
 				t.Fatalf("no snug block: %v\n%s", err, b)
 			}
-			if meta.Format != 1 {
-				t.Errorf("snug.format is %d, want 1", meta.Format)
+			if meta.Format != 2 {
+				t.Errorf("snug.format is %d, want 2", meta.Format)
 			}
 			if meta.Outcome != "refused" {
 				t.Errorf("snug.outcome is %q, want %q", meta.Outcome, "refused")

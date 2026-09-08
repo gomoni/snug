@@ -296,3 +296,24 @@ func TestParseNetModeAcceptsTwoModesAndNothingElse(t *testing.T) {
 		}
 	}
 }
+
+// TestHostAddressesSealedIsExactlyEgress pins HostAddressesSealed's
+// predicate to the mode it derives from, hand-built rather than resolved
+// from a profile, so this runs with no user namespace: --dry-run's own
+// description of the seal (internal/cli/report.go) and the sealing itself
+// (internal/stage/loopback.go's sealHostAddresses) both key off NetEgress,
+// and this is the one place both would go silently out of step with a third
+// mode added to NetMode without a matching arm here.
+func TestHostAddressesSealedIsExactlyEgress(t *testing.T) {
+	for _, tc := range []struct {
+		mode NetMode
+		want bool
+	}{
+		{NetIsolated, false},
+		{NetEgress, true},
+	} {
+		if got := (NetPolicy{Mode: tc.mode}).HostAddressesSealed(); got != tc.want {
+			t.Errorf("HostAddressesSealed() for mode %v = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}

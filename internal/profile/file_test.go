@@ -645,6 +645,49 @@ func TestRetiredPathKeyNamesTheFix(t *testing.T) {
 	}
 }
 
+// TestRetiredAnonKeyNamesTheFix is the unit-level regression for
+// retiredAnonKey: network anonymisation (a synthetic address/gateway in
+// place of the sandbox's real one) is retired with no replacement spelling,
+// so a profile still carrying one of the four keys must be refused rather
+// than silently accepted as an ordinary (and now meaningless) grant.
+func TestRetiredAnonKeyNamesTheFix(t *testing.T) {
+	_, err := parse([]byte("[profile.x]\nnetwork = \"egress\"\naddress = \"10.13.13.2/24\"\n"+
+		"gateway = \"10.13.13.1\"\n"), "mine.toml", true)
+	if err == nil {
+		t.Fatal("`address`/`gateway` are retired and must be refused")
+	}
+	for _, want := range []string{"mine.toml", `"x"`, "address", "gateway", "no longer accepts",
+		"no longer supports network anonymisation", "no replacement key", "remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q — the message has to name the retired keys "+
+				"and say there is nothing to migrate to", err, want)
+		}
+	}
+	// POSITIVE CONTROL. Without it the refusal would read as a ban on `network
+	// = "egress"` itself rather than on the two retired keys — a plain egress
+	// profile naming neither must still parse.
+	reg, err := parse([]byte("[profile.x]\nnetwork = \"egress\"\n"), "mine.toml", true)
+	if err != nil {
+		t.Fatalf("a profile naming no retired key must parse: %v", err)
+	}
+	if reg["x"].Network != "egress" {
+		t.Errorf("network = %q, want %q", reg["x"].Network, "egress")
+	}
+
+	// address6/gateway6 alone are refused too — the check is OR across all
+	// four keys, not just the v4 pair.
+	_, err = parse([]byte("[profile.y]\nnetwork = \"egress\"\naddress6 = \"fd00::2/64\"\n"+
+		"gateway6 = \"fd00::1\"\n"), "mine.toml", true)
+	if err == nil {
+		t.Fatal("`address6`/`gateway6` are retired and must be refused")
+	}
+	for _, want := range []string{"address6", "gateway6"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 // The parse-time checks run in parse, beside checkName — so `snug profile show`
 // reports them and the verdict on a profile never depends on the host reading
 // it (§2.3).
