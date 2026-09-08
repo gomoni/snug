@@ -31,7 +31,7 @@ func TestDryRunStatesTheTmpfsBound(t *testing.T) {
 	}
 	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 
-	want := "(max " + policy.FormatBytes(p.TmpfsSizeBytes) + ")"
+	want := "(max " + policy.Size(p.TmpfsSizeBytes).String() + ")"
 	tmpLine := ""
 	roLine := ""
 	for _, line := range strings.Split(got, "\n") {

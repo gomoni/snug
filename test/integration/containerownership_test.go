@@ -19,13 +19,12 @@ package integration
 // runs (ownership.go's own package comment; VERIFY.md §9's "warm start"
 // language). Two runs on the SAME target directory therefore share one
 // store, which is the only way to produce "another run's container" at all.
-// snug refuses a second LIVE run on one target
-// (internal/cli/targetlock.go, .claude/design/ONE-SANDBOX-PER-DIR.md), so the
-// two runs here are sequential: run() blocks until the first snug process has
-// fully exited (and released its flock) before the second is even started.
-// That sequencing is also the real threat shape #386 is about — the store
-// outlives any one run, and whatever an earlier run left in it is still
-// there the next time this target is opened.
+// The two runs here are SEQUENTIAL — run() blocks until the first snug process
+// has fully exited before the second is even started — because that is the
+// threat shape #386 is about: the store outlives any one run, and whatever an
+// earlier run left in it is still there the next time this target is opened.
+// Concurrent runs on one target are permitted and share the same store, which
+// is a sharper version of the same channel, not a different one.
 //
 // # The row-3 trap this test exists to avoid
 //

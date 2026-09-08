@@ -221,7 +221,7 @@ const maxHTTPDoorStateBytes = 64 << 10
 // httpDoorStateFile is where a run publishes its doors for `snug proxy` to find.
 // Beside state.json in the run's own directory rather than inside it: state.json
 // has a schema a version check refuses on mismatch, and a door is not something
-// `snug attach` needs to understand.
+// the orphan sweep — state.json's other reader — needs to understand.
 const httpDoorStateFile = "http-doors.json"
 
 // publishHTTPDoors writes this run's doors where `snug proxy` reads them.

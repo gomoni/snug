@@ -8,7 +8,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -128,8 +127,6 @@ func Main() {
 			os.Exit(profileCmd(argv[1:]))
 		case "config":
 			os.Exit(configCmd(argv[1:]))
-		case "attach":
-			os.Exit(attachCmd(argv[1:]))
 		case "proxy":
 			os.Exit(proxyCmd(argv[1:]))
 		case "engine":
@@ -175,7 +172,6 @@ usage:
   snug profile dot [NAME...]              the same as a graphviz graph
   snug config                             show the resolved configuration
   snug doctor                             check whether this host can run snug
-  snug attach [dir]                       join a sandbox that is already running
   snug proxy [dir]                        serve a declared http door to your browser
 
 flags:
@@ -457,37 +453,34 @@ func run(cfg config) int {
 		return refuse(cfg, exitUsage, err)
 	}
 
-	// One live sandbox per target directory (issue #119). This is the earliest
-	// point at which the target is knowable, and the refusal must start NOTHING
-	// — no host tmp dir, no staged credentials, no ssh-agent or container proxy,
-	// no stage, no netns, no bwrap — so the lock is taken here, before any of
-	// that. A dry run creates nothing and must never be refused, so it takes no
-	// lock. Invariant 5: the refusal is fatal and there is no fallback to a
-	// second run.
+	// Announce this run on the target, SHARED: another sandbox on the same
+	// directory is a supported shape, and this lock is how everything else
+	// learns that at least one is live (targetlock.go). Taken here because
+	// this is the earliest point at which the target is knowable and nothing
+	// has been created yet — no host tmp dir, no staged credentials, no
+	// ssh-agent or container proxy, no stage, no netns, no bwrap — so a
+	// failure to take it stops the run before any of that exists. A dry run
+	// creates nothing, so it takes no lock.
 	if !cfg.startsNothing() {
 		unlock, err := lockTarget(abs)
 		if err != nil {
-			var busy *targetBusyError
-			if errors.As(err, &busy) {
-				// The named-fix refusal: another live run holds this target.
-				return refuseVerbatim(cfg, exitUnavail, busy.message(target), busy.Error())
-			}
 			// A hard error (a runtime directory that fails the ownership,
-			// mode or symlink guards secureSubroot enforces) is the same
-			// refusal the per-run lock produces from startIdentity /
+			// mode or symlink guards secureSubroot enforces, or `snug engine
+			// gc` holding this target exclusively for a store reclaim) is the
+			// same refusal the per-run lock produces from startIdentity /
 			// startContainers, and takes the same exit code — this path
 			// simply reaches those guards earlier.
 			return refuse(cfg, exitPolicy, err)
 		}
 		defer unlock()
 
-		// Housekeeping, and it is placed HERE for two reasons. It kills
-		// processes, so a dry run must never reach it (a dry run starts
-		// nothing and stops nothing — issue #21); and it runs only once the
-		// lock proves no OTHER live run owns this target, so the sweep and
-		// the refusal above read the same fact from the same lock rather
-		// than from two sources that could disagree. See orphansweep.go for
-		// why this cannot reach a live sandbox.
+		// Housekeeping, placed HERE because it kills processes and a dry run
+		// must never reach it (a dry run starts nothing and stops nothing —
+		// issue #21). It does NOT depend on this run's own lock proving
+		// anything, and it consults no target's lock at all: each record is
+		// judged on whether the snug that owned THAT run is provably gone, so
+		// a peer live on the same target defers nothing. See orphansweep.go
+		// for why it cannot reach a live sandbox.
 		sweepOrphanedSandboxes()
 	}
 
@@ -611,11 +604,10 @@ func run(cfg config) int {
       Fix: give this host a resolver, or pin one in your own profile.`)
 	}
 
-	// The run's own private directory, published for the whole run so `snug
-	// attach` can find it — created on EVERY real run now, not only when
-	// identity or containers need it (issue #61 part (c)/(e)). --dry-run
-	// starts nothing, so it must not create one either (dryrun.go's ATTACH
-	// block names the PATTERN it would use, never a directory that exists).
+	// The run's own private directory, holding this run's sockets and its own
+	// lock — created on EVERY real run now, not only when identity or
+	// containers need it (issue #61 part (c)/(e)). --dry-run starts nothing,
+	// so it must not create one either.
 	//
 	// This is a runtimeDir()-shaped refusal, and it is FATAL rather than a
 	// warning: the alternative reading — "a debugging convenience must not
@@ -633,9 +625,9 @@ func run(cfg config) int {
 	if !cfg.startsNothing() {
 		d, rerr := openRuntimeDir()
 		if rerr != nil {
-			const cannotPublish = "This run cannot publish its state, so `snug attach` could " +
-				"never find it — refusing to start rather than running a sandbox nothing else " +
-				"can reach."
+			const cannotPublish = "This run cannot publish its state, so if it is SIGKILLed " +
+				"nothing will be able to find and clean up its sandbox init — refusing to " +
+				"start rather than running a sandbox that can only be left behind."
 			return refuseVerbatim(cfg, exitPolicy,
 				fmt.Sprintf("snug: %v\n\n      %s\n", rerr, cannotPublish),
 				fmt.Sprintf("%v: %s", rerr, cannotPublish))
@@ -764,7 +756,8 @@ func run(cfg config) int {
 				runDirPath = runDir.Path()
 			}
 			if werr := writeRunState(pol, info, runDirPath); werr != nil {
-				fmt.Fprintf(os.Stderr, "snug: this run will not be attachable (%v)\n", werr)
+				fmt.Fprintf(os.Stderr, "snug: could not record this run (%v); a SIGKILL of "+
+					"snug would leave its sandbox init for nothing to clean up\n", werr)
 				return
 			}
 			// Only after writeRunState has succeeded, never before: a

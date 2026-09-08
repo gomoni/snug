@@ -159,9 +159,9 @@ type event struct {
 	// fdBwrapInfo). InitPID is a HOST pid — bwrap sits outside the pid
 	// namespace it creates, and P0, P1 and bwrap are all in the host's — so it
 	// means the same thing on both sides of this socket. Zero when bwrap never
-	// answered, which is fatal for a gated run and warn-only ("this run will
-	// not be attachable") for one with no engine; "forked" is never sent in
-	// that case. Namespaces is "enginestarted" only — "forked" carries InitPID
+	// answered, which is fatal for a gated run and warn-only ("this run's
+	// sandbox init is not recorded") for one with no engine; "forked" is never
+	// sent in that case. Namespaces is "enginestarted" only — "forked" carries InitPID
 	// alone.
 	InitPID    int               `json:"init_pid,omitempty"`
 	Namespaces map[string]uint64 `json:"namespaces,omitempty"`

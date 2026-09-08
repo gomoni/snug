@@ -20,8 +20,7 @@ import (
 // before snug gets there, not just after.
 //
 // Two guards, both load-bearing (issue #61 part (c), which promoted this
-// from #31's low-severity list once it became the prerequisite for `snug
-// attach`):
+// from #31's low-severity list):
 //
 //   - Every directory this function creates or reuses — the shared "snug"
 //     directory and this run's own subdirectory — is opened through
@@ -338,10 +337,10 @@ func lockRunDir(snugRoot *os.Root, snugPath, runName string) (*os.File, error) {
 			"and snug refuses to use one whose owner and mode it cannot verify", err)
 	}
 	// Closed once the lock inside it is held. It was kept open for a reader
-	// that no longer exists: issue #123 moved `snug attach`'s state.json to
-	// the TARGET-keyed path, so nothing writes into this directory through a
-	// Root any more, and runStateRoot — the function that handed it out — had
-	// no callers left at all. A descriptor held open for a dead reader is not
+	// that no longer exists: issue #123 moved state.json to the TARGET-keyed
+	// path, so nothing writes into this directory through a Root any more, and
+	// runStateRoot — the function that handed it out — had no callers left at
+	// all. A descriptor held open for a dead reader is not
 	// defence in depth, it is a fact nobody is checking.
 	defer runRoot.Close()
 

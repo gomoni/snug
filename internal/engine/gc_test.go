@@ -207,6 +207,21 @@ func TestPurgeChmodsOnlyWhatBlockedIt(t *testing.T) {
 	if _, err := exec.LookPath("strace"); err != nil {
 		t.Skipf("strace not on PATH: cannot count chmod syscalls without it: %v", err)
 	}
+	// PRESENCE IS NOT CAPABILITY, and the two must be probed separately.
+	// Inside snug's own sandbox strace is on PATH and cannot trace:
+	// "PTRACE_TRACEME: Operation not permitted", exit 1. The same denial comes
+	// from Docker's default seccomp profile and from a runner without
+	// CAP_SYS_PTRACE, so this probes the capability rather than reading $SNUG —
+	// gating on the variable would keep failing everywhere else it bites.
+	//
+	// It runs BEFORE plantModeZeroTree on purpose. A mode-0000 directory that
+	// Purge never got to restore also makes t.TempDir's own cleanup fail, so
+	// skipping later produced a SECOND failure whose message named the temp
+	// directory and not ptrace.
+	if out, err := exec.Command("strace", "-f", "-o", os.DevNull, "/bin/true").CombinedOutput(); err != nil {
+		t.Skipf("strace is present but cannot trace on this host, so chmod syscalls cannot "+
+			"be counted: %v\n%s", err, out)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

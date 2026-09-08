@@ -65,6 +65,27 @@ func TestLocateBwrapFailureFindsTheNarrowestRefusal(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The fake bwrap answers for the KERNEL, but the userns rung's
+			// verdict is not the fake's alone: locateBwrapFailure hands that
+			// refusal to classifyUsernsRefusal, which reads THIS host's
+			// sysctls and THIS process's seccomp status. Under a filter with
+			// permissive sysctls — snug's own sandbox, Docker's default
+			// profile — the honest answer becomes blockerUsernsSeccomp, so the
+			// case wanting blockerUserns cannot hold and is skipped rather
+			// than made to lie.
+			//
+			// No coverage is lost, which is what makes the skip allowed here:
+			// classifyUsernsRefusal is pure and
+			// TestAUsernsRefusalBlamesSeccompOnlyWhenTheSysctlsAreAlreadyFine
+			// drives all four combinations, the {true, true} ->
+			// blockerUsernsSeccomp row this skip steps around included.
+			// Probed, not read off $SNUG, so it also holds wherever else a
+			// filter is installed.
+			if tc.want == blockerUserns && seccompFilterInstalled() && usernsSysctlsPermissive() {
+				t.Skip("a seccomp filter is installed and the userns sysctls are permissive, " +
+					"so a userns refusal classifies as blockerUsernsSeccomp here; the " +
+					"classification itself is covered purely by TestClassifyUsernsRefusal")
+			}
 			fake := fakeBwrap(t, tc.refuse, tc.alsoRefuses)
 			got, ladder := locateBwrapFailure(fake)
 			if got != tc.want {

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -923,56 +922,173 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 	}
 }
 
-// TestDryRunAttachBlockNamesTheFileAttachActuallyReads pins the ATTACH block's
-// honesty requirements directly rather than trusting review (describeAttach's
-// own doc comment).
+// TestDryRunSharedBlockNamesTheSurfaceASecondSandboxWouldMeet pins the SHARED
+// block's honesty requirements directly rather than trusting review
+// (describeShared's own doc comment).
 //
-// It used to be named ...NamesThePathPattern and asserted "run-<pid>", from
-// when the state file lived under runtimeBase(). Issue #123 moved it to a
-// TARGET-keyed name under the uid-derived targetLockBase(), and the assertion
-// went stale in the worst direction available to a --dry-run test: it kept
-// PASSING while the screen named a file that does not exist, with the wrong
-// basename, under a base the run need not even use. The pid half of the old
-// argument survives and is asserted harder below — there is now no pid in the
-// path at all.
-func TestDryRunAttachBlockNamesTheFileAttachActuallyReads(t *testing.T) {
-	// Points runtimeBase() somewhere obviously wrong. The ATTACH block must
-	// NOT render it: that is the env-derived base the file no longer lives in,
-	// and naming it is exactly the bug this test now guards.
-	t.Setenv("XDG_RUNTIME_DIR", "/fake-runtime-dir-for-this-test")
+// The half that needs a test rather than a reading is the GRAFT half. The
+// engine store and runroot are KindGraft, internal/policy/validate.go refuses a
+// KindGraft in p.Mounts, and so an enumeration written over the payload mount
+// set alone passes every review and silently omits the widest shared surface
+// there is. The fixture below therefore carries one of each and demands both.
+func TestDryRunSharedBlockNamesTheSurfaceASecondSandboxWouldMeet(t *testing.T) {
+	pol := &policy.Policy{
+		Target: "/home/u/proj",
+		Podman: policy.PodmanSocket,
+		Mounts: map[string]policy.Mount{
+			"/home/u/proj": {Guest: "/home/u/proj", Kind: policy.KindBind,
+				Host: "/home/u/proj", Access: policy.AccessRW},
+			"/etc/hosts": {Guest: "/etc/hosts", Kind: policy.KindBind,
+				Host: "/etc/hosts", Access: policy.AccessRO},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/store": {Mount: policy.Mount{
+				Guest: "/snug/engine/store", Kind: policy.KindGraft,
+				Host: "/home/u/.local/share/snug/engines/sha256_abc/storage", Access: policy.AccessRW}},
+			"/run": {Mount: policy.Mount{
+				Guest: "/run", Kind: policy.KindTmpfs, Access: policy.AccessRW}},
+		},
+	}
+	got := captureFile(t, func(w io.Writer) { describeShared(w, pol) })
 
-	pol := &policy.Policy{Target: "/home/u/proj"}
-	got := captureFile(t, func(w io.Writer) { describeAttach(w, pol) })
+	if !strings.Contains(got, "/home/u/proj") {
+		t.Errorf("the SHARED block does not name the writable target bind:\n%s", got)
+	}
+	// The graft half. A mount-set sweep cannot reach this row by construction,
+	// so its absence is the regression this test exists for.
+	if !strings.Contains(got, "/home/u/.local/share/snug/engines/sha256_abc/storage") {
+		t.Errorf("the SHARED block does not name the read-write engine store graft, which lives in "+
+			"p.Grafts and cannot appear in p.Mounts at all (validate.go refuses a KindGraft "+
+			"there) — an enumeration over the mount set alone is blind to it:\n%s", got)
+	}
+	if strings.Contains(got, "/etc/hosts") {
+		t.Errorf("the SHARED block names a READ-ONLY bind; neither sandbox can write it, so it is "+
+			"not a channel between them:\n%s", got)
+	}
+	// A graft with no Host has no host side to meet on — describeGrafts prints
+	// "no host path is opened" for exactly these, and each run's engine mounts
+	// its own fresh one.
+	if strings.Contains(got, "/run ") {
+		t.Errorf("the SHARED block names a graft with no host path:\n%s", got)
+	}
 
-	base, snugName, err := targetLockBase()
-	if err != nil {
-		t.Skipf("this host has no per-user runtime directory, so there is no path to render: %v", err)
+	// The abuse sentence, in both directions, and the named files. This is the
+	// channel measured on this branch: sandbox A writes .git/hooks/pre-commit,
+	// sandbox B runs an ordinary `git commit`, A's hook fires under B's
+	// credentials. Softening any of it is the thing this assertion prevents.
+	for _, want := range []string{".git/hooks", "Makefile", "CLAUDE.md", ".envrc", "package.json"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the SHARED block does not name %s among the files one sandbox writes and the "+
+				"other's tools execute or obey:\n%s", want, got)
+		}
 	}
-	want := filepath.Join(base, snugName, targetStateName(pol.Target))
-	if !strings.Contains(got, want) {
-		t.Errorf("ATTACH block does not name the file `snug attach` actually reads (%s):\n%s",
-			want, got)
+	if !strings.Contains(got, "Neither has to") {
+		t.Errorf("the SHARED block does not say the channel needs no cooperation from the "+
+			"victim:\n%s", got)
 	}
-	if strings.Contains(got, "/fake-runtime-dir-for-this-test") {
-		t.Errorf("ATTACH block rendered the env-derived runtimeBase(), which is NOT where the "+
-			"state file lands (issue #123):\n%s", got)
+	// With a @podman* profile selected the store sentence must carry execution,
+	// not only sharing.
+	if !strings.Contains(got, "the other's engine runs") {
+		t.Errorf("the SHARED block does not say a layer one sandbox's engine pulls is a layer the "+
+			"other's engine runs:\n%s", got)
 	}
-	// No pid anywhere in the path, fabricated or otherwise — the target-keyed
-	// name has no room for one, and printing this process's own pid would be
-	// the "small lie" CLAUDE.md says makes the artifact untrustworthy.
-	if strings.Contains(got, "run-"+strconv.Itoa(os.Getpid())) || strings.Contains(got, "run-<pid>") {
-		t.Errorf("ATTACH block still names a per-run directory:\n%s", got)
+	if !strings.Contains(got, "own tmpfs $HOME") {
+		t.Errorf("the SHARED block does not state what is NOT shared:\n%s", got)
 	}
-	if !strings.Contains(got, "0600") || !strings.Contains(got, "0700") {
-		t.Errorf("ATTACH block does not state the file/directory modes:\n%s", got)
+}
+
+// TestDryRunSharedBlockOmitsWhatBelongsToThisRunAlone is the false-positive
+// half. The block filters for writable, and this run's OWN sockets are
+// writable: /snug/podman.sock lives under run-<pid>/ and /snug/engine/sock
+// under snug-<uid>-<pid>/, so a peer sandbox is handed its own and can meet
+// this one on neither. Listing them among "what another sandbox on this
+// target shares with you" is a false row on the screen whose whole job is to
+// be trusted.
+//
+// The discriminator is the RunScoped flag set where those paths are
+// CONSTRUCTED, never a pid parsed back out of the path — which is why the
+// positive control below is the same two guest paths WITHOUT the flag. If the
+// filter ever became "a path that looks run-shaped", the control would be
+// dropped too and this test would say so.
+func TestDryRunSharedBlockOmitsWhatBelongsToThisRunAlone(t *testing.T) {
+	pol := &policy.Policy{
+		Target: "/home/u/proj",
+		Podman: policy.PodmanSocket,
+		Mounts: map[string]policy.Mount{
+			"/home/u/proj": {Guest: "/home/u/proj", Kind: policy.KindBind,
+				Host: "/home/u/proj", Access: policy.AccessRW},
+			"/snug/podman.sock": {Guest: "/snug/podman.sock", Kind: policy.KindBind,
+				Host: "/run/user/1000/snug/run-4242/podman.sock", Access: policy.AccessRW,
+				RunScoped: true},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/store": {Mount: policy.Mount{
+				Guest: "/snug/engine/store", Kind: policy.KindGraft,
+				Host: "/home/u/.local/share/snug/engines/sha256_abc/storage", Access: policy.AccessRW}},
+			"/snug/engine/sock": {Mount: policy.Mount{
+				Guest: "/snug/engine/sock", Kind: policy.KindGraft,
+				Host: "/tmp/snug-1000-4242/sock", Access: policy.AccessRW, RunScoped: true}},
+		},
 	}
-	if !strings.Contains(got, "no command, no argv") {
-		t.Errorf("ATTACH block does not say state.json carries no command/argv:\n%s", got)
+	got := captureFile(t, func(w io.Writer) { describeShared(w, pol) })
+
+	for _, absent := range []string{"/run/user/1000/snug/run-4242/podman.sock", "/tmp/snug-1000-4242/sock"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("the SHARED block lists %s, whose host side exists for THIS run alone: a "+
+				"second sandbox on this target is handed its own and cannot meet this one "+
+				"there, so the row is a false positive:\n%s", absent, got)
+		}
 	}
-	if !strings.Contains(got, "NOT a permission") {
-		t.Errorf("ATTACH block does not say attach gates nothing:\n%s", got)
+	// The two rows a peer genuinely meets must survive, or the filter is
+	// simply dropping /snug.
+	for _, want := range []string{"/home/u/proj", "/home/u/.local/share/snug/engines/sha256_abc/storage"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the SHARED block no longer names %s, which IS keyed by the target and IS "+
+				"shared:\n%s", want, got)
+		}
 	}
-	if !strings.Contains(got, "seccomp") || !strings.Contains(got, "capability") {
-		t.Errorf("ATTACH block does not name what attach DOES add (filter, capability set):\n%s", got)
+
+	// POSITIVE CONTROL on the flag rather than on the paths: the identical
+	// guest paths, unmarked, must be listed. Without this the assertions above
+	// are equally satisfied by a block that filtered on the path text.
+	unmarked := &policy.Policy{
+		Target: "/home/u/proj",
+		Mounts: map[string]policy.Mount{
+			"/snug/podman.sock": {Guest: "/snug/podman.sock", Kind: policy.KindBind,
+				Host: "/run/user/1000/snug/run-4242/podman.sock", Access: policy.AccessRW},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/sock": {Mount: policy.Mount{
+				Guest: "/snug/engine/sock", Kind: policy.KindGraft,
+				Host: "/tmp/snug-1000-4242/sock", Access: policy.AccessRW}},
+		},
+	}
+	ctl := captureFile(t, func(w io.Writer) { describeShared(w, unmarked) })
+	for _, want := range []string{"/run/user/1000/snug/run-4242/podman.sock", "/tmp/snug-1000-4242/sock"} {
+		if !strings.Contains(ctl, want) {
+			t.Errorf("the control policy marks nothing RunScoped and %s is still omitted, so the "+
+				"exclusion is not keyed on the flag:\n%s", want, ctl)
+		}
+	}
+}
+
+// TestDryRunSharedBlockOnAPolicyWithNothingWritable is the zero case: a screen
+// that printed an empty list under "the writable host paths it could meet this
+// one on are below" would read as a rendering failure, not as a guarantee.
+func TestDryRunSharedBlockOnAPolicyWithNothingWritable(t *testing.T) {
+	pol := &policy.Policy{
+		Target: "/home/u/proj",
+		Mounts: map[string]policy.Mount{
+			"/etc/hosts": {Guest: "/etc/hosts", Kind: policy.KindBind,
+				Host: "/etc/hosts", Access: policy.AccessRO},
+		},
+	}
+	got := captureFile(t, func(w io.Writer) { describeShared(w, pol) })
+	if !strings.Contains(got, "meet this one on nothing") {
+		t.Errorf("the SHARED block does not state the zero case positively:\n%s", got)
+	}
+	if strings.Contains(got, "the other's engine runs") {
+		t.Errorf("the SHARED block claims a shared engine store on a policy with no container "+
+			"profile:\n%s", got)
 	}
 }

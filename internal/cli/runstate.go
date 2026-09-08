@@ -1,37 +1,35 @@
 package cli
 
-// runstate.go is the write side and the read/discovery side of `state.json`
-// — the one file a run publishes about itself so `snug attach` can find and
-// join it. It lives next to runtimedir.go because it needs that file's
-// *os.Root machinery, which stays package-private on purpose (CLAUDE.md,
-// invariant 3's neighbourhood: a runtime directory reached by a bare path
-// lookup is exactly the shape issue #61(c)/#85 closed).
+// runstate.go is the write and read side of `state.json`, the one file a run
+// publishes about itself. It has exactly two readers left: the orphan sweep,
+// which needs the identity chain (init pid, its start time, its six namespace
+// inodes, and the owner record) to decide whether a leftover init may be
+// signalled, and `snug proxy`, which needs run_dir to find the http-doors
+// file a run published beside its sockets.
 //
 // Nothing here resolves a profile, reads TOML, or makes a policy decision —
-// it renders a policy that has ALREADY been resolved (writeRunState) or reads
-// back what a run already published (readRunStateFrom, decodeRunState). The
-// abuse sentence for the file itself: a hostile process with the same uid as
-// the run's owner can read state.json and learn a sandbox's init pid, its
-// namespace ids and its seccomp digest — none of which grants it anything it
-// could not already reach with `nsenter` and worse hygiene (issue #61's own
-// settlement: attach gates nothing, the kernel already does, by uid). What
-// state.json must NEVER carry is a command, an argv, an executable path
-// beyond the one bounded exception (SHELL, §8.4), or a host-environment value
-// a profile merely passed through — see snugAuthoredEnvPairs below.
+// it renders facts about a sandbox that is already running.
+//
+// The abuse sentence for the file itself: a hostile process with the same uid
+// as the run's owner can read state.json and learn a sandbox's init pid and
+// its namespace ids, neither of which grants it anything it could not already
+// reach with `nsenter` and worse hygiene — the kernel gates that by uid, and
+// snug never did. What state.json must NEVER carry is a command, an argv, an
+// executable path, or a host-environment value a profile merely passed
+// through: every one of those is a secret a same-uid reader would not
+// otherwise have, written to disk for its benefit.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"runtime/debug"
 	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
+	"golang.org/x/sys/unix"
 )
 
 // runStateSchema is the only version this binary understands. A mismatch is
@@ -40,33 +38,29 @@ import (
 const runStateSchema = 1
 
 // runState is state.json's Go shape. Field order here is cosmetic; the JSON
-// key names are the contract (§6.2 of the attach design) and every one of
-// them is tagged explicitly rather than left to reflection's default
+// key names are the contract — the orphan sweep of a LATER snug reads a
+// record this one wrote, so a rename is a cross-version break — and every one
+// of them is tagged explicitly rather than left to reflection's default
 // casing, so a struct-field rename can never silently change the file.
 type runState struct {
-	Schema   int             `json:"schema"`
-	Target   string          `json:"target"`
-	Profiles []string        `json:"profiles"`
-	Chdir    string          `json:"chdir"`
-	Sandbox  runStateSandbox `json:"sandbox"`
-	Seccomp  runStateSeccomp `json:"seccomp"`
-	Env      [][2]string     `json:"env"`
-	Revision string          `json:"revision,omitempty"`
+	Schema  int             `json:"schema"`
+	Target  string          `json:"target"`
+	Sandbox runStateSandbox `json:"sandbox"`
 
 	// Owner is the snug process that holds this target's lock, and it is the
-	// sweep's second liveness signal — the one an `rm` or an `mv` of the lock
-	// file cannot detach from the run (issue #489). See stateowner.go.
+	// sweep's liveness signal for this run — the one an `rm` or an `mv` of the
+	// lock file cannot detach from it (issue #489). See stateowner.go.
 	Owner stateOwner `json:"owner"`
 
 	// RunDir is this run's own runtime directory, and it is here for one
 	// consumer: `snug proxy` has to find the http-doors file the run published
-	// beside its sockets. Optional, like Revision — a run with no doors has
-	// nothing there to read, and an older state file simply does not carry it.
+	// beside its sockets. Optional — a run with no doors has nothing there to
+	// read, and an older state file simply does not carry one.
 	//
-	// It is NOT how `snug attach` finds anything. That still goes through the
-	// TARGET-keyed path, for the reason the comment below gives: the two
-	// processes need not agree on $XDG_RUNTIME_DIR, and a path published by one
-	// of them is a fact rather than an agreement.
+	// It is published rather than recomputed because the run directory is
+	// derived from $XDG_RUNTIME_DIR/$TMPDIR, and `snug proxy` need not have
+	// been launched with the same ones: a path published by the run is a fact,
+	// where a path the reader derives is an agreement neither side made.
 	RunDir string `json:"run_dir,omitempty"`
 }
 
@@ -76,24 +70,17 @@ type runStateSandbox struct {
 	Namespaces    map[string]uint64 `json:"namespaces"`
 }
 
-type runStateSeccomp struct {
-	// State is "active" or "none" — never a bare bool, so a reader printing
-	// it (an error message, a future --list) never has to invent the words.
-	State  string `json:"state"`
-	Digest string `json:"digest,omitempty"`
-}
-
 // runStateNamespaceKinds is every namespace state.json's "namespaces" object
-// must name, in the order attach's own checks read them. A struct literal
-// with named fields would let a future editor add "mnt" under two different
-// spellings in two different places; this is the one list both the writer
-// and the reader range over.
+// must name, and the same six the ".starting" record carries. A struct
+// literal with named fields would let a future editor add "mnt" under two
+// different spellings in two different places; this is the one list every
+// writer and every reader ranges over.
 var runStateNamespaceKinds = []string{"mnt", "pid", "net", "ipc", "uts", "cgroup"}
 
-// writeRunState renders pol and info into this run's own state.json, through
-// targetstate.go's writeTargetState — the TARGET-keyed path, so a run and
-// the `snug attach` that must find it agree on where the file is whatever
-// $XDG_RUNTIME_DIR each was launched with (issue #123).
+// writeRunState renders pol and info into this run's state.json, through
+// targetstate.go's writeTargetState — the TARGET-keyed path, so the orphan
+// sweep and `snug proxy` find the file whatever $XDG_RUNTIME_DIR each was
+// launched with (issue #123).
 //
 // Called from a background goroutine (sandbox.Options.OnInfo), once bwrap
 // has answered on --info-fd — see internal/sandbox/exec.go's reportInfo.
@@ -119,19 +106,14 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) 
 			// fillMissingNamespaceIDs is the fallback for that, reading
 			// /proc/<pid>/ns/<kind> directly) — if this is still 0 here, that
 			// fallback itself failed, most likely because the pid was
-			// already gone. Refusing to publish is invariant 5: a state file
-			// `snug attach` would refuse anyway (its own live check treats
-			// any recorded 0 as a guaranteed mismatch) is worse than no
-			// state file, because "unattachable" should say so at the
-			// source rather than as a confusing refusal minutes later.
+			// already gone. Refusing to publish is invariant 5: a record the
+			// orphan sweep would refuse to act on anyway (killOrphanInit
+			// treats any recorded 0 as a guaranteed mismatch) is worse than
+			// no record, because the failure should say so at the source
+			// rather than as a leftover init nobody can explain.
 			return fmt.Errorf("run state: could not determine the %q namespace id (got 0)", k)
 		}
 		namespaces[k] = v
-	}
-
-	seccomp := runStateSeccomp{State: "none"}
-	if info.SeccompActive {
-		seccomp = runStateSeccomp{State: "active", Digest: info.SeccompDigest}
 	}
 
 	owner, err := currentOwner()
@@ -139,32 +121,22 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) 
 		return fmt.Errorf("run state: %w", err)
 	}
 
-	profiles := make([]string, 0, len(pol.Selected))
-	for _, p := range pol.Selected {
-		profiles = append(profiles, string(p))
-	}
-
 	st := runState{
-		Schema:   runStateSchema,
-		Target:   pol.Target,
-		Profiles: profiles,
-		Chdir:    pol.Chdir,
+		Schema: runStateSchema,
+		Target: pol.Target,
 		Sandbox: runStateSandbox{
 			InitPID:       info.InitPID,
 			InitStarttime: starttime,
 			Namespaces:    namespaces,
 		},
-		Owner:    owner,
-		Seccomp:  seccomp,
-		Env:      snugAuthoredEnvPairs(pol),
-		Revision: buildRevision(),
-		RunDir:   runDirPath,
+		Owner:  owner,
+		RunDir: runDirPath,
 	}
 
-	// Published to the TARGET-keyed path (targetstate.go), not into this
-	// run's own directory: a run and the `snug attach` that must find it have
-	// to agree on where the file is, and the run directory is derived from
-	// $XDG_RUNTIME_DIR/$TMPDIR, which they need not agree on (issue #123).
+	// Published to the TARGET-keyed path (targetstate.go), not into this run's
+	// own directory: the reader is a LATER snug process, and the run directory
+	// is derived from $XDG_RUNTIME_DIR/$TMPDIR, which the two need not agree
+	// on (issue #123).
 	//
 	// That change also left this function taking a runPath it never used —
 	// carried for three releases because callers had one to pass. A function
@@ -174,28 +146,6 @@ func writeRunState(pol *policy.Policy, info sandbox.RunInfo, runDirPath string) 
 		return err
 	}
 	return nil
-}
-
-// snugAuthoredEnvPairs is Policy.AuthoredEnvNames() (verb VerbSnug)
-// intersected with Policy.EnvPairs(): the subset of the resolved
-// environment snug ITSELF wrote, rendered as the name/value pairs the
-// attached shell will actually see. Restricting the record to these names —
-// rather than every variable the run has — is what keeps a token some
-// profile merely passed through (environ.set DOCKER_HOST = "ssh://…", say)
-// off disk: a profile cannot write one of these names at all (env.go,
-// SnugOwnedEnv), so this set can never carry one.
-func snugAuthoredEnvPairs(pol *policy.Policy) [][2]string {
-	authored := make(map[string]bool)
-	for _, name := range pol.AuthoredEnvNames() {
-		authored[name] = true
-	}
-	out := make([][2]string, 0, len(authored))
-	for _, kv := range pol.EnvPairs() {
-		if authored[kv[0]] {
-			out = append(out, kv)
-		}
-	}
-	return out
 }
 
 // procStartTime reads field 22 (starttime) of /proc/<pid>/stat. The comm
@@ -239,49 +189,9 @@ func procStatAfterComm(pid int) ([]string, error) {
 	return strings.Fields(s[i+2:]), nil
 }
 
-// buildRevision is debug.ReadBuildInfo()'s vcs.revision, if present — used
-// ONLY to make a seccomp-digest-mismatch message concrete ("this sandbox was
-// started by revision X, this binary is Y"). No decision anywhere reads this
-// field; the digest comparison is the decision.
-func buildRevision() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" {
-			return s.Value
-		}
-	}
-	return ""
-}
-
-// readRunStateFrom parses and validates state.json from an already-opened,
-// already-ownership-verified run directory. This is the full §6.3 refusal
-// list EXCEPT the two checks that need live process state (init_starttime
-// against /proc, the six namespace inodes, the userns-is-ours check, and the
-// seccomp digest rebuild) — those are attach.go's job, against the ONE run a
-// human actually named, not every run discovery walks past.
-func readRunStateFrom(runRoot *os.Root) (runState, error) {
-	if fi, err := runRoot.Lstat("state.json"); err != nil {
-		return runState{}, err
-	} else if fi.Mode()&os.ModeSymlink != 0 {
-		return runState{}, fmt.Errorf("state.json is a symlink")
-	}
-
-	f, err := runRoot.OpenFile("state.json", os.O_RDONLY, 0)
-	if err != nil {
-		return runState{}, err
-	}
-	defer f.Close()
-
-	return decodeRunState(f)
-}
-
-// decodeRunState is the parse-and-validate half of reading a state file,
-// split out from readRunStateFrom so the target-keyed layout (targetstate.go,
-// issue #123) validates through exactly the same code rather than a second
-// copy that could accept a file the other rejects.
+// decodeRunState is the parse-and-validate half of reading a state file. Its
+// two callers — readTargetState and the orphan sweep — go through it rather
+// than each decoding, so neither can accept a file the other rejects.
 func decodeRunState(r io.Reader) (runState, error) {
 	var st runState
 	if err := json.NewDecoder(r).Decode(&st); err != nil {
@@ -299,19 +209,26 @@ func decodeRunState(r io.Reader) (runState, error) {
 	return st, nil
 }
 
-// filterDigestConsistent is a tiny, table-free assertion used by
-// runstate_test.go: it exists so a test can confirm sandbox.FilterDigest and
-// this file's own reader agree on the SHAPE of a digest string
-// ("sha256:" + 64 hex chars) without duplicating the hashing logic.
-func filterDigestConsistent(digest string) bool {
-	const prefix = "sha256:"
-	if !strings.HasPrefix(digest, prefix) {
-		return false
+// procNamespaceInodes reads the six namespace ids by OPENING and FSTATing
+// each /proc/<pid>/ns/<kind> descriptor — not readlink, which returns a
+// string of the same form but is one syscall this function does not need to
+// trust the kernel to have rendered consistently with what the caller will
+// later compare against. Its two callers are the orphan sweep's identity
+// chain (killOrphanInit) and the record writers that feed it.
+func procNamespaceInodes(pid int) (map[string]uint64, error) {
+	out := make(map[string]uint64, len(runStateNamespaceKinds))
+	for _, k := range runStateNamespaceKinds {
+		f, err := os.Open(fmt.Sprintf("/proc/%d/ns/%s", pid, k))
+		if err != nil {
+			return nil, err
+		}
+		var st unix.Stat_t
+		ferr := unix.Fstat(int(f.Fd()), &st)
+		f.Close()
+		if ferr != nil {
+			return nil, ferr
+		}
+		out[k] = st.Ino
 	}
-	hexPart := strings.TrimPrefix(digest, prefix)
-	if len(hexPart) != sha256.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(hexPart)
-	return err == nil
+	return out, nil
 }

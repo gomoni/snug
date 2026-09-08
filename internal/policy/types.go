@@ -234,6 +234,33 @@ type Mount struct {
 	// a generated mount whose destination is not known to exist is refused by
 	// the guard as before.
 	HostDestExists bool
+
+	// RunScoped states a FACT about the HOST side, like HostDestExists and
+	// unlike Authored: the host path exists for THIS run alone and no second
+	// snug can be handed the same one. It is true of the sockets snug creates
+	// per run (BindSocket's whole caller set) and of the engine's own run
+	// directory, whose names carry this process's pid; it is FALSE of every
+	// path derived from the target — the target bind itself, and the engine
+	// store and runroot, which internal/engine keys by the target hash alone.
+	//
+	// Its one reader is the SHARED block of `snug --dry-run`, which
+	// enumerates the writable host surface a SECOND sandbox on the same
+	// directory could meet this one on. A run-scoped path is not part of that
+	// surface for a reason that holds whatever the peer's policy says, which
+	// is what makes it safe to leave out of a screen whose job is to be
+	// trusted: the peer gets its own. The alternative was reading the pid back
+	// out of the path string, which is a guess about a naming convention
+	// rather than a fact.
+	//
+	// It grants nothing and is read by no rule. No profile can set it, and
+	// that is checked rather than asserted: TOML parses into Profile, Resolve
+	// never writes it (TestResolveProducesNoRunScopedMount), and the only two
+	// functions that do are snug's own post-resolution writers, BindSocket
+	// below and internal/engine's GraftPathsInto
+	// (TestRunScopedWritersAreTheTwoFunctionsTheFieldNames). Both run AFTER
+	// the profile fold, which is why join needs no meet for this field the way
+	// it does for Authored.
+	RunScoped bool
 }
 
 // Mount deliberately has NO String or GoString method, and that is a decision
@@ -656,10 +683,17 @@ func (p *Policy) Replace(m Mount) {
 //
 // It bypasses no check that matters: the path is snug's own choice under
 // /snug, not a profile's, and the socket is one snug just created.
+//
+// Every mount it writes is RunScoped, and that is a property of the caller
+// set rather than a parameter: this function exists for a socket THIS run had
+// to create before it could hand it over, so its host path is under this
+// run's own runtime directory and a second snug on the same target is handed
+// its own. A caller that wanted to bind a socket two runs share would be
+// asking for something else and needs a different writer.
 func (p *Policy) BindSocket(hostPath, guestPath, from string) {
 	p.Replace(Mount{
 		Guest: guestPath, Host: hostPath, Kind: KindBind,
-		Access: AccessRW, From: []string{from},
+		Access: AccessRW, From: []string{from}, RunScoped: true,
 	})
 }
 

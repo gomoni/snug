@@ -118,8 +118,8 @@ func MustCreateSubdir(parent *os.Root, parentDesc, name string) (*os.Root, error
 // directory that is expected to already exist (another run's directory,
 // being read rather than claimed) and refuses it exactly as hard —
 // ownership, mode, and no symlink at this name — without creating anything
-// if it is absent. Used by `snug attach`'s run discovery, which must never
-// bring a directory into existence just by looking for one.
+// if it is absent. Used by every reader of another run's published state,
+// which must never bring a directory into existence just by looking for one.
 func OpenExistingSubdir(parent *os.Root, parentDesc, name string) (*os.Root, error) {
 	full := filepath.Join(parentDesc, name)
 

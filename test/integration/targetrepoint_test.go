@@ -163,11 +163,10 @@ func TestAnchorHidesNothingAndEvaporatesAtTeardown(t *testing.T) {
 // so this test authors its own rw-granting profile, the shape a user's own
 // profiles.d entry would take.
 //
-// This is the KNOWN residual `snug attach`'s planned st_dev/st_ino check
-// (issue #553's "Detect" half) is meant to cover separately, in the style of
-// the test it replaces: it fails the day that check lands and pins this
-// shape, and when it does, the fix is right and this test is what needs
-// rewriting.
+// This is the KNOWN residual issue #553's "Detect" half — an st_dev/st_ino
+// check on the target — is meant to cover separately, in the style of the test
+// it replaces: it fails the day that check lands and pins this shape, and when
+// it does, the fix is right and this test is what needs rewriting.
 func TestTheReadWriteBoundAncestorResidualStillReachesTheHost(t *testing.T) {
 	budget(t)
 	requireSandbox(t)

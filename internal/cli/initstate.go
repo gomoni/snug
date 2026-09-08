@@ -4,11 +4,11 @@ package cli
 // bwrap answers --info-fd, naming its init, long before runOneSandbox reports
 // "enginestarted" — the mount settle and, on a container run, the engine's
 // whole cold start sit in between — and exec.go's publishInfo only runs AFTER
-// that, and after a gated run's release byte, on purpose (issue #125: an
-// attachable sandbox is a sandbox `snug attach` could put a process into
-// before its gate opened). For that whole interval state.json does not exist
-// yet, so sweepOneOrphan's kill has nothing to read and a SIGKILLed snug
-// leaves an init the next run cannot find.
+// that, and after a gated run's release byte, on purpose (issue #125: a record
+// naming a sandbox whose payload the gate is still holding announces a run that
+// does not yet exist). For that whole interval state.json does not exist yet,
+// so sweepOneOrphan's kill has nothing to read and a SIGKILLed snug leaves an
+// init the next run cannot find.
 //
 // This file is written the moment sandbox.Options.OnInit fires — before any
 // of that — and removed the moment writeRunState succeeds, so the two files
@@ -27,9 +27,9 @@ package cli
 // only just answered --info-fd — its own comment in internal/stage/serve.go
 // measures the init's mount namespace at that instant still holding the whole
 // host tree at /oldroot with a writable root, settling ~150ms later to the
-// sandbox's own read-only view. A record any attach path could read would
-// therefore hand out a sandbox before it exists, up to that ~150ms early on
-// every run and the whole of the engine's cold start on a gated one.
+// sandbox's own read-only view. A record anything could act on would therefore
+// describe a sandbox before it exists, up to that ~150ms early on every run and
+// the whole of the engine's cold start on a gated one.
 //
 // The abuse sentence: a same-uid process can read this file and learn a
 // sandbox init's pid and namespace ids 1-2s earlier than state.json would
@@ -44,6 +44,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 )
 
 // initStateSchema is the only version this binary understands, exactly as
@@ -63,27 +64,33 @@ type initState struct {
 	InitStarttime uint64            `json:"init_starttime"`
 	Namespaces    map[string]uint64 `json:"namespaces"`
 
-	// Owner carries the same second liveness signal state.json does, for the
-	// same reason and read by the same gate — see stateowner.go and issue
-	// #489. A gate present in only one of the two records would leave the
-	// hole open for whichever window the other covers.
+	// Owner carries the same liveness signal state.json does, for the same
+	// reason and read by the same gate — see stateowner.go and issue #489. A
+	// gate present in only one of the two records would leave the hole open
+	// for whichever window the other covers.
 	Owner stateOwner `json:"owner"`
 }
 
-// initStateName is targetStateName's sibling, keyed by the same
-// targetkey.Hash so the two sort together, but with no ".json" suffix — that
-// absence is structural, not cosmetic: sweepOrphanedSandboxesIn's existing
-// ".json" filter cannot claim this name by accident, so the two sweep
+// initStateName is targetStateName's sibling: the same target stem and the
+// same owning pid, so a run's two records sort together, but with no ".json"
+// suffix — that absence is structural, not cosmetic: sweepOrphanedSandboxesIn's
+// existing ".json" filter cannot claim this name by accident, so the two sweep
 // branches stay disjoint by filename rather than by a hash comparison that
 // happens to fail.
-func initStateName(realpath string) string {
-	return targetKeyPrefix(realpath) + ".starting"
+//
+// The pid is here for the reason it is in state.json's name and it matters
+// more here: this is the record that exists precisely while a run is too
+// young to have published anything else, so two runs starting on one target
+// within a second of each other are exactly the case where one overwriting
+// the other loses an init nothing else names.
+func initStateName(realpath string, pid int) string {
+	return fmt.Sprintf("%s.%d.starting", targetKeyPrefix(realpath), pid)
 }
 
 // initStateNameMatches is targetStateNameMatches' sibling for the
-// ".starting" record — same two generations, same reason.
+// ".starting" record — same generations, same reason.
 func initStateNameMatches(realpath, name string) bool {
-	return name == initStateName(realpath) || name == legacyTargetKeyPrefix(realpath)+".starting"
+	return targetRecordNameMatches(realpath, name, ".starting")
 }
 
 // writeInitState publishes the orphan-kill record for pid, the sandbox's
@@ -124,7 +131,11 @@ func writeInitState(target string, pid int) error {
 		Namespaces:    namespaces,
 		Owner:         owner,
 	}
-	return writeTargetFile(initStateName(target), st)
+	// owner.PID is this process (currentOwner reads os.Getpid()), and taking
+	// the name's pid from the record rather than calling os.Getpid() again is
+	// writeTargetState's rule: the name addresses the owner the body names,
+	// or the sweep's liveness gate is aimed at a different process.
+	return writeTargetFile(initStateName(target, owner.PID), st)
 }
 
 // validatedInitNamespaces is writeInitState's own zero-refusal guard
@@ -147,15 +158,19 @@ func validatedInitNamespaces(nsIno map[string]uint64) (map[string]uint64, error)
 	return namespaces, nil
 }
 
-// removeInitState drops target's ".starting" record. Called only after
-// writeRunState has already succeeded — never before, and never on its own —
-// so that a SIGKILL between the two calls always leaves at least one record
-// naming the same init: the second pidfd_open a sweep would then attempt
-// against it (once from each record, in the ordinary case where neither race
-// happens) simply returns ESRCH the second time, which killOrphanInit already
-// reads as "already gone".
+// removeInitState drops THIS process's ".starting" record for target — never
+// a peer run's, which is what the os.Getpid() in the name buys: a second snug
+// on the same directory has its own record and its own init, and removing it
+// here would blind every later sweep to that init.
+//
+// Called only after writeRunState has already succeeded — never before, and
+// never on its own — so that a SIGKILL between the two calls always leaves at
+// least one record naming the same init: the second pidfd_open a sweep would
+// then attempt against it (once from each record, in the ordinary case where
+// neither race happens) simply returns ESRCH the second time, which
+// killOrphanInit already reads as "already gone".
 func removeInitState(target string) error {
-	return removeTargetFile(initStateName(target))
+	return removeTargetFile(initStateName(target, os.Getpid()))
 }
 
 // decodeInitState parses and validates one ".starting" record, the same

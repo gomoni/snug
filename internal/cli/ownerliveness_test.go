@@ -13,13 +13,13 @@ import (
 // of a live run's per-target lock file made the next run's sweep SIGKILL that
 // run's sandbox init.
 //
-// Every case here satisfies all four of the sweep's original conditions on
-// purpose. The lock is genuinely not held (there is no lock file at all,
-// which is what the `rm` leaves behind), the record's name genuinely hashes
-// its target, and the pid, start time and six namespace inodes genuinely name
-// the victim. Under the code this file was written against, that is a kill.
-// What must stop it is the one signal an unlink cannot detach: the owning
-// snug's own process.
+// Every case here satisfies every other condition the sweep applies, on
+// purpose: the record's name genuinely hashes its target, and the pid, start
+// time and six namespace inodes genuinely name the victim. The lock is not
+// held either (there is no lock file at all, which is what the `rm` leaves
+// behind), and that is no longer even asked — which is why the owner is the
+// only thing left that can stop the kill, and why these cases are the whole of
+// what protects a live run.
 
 func TestSweepDoesNotKillALiveRunWhoseLockFileWasRemoved(t *testing.T) {
 	dir, root := stateDirForTest(t)
@@ -53,9 +53,9 @@ func TestSweepDoesNotKillALiveRunWhoseLockFileWasRemoved(t *testing.T) {
 			"from the NAME and targetLockIsHeld then answers \"not held\" about a live run",
 			victim.pid, owner.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
-		t.Errorf("the sweep removed a live run's state file (err=%v): `snug attach` reads that "+
-			"file, so removing it makes a running sandbox unreachable", err)
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, recordOwnerPID(st.Owner)))); err != nil {
+		t.Errorf("the sweep removed a live run's state file (err=%v): it is the only thing "+
+			"naming that run's init, so removing it blinds every later sweep to it", err)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestSweepDoesNotKillAnInitWhoseRecordNamesNoOwner(t *testing.T) {
 		t.Errorf("the sweep killed pid %d on a record carrying no owner: an owner it cannot "+
 			"confirm must read as alive, or stripping the field restores issue #489", victim.pid)
 	}
-	if _, err := os.Stat(filepath.Join(dir, targetStateName(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, targetStateName(target, recordOwnerPID(st.Owner)))); err != nil {
 		t.Errorf("the record was removed (err=%v): nothing else on the host names that init, "+
 			"and deleting the record is issue #236's accumulation from inside the cleanup path", err)
 	}
@@ -204,7 +204,7 @@ func writeInitStateAt(t *testing.T, dir, target string, st initState) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, initStateName(target)), append(blob, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, initStateName(target, recordOwnerPID(st.Owner))), append(blob, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

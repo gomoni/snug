@@ -453,12 +453,15 @@ func New(pol *policy.Policy) (*Engine, error) {
 		// RE-DERIVED. This used to say "teardown stops" and "Stop and the
 		// reaper both filter on it" — false since issue #167 deleted the
 		// host-side `podman stop`; teardown is pid-namespace collapse and
-		// filters on nothing. It also rested on a CONCURRENT sibling sharing
-		// the store, which issue #276 removed: engineKey is sha256(target)
-		// alone and S = L exactly (paths.go), so at most one live run uses a
-		// store. What the label separates is runs in TIME — the store
-		// persists and teardown removes no container record, so a later run of
-		// the same target opens a store holding every earlier run's.
+		// filters on nothing.
+		//
+		// It separates runs in TIME: the store persists and teardown removes no
+		// container record, so a later run on the same target opens a store
+		// holding every earlier run's. AND CONCURRENTLY, now that two sandboxes
+		// may be live on one target at once — engineKey is sha256(target) alone
+		// (paths.go), so they share the store while it is being written, and
+		// the pid in this label is the only thing that tells one live run's
+		// containers from its peer's.
 		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, pid),
 
 		store:   planned.Store,

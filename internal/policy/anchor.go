@@ -33,10 +33,9 @@ const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor
 // mount travels with it — which frees the original name for the payload to
 // recreate. Measured in #553 on the default selection: a payload renamed the
 // target's parent, recreated $SNUG_TARGET as an ordinary directory in the
-// covering tmpfs, and everything a later reader touched at that path — a
-// human's `snug attach` included — was payload-authored content, while every
-// screen went on printing the real project path and the work "saved" there
-// evaporated at teardown. The host was untouched: this is deception, not an
+// covering tmpfs, and everything a later reader touched at that path was
+// payload-authored content, while every screen went on printing the real
+// project path and the work "saved" there evaporated at teardown. The host was untouched: this is deception, not an
 // escape, which is why it is a mount-generation bug and not a containment one.
 //
 // The same mechanism reaches snug's own generated files one directory up:
@@ -87,7 +86,7 @@ const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor
 // exits on "which is inside /tmp from profile @tmp-shared".
 //
 // CheckEngineBindSource already refuses to forward a source under that shape
-// (its case 3, rwBindCovers), and `snug attach` is covered separately.
+// (its case 3, rwBindCovers).
 //
 // # Ordering, which is what keeps every grant visible
 //

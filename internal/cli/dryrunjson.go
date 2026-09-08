@@ -470,6 +470,28 @@ type jsonMount struct {
 	// consumer, when it in fact means "not a tmpfs; this field does not
 	// apply". Additive — see dryRunFormat's doc comment — so no format bump.
 	SizeBytes uint64 `json:"size_bytes,omitempty"`
+	// HostIsRunScoped is Mount.RunScoped: the HOST side of this bind exists
+	// for this run alone, so a second snug sandbox on the same target is
+	// handed its own and cannot meet this one there.
+	//
+	// It is the one fact describeShared's screen turns on that nothing else
+	// in this document carried, and without it a consumer computing "what do
+	// two sessions share" from kind+access+host has to guess from the shape
+	// of a path — which is the guess describeShared's own comment refuses to
+	// make. NOT omitempty: false is the answer for every ordinary bind and a
+	// consumer must not have to branch on whether the key exists to read it.
+	//
+	// The Go field is NOT spelled `RunScoped`, for exactly the reason
+	// SnugAuthored above is not spelled `Authored`: internal/policy sweeps the
+	// module BY NAME for writes to a field so spelled
+	// (TestRunScopedWritersAreTheTwoFunctionsTheFieldNames), because the
+	// SHARED block omits a run-scoped row and a third writer could mark a
+	// genuinely shared path run-scoped and shorten that block with nothing
+	// saying so. The sweep is textual and cannot tell this output-only DTO
+	// from a policy.Mount — and the fix is to keep the sweep maximally
+	// paranoid and give the DTO its own name, never to add a site to its
+	// list. The JSON key is still "run_scoped"; only the Go spelling moves.
+	HostIsRunScoped bool `json:"run_scoped"`
 }
 
 // jsonGraft is a mount in the ENGINE's derived namespace, never the payload's.
@@ -498,6 +520,14 @@ type jsonGraft struct {
 	// reporting "size_bytes": 0 would read as "unbounded" to a consumer
 	// rather than "not a tmpfs; this field does not apply".
 	SizeBytes uint64 `json:"size_bytes,omitempty"`
+	// HostIsRunScoped is Graft.RunScoped, and it carries here for the same
+	// reason jsonMount's does — describeShared sweeps p.Grafts as well as
+	// p.Mounts, because the engine store and runroot are grafts and
+	// validate.go refuses a KindGraft in p.Mounts. A consumer sweeping only
+	// mounts[] under-reports on exactly the runs where the shared surface is
+	// widest. The Go spelling avoids `RunScoped` for the reason jsonMount's
+	// own field states.
+	HostIsRunScoped bool `json:"run_scoped"`
 }
 
 type jsonNotGranted struct {
@@ -790,7 +820,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			// The fact behind the human column's "exec" word: a KindData file
 			// with an executable permission bit is CODE, not config (the
 			// podman stub is the one case today).
-			Executable: m.Perms != nil && *m.Perms&0o111 != 0,
+			Executable:      m.Perms != nil && *m.Perms&0o111 != 0,
+			HostIsRunScoped: m.RunScoped,
 		}
 		if m.Kind == policy.KindTmpfs {
 			jm.SizeBytes = rep.TmpfsSizeBytes
@@ -807,9 +838,10 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	doc.EngineView = make([]jsonGraft, 0, len(rep.Grafts))
 	for _, g := range rep.Grafts {
 		jg := jsonGraft{
-			Kind:   g.Kind.String(),
-			Access: g.Access.String(),
-			Why:    g.Why,
+			Kind:            g.Kind.String(),
+			Access:          g.Access.String(),
+			Why:             g.Why,
+			HostIsRunScoped: g.RunScoped,
 		}
 		if bound, ok := rep.GraftTmpfsSizeBytes[g.Guest]; ok {
 			jg.SizeBytes = bound

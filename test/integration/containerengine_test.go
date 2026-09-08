@@ -248,14 +248,14 @@ func describeResolvedEngine() string {
 	return r.versionLine + " at " + r.path
 }
 
-// containerEngineEnv is baseEnv (via attachEnv's own isolation, so
+// containerEngineEnv is baseEnv (via suiteEnv's own isolation, so
 // $XDG_RUNTIME_DIR never collides with another test's live run) plus
 // $SNUG_PODMAN pointed at hostEngine's resolved binary. Every test in this
 // file that starts a real engine uses it.
 func containerEngineEnv(t *testing.T) (env []string, xdgRuntime string) {
 	t.Helper()
 	podman := hostEngine(t)
-	base, xdg := attachEnv(t)
+	base, xdg := suiteEnv(t)
 	out := append(base, "SNUG_PODMAN="+podman)
 	// SNUG_PODMAN_ROOT is passed through from the AMBIENT environment when a
 	// developer set it, and never invented (issue #393 spec §1): a system
@@ -1805,13 +1805,17 @@ func TestNoAbstractSocketsWithEngineInN(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	script := fmt.Sprintf(`
+	// The probe runs as this sandbox's OWN payload, which is what makes it a
+	// probe of THIS engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own, so its answers would be
+	// about a different process than the enginePID found below.
+	//
+	// It needs a number the payload cannot compute — the engine's HOST pid —
+	// so the host hands it over through the one thing both sides can write:
+	// the target directory. The payload blocks on the file appearing, which is
+	// also what keeps the sandbox alive until the probe has run.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
+while [ ! -f enginepid ]; do sleep 0.05; done
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -1821,26 +1825,29 @@ class UnixHTTP(http.client.HTTPConnection):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(self.path); self.sock = s
 sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
-print("version: %%d" %% r.status)
+print("version: %d" % r.status)
 EOF
 echo "---SS---"
 ss -xl
 echo "---PROC---"
-ls -d /proc/%d 2>&1
+ls -d /proc/$(cat enginepid) 2>&1
 echo DONE
-`, enginePID)
+sleep 300
+`)
+	bg.ready(t)
+	bg.waitForState(t)
 
-	r := attachScript(t, env, proj, script)
-	if !strings.Contains(r.out, "DONE") {
-		t.Fatalf("the probe did not run to the end:\n%s", r.out)
-	}
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+	handToPayload(t, proj, "enginepid", strconv.Itoa(enginePID))
+	out := waitForLogLine(t, bg, "DONE", 30*time.Second)
+
 	// CONTROL: the engine actually answers, so this is a live-engine
 	// observation and not a probe that ran against nothing.
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine did not answer /version from inside the sandbox:\n%s", r.out)
+	if !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine did not answer /version from inside the sandbox:\n%s", out)
 	}
 
-	_, ssSection, procSection := cutTwice(r.out, "---SS---", "---PROC---")
+	_, ssSection, procSection := cutTwice(out, "---SS---", "---PROC---")
 	// Abstract sockets are rendered by ss as "@name" in the local-address
 	// column. Any "@" in this section is an abstract listener the sandbox can
 	// see, which must be none.
@@ -1853,13 +1860,13 @@ echo DONE
 	}
 	if strings.TrimSpace(ssSection) == "" {
 		t.Errorf("`ss -xl` produced no output at all — this test cannot tell an empty listing "+
-			"from a broken probe:\n%s", r.out)
+			"from a broken probe:\n%s", out)
 	}
 
 	if !strings.Contains(procSection, "No such file or directory") {
 		t.Errorf("the engine's own pid (%d, host-visible: a nested pid namespace does not hide "+
 			"its members from an ancestor's procfs) IS visible in the sandbox's own /proc — the "+
-			"sandbox's pid namespace does not actually exclude it:\n%s", enginePID, r.out)
+			"sandbox's pid namespace does not actually exclude it:\n%s", enginePID, out)
 	}
 }
 
@@ -1971,7 +1978,7 @@ func TestEngineNetnsReapedOnSIGKILL(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -2092,7 +2099,7 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 
 	t.Run("control: engine starts when nothing is faked", func(t *testing.T) {
 		proj, _ := target(t)
-		bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 5`)
+		bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 5`)
 		bg.ready(t)
 		bg.waitForState(t)
 		// bg's own t.Cleanup kills it; reaching here means the payload started,
@@ -2270,15 +2277,10 @@ func TestEngineCapBoundingInU(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	// CONTROL: it really is running and answering, not a stale pid reused by
-	// something else.
-	r := attachScript(t, env, proj, `
+	// The /version control is the payload's own first act, so it is a probe of
+	// THIS sandbox's engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -2290,9 +2292,17 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
 print("version: %d" % r.status)
 EOF
+sleep 300
 `)
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, r.out)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: it really is running and answering, not a stale pid reused by
+	// something else.
+	if out := waitForLogLine(t, bg, "version: 200", 30*time.Second); !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, out)
 	}
 
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", enginePID))
@@ -2806,7 +2816,7 @@ func TestASignalledContainerRunLeavesNothingRunning(t *testing.T) {
 	// /build is gated on policy.PodmanBuild — see
 	// TestHostLoopbackClosedFromContainer's own note on what @podman-socket
 	// alone does to a client mid-upload.
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -3049,7 +3059,7 @@ func TestHostContainersConfAuthorsNothingInAContainer(t *testing.T) {
 
 	home, marker := hostileContainersConfHome(t)
 	wrapper, toolchainRoot := engineWithHome(t, home)
-	base, _ := attachEnv(t)
+	base, _ := suiteEnv(t)
 	// SNUG_PODMAN_ROOT is not optional: the wrapper is the engine binary for
 	// this run and it lives outside every grant, so without the graft G4
 	// refuses the run outright. See engineWithHome's own doc comment.
@@ -3320,7 +3330,7 @@ func findConmonPID(t *testing.T, root int, timeout time.Duration) int {
 // CONTROL of confirming the token is actually alive on the host — this
 // helper only starts things, per CLAUDE.md's rule that a positive control has
 // to sit next to the assertion it backs, not be buried in shared setup.
-func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string) (bg *attachSandbox, token string) {
+func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string) (bg *bgSandbox, token string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(proj, "netprobe"), mustRead(t, holderBin(t)), 0o755); err != nil {
 		t.Fatal(err)
@@ -3330,7 +3340,7 @@ func startEngineHeldContainer(t *testing.T, env []string, proj, tagSuffix string
 	if err := os.WriteFile(filepath.Join(proj, "holder.py"), []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	bg = startAttachSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
+	bg = startBgSandbox(t, env, []string{"-p", "@podman-build"}, proj, `python3 holder.py`)
 	bg.ready(t)
 	bg.waitForState(t)
 	return bg, token
@@ -3377,15 +3387,10 @@ func TestEngineHasItsOwnPidNamespace(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
-	bg.ready(t)
-	bg.waitForState(t)
-
-	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
-
-	// CONTROL: the engine really is running and answering /version, not a
-	// stale pid some unrelated process reused.
-	r := attachScript(t, env, proj, `
+	// The /version control is the payload's own first act, so it is a probe of
+	// THIS sandbox's engine: a second `snug` on the same target is an
+	// independent sandbox with an engine of its own.
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
 python3 - <<'EOF'
 import http.client, socket, os
 class UnixHTTP(http.client.HTTPConnection):
@@ -3397,9 +3402,17 @@ sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
 c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
 print("version: %d" % r.status)
 EOF
+sleep 300
 `)
-	if !strings.Contains(r.out, "version: 200") {
-		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, r.out)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: the engine really is running and answering /version, not a
+	// stale pid some unrelated process reused.
+	if out := waitForLogLine(t, bg, "version: 200", 30*time.Second); !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, out)
 	}
 
 	engineNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", enginePID))
@@ -4168,7 +4181,7 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 	bg.ready(t)
 	bg.waitForState(t)
 
@@ -4179,7 +4192,7 @@ func TestEngineTmpfsAreBounded(t *testing.T) {
 		t.Fatalf("reading the engine's own mountinfo (pid %d): %v", enginePID, err)
 	}
 
-	// This run set no tmpfs_size_mib, so /run tracks policy.DefaultTmpfsSize
+	// This run set no tmpfs_size, so /run tracks policy.DefaultTmpfsSize
 	// — the same number a payload's own tmpfs use, per EngineTmpfsSize's own
 	// contract.
 	got := map[string]uint64{}
@@ -4474,28 +4487,38 @@ print("PROBE-COMPLETE", flush=True)
 // CONTROL below is the gate instead: an ordinary create must return 201, and if
 // it does not the test skips naming what the engine said.
 //
+// containerEngineEnv IS the gate it takes, and only for the half requireRealEngine
+// does not overlap: hostEngine's podman-6.x check. The assertions here are about
+// what a REAL podman accepts, and podman 4.9.3 refuses the stock all-zero
+// NetworkingConfig this test's ergonomic floor requires —
+//
+//	stock networkingconfig: 500
+//	networks and static ip/mac address can only be used with Bridge mode networking
+//
+// — which is the ENGINE's answer to a body snug forwarded correctly, not a
+// filter result, and therefore not evidence about anything this test asserts.
+// openSUSE Tumbleweed is the only lane that guarantees podman 6.x, so on every
+// other engine this skips with the version named. It stays OFF requireRealEngine
+// for the create-not-start reason above.
+//
 // CONSEQUENCE, STATED BECAUSE IT IS A REAL GAP AND NOT A FREE CHOICE: issue
-// #393's SNUG_ENGINE_FLOOR counts test functions by a literal-string sweep over
-// containerEngineEnv|podmanBundle|bundleRoot|requireRealEngine, and this test
-// matches none of them — so it is NOT on the floor, and the floor stays 32. That
-// means a run where this test skipped on its own control is not caught by the
-// mechanism built to catch exactly that ("green by skipping", #393's own
-// defect). The trade was taken deliberately: gating on requireRealEngine would
-// make this test SKIP on the development host where it currently passes and
-// really exercises the filter, which is worse than being uncounted. The skip
-// paths below are t.Skipf with the engine's own words in them so the shortfall
-// is at least visible in the log. A second floor category for "needs create, not
-// run" belongs to #393/#395 and is filed rather than invented here.
+// #393's SNUG_ENGINE_FLOOR counts a test once it logs `snug-engine-ran:`, which
+// requireRealEngine is what emits — so this test is NOT on the floor. A run
+// where it skipped on its own control is not caught by the mechanism built to
+// catch exactly that ("green by skipping", #393's own defect). The skip paths
+// below are t.Skipf with the engine's own words in them so the shortfall is at
+// least visible in the log. A second floor category for "needs create, not run"
+// belongs to #393/#395 and is filed rather than invented here.
 func TestCreateTopLevelIsFilteredEndToEnd(t *testing.T) {
 	budget(t, 240*time.Second)
 	requireSandbox(t)
-	requireEngine(t)
+	env, _ := containerEngineEnv(t)
 	requirePython(t)
 
 	proj, _ := target(t)
 	writeTopLevelProbe(t, proj)
 
-	r := run(t, []string{"-p", "@podman-build"}, proj, `python3 probe.py`).mustRun(t)
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 probe.py`).mustRun(t)
 
 	if !strings.Contains(r.out, "PROBE-COMPLETE") {
 		t.Fatalf("the probe did not run to the end, so a missing marker below is absent "+

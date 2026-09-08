@@ -19,7 +19,7 @@ func proxyUsage() {
 	fmt.Fprint(os.Stderr, `snug proxy — serve a sandbox's http door to your own browser
 
 usage:
-  snug proxy [dir] [-p PORT[:DOOR]]
+  snug proxy [dir] [-p PORT[:DOOR]] [--pid PID]
 
 Opens a door a profile DECLARED with listen_names. The sandbox cannot open one
 itself, and nothing is reachable until this command runs.
@@ -27,6 +27,9 @@ itself, and nothing is reachable until this command runs.
   -p, --port PORT       serve on this HOST port
   -p, --port PORT:DOOR  ...and say which door, when the run declares several
   -p, --port :DOOR      the door, on its default port
+      --pid PID         which run, when several are live on the directory —
+                        the pid of the "snug" process, which the refusal that
+                        sends you here lists
   -h, --help            this
 
 Host-first like docker's -p, with the one difference that only this side has a
@@ -42,7 +45,7 @@ in another terminal is that decision made twice rather than once.
 // payload declares nothing, opens nothing and cannot reach this code — the
 // sandbox has no access to the run state it reads.
 func proxyCmd(argv []string) int {
-	target, door, port, err := parseProxyArgs(argv)
+	target, door, port, pid, err := parseProxyArgs(argv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n\n", err)
 		proxyUsage()
@@ -56,10 +59,9 @@ func proxyCmd(argv []string) int {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitUsage
 	}
-	// The same canonicalisation `snug attach` uses, for the same reason: a run
-	// publishes its state under the target's REALPATH, so a symlink or a
+	// A run publishes its state under the target's REALPATH, so a symlink or a
 	// trailing slash must not be able to miss a run that is right there.
-	real, exists, err := canonicalAttachTarget(abs)
+	real, exists, err := canonicalTarget(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: resolving %s: %v\n", abs, err)
 		return exitUsage
@@ -68,7 +70,7 @@ func proxyCmd(argv []string) int {
 		fmt.Fprintf(os.Stderr, "snug: no live snug run found for %s (it does not exist)\n", abs)
 		return exitPolicy
 	}
-	st, err := selectLiveRun(real)
+	st, err := selectLiveRun(real, pid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: %v\n", err)
 		return exitPolicy
@@ -212,7 +214,7 @@ func splitPortSpec(spec string) (port int, name string, err error) {
 	return n, name, nil
 }
 
-func parseProxyArgs(argv []string) (target, door string, port int, err error) {
+func parseProxyArgs(argv []string) (target, door string, port, pid int, err error) {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch {
@@ -222,26 +224,54 @@ func parseProxyArgs(argv []string) (target, door string, port int, err error) {
 
 		case a == "-p" || a == "--port":
 			if i+1 >= len(argv) {
-				return "", "", 0, fmt.Errorf("%s needs a port, or PORT:DOOR", a)
+				return "", "", 0, 0, fmt.Errorf("%s needs a port, or PORT:DOOR", a)
 			}
 			i++
 			port, door, err = splitPortSpec(argv[i])
 			if err != nil {
-				return "", "", 0, err
+				return "", "", 0, 0, err
 			}
 		case strings.HasPrefix(a, "--port="):
 			port, door, err = splitPortSpec(strings.TrimPrefix(a, "--port="))
 			if err != nil {
-				return "", "", 0, err
+				return "", "", 0, 0, err
+			}
+		case a == "--pid":
+			if i+1 >= len(argv) {
+				return "", "", 0, 0, fmt.Errorf("--pid needs the pid of a live snug run")
+			}
+			i++
+			pid, err = parseRunPID(argv[i])
+			if err != nil {
+				return "", "", 0, 0, err
+			}
+		case strings.HasPrefix(a, "--pid="):
+			pid, err = parseRunPID(strings.TrimPrefix(a, "--pid="))
+			if err != nil {
+				return "", "", 0, 0, err
 			}
 		case strings.HasPrefix(a, "-"):
-			return "", "", 0, fmt.Errorf("unknown flag %q", a)
+			return "", "", 0, 0, fmt.Errorf("unknown flag %q", a)
 		default:
 			if target != "" {
-				return "", "", 0, fmt.Errorf("more than one directory given (%q and %q)", target, a)
+				return "", "", 0, 0, fmt.Errorf("more than one directory given (%q and %q)", target, a)
 			}
 			target = a
 		}
 	}
-	return target, door, port, nil
+	return target, door, port, pid, nil
+}
+
+// parseRunPID reads --pid's argument. It is an ADDRESS for one of the runs
+// selectLiveRun listed and nothing more: no signal is sent to it, no /proc
+// entry is opened by this number alone, and a pid naming no live run on the
+// directory is refused there rather than resolved to the nearest thing it
+// resembles.
+func parseRunPID(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("--pid %q is not a pid; give the pid of the `snug` process running "+
+			"the sandbox, as listed when several runs are live on one directory", raw)
+	}
+	return n, nil
 }

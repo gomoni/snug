@@ -36,6 +36,15 @@ import (
 // been written inline. What it does catch is every producer that is a function,
 // which is what all seven of #332's were.
 //
+// describeShared (dryrun.go) is the worked example of exactly this blind
+// spot, found once rather than hypothesised: it reads m.RunScoped and
+// gr.RunScoped directly out of p.Mounts/p.Grafts in its own filter, calling
+// no producer function, so this sweep cannot see it — and would not have
+// caught the JSON document shipping with no run_scoped key at all.
+// TestJSONRunScopedSharedSetAgreesWithDescribeShared (runscopedjson_test.go)
+// is what closes that one gap, by comparing the two renderings directly
+// rather than trusting this sweep to have reached them both.
+//
 // The producer predicate is DERIVED, never a list:
 //
 //	internal/policy   any package-level policy.X(...) call, and any method
@@ -173,8 +182,9 @@ var humanOnlyFacts = map[string]string{
 	"policy.VisibleText": "escaping for a terminal; the document runs escapeRawForgingRunes over itself instead",
 	"policy.JoinNames":   "joins profile names into a screen column; the document emits the array",
 	"policy.IsEnvList":   "decides whether a value is quoted on screen; the document emits the string",
-	"policy.FormatBytes": "renders a byte count as \"1 GiB\"/\"512 MiB\" for the FILESYSTEM block's tmpfs " +
-		"rows (issue #281); the document carries the raw uint64 instead, as mounts[].size_bytes",
+	"policy.Size": "a conversion, not a producer: policy.Size(n).String() renders a byte count as " +
+		"\"1 GiB\"/\"512 MiB\" for the FILESYSTEM block's tmpfs rows (issue #281); the document carries " +
+		"the same number raw, as mounts[].size_bytes",
 }
 
 // producerSweep is the parsed corpus: every non-test file in internal/cli and

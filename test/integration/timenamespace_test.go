@@ -17,12 +17,11 @@ import (
 // (TestTheRunDirectoryIsInMountinfoOnlyWhenAProxySocketIsMounted): a test
 // called "TimeIsUnshared" would be a claim the tree does not support.
 //
-// Three places already say this in prose: internal/policy/bwrap.go's
-// UnshareFlags lists user/ipc/pid/uts and cgroup-try with no time flag,
-// internal/attach/bridge.go:61 ("CLONE_NEWTIME is deliberately absent: bwrap
-// creates no time namespace"), and PSEUDOFS-AUDIT.md's P6 row (uptime/btime
-// leak as a direct consequence). None of them had ever been measured from
-// inside a running sandbox; this is that measurement.
+// Two places already say this in prose: internal/policy/bwrap.go's
+// UnshareFlags lists user/ipc/pid/uts and cgroup-try with no time flag, and
+// PSEUDOFS-AUDIT.md's P6 row (uptime/btime leak as a direct consequence).
+// Neither had ever been measured from inside a running sandbox; this is that
+// measurement.
 //
 // bwrap 0.11.2 has no --unshare-time flag at all (confirmed against `bwrap
 // --help` on this host), so there is no argv this test could ever pin the
@@ -64,9 +63,8 @@ func TestSandboxUnsharesTheTimeNamespace(t *testing.T) {
 
 	if sandboxTime != hostTime {
 		t.Errorf("the payload's time namespace is %s, this test process's own (the sandbox's "+
-			"parent) is %s — bwrap created a NEW time namespace. internal/attach's "+
-			"SevenNamespaceFlags does not join CLONE_NEWTIME, so `snug attach` would now be "+
-			"joining the wrong (host) time namespace instead of the sandbox's own:\n%s",
-			sandboxTime, hostTime, r.out)
+			"parent) is %s — bwrap created a NEW time namespace. Every place that reasons "+
+			"about the sandbox's namespace set (UnshareFlags, PSEUDOFS-AUDIT.md's P6 row) "+
+			"assumes it does not:\n%s", sandboxTime, hostTime, r.out)
 	}
 }

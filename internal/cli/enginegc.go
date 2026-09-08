@@ -47,11 +47,14 @@ package cli
 //     when nothing is sandboxing, not whenever they like; that is a smaller
 //     cost than a corrupted store.
 //
-// A run-state JSON is a CORROBORATING refusal only, on Arm A, using the
-// EXACT name (targetStateName(bc.Target), never a prefix): its PRESENCE,
-// matched by full pid+starttime+namespace identity (the same chain
-// orphansweep.go's killOrphanInit uses), refuses regardless of the flock.
-// Its ABSENCE proves nothing — a run that has not yet published one is not
+// A run-state JSON is a CORROBORATING refusal only, on Arm A, and it is
+// matched by bc.Target's own derived stem rather than by reading each record
+// to see which target it claims — several runs may be live on one target and
+// each publishes a record of its own, so this is a scan of THAT TARGET's
+// names, never of the directory. ANY ONE of them whose full
+// pid+starttime+namespace identity checks out (the same chain
+// orphansweep.go's killOrphanInit uses) refuses regardless of the flock.
+// Their ABSENCE proves nothing — a run that has not yet published one is not
 // thereby "not live" — so it is never read as evidence a target is safe.
 //
 // # Pre-flight ownership, and why it is incomplete
@@ -682,7 +685,11 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 		if serr != nil {
 			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, serr)
 		}
-		lock, lerr := openAndHoldTargetLock(snugRoot, snugPath, name, real)
+		// LOCK_EX, where a run takes LOCK_SH: the exclusive request is what
+		// both detects a live run (flock refuses it while any shared holder
+		// is there) and KEEPS the target not-live for as long as this
+		// descriptor is held, which is the half a reclaim cannot do without.
+		lock, lerr := openAndHoldTargetLock(snugRoot, snugPath, name, real, unix.LOCK_EX)
 		if lerr != nil {
 			var busy *targetBusyError
 			if errors.As(lerr, &busy) {
@@ -746,13 +753,33 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 	return targetProvablyLive(snugRoot, snugPath, real), noop, nil
 }
 
-// targetProvablyLive is Arm A's corroborating signal: the run-state JSON at
-// its EXACT name (targetStateName(real), never a prefix scan), checked by
-// the identical pid+starttime+namespace identity chain orphansweep.go's
-// killOrphanInit already uses. Any failure to confirm returns false — this
-// function only ever REFUSES on a positive match; it never asserts safety.
+// targetProvablyLive is Arm A's corroborating signal: real's run-state
+// records, each checked by the identical pid+starttime+namespace identity
+// chain orphansweep.go's killOrphanInit already uses. Any failure to confirm
+// returns false — this function only ever REFUSES on a positive match; it
+// never asserts safety.
+//
+// It ranges over EVERY record the target has, because a target may carry
+// several live runs at once and each publishes its own (targetstate.go). One
+// live sandbox is enough to refuse a store reclaim, so the first confirmed
+// one wins and the rest are not opened. Checking only the newest would let a
+// gc reclaim the store an older, still-running peer's engine is writing.
 func targetProvablyLive(snugRoot *os.Root, snugPath, real string) bool {
-	name := targetStateName(real)
+	names, err := targetStateNamesIn(snugRoot, real)
+	if err != nil {
+		return false
+	}
+	for _, name := range names {
+		if oneRecordProvablyLive(snugRoot, real, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// oneRecordProvablyLive is targetProvablyLive for a single record. Split out
+// so a `return false` about one record cannot end the scan over the others.
+func oneRecordProvablyLive(snugRoot *os.Root, real, name string) bool {
 	f, err := snugRoot.Open(name)
 	if err != nil {
 		return false
@@ -763,8 +790,11 @@ func targetProvablyLive(snugRoot *os.Root, snugPath, real string) bool {
 	if err != nil {
 		return false
 	}
-	if targetStateName(st.Target) != name {
-		return false // the name is the index; a mismatch is not evidence of anything
+	if st.Target != real {
+		// The stem is the index and the caller matched it, so this is a
+		// hand-placed or colliding record. A mismatch is not evidence of
+		// anything, in either direction.
+		return false
 	}
 	pid := st.Sandbox.InitPID
 	if pid <= 1 {
@@ -830,7 +860,11 @@ func anyRunLive() (bool, error) {
 		if oerr != nil {
 			continue
 		}
-		flockErr := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		// LOCK_EX, not LOCK_SH: a run holds this file SHARED for its whole
+		// life, so a shared probe would succeed beside it and this scan would
+		// report "no run is live" while one is — licensing a store reclaim
+		// under a running engine.
+		flockErr := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if flockErr == nil {
 			unix.Flock(int(f.Fd()), unix.LOCK_UN)
 			f.Close()
