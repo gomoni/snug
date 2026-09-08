@@ -29,7 +29,7 @@ command was **executed**; everything else is marked as reasoning.
 
 **This section is the canonical write-up of the finding.** Code and prose across
 the repo cite it — `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`,
-`internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §1.3.
+`internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §6.4.
 If you arrived from one of those, this is the whole story; §5 is what is left to
 do.
 
@@ -274,17 +274,13 @@ Under M-b `include = ["net"]` becomes **wrong** and must be removed again,
 because then `@net` genuinely implies nothing extra and offline goes back to
 being the absence of a profile.
 
-**M-b's topology has moved to [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md).** The six steps
-that stood here described a single one-shot `snug __netns-stage` re-exec, and
-that shape came from an assumption — that snug must *become* the sandbox — which
-`SUPERVISOR-DESIGN.md` §0 removed. Read that document for the topology; do not
-reconstruct it from the list that used to be here. What it changes: the stage
-holds the namespaces and the engine, the sandbox and later payloads are its
-siblings rather than its successors, which is also what makes `snug attach`
-possible.
+**M-b's topology is [`SUPERVISOR-DESIGN.md`](SUPERVISOR-DESIGN.md)'s**, and that
+document is the only place it is written: snug does not *become* the sandbox.
+The stage holds the namespaces and the engine; the sandbox and later payloads
+are its siblings rather than its successors.
 
-**What carried over unchanged, and is still owed.** These are requirements, not
-topology, so they survived the move intact:
+**What this section owes is requirements, not topology**, which is why they are
+here and the steps are not:
 
 1. **Preflight, all fatal, each naming its fix**, before anything starts: a real
    podman binary (`podmanClientUsable`, promoted from warning to refusal — see

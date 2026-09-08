@@ -6,9 +6,7 @@ package sandbox
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
@@ -133,10 +131,7 @@ func nativeAuditArch() (uint32, bool) {
 //	                 and the stage's control channel has an independent lock
 //	                 against it anyway (SUPERVISOR-DESIGN.md §3.3: the stage is
 //	                 not in the payload's pid namespace, so there is no pid to
-//	                 name). `snug attach` does NOT depend on this line — its own
-//	                 pidfd_open runs on the host, in internal/cli/attach.go,
-//	                 before the raw-fork child installs this filter at all.
-//	                 See issue #23: on this host (yama ptrace_scope=1) the
+//	                 name). See issue #23: on this host (yama ptrace_scope=1) the
 //	                 syscall is ALREADY refused sibling-to-sibling by Yama, not
 //	                 by anything here — this filter is the lock for the hosts
 //	                 (containers, hardened-off Yama) where that sysctl is 0.
@@ -431,24 +426,6 @@ func BuildFilter() (prog []byte, ok bool, err error) {
 		return nil, false, err
 	}
 	return raw, true, nil
-}
-
-// FilterDigest is the identity `snug attach` compares against: the run's
-// state file records this over the program bytes it actually installed, and
-// attach refuses to join unless ITS OWN BuildFilter() produces the identical
-// digest (internal/attach's caller does this, in internal/cli/attach.go).
-//
-// Rebuilding and hashing rather than carrying the program bytes in the state
-// file is the point, not an incidental choice: the bytes are authored by
-// deniedSyscalls and BuildFilter, in code, and a file that carried them would
-// be a second author of the filter — the same "trust the wire" shape this
-// project already refused once for Bwrap/Argv travelling on a channel.
-// Rebuilding also cannot fail open: if BuildFilter is missing, broken, or on
-// an architecture with no syscall table, attach has no filter to install and
-// says so rather than joining unfiltered.
-func FilterDigest(prog []byte) string {
-	sum := sha256.Sum256(prog)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // FilterFD writes the program to an anonymous memfd for bwrap's --seccomp.

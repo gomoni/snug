@@ -512,8 +512,9 @@ func killPinned(pid, root int, exclude map[int]bool) {
 // reads that exact file and issue #236's measurements show it working.
 //
 // The real reason is a difference in what the two callers owe. initwalk NAMES
-// an init and has a fallback when it cannot — the run is merely not
-// attachable. This sweep is the teardown GUARANTEE and has none, so it is
+// an init and has a fallback when it cannot — the run merely goes unrecorded,
+// which costs a later sweep its target and nothing else. This sweep is the
+// teardown GUARANTEE and has none, so it is
 // built on ancestry walked UP from every candidate pid, which needs no kernel
 // config option at all, exactly as the integration suite's own findDescendant
 // does. With becomeSubreaper active this needs very few hops for a reparented

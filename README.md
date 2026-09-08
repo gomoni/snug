@@ -118,20 +118,34 @@ include = ["@net", "@claude", "@sys", "@home", "@cwd-rw", "@podman-socket", "@po
 description = "Allow proper ssh keys and gh account"
 ```
 
-## Attach
+## A second session is a second sandbox
 
-Similarly to tools like `tmux` `snug` have the ability to join into existing
-sandbox. This is done via `snug attach <dir>` command. Because `snug` itself
-allows a single sandbox per a directory, in order to simplify the runtime
-model, the `<dir>` is the only one parameter needed. Attached processes has the
-same set of profiles.
+Run `snug` again on the same directory and you get another sandbox, not another
+shell in the first one. The two share exactly the host-backed writable surface
+their profiles grant — the target directory, and the container store if a
+`@podman*` profile is selected — and nothing else: separate `$HOME` tmpfs,
+separate `/tmp`, separate pids, separate environment. `snug --dry-run` prints
+the whole shared list under `SHARED`.
+
+That sharing is a channel in both directions. One sandbox writes
+`.git/hooks/pre-commit`, `Makefile`, `CLAUDE.md`, `.envrc` or `package.json`;
+the other's tools execute or obey it, under the other's credentials, with no
+cooperation needed from it. Where the container store is shared, a layer one
+sandbox's engine pulls is a layer the other's engine runs. If that is not what
+you want, use two directories.
+
+There is no way to put a process inside a sandbox that is already running.
+Joining one meant landing in its namespaces, where `/proc/<pid>/environ` and
+`/proc/<pid>/fd` of the payload are readable and writable by a same-uid
+process — the leak runs both ways, and no flag closes it. From outside the
+sandbox you are the host user and `nsenter` is still yours, unconfined.
 
 ## The architecture
 
 The project started as a `agent-sandbox.sh` script. The features around
 embedded podman, the necessity to run podman inside the same network namespace,
-the `attach` command, and a limitation of some Linux syscalls to a
-single-threaded code, that all required `snug` to became multiprocess thing.
+and a limitation of some Linux syscalls to a single-threaded code, that all
+required `snug` to became multiprocess thing.
 
 Yet there is **no daemon**. Nothing survives you. `snug` simply reexec itself several time
 implementing a distinct stages of a sandbox itself.
@@ -653,8 +667,18 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 | host services on `127.0.0.1` | private netns |
 | X11 keylogging, D-Bus, the desktop session | not mounted; netns-scoped |
 | host persistence (`.bashrc`, autostart, cron) | `$HOME` is an ephemeral tmpfs |
+| one session's Claude credential from another session | private mount and pid namespaces; staged files are memfd-backed and have no path to name |
 
-## What snug does not defends against
+A credential minted *inside* a session is covered too. `/login` writes a full
+set, `refreshToken` included, to `~/.claude/.credentials.json` on the sandbox's
+own tmpfs; a second session cannot read it. Not "cannot be read" — same uid on
+the host, so `/proc/<pid>/root`, `nsenter` and gdb are still yours. The line
+runs between sandboxes, not between you and a process you started. What still
+crosses is the shared target: one sandbox plants `.git/hooks/pre-commit`, the
+other's `git commit` runs it. `VERIFY.md` §6n-bis is the by-hand check, positive
+control included.
+
+## What snug does not defend against
 
 Kernel zero days - the security perimeter is a Linux itself, so escape by
 exploit is possible. Run the VM if expects more strict isolation though.
@@ -765,8 +789,8 @@ keep.
 
 This is alpha status - while the basic concept feels solid, more real world usage are needed.
 
-The builtin profiles, their dependencies, CLI or an ability to attach to an existing sandbox - all of this
-may be refined in the near future.
+The builtin profiles, their dependencies and the CLI - all of this may be
+refined in the near future.
 
 ## Drafts — designed, not built
 

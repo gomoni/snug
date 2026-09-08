@@ -85,7 +85,7 @@ func watchForInit(bwrapPid int, opts Options, named *initReporter) {
 //
 //	snug: could not record this run's sandbox init (init state: reading
 //	namespace ids of pid 2: open /proc/2/ns/mnt: permission denied)
-//	snug: this run will not be attachable (run state: could not determine
+//	snug: could not record this run (run state: could not determine
 //	the "mnt" namespace id (got 0))
 //
 // It failed loudly only by an accident of numbering — small host pids are
@@ -111,8 +111,9 @@ func hostInitPID(bwrapPid, reported int, opts Options) (int, bool) {
 	// and re-stat'ing it every 5ms would only add a way to fail late.
 	theirs, err := initwalk.NamespaceInode(bwrapPid, "user")
 	if err != nil {
-		opts.warn(fmt.Sprintf("cannot read bwrap's user namespace (%v); this run will "+
-			"not be attachable", err))
+		opts.warn(fmt.Sprintf("cannot read bwrap's user namespace (%v); this run's sandbox "+
+			"init goes unrecorded, so a SIGKILL of snug would leave it for nothing to "+
+			"clean up", err))
 		return 0, false
 	}
 	deadline := time.Now().Add(initWatchTimeout)

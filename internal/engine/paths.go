@@ -48,18 +48,26 @@ type Paths struct {
 //
 // # The soundness rule, for whoever proposes a coarser key next
 //
-// Let L(x) be the equivalence class the per-target lock enforces
-// (internal/cli's lockTarget, keyed on sha256(realpath) — see
-// ONE-SANDBOX-PER-DIR.md) and S(x) the store's own partition — two targets
-// share a key iff engineKey returns the same string for both. The property
-// snug depends on is S(a) = S(b) ⟹ L(a) = L(b): the store's partition must be
-// AT LEAST AS FINE as the lock's, so "at most one live user of a given store"
-// falls out of an invariant snug already enforces, rather than needing its
-// own proof. Today S = L exactly, because both hash the identical canonical
-// target string. A key COARSER than the lock — a global store, or any key
-// that merges two different targets into one hash — is the UNSOUND
-// direction: it would let a second run reach a store a live sandbox still
-// owns, and no test catches that by construction the way this one does.
+// Let L(x) be the equivalence class the per-target lock is keyed on
+// (internal/cli's lockTarget, sha256(realpath)) and S(x) the store's own
+// partition — two targets share a key iff engineKey returns the same string
+// for both. The property snug depends on is S(a) = S(b) ⟹ L(a) = L(b): the
+// store's partition must be AT LEAST AS FINE as the lock's, so every live user
+// of a given store is a run on the SAME target, which is the sharing a user
+// asked for by naming that directory twice. Today S = L exactly, because both
+// hash the identical canonical target string.
+//
+// What it does NOT say, since the lock became shared and several runs may hold
+// one target at once: that a store has at most one live user. It has as many
+// as the human started, concurrently, and the consequence is stated on the
+// --dry-run screen (describeShared) rather than refused — a layer one
+// sandbox's engine pulls is a layer its peer's engine runs, which is the same
+// channel #276 already accepted across sequential runs, with concurrency added.
+//
+// A key COARSER than the lock — a global store, or any key that merges two
+// different targets into one hash — is the UNSOUND direction: it would let a
+// run reach a store a sandbox for an UNRELATED directory owns, which no human
+// asked for, and no test catches that by construction the way this one does.
 //
 // pol.Target is ALREADY canonical: policy.Resolve runs EvalSymlinks on it
 // (internal/policy/resolve.go) before storing it, and types.go's own doc
@@ -190,6 +198,14 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 		Mount: policy.Mount{
 			Guest: policy.EngineSockGuest, Host: ps.SockDir,
 			Kind: policy.KindGraft, Access: policy.AccessRW, From: []string{"(snug)"},
+			// RunScoped, unlike the store and runroot above: SockDir and
+			// ConfDir are halves of a run directory named
+			// snug-<uid>-<pid>, so a second snug on this target gets its
+			// own and cannot meet this one here. The store and runroot are
+			// keyed by the target hash ALONE (engineKey), so they are
+			// exactly what a peer DOES meet this run on, and marking them
+			// would delete that row from the SHARED screen.
+			RunScoped: true,
 		},
 		Why: "create or replace the socket the container proxy dials — the engine must be " +
 			"able to bind it, which is why this half of the run directory is writable and the " +
@@ -202,6 +218,7 @@ func GraftPathsInto(env policy.Environ, p *policy.Policy, ps Paths) error {
 		Mount: policy.Mount{
 			Guest: policy.EngineConfGuest, Host: ps.ConfDir,
 			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"(snug)"},
+			RunScoped: true,
 		},
 		Why: "READ every configuration file snug generated for it — and only read them: this " +
 			"is the half of the run directory that is read-only, so an engine that is talked " +

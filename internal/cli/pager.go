@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // The pager exists because --dry-run and --explain are the two screens a human
@@ -25,8 +27,8 @@ import (
 //
 // Nothing here uses golang.org/x/term. That would be a THIRD third-party
 // dependency and CLAUDE.md ("Go, and it is not reopened") spends the whole
-// budget on go-toml and golang.org/x/sys. The tty test is attachstdio.go's
-// isTerminal, which already runs exactly the ioctl x/term would.
+// budget on go-toml and golang.org/x/sys. The tty test is isTerminal at the
+// foot of this file, which already runs exactly the ioctl x/term would.
 
 // pagerCmd decides which pager, if any, a human-readable screen goes through,
 // and returns the argv to exec. nil means "write straight to the stream" —
@@ -216,4 +218,16 @@ func pageHuman(out *os.File, jsonOutput bool, render func(io.Writer) error) erro
 	}
 	argv := pagerCmd(os.LookupEnv, exec.LookPath, isTerminal(int(out.Fd())))
 	return writeThroughPager(out, argv, os.Environ(), render)
+}
+
+// isTerminal reports whether fd refers to a terminal, via TCGETS: it
+// succeeds only on a tty-like device, so its error/success split IS the
+// isatty(3) test, without needing a dependency for one ioctl.
+//
+// Two callers, and they want it for opposite reasons: pageHuman below, which
+// pages only for a human, and run() in main.go, which gives the sandbox a
+// terminal only when snug itself has one (issue #528).
+func isTerminal(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	return err == nil
 }

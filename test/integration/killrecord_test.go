@@ -18,8 +18,6 @@ package integration
 // live in is never bound into any sandbox. That claim was asserted nowhere
 // before this file.
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,17 +26,14 @@ import (
 	"time"
 )
 
-// startingPath is attachSandbox.statePath's (attach_test.go) sibling for the
-// ".starting" kill record: the identical "sha256_"+sha256(realpath) stem
-// (issue #349), ".starting" instead of ".json".
-func (s *attachSandbox) startingPath(t *testing.T) string {
+// startingPath is bgSandbox.statePath's sibling for the ".starting" kill
+// record: the same per-run stem, ".starting" instead of ".json".
+func (s *bgSandbox) startingPath(t *testing.T) string {
 	t.Helper()
-	real, err := filepath.EvalSymlinks(s.proj)
-	if err != nil {
-		t.Fatalf("resolving the target %s: %v", s.proj, err)
+	if p := soleTargetRecord(t, uidRuntimeSnugDir(t), s.proj, ".starting"); p != "" {
+		return p
 	}
-	sum := sha256.Sum256([]byte(real))
-	return filepath.Join(uidRuntimeSnugDir(t), "target-sha256_"+hex.EncodeToString(sum[:])+".starting")
+	return targetRecordGlob(t, uidRuntimeSnugDir(t), s.proj, ".starting")
 }
 
 // waitForGone polls for a path to stop existing — waitForFile's opposite
@@ -68,7 +63,7 @@ func TestTheKillRecordLandsBeforeTheEngineIsUp(t *testing.T) {
 	requireRealEngine(t, env)
 	proj, _ := target(t)
 
-	bg := startAttachSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 300`)
 
 	// bg.ready(t) is deliberately NOT called before the checks below: a
 	// @podman-socket run is GATED (issue #125) — the payload, and therefore
@@ -77,16 +72,24 @@ func TestTheKillRecordLandsBeforeTheEngineIsUp(t *testing.T) {
 	// appear, the whole window this test exists to catch has already closed
 	// on its own. So the record has to be caught from process start.
 
-	startingPath := bg.startingPath(t)
-	statePath := bg.statePath(t)
-
 	// POSITIVE CONTROL: the .starting record actually appears at all.
 	// Without this, "state.json was not there yet" would be equally true of
 	// a run that published NEITHER record — the sandbox never having reached
 	// the starting line in the first place.
-	if err := waitForFile(startingPath, 15*time.Second); err != nil {
-		t.Fatalf("the .starting record never appeared at %s (%v):\n%s",
-			startingPath, err, bg.log())
+	//
+	// The wait is over the GLOB rather than a path: the record's name carries
+	// its owning pid, so the name is not knowable before the record is.
+	startingPath := ""
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if startingPath = soleTargetRecord(t, uidRuntimeSnugDir(t), bg.proj, ".starting"); startingPath != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the .starting record never appeared matching %s:\n%s",
+				targetRecordGlob(t, uidRuntimeSnugDir(t), bg.proj, ".starting"), bg.log())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	// THE ASSERTION: at the instant the .starting record exists, state.json
@@ -95,13 +98,15 @@ func TestTheKillRecordLandsBeforeTheEngineIsUp(t *testing.T) {
 	// regression that removed the "forked" event, or that published
 	// state.json before the engine finished, would pass the control above and
 	// fail here.
-	if _, err := os.Stat(statePath); err == nil {
+	//
+	// Resolved through the same glob, never by stat'ing a pattern: a stat of
+	// a name containing "*" is ENOENT whatever exists, which would turn this
+	// assertion into one that cannot fail.
+	if statePath := soleTargetRecord(t, uidRuntimeSnugDir(t), bg.proj, ".json"); statePath != "" {
 		t.Fatalf("state.json already exists at %s the instant the .starting record appeared — "+
 			"this test needs the engine's cold start to still be in progress for the window it "+
 			"is measuring to exist at all; the engine may have started faster than expected on "+
 			"this host", statePath)
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat %s: %v", statePath, err)
 	}
 
 	// The run finishes coming up: the payload is released, state.json lands,

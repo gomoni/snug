@@ -1121,6 +1121,53 @@ echo CHECKED`).mustRun(t)
 	}
 }
 
+// TestPayloadUsernsMapsExactlyOneID pins the runtime shape SECRETS.md §5.2's
+// refusal depends on: the payload's user namespace is always created with
+// --unshare-user and bwrap never joins one via --userns FD, so
+// /proc/self/uid_map inside the payload must be exactly one line whose count
+// field is 1. A second line, or a count above 1, means the payload was handed
+// a uid RANGE rather than a single id — precisely the "uid wall" §5.2
+// measured and refused, and it would silently change what SO_PEERCRED
+// reports, what DAC between inner uids means, and make --userns FD reachable
+// where it is structurally excluded today.
+//
+// The map's middle field (which host-side uid the mapping points at) is
+// deliberately not asserted: internal/sandbox/exec.go:410 notes it varies
+// with topology (flat vs staged, and with nesting), so pinning it here would
+// fail for a reason unrelated to what this test exists to catch.
+func TestPayloadUsernsMapsExactlyOneID(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	r := run(t, nil, proj, `cat /proc/self/uid_map`).mustRun(t)
+
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(r.out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("the payload's /proc/self/uid_map has %d mapping lines, want exactly 1 — "+
+			"more than one line means the payload's user namespace was given more than one "+
+			"identity mapping, which SECRETS.md §5.2 refuses:\n%s", len(lines), r.out)
+	}
+
+	fields := strings.Fields(lines[0])
+	if len(fields) != 3 {
+		t.Fatalf("uid_map line %q does not have the usual 3 fields (inner, outer, count):\n%s",
+			lines[0], r.out)
+	}
+	if fields[2] != "1" {
+		t.Errorf("uid_map count is %q, want \"1\" — a count above 1 means the payload's user "+
+			"namespace maps a uid RANGE instead of a single id, which is exactly the 'uid wall' "+
+			"SECRETS.md §5.2 measured and refused: it would silently change what SO_PEERCRED "+
+			"reports, what DAC between inner uids means, and reach --userns FD where it is "+
+			"structurally excluded today:\n%s", fields[2], r.out)
+	}
+}
+
 // clone3 must return ENOSYS, not EPERM: glibc's pthread_create falls back to
 // clone() only on ENOSYS, and EPERM broke every threaded program — curl's
 // resolver among them, which presented as a DNS failure and cost an hour in

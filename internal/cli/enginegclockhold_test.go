@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,12 @@ import (
 //
 // The assertion is the one that would have failed: while gc believes it is
 // inside its protected phase, lockTarget on that target must be REFUSED.
+//
+// This is the ONLY thing that refuses a run on a locked target. Runs hold the
+// target lock SHARED and never exclude each other; gc's reclaim arm asks for
+// LOCK_EX precisely so that it does, and CONTROL 0 below is what tells the two
+// modes apart — remove the exclusive request and a peer run still starts, so
+// only the gc case can catch it.
 func TestEngineGCHoldsTheTargetLockWhenItsFileWasSwept(t *testing.T) {
 	snugDir := useTargetLockBase(t)
 	if err := os.MkdirAll(snugDir, 0o700); err != nil {
@@ -37,6 +44,20 @@ func TestEngineGCHoldsTheTargetLockWhenItsFileWasSwept(t *testing.T) {
 		t.Fatalf("fixture: the lock file must be absent to reproduce this, got %v", serr)
 	}
 
+	// CONTROL 0: two runs on this target coexist. Without it, the refusal
+	// below is equally true of a lock that refuses everything.
+	first, err := lockTarget(target)
+	if err != nil {
+		t.Fatalf("a first run could not take the target lock: %v", err)
+	}
+	second, err := lockTarget(target)
+	if err != nil {
+		first()
+		t.Fatalf("a second run on the same target was refused: %v", err)
+	}
+	second()
+	first()
+
 	live, unlock, err := targetLive(real, liveHoldForReclaim)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +74,13 @@ func TestEngineGCHoldsTheTargetLockWhenItsFileWasSwept(t *testing.T) {
 		var busy *targetBusyError
 		if !errors.As(lerr, &busy) {
 			unlock()
-			t.Fatalf("the run was refused, but not as busy: %v", lerr)
+			t.Fatalf("the run was refused, but not by the exclusive holder: %v", lerr)
+		}
+		if !strings.Contains(lerr.Error(), "engine gc") {
+			unlock()
+			t.Errorf("the refusal does not name what is actually in the way. A peer run cannot "+
+				"cause this, so a message about `a run is live` sends the reader looking for a "+
+				"sandbox that is not the problem: %v", lerr)
 		}
 	}
 	unlock()

@@ -107,17 +107,20 @@ func TestNulJoinRefusesAnElementContainingTheSeparator(t *testing.T) {
 	}
 }
 
-// TestFillMissingNamespaceIDsRecoversAnOmittedKey is the regression this
-// session found: bwrap's --info-fd JSON OMITS a "<kind>-namespace" key
-// entirely for any namespace it did not itself unshare — measured directly
+// TestFillMissingNamespaceIDsRecoversAnOmittedKey pins the fallback for a
+// gap in bwrap's --info-fd contract: the JSON OMITS a "<kind>-namespace" key
+// entirely for any namespace bwrap did not itself unshare — measured directly
 // against this host's bwrap (with --unshare-net the key is present and
 // correct; without it, because the process merely inherited an
 // already-created netns exactly as runStaged's own stage does, the key is
-// absent and json.Decoder silently zero-values it). Every @net (staged) run
-// therefore recorded "net": 0 in state.json, and since attach's own live
-// check treats ANY mismatch as a refusal (0 is never a real inode), every
-// @net sandbox was permanently unattachable. This test proves the fallback:
-// a 0 left by the decoder is replaced with the REAL inode read from
+// absent and json.Decoder silently zero-values it).
+//
+// What a 0 costs on an @net (staged) run: writeRunState REFUSES to publish a
+// record carrying one (internal/cli/runstate.go, "could not determine the %q
+// namespace id"), so the run has no state.json, so a later snug's orphan
+// sweep has no init pid to name — and a SIGKILL of that snug leaves a live
+// sandbox nothing will ever clean up. This test proves the fallback: a 0 left
+// by the decoder is replaced with the REAL inode read from
 // /proc/<pid>/ns/<kind>, for THIS process's own namespaces (which this test
 // can read without any privilege).
 func TestFillMissingNamespaceIDsRecoversAnOmittedKey(t *testing.T) {

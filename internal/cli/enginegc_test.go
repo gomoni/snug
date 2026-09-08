@@ -99,6 +99,11 @@ func countLockFiles(dir string) int {
 // several tests below release the lock partway through to prove the
 // SUBSEQUENT reclaim, in the same test, is a positive control rather than a
 // separate run.
+//
+// LOCK_SH for holdTargetLock's reason: a run holds the target lock shared, and
+// only a shared fixture can catch a liveness probe that has stopped asking for
+// LOCK_EX — which for `snug engine gc` means reclaiming a store under a running
+// engine.
 func holdTargetLockReleasable(t *testing.T, snugDir, target string) (release func()) {
 	t.Helper()
 	if err := os.MkdirAll(snugDir, 0o700); err != nil {
@@ -109,7 +114,7 @@ func holdTargetLockReleasable(t *testing.T, snugDir, target string) (release fun
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
 	return func() {

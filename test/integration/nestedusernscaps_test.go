@@ -34,10 +34,20 @@ import (
 //	SIOCSIFFLAGS on N's lo -> EPERM        control: the same ioctl in a netns it owns SUCCEEDS and the flag flips
 //	setns(saved N fd, CLONE_NEWNET) -> EPERM  control: setns into the netns it owns SUCCEEDS, same fd mechanism
 //	remount rw of /usr and / -> EPERM      control: mounting a tmpfs of its own in its own mountns SUCCEEDS
+//	mount("proc", …) onto /proc or a fresh dir -> EPERM  control: tmpfs onto that SAME fresh dir SUCCEEDS
 //
 // plus the precondition that makes them worth anything: CapEff and CapBnd in
 // the nested namespace actually carry CAP_NET_ADMIN and CAP_SYS_ADMIN, while
 // the payload that created it held neither.
+//
+// The proc/tmpfs pair pins the ground SECRETS.md §7.6 stands a refusal on: a
+// private /proc is what would have let a placed-in process hide from the rest
+// of its pid namespace (the route `snug attach`'s private-proc mode would have
+// taken, deleted before it shipped), and §7.6 rests "the payload's user
+// namespace cannot mount one" on exactly the EPERM/OK contrast asserted below.
+// A FAILURE here does not mean the sandbox leaks a secret today — it means the
+// kernel property §7.6 cites has stopped holding, and §7.6 needs rewriting
+// rather than this test relaxed.
 //
 // COVERAGE THIS DOES NOT CLAIM. The engine arm is not measured: podman and
 // crun create their own nested user namespaces for a container, and this test
@@ -224,6 +234,19 @@ func TestNestedUserNamespaceCapsCannotReachSnugsNamespaces(t *testing.T) {
 			eq("remount-rw-/usr", "operation not permitted", "bwrap's read-only /usr is locked by "+
 				"the user namespace that made it")
 			eq("remount-rw-/", "operation not permitted", "same, for the sandbox root")
+
+			// ── the discriminator SECRETS.md §7.6 rests a refusal on ────────
+			eq("mount-proc-onto-proc", "operation not permitted", "a private /proc is exactly "+
+				"the filesystem this nested namespace's CAP_SYS_ADMIN must not be able to mount "+
+				"over the payload's real /proc")
+			eq("mount-proc-onto-fresh", "operation not permitted", "same refusal onto a fresh, "+
+				"otherwise-uninvolved directory, so the EPERM above is not specific to /proc "+
+				"already being a mountpoint")
+			eq("mount-tmpfs-onto-fresh", "OK", "the discriminator itself: a tmpfs mounts at the "+
+				"SAME place proc was just refused, so the refusal above is about the filesystem "+
+				"type snug's own procfs uses and not about the directory being unwritable")
+			eq("mount-sysfs-onto-fresh", "operation not permitted", "sysfs refused the same way "+
+				"proc was, so the refusal is not specific to procfs")
 			for _, path := range []string{"/usr", "/", "/etc"} {
 				name := "remount-rw-" + path
 				if got := field(name); got == "OK" {

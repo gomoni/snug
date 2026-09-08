@@ -29,7 +29,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/dev",
@@ -42,7 +43,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/lib",
@@ -55,7 +57,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/lib64",
@@ -68,7 +71,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/proc",
@@ -81,7 +85,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/sbin",
@@ -94,7 +99,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/tmp",
@@ -108,7 +114,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/usr",
@@ -121,7 +128,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/group",
@@ -134,7 +142,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/ld.so.cache",
@@ -147,7 +156,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/ld.so.conf",
@@ -160,7 +170,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/nsswitch.conf",
@@ -173,7 +184,8 @@
       "optional": true,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/passwd",
@@ -186,7 +198,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/resolv.conf",
@@ -199,7 +212,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/home/u",
@@ -213,7 +227,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/proc/config.gz",
@@ -227,7 +242,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the complete host kernel config — an exploit-selection oracle"
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the complete host kernel config — an exploit-selection oracle",
+      "run_scoped": false
     },
     {
       "guest": "/proc/key-users",
@@ -241,7 +257,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's keyring accounting"
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's keyring accounting",
+      "run_scoped": false
     },
     {
       "guest": "/proc/keys",
@@ -255,7 +272,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's live keyring (keyctl is already seccomp-denied)"
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's live keyring (keyctl is already seccomp-denied)",
+      "run_scoped": false
     },
     {
       "guest": "/proc/sys",
@@ -269,7 +287,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "procfs_replacement": "read-only: the write side is snug's own mount now, not a capability check snug does not own. Reads are unchanged, and namespace-scoped values are still this sandbox's"
+      "procfs_replacement": "read-only: the write side is snug's own mount now, not a capability check snug does not own. Reads are unchanged, and namespace-scoped values are still this sandbox's",
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.cache",
@@ -283,7 +302,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.config",
@@ -297,7 +317,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local",
@@ -311,7 +332,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/proj",
@@ -325,7 +347,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local/share",
@@ -339,7 +362,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local/state",
@@ -353,7 +377,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/proj/sub",
@@ -366,7 +391,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     }
   ],
   "grafts": [],

@@ -411,37 +411,46 @@ func TestProfileShowEscapesEveryValue(t *testing.T) {
 	}
 }
 
-// TestAttachScreensAreCoveredByTheControlCharacterSweep is §13.7 test 29:
-// "the existing TestNoSnugScreenEmitsARawControlCharacter must cover the new
-// block and the new help text — check that it does, rather than assuming."
+// TestSharedBlockIsCoveredByTheControlCharacterSweep exists so the coverage
+// question is CHECKED rather than assumed.
 //
-// dryRun already calls describeAttach unconditionally (dryrun.go), so the
-// whole-screen sweep above already exercises it — this test exists so that
-// fact is CHECKED, not assumed, and so a future describeAttach that starts
-// interpolating something (a target path, say) is caught by the same
-// isForgingRune sweep rather than silently exempted because nobody re-ran the
-// coverage question. attachUsage's help text is static (no value is
-// interpolated into it at all today), so there is nothing FOR the sweep to
-// catch there yet — this test pins that fact directly rather than leaving it
-// implicit, so it fails the moment the help text stops being static.
-func TestAttachScreensAreCoveredByTheControlCharacterSweep(t *testing.T) {
-	attachOut := captureFile(t, func(w io.Writer) {
-		describeAttach(w, &policy.Policy{Target: "/home/u/proj"})
-	})
-	if attachOut == "" {
-		t.Fatal("describeAttach produced no output at all, so the sweep in " +
+// dryRun calls describeShared unconditionally (dryrun.go), so the whole-screen
+// sweep above already exercises it. This pins that, and pins the sharper half:
+// describeShared INTERPOLATES values a hostile input reaches — a target path a
+// human typed, and a graft's host path — so a future edit that renders one
+// without visibleValue is caught here rather than silently exempted because
+// nobody re-ran the coverage question. The fixture below plants a U+202E in
+// both.
+func TestSharedBlockIsCoveredByTheControlCharacterSweep(t *testing.T) {
+	const rlo = "\u202e"
+	pol := &policy.Policy{
+		Target: "/home/u/proj" + rlo,
+		Mounts: map[string]policy.Mount{
+			"/home/u/proj" + rlo: {Guest: "/home/u/proj" + rlo, Kind: policy.KindBind,
+				Host: "/home/u/proj" + rlo, Access: policy.AccessRW},
+		},
+		Grafts: map[string]policy.Graft{
+			"/snug/engine/store": {Mount: policy.Mount{
+				Guest: "/snug/engine/store", Kind: policy.KindGraft,
+				Host: "/home/u/.local/share/snug" + rlo, Access: policy.AccessRW}},
+		},
+	}
+	out := captureFile(t, func(w io.Writer) { describeShared(w, pol) })
+	if out == "" {
+		t.Fatal("describeShared produced no output at all, so the sweep in " +
 			"TestNoSnugScreenEmitsARawControlCharacter cannot be said to cover it")
 	}
-	if i := strings.IndexFunc(attachOut, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
-		t.Errorf("describeAttach emitted a raw control character (%q)", []rune(attachOut[i:])[0])
+	if i := strings.IndexFunc(out, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
+		t.Errorf("describeShared emitted a raw control character (%q). A directional override "+
+			"reverses how the rest of the row reads, so a shared path displays as one it is "+
+			"not:\n%s", []rune(out[i:])[0], out)
 	}
-
-	helpOut := captureStdout(t, attachUsage)
-	if helpOut == "" {
-		t.Fatal("attachUsage produced no output at all")
-	}
-	if i := strings.IndexFunc(helpOut, func(r rune) bool { return r != '\n' && isForgingRune(r) }); i >= 0 {
-		t.Errorf("attach's help text emitted a raw control character (%q)", []rune(helpOut[i:])[0])
+	// POSITIVE CONTROL: the escaped form is there, so the assertion above is
+	// about escaping and not about a fixture whose character never reached the
+	// screen at all. Twice: once for the mount row, once for the graft row.
+	if n := strings.Count(out, `\u202e`); n < 2 {
+		t.Fatalf("the escaped form of U+202E appears %d time(s), want at least 2 (the mount "+
+			"row's host path and the graft row's):\n%s", n, out)
 	}
 }
 

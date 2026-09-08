@@ -245,6 +245,27 @@ func mounts() {
 	// satisfied by a nested namespace that got no privilege at all.
 	report("mount-own-tmpfs", unix.Mount("tmpfs", dir, "tmpfs", 0, ""))
 
+	// SECRETS.md §7.6's discriminator: a private /proc is exactly the
+	// filesystem this nested namespace's CAP_SYS_ADMIN cannot mount, while a
+	// tmpfs at the same mountpoint can. A second, still-empty directory keeps
+	// this from mounting onto the tmpfs dir already claimed above.
+	dir2, err := filepath.Abs("capregain-mnt2")
+	if err != nil {
+		report("mount-dir2", err)
+		return
+	}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		report("mount-dir2", err)
+		return
+	}
+	report("mount-proc-onto-proc", unix.Mount("proc", "/proc", "proc", 0, ""))
+	report("mount-proc-onto-fresh", unix.Mount("proc", dir2, "proc", 0, ""))
+	// Same mountpoint as the line above, different filesystem: this is the
+	// discriminator itself, not a second copy of mount-own-tmpfs's control
+	// (that one is a different path and so proves nothing about proc's place).
+	report("mount-tmpfs-onto-fresh", unix.Mount("tmpfs", dir2, "tmpfs", 0, ""))
+	report("mount-sysfs-onto-fresh", unix.Mount("sysfs", dir2, "sysfs", 0, ""))
+
 	for _, path := range []string{"/usr", "/", "/etc"} {
 		name := "remount-rw-" + path
 		err := unix.Mount("", path, "", unix.MS_REMOUNT|unix.MS_BIND, "")

@@ -119,9 +119,8 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 	}
 
 	// No os.RemoveAll here: the run directory now has one owner for its
-	// whole lifetime — run() in main.go, which creates it (on every REAL
-	// run, since snug attach's state.json needs one) and is the sole
-	// remover, once, after the sandbox has exited. Two removers racing each
+	// whole lifetime — run() in main.go, which creates it on every REAL run
+	// and is the sole remover, once, after the sandbox has exited. Two removers racing each
 	// other over the same directory is exactly the shape issue #85's sweep
 	// already has to defend against from a DIFFERENT process; there is no
 	// reason to build a second copy of that race inside one.

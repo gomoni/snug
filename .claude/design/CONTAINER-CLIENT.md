@@ -205,7 +205,7 @@ is resolving to a **host-escape helper**: `distrobox-host-exec`, `host-spawn`,
 detecting "symlink" would stage stubs over half of `/usr/bin`.
 
 **This stages an executable, which the model has never done before.** SECRETS.md
-§4 flags exactly this: *"a `stub` key would be the first key that stages an
+§4.3 flags exactly this: *"a `stub` key would be the first key that stages an
 executable … it grants the most powerful thing in the model — code that runs
 before the tool the human named. Its abuse sentence has to be written before its
 syntax."* It is snug-authored rather than profile-authored, which is the
@@ -324,7 +324,7 @@ the one it impersonates (podman's grows every release).
 
 **Scope: `podman` only**, gated on `Podman != PodmanOff`. Not a scan of
 `/usr/bin` — that is what turns "snug authored one replacement" into "snug
-replaces host binaries it judges broken", the general mechanism SECRETS.md §4
+replaces host binaries it judges broken", the general mechanism SECRETS.md §4.3
 says needs its abuse sentence first.
 
 **`--dry-run`:** render `KindData` with an executable bit as kind `exec`, and add

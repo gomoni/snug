@@ -206,9 +206,9 @@ AFTER /tmp/snugvrt.XXXXXX/snug
 
 The run's own directory exists while the sandbox is up and is gone after it
 exits; the shared `snug` directory stays, by design — it is the parent every
-run and every `snug attach` looks in, and it holds nothing. No profile is
-selected here because none is needed: every real run publishes its state so
-`snug attach` can find it. The SOCKET half of the control needs a profile that
+run and the next run's orphan sweep look in, and it holds nothing. No profile
+is selected here because none is needed: every real run publishes its state so
+a later sweep can find its init. The SOCKET half of the control needs a profile that
 has one — an identity, or an engine on a host where `@podman-socket` is not
 refused — and is covered by `TestDryRunLeavesNoRunDirectoryOrSocket` in
 `test/integration`.
@@ -1141,8 +1141,8 @@ hidden by a rule; it was never granted, so there is nothing there to deny.
 `rename(2)` refuses only when the dentry being renamed IS a mount point, so
 without an anchor a payload renames the *parent*, the target's mount travels
 with it, and the freed path is recreated as the payload's own directory — after
-which `$SNUG_TARGET`, and a human's `snug attach`, read payload-authored content
-while every screen still prints the real project path.
+which `$SNUG_TARGET` reads payload-authored content while every screen still
+prints the real project path.
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c '
@@ -2338,6 +2338,101 @@ pass just as well on a run where staging stopped working altogether:
 A build that stages the host bytes in the first case has fallen back to the old
 behaviour, which is the one regression that would undo this change with nothing
 on screen to say so.
+
+### 6n-bis. A credential minted INSIDE one session is unreachable from another
+
+§6n bounds what the host hands a sandbox on the way IN. It says nothing about a
+credential that comes into being INSIDE one. `/login` in a running session
+completes a fresh OAuth flow and writes a full credential set — `refreshToken`
+included — into `~/.claude/.credentials.json`, which is a writable file on the
+`~/.claude` tmpfs and is Claude Code's to rewrite once snug has handed off.
+Measured on claude 2.1.263: that file's mtime landed 1421 s after the payload
+started, both dropped keys were back, and `refreshTokenExpiresAt` was 29 days
+out.
+
+So the question here is not what snug carried in, but: given a live credential
+that exists only inside session A, can session B read it.
+
+Use a canary rather than a real `/login`. The write path is the same file on the
+same tmpfs, and minting a real 29-day token to prove a point is worse than the
+thing being proved. Terminal 1, session A:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c \
+  'printf %s snug-canary-42 > ~/.claude/.credentials.json; exec /bin/sleep 300'
+```
+
+`exec` is load-bearing. The canary reaches A through argv, so without it the
+string sits in a `/proc/<pid>/cmdline` for the whole run and the sweep below
+answers a different question. After the exec the payload's cmdline is
+`/bin/sleep 300` and the only live copy of the canary is the file itself.
+
+Terminal 2 is the POSITIVE CONTROL, and it is also the honest limit of the
+claim. Run it on the HOST, as yourself, while A lives:
+
+```bash
+p=$(pgrep -f '/bin/sleep 300' | head -1)
+cat /proc/$p/root$HOME/.claude/.credentials.json; echo
+```
+
+Expect `snug-canary-42`. The host reads it because `/proc/<pid>/root` takes
+`PTRACE_MODE_READ`, which Yama does not gate at any `ptrace_scope`, and the
+sandbox runs under your own uid — `nsenter`, `/proc/<pid>/mem` and gdb are yours
+as well. snug's line runs between the sandbox and the host, not between you and
+a process you started yourself. If this prints nothing, everything below is
+vacuous: A may never have written the file, or may already have died.
+
+Terminal 3, session B, launched while A is still alive. `/proc/*/root` is swept
+explicitly rather than assumed empty — that traversal is exactly what just
+worked from the host, and it is what must not work here:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c '
+  echo "visible-pids: $(ls -d /proc/[0-9]* | wc -l)"
+  grep -rl snug-canary-42 "$HOME" /tmp /dev/shm 2>/dev/null
+  for p in /proc/[0-9]*; do
+    c="$p/root$HOME/.claude/.credentials.json"
+    [ -r "$c" ] && { echo "== $c"; cat "$c"; echo; }
+  done'
+```
+
+Expect `visible-pids` to be a handful — B's own payload and its children, not
+the host's hundreds — and no `grep` output at all. The only `==` blocks may be
+B's OWN pids, showing B's own staged credential, which is §6n's file and carries
+no `refreshToken`; if you have never run Claude Code on this host there will be
+no `==` block at all. No block may contain `snug-canary-42`, and none may name
+A's pid — `/proc/<A>/root` resolving is a separate failure from reading the
+file, because it means B's PID namespace is not private, which is a different
+bug with a different fix.
+
+**What makes this true**, so a later reader can tell whether a refactor has
+quietly removed it. Staged `policy.KindData` content never has a filesystem name
+at all: snug puts it in an anonymous `memfd` and passes the descriptor to bwrap,
+which materialises it inside the sandbox's own tmpfs — device `0:163` in a
+measured run, an anonymous superblock whose `mountinfo` root is `/`, unlike
+every host bind, which names its host subtree. A second session gets a second
+private mount namespace, so there is no name in B for the tmpfs holding A's
+file, and B's private PID namespace means `/proc` in B contains no pid of A's to
+traverse through.
+
+**And the direction this does NOT close**, which matters here because the two
+sessions above share one target. B cannot read A's credential; B can arrange for
+A to hand it over. Measured, three runs on one target with a synthetic
+credential: a `@cwd-rw` run with no credential of its own writes
+`.git/hooks/pre-commit` carrying `cp "$HOME/.claude/.credentials.json"
+./.stolen-token`; a later `@claude` run does an ordinary `git commit`, git fires
+the hook, and the first run reads the second's `accessToken` out of the target.
+What bounded that was §6n's projection and nothing else — the file the hook
+copied carries no `refreshToken`, so what moved expires in hours rather than in
+29 days. Use two directories if that is not a trade you want.
+
+The automated equivalent, which uses two targets rather than one and asserts the
+same two negatives separately:
+
+```bash
+SNUG_REQUIRE_SANDBOX=1 go test -tags integration -timeout 2m -v \
+  -run TestOneSessionsClaudeCredentialIsNotReadableFromAnother ./test/integration/
+```
 
 ## 6c. The seccomp filter is actually installed
 
@@ -4046,26 +4141,29 @@ started the engine under — and the engine is root in the sandbox's user
 namespace with the full delegated subuid range. Writable, it could rewrite what
 it was started under.
 
-### 9n. `snug attach` cannot reach the engine (issue #125, C3)
+### 9n. The payload cannot reach the engine (issue #125, C3)
 
 `/proc/<pid>/fd` reaches a sibling's files and `/proc/<pid>/mem` its memory,
 neither of them syscall-shaped, so no seccomp filter can name them. What keeps
-`snug attach` away from the engine is that the engine holds its own **pid
+the payload away from the engine is that the engine holds its own **pid
 namespace** (issue #145) and the payload's `/proc` does not enumerate it.
 
-With a container run live:
+Start a container run, find the engine from the HOST, and hand its pid to the
+payload through the target directory — the one thing both sides can write:
 
 ```bash
 ENG=$(pgrep -f 'system service' | head -1)
 ls /proc/$ENG/fd | head -3          # from the HOST: works
 
-snug attach $SC/proj/sub -- /bin/sh -c '
+./bin/snug -p @podman-socket $SC/proj/sub -- /bin/sh -c '
+  while [ ! -f enginepid ]; do sleep 0.05; done
   a=sys; b=tem; c=ser; d=vice
   for p in /proc/[0-9]*; do
     [ "$p" = "/proc/$$" ] && continue
     tr "\0" " " < $p/cmdline 2>/dev/null | grep -q "$a$b $c$d" && echo "SAW $p"
   done
-  echo SWEPT'
+  echo SWEPT' &
+sleep 5; echo $ENG > $SC/proj/sub/enginepid; wait
 ```
 
 Expect `SWEPT` and no `SAW` line. Note the needle is assembled from two
@@ -4501,14 +4599,20 @@ box had 23, the oldest 12 h old.
 The answer is deferred rather than real-time, the same trade issue #85 made for
 the run directory: the next `snug` run cleans it up.
 
-Make one on purpose. The run's state file lands at about 165 ms and the orphan
-window is open from ~150 ms to ~350 ms, so waiting for that file and killing
-immediately afterwards lands inside it — measured 5 attempts out of 5:
+Make one on purpose, and it must be the **staged** arm — `-p @net`. On the
+offline arm snug's own intermediate pid namespace (`__inpidns`) collapses when
+snug is killed and takes the init with it: `SIGKILL` at a fixed offset of 50,
+100, 150, 200, 250, 300 and 350 ms produced **0 orphans out of 3 at every
+offset**. The staged arm has no such namespace between snug and bwrap, and
+there the window is real — 3 of 3 at 150 ms and 3 of 3 at 200 ms, 0 of 3 at
+100 ms (nothing to leak yet) and 0 of 3 at 300 ms (`--die-with-parent` is
+armed by then). The state file lands inside that window, so waiting for it and
+killing immediately afterwards is the reliable way in — **5 attempts out of 5**:
 
 ```bash
-SP=/run/user/$(id -u)/snug/target-$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
-rm -f $SP
-./bin/snug $SC/proj/sub -- /bin/sleep 300 & SNUG=$!
+H=$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
+./bin/snug -p @net $SC/proj/sub -- /bin/sleep 300 & SNUG=$!
+SP=/run/user/$(id -u)/snug/target-sha256_$H.$SNUG.json
 while [ ! -f $SP ]; do sleep 0.002; done
 kill -9 $SNUG; wait $SNUG 2>/dev/null; sleep 1
 PID=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
@@ -4519,7 +4623,7 @@ Expect a live process whose parent is **not** your shell — it has been
 reparented, which is what "its snug is gone" looks like:
 
 ```
- 325698    8266 S    /usr/bin/bwrap --args 7 -- /bin/sleep 300
+ 163983    6736 S    /usr/bin/bwrap --args 10 -- /bin/sleep 300
 ```
 
 That is the positive control: without it the next step proves nothing, because
@@ -4534,17 +4638,18 @@ ps -p $PID >/dev/null && echo "STILL ALIVE <-- FAIL" || echo "swept: ok"
 Expect the notice and then `swept: ok`:
 
 ```
-snug: killed orphaned sandbox init pid 325698 for target /tmp/.../proj/sub (its snug is
+snug: killed orphaned sandbox init pid 163983 for target /tmp/.../proj/sub (its snug is
       gone; left behind by a run that did not exit cleanly)
 ```
 
 **Why this cannot reach a live sandbox**, and it is worth checking rather than
 believing: start a run in one terminal, run `snug` on a different directory in
-another, and the first is untouched. The sweep acts only on a state file whose
-per-target lock is **not held** — a live run holds that lock for its whole life
-and the kernel releases it only when that process dies — and only when the
+another, and the first is untouched — §14c is that check. Each record names
+its own owner, and the sweep acts only where that owner is gone; it consults
+no target lock at all, which is what lets it reap a dead run's orphan while a
+peer on the SAME target is still live (§14d). The second condition is that the
 recorded start time still matches `/proc/<pid>/stat` field 22, which is the
-pid-reuse guard `snug attach` already relies on.
+pid-reuse guard the record carries a start time for.
 
 ### 11c-ter. The init is nameable before bwrap reports it, on both arms (issue #236)
 
@@ -4559,7 +4664,7 @@ Start a **staged** run (`@net` is what selects that arm) and look at the tree:
 ```bash
 ./bin/snug -p @net $SC/proj/sub -- /bin/sleep 60 & SNUG=$!
 sleep 2
-SP=/run/user/$(id -u)/snug/target-sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
+SP=/run/user/$(id -u)/snug/target-sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).$SNUG.json
 INIT=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
 BWRAP=$(awk '/^PPid:/{print $2}' /proc/$INIT/status)
 for p in $SNUG $BWRAP $INIT; do
@@ -4599,11 +4704,11 @@ upstream's window. The other one, a **gated** run's parked payload waiting on
 snug's `--block-fd` (a **pipe**, which is what tells the two apart from
 outside), IS reached now, by the record 11c-ter checks.
 
-### 11c-ter. The kill record exists before the sandbox is attachable (issue #236)
+### 11c-ter. The kill record exists before `state.json` does (issue #236)
 
 `state.json` is published only once the sandbox is up — and on a gated run only
-after the release byte, because a state file is an invitation to `snug attach`
-and attaching to a parked payload would defeat the gate. On a container run
+after the release byte, because a record naming a sandbox whose payload the gate
+is still holding announces a run that does not yet exist. On a container run
 that is the engine's whole cold start with no host record naming the init, so a
 `SIGKILL` there left a leftover 11c-bis could not find. `target-<hash>.starting`
 closes it: written the instant bwrap names its init, removed once `state.json`
@@ -4614,19 +4719,18 @@ hand:
 
 ```bash
 D=/run/user/$(id -u)/snug
-KEY=$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
-rm -f $D/target-$KEY.json $D/target-$KEY.starting
+KEY=sha256_$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
 ./bin/snug -p @podman-socket $SC/proj/sub -- /bin/sleep 20 & SNUG=$!
-while [ ! -e $D/target-$KEY.starting ] && [ ! -e $D/target-$KEY.json ]; do sleep 0.002; done
+while [ ! -e $D/target-$KEY.$SNUG.starting ] && [ ! -e $D/target-$KEY.$SNUG.json ]; do sleep 0.002; done
 ls -1 $D/target-$KEY.* | sed "s|$D/||"
-cat $D/target-$KEY.starting
+cat $D/target-$KEY.$SNUG.starting
 ```
 
 Expect the record and **no** `.json` beside it — that absence is the point:
 
 ```
-target-b18f2a2a....starting
-target-b18f2a2a....lock
+target-sha256_b18f2a2a....<snug pid>.starting
+target-sha256_b18f2a2a....lock
 {
   "schema": 1,
   "target": "/tmp/.../proj/sub",
@@ -4640,8 +4744,8 @@ target-b18f2a2a....lock
 ```
 
 Five keys and no sixth. It names who to kill and says **nothing** about seccomp,
-environment, profiles or command — a record any attach path could act on would
-hand out a sandbox whose root is still writable and whose `/oldroot` is still
+environment, profiles or command — a record anything could act on early would
+describe a sandbox whose root is still writable and whose `/oldroot` is still
 the host tree (`internal/stage/serve.go` measures 816 mounts, root `rw`, at
 `t+0ms`). Then let the engine come up:
 
@@ -4652,8 +4756,8 @@ sleep 8; ls -1 $D/target-$KEY.* | sed "s|$D/||"; wait $SNUG
 Expect the swap — `.starting` gone, `state.json` there, never both:
 
 ```
-target-b18f2a2a....json
-target-b18f2a2a....lock
+target-sha256_b18f2a2a....<snug pid>.json
+target-sha256_b18f2a2a....lock
 ```
 
 **Why this order and not the reverse**: the removal happens only after
@@ -5474,7 +5578,7 @@ Expect `still alive: ok`.
 
 `13c` covers the run directory. The per-TARGET files are elsewhere and were
 covered by nothing: one `target-sha256_<hex>.lock` per target ever sandboxed,
-kept for the life of the boot, plus `target-sha256_<hex>.json.tmp-<pid>`
+kept for the life of the boot, plus `target-sha256_<hex>.<pid>.json.tmp-<pid>`
 whenever a SIGKILL interrupts a state write (`writeTargetFile` removes only the
 temp name carrying its own pid).
 
@@ -5488,8 +5592,9 @@ ls /run/user/$(id -u)/snug | wc -l           # before
 ls /run/user/$(id -u)/snug
 ```
 
-Expect exactly the current run's own two files, `target-sha256_<hex>.json` and
-`target-sha256_<hex>.lock`, and nothing else. Measured on one development box
+Expect exactly the current run's own two files, `target-sha256_<hex>.<pid>.json`
+(the pid being the `snug` that published it) and `target-sha256_<hex>.lock`, and
+nothing else. Measured on one development box
 after two days of suite runs: **741 -> 2**, of which 738 were lock files and one
 was a `.json.tmp-<pid>`.
 
@@ -5512,246 +5617,127 @@ and two runs then hold "the" lock for one target.
 
 ---
 
-## 14. `snug attach` — a second shell in the *same* sandbox, equally confined
+## 14. A second session is a second sandbox
 
-`snug attach [dir]` joins a live run by its **target directory** (bare `attach`
-uses the current directory). It **gates nothing**: any same-uid host process can
-join these namespaces anyway, measured five ways on both topologies, and the help
-text says so. Its value is therefore not a permission but that it enters
-*confined* — the run's own seccomp filter, an empty capability set, the run's
-environment — where a naive `nsenter` enters with none of them. These checks prove
-attach lands in the right sandbox **and** arrives confined.
+There is no way to put a process inside a sandbox that is already running. Run
+`snug` again on the same directory and you get another sandbox: its own user,
+mount, pid, ipc, uts and net namespaces, its own tmpfs `$HOME`, its own `/tmp`,
+its own environment. What the two share is the host-backed writable surface
+their profiles grant, and `--dry-run`'s SHARED block enumerates it.
 
-The sub-checks run in order and share `$T` (the target) and `$SNUG` (the run's
-pid) from 14a. Start there.
-
-### 14a. It lands in the SAME sandbox — the decisive check, the private tmpfs
+### 14a. Two runs on one directory both start
 
 ```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'echo proof-$$ > /tmp/attach-proof; while :; do sleep 1; done' &
-SNUG=$!
-sleep 2
-./bin/snug attach "$T" -- /bin/sh -c 'cat /tmp/attach-proof'      # prints proof-<pid>
+T=$(mktemp -d); mkdir -p "$T/proj"
+./bin/snug "$T/proj" -- /bin/sh -c 'echo first > "$HOME/whose-home"; touch A; while :; do sleep 1; done' &
+FIRST=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/proj" -- /bin/sh -c 'touch B; ls "$HOME/whose-home"; cat A >/dev/null && echo SEES-TARGET'
+echo "exit=$?"; ls "$T/proj"
+kill $FIRST 2>/dev/null; wait $FIRST 2>/dev/null
 ```
 
-Expect the same bytes the run wrote. `/tmp` is the sandbox's **private tmpfs**; a
-marker written *after* it started can only be read by a process in its mount
-namespace. A fresh, unrelated `snug` has an empty `/tmp` — so this is what
-distinguishes "the same sandbox" from "a sandbox that looks like it".
+Expect the second run to exit 0, `A` and `B` both present, `SEES-TARGET`, and
+`ls: cannot access '/…/whose-home': No such file or directory` — the two share
+the target and nothing else. The first run is still alive throughout, which is
+what the automated `TestTwoLiveSandboxesOnOneDirectory` also checks.
 
-### 14b. The namespaces are literally the same
+### 14b. The shared surface is on the screen, with its abuse sentence
 
 ```bash
-echo "run:";    ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/1/ns/{mnt,net,pid,user,ipc,uts}'
-echo "attach:"; ./bin/snug attach "$T" -- /bin/sh -c 'readlink /proc/self/ns/{mnt,net,pid,user,ipc,uts}'
+./bin/snug --dry-run -p @cwd-rw "$T/proj" | sed -n '/^SHARED/,/^$/p'
 ```
 
-The inode numbers match. attach joins by these exact inodes and **refuses on any
-mismatch**, so equality is enforced by construction — this is how you see it for
-yourself. (`/proc/1` inside is bwrap's own init; the attached process shares its
-pid namespace, so `pid` matches too.)
+Expect the writable host paths listed with their host sides, then, verbatim:
 
-### 14c. The attached process is confined exactly as the payload
-
-```bash
-./bin/snug attach "$T" -- /bin/sh -c 'grep -E "NoNewPrivs|Seccomp:|CapEff|CapBnd" /proc/self/status'
+```
+         Where they do meet, the other sandbox writes files THIS one's tools
+         execute or obey — .git/hooks/*, Makefile, CLAUDE.md, .envrc,
+         package.json — and this one writes files the other's tools execute or
+         obey. Neither has to cooperate: a hook one drops runs under the
+         other's credentials, on the other's next `git commit`.
 ```
 
-Expect `NoNewPrivs: 1`, `Seccomp: 2`, `CapEff: 0000000000000000`,
-`CapBnd: 0000000000000000` — identical to the payload's own four lines. A naive
-`nsenter` would show `Seccomp: 0` and a full `CapBnd` (`000001ffffffffff`). That
-difference is the entire feature.
+With a `@podman*` profile selected, the engine store appears in the list and one
+more sentence follows it: the store is keyed by the target alone, so a layer one
+sandbox's engine pulls is a layer the other's engine runs.
 
-### 14d. The installed filter is real — behaviour, not a flag
+What must NOT appear is this run's own sockets. They are writable and they are
+host-backed, but their host side is named after this run, so a second sandbox is
+handed its own and meets this one on neither:
 
 ```bash
-./bin/snug attach "$T" -- /bin/sh -c 'unshare -U true 2>&1 || echo "userns refused: ok"'
+./bin/snug --dry-run -p @cwd-rw -p @podman-socket "$T/proj" \
+  | sed -n '/^SHARED/,/^$/p' | grep -c -e podman.sock -e engine/sock
 ```
 
-Expect the refusal. `--seccomp` has been "passed, accepted, and never installed"
-before (bwrap stops parsing at `--`), so this asserts the filter *does something*,
-not that a flag was present.
+Expect `0`. The engine STORE and RUNROOT rows are still there in the same
+output — they are keyed by the target hash alone, which is exactly what makes
+them shared — so a `0` here with an empty list above it is the filter having
+eaten too much, not the property under test.
 
-### 14e. The environment is the run's, not the host's
+### 14c. A second run's startup sweep does not touch a live run
+
+Start a run, then have a second `snug` on a DIFFERENT directory perform its
+startup sweep:
 
 ```bash
-SECRET=leak-me ./bin/snug attach "$T" -- /bin/sh -c 'echo "SECRET=${SECRET:-not-present}"'
+T=$(mktemp -d); mkdir -p "$T/proj" "$T/other"
+./bin/snug "$T/proj" -- /bin/sh -c 'touch A; while :; do sleep 1; done' & FIRST=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/other" -- /bin/true
+sleep 1; kill -0 $FIRST && echo "first run survived the sweep: ok"
+kill $FIRST 2>/dev/null; wait $FIRST 2>/dev/null
 ```
 
-Expect `SECRET=not-present`. A host variable in attach's *own* environment must
-not reach `/proc/<pid>/environ` inside the sandbox's pid namespace — the same PID-1
-leak that once handed a payload 106 host variables, asked here of the attach path.
+Expect `first run survived the sweep: ok`. What spares it is the record's own
+owner: the sweep asks, per record, whether the `snug` process that owned that
+run is still running, and consults no target lock at all (`orphansweep.go`).
+The lock answers a different question, for `snug proxy` and `snug engine gc`,
+and it is shared — a probe that asked for `LOCK_SH` would succeed beside the
+live holder, answer "nobody holds it", and let gc reclaim the store under a
+running engine.
 
-### 14f. Teardown — the pid namespace is the leash
+### 14d. An orphan is reaped while a peer on the same target is live
+
+The sweep must not wait for the target to fall quiet. Two runs on ONE
+directory, `SIGKILL` the first, and let a third run sweep while the second is
+still going:
 
 ```bash
-./bin/snug attach "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-ATT=$!
+T=$(mktemp -d); mkdir -p "$T/proj" "$T/other"
+D=/run/user/$(id -u)/snug
+H=$(printf %s "$(readlink -f "$T/proj")" | sha256sum | cut -d' ' -f1)
+./bin/snug "$T/proj" -- /bin/sh -c 'touch A; while :; do sleep 1; done' & A=$!
+while [ ! -e "$T/proj/A" ]; do sleep 0.05; done
+./bin/snug "$T/proj" -- /bin/sh -c 'touch B; while :; do sleep 1; done' & B=$!
+while [ ! -e "$T/proj/B" ]; do sleep 0.05; done
+ls $D/target-sha256_$H.*.json | wc -l        # 2 records, one target
+kill -9 $A; wait $A 2>/dev/null
+./bin/snug "$T/other" -- /bin/true           # sweeps while B is live
 sleep 1
-kill -9 $SNUG                                    # kill the ORIGINAL run
-sleep 1
-kill -0 $ATT 2>/dev/null && echo "BUG: attach outlived the sandbox" || echo "attach died with the sandbox: ok"
-rm -rf "$T"
+ls $D/target-sha256_$H.*.json | wc -l        # 1: A's record is gone
+test -e $D/target-sha256_$H.$A.json && echo "the dead run's record SURVIVED: bug"
+kill -0 $B && echo "the live peer survived: ok"
+kill $B 2>/dev/null; wait $B 2>/dev/null
 ```
 
-Expect `attach died with the sandbox: ok`. Killing the run collapses the pid
-namespace, which SIGKILLs the payload and the attached command; the attach client
-then has nothing left to relay and exits. Nothing is left behind — attach adds no
-new orphan class. (Conversely, SIGKILLing the *attach client* leaves the run
-untouched; the client's bridge child carries `PR_SET_PDEATHSIG`.)
+Expect `2`, then `1` with no `SURVIVED` line, then `the live peer survived:
+ok`. The middle assertion is the half that regressed: the target lock is SHARED
+and B still holds it, so a sweep that returned early on "held" left A's record
+— and, where the `SIGKILL` lands inside bwrap's startup window, A's
+still-running init — in place for the whole of B's life. The automated form is
+`TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock`.
 
-### 14g. The refusals
+### 14e. From outside, `nsenter` is still yours
 
-```bash
-./bin/snug attach /tmp/no-run-here 2>&1 || echo "refused: ok"
-```
-
-Expect `no live snug run found for /tmp/no-run-here — nothing is currently
-sandboxing this directory`. A stale `state.json` whose owning process is gone is
-not a match: the run directory's advisory lock must be *held* for the run to be
-attachable. Note the current build addresses runs **only** by target directory —
-two live runs on the *same* directory are reported as an ambiguity it cannot yet
-resolve; whether a second run on one directory should be refused at launch instead
-is an open decision, not a check to write against today's behaviour.
-
-### 14h. Interactive attach gives a working job-control shell
-
-Every check above drives attach non-interactively (`/bin/sh -c '...'`, stdin
-redirected) — none of them exercise the pty/job-control path at all. This one
-does, from a real terminal:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-SNUG=$!
-sleep 1
-./bin/snug attach "$T"
-```
-
-Expect an interactive shell prompt with **no** `cannot set terminal process
-group (-1): Inappropriate ioctl for device` or `no job control in this shell`
-message on entry, and ordinary job control working: `sleep 100 &`, `fg`,
-`Ctrl-Z`, `bg`, `jobs`. This is the by-hand equivalent of
-`TestAttachPTYGivesJobControl`: the pty allocated for the session becomes its
-controlling terminal (`setsid()` + `ioctl(TIOCSCTTY)` in
-`internal/attach/child.go`), which is what job control needs. Exit the shell,
-then:
-
-```bash
-kill -9 $SNUG; rm -rf "$T"
-```
-
-**Known limitation — a SIGKILLed attach client leaves your terminal raw.**
-`restoreTerminal` (`internal/cli/attachstdio.go`) is `defer`red immediately
-after the pty is set up, so it runs on every *catchable* exit from `snug
-attach` — a normal return, the attached command dying, an early error — and
-puts the client's terminal termios back exactly as it found it. `SIGKILL` is
-not catchable, so the one path that cannot run it is `snug attach` itself
-being killed with `-9` mid-session:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- /bin/sh -c 'while :; do sleep 1; done' &
-SNUG=$!
-sleep 1
-./bin/snug attach "$T" &
-ATTACH=$!
-sleep 1
-kill -9 $ATTACH
-```
-
-Expect the shell you ran this from to now echo nothing you type and show no
-line editing — it is stuck in raw mode. This is a terminal-ergonomics gap,
-not a confinement one: the sandbox and its payload are entirely unaffected
-(they are torn down by the run's own `PR_SET_PDEATHSIG` machinery, not by
-this). Recover with:
-
-```bash
-reset            # or: stty sane
-kill -9 $SNUG; rm -rf "$T"
-```
-
-### 14i. Attach returns when the attached command exits, not when its leftovers do (issue #221)
-
-14h leaves the session by exiting the shell, so nothing it does distinguishes
-"attach returned because the command exited" from "attach returned because
-everything the command started also exited". This one does. The payload exits
-immediately and leaves a descendant behind holding its stdio:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- sleep 300 &
-SNUG=$!
-sleep 2
-time script -qec "./bin/snug attach $T -- /bin/bash -c \"(trap '' HUP; sleep 60) & echo attached-done\"" /dev/null
-kill -9 $SNUG; rm -rf "$T"
-```
-
-Expect `attached-done`, then a line naming what was given up on, then `real`
-about **two seconds**:
-
-```
-attached-done
-snug: attach: the attached command exited, but something it left behind still holds its stdio open; stopped draining after 2s of silence and any further output is lost
-```
-
-MEASURED on this host: **2.028s**, against **1m0.027s** with
-`internal/cli/attachstdio.go` reverted — the descendant's own `sleep 60` to the
-hundredth of a second, which is what "attach waited for the leftovers" looks
-like. The message is not decoration: a sandbox that silently truncates its own
-transcript is the screen lying, and both ways this drain can cut output are
-otherwise invisible (clean exit status, nothing on stderr).
-
-Two props in that command line, both load-bearing. `script -qec` is only there
-to supply a pty, so `newStdioRelay` takes the interactive branch from a shell
-script; run it from a terminal and `./bin/snug attach` alone does the same.
-`trap '' HUP` is what makes the descendant survive: on the pty path A becomes a
-session leader (`setsid()` + `TIOCSCTTY`, `internal/attach/child.go`), `bash -c`
-is non-interactive so job control is off and the backgrounded subshell stays in
-A's own process group, and A's exit therefore HUPs the terminal's foreground
-group — the descendant's included. Without the trap the descendant dies in a
-fraction of a second and the check passes vacuously.
-
-Why it can hang at all: A's fds 0/1/2 are `dup3`'d and `dup3` clears CLOEXEC by
-design, so a descendant inherits the pty slave (or, with stdin redirected, the
-relay pipe) and holds the far end open. The client has already reaped the
-bridge and has the exit status, and the outbound copy it is draining sees
-neither EOF nor EIO. `stdioRelay.wait` therefore arms a `drainTimeout` read
-deadline on each drain end rather than waiting on them unconditionally, and
-every ioctl on the pty master goes through `ctlFd` (`SyscallConn().Control`)
-instead of `os.File.Fd()`, which would put the master back into blocking mode
-and out of the runtime poller — where no deadline on it can work.
-
-**The bound is on SILENCE, not on elapsed time**, and the difference is what
-keeps this check from being a new bug: `drainCopy` re-arms the deadline after
-every successful read, so output that is still arriving always gets through and
-only a stream that goes quiet for `drainTimeout` with its far end still held
-open ends the drain. An absolute deadline instead cut a benign payload's
-still-flowing output mid-stream — measured by the red team at 16447 of 20019
-bytes, final line gone, no descendant involved at all. A copy parked in
-`write(2)` is deliberately not bounded by any of this: that is the client's own
-consumer applying back-pressure, which the sandbox cannot reach.
-
-The pipe half of the same property, with no pty involved:
-
-```bash
-T=$(mktemp -d)
-./bin/snug "$T" -- sleep 300 &
-SNUG=$!
-sleep 2
-time ./bin/snug attach "$T" -- /bin/bash -c "(trap '' HUP; sleep 60) & echo attached-done" < /dev/null
-kill -9 $SNUG; rm -rf "$T"
-```
-
-Same expectation, same message: **2.015s** measured here. The automated equivalents are
-`TestAttachPTYReturnsPromptlyWhenADescendantHoldsTheSlave` and
-`TestAttachPipeReturnsPromptlyWhenADescendantHoldsThePipe`:
-
-```bash
-SNUG_REQUIRE_SANDBOX=1 go test -tags integration ./test/integration/ \
-  -run 'TestAttach(PTY|Pipe)ReturnsPromptlyWhenADescendantHolds' -count=1 -v
-```
+Nothing here is a permission snug grants or withholds. A same-uid host process
+can join a running sandbox's namespaces with `nsenter` and always could — the
+kernel gates that by uid. What snug no longer does is BUILD that path and hand
+it to you as a confined shell, because the leak runs both ways: a process in the
+payload's namespaces reads `/proc/<pid>/environ` and `/proc/<pid>/fd` of every
+other process there, in both directions, and `PR_SET_DUMPABLE 0` does not
+survive `execve`.
 
 
 ## 15. snug never writes its generated files onto the host
@@ -6720,7 +6706,10 @@ filter let it through — 404 above is the ENGINE answering, on a host with no
 The per-target lock is held on an INODE and consulted by NAME, so one `rm` — or
 one `mv`, which leaves no `(deleted)` trail anywhere — detaches the two and made
 the next run's sweep read a live run as dead and SIGKILL its sandbox init. The
-kill is now gated on the owning snug's own process, which no rename reaches.
+kill is now gated on the owning snug's own process, which no rename reaches —
+and that gate is the only one: the sweep does not consult the lock at all, since
+a shared lock answers about the target rather than about the record it is
+judging (§14d).
 
 ```bash
 TGT=$(mktemp -d); OTHER=$(mktemp -d)
@@ -6728,8 +6717,8 @@ TGT=$(mktemp -d); OTHER=$(mktemp -d)
 sleep 3
 D=/run/user/$(id -u)/snug
 H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
-INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
-OWNER=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['owner']['pid'])")
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['sandbox']['init_pid'])")
+OWNER=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['owner']['pid'])")
 echo "init=$INIT owner=$OWNER snug=$SNUG"   # expect: owner == snug
 rm $D/target-sha256_$H.lock
 ./bin/snug $OTHER -- true                    # an unrelated run; its sweep runs
@@ -6757,7 +6746,7 @@ TGT=$(mktemp -d); OTHER=$(mktemp -d)
 sleep 3
 D=/run/user/$(id -u)/snug
 H=$(printf %s "$(readlink -f $TGT)" | sha256sum | cut -d' ' -f1)
-INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.json'))['sandbox']['init_pid'])")
+INIT=$(python3 -c "import json;print(json.load(open('$D/target-sha256_$H.$SNUG.json'))['sandbox']['init_pid'])")
 kill -9 $SNUG
 ./bin/snug $OTHER -- true
 test -d /proc/$INIT && echo STILL-ALIVE-BUG || echo SWEPT

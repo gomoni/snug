@@ -36,6 +36,11 @@ import (
 //	          snug: this run will not be attachable (reading bwrap's --info-fd: EOF)
 //	fixed     PAYLOAD-RAN
 //
+// The second line is f1d7e5b's own wording and is quoted as measured; the
+// warning at that call site reads "this run's sandbox init is not recorded"
+// today (internal/sandbox/exec.go), so grep for that, not for the line
+// above.
+//
 // The four /bin/true calls are load-bearing, not filler: they advance the
 // namespace's pid counter past 2 and exit, so pid 2 is GONE rather than
 // merely somebody else. Without them snug's own bwrap lands on outer pid 2,

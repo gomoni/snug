@@ -269,7 +269,7 @@ const initWalkGrace = 500 * time.Millisecond
 // event until this returns. On an UNGATED run that means a bwrap which never
 // answers stalls P0 for this long with the payload already running; the signal
 // guard is armed by then, so a Ctrl-C in that window is queued rather than
-// lost, and the run then reports itself unattachable exactly as it did when P0
+// lost, and the run then reports its init unrecorded exactly as it did when P0
 // read this descriptor itself.
 const bwrapInfoTimeout = 10 * time.Second
 
@@ -521,9 +521,9 @@ awaitInfo:
 		// Fatal on a gated run, and only there. Without the init's pid this
 		// process cannot promise to take the parked payload down with it, and
 		// releasing a payload nobody can supervise is worse than refusing the
-		// run — invariant 5. On an ungated run the same failure has always been
-		// warn-only ("this run will not be attachable"): the payload is already
-		// running and there is nothing left to gate.
+		// run — invariant 5. On an ungated run the same failure is warn-only
+		// ("this run's sandbox init is not recorded", exec.go): the payload is
+		// already running and there is nothing left to gate.
 		if infoErr != nil {
 			return abort(fmt.Errorf("__stage-serve: the sandbox's payload is parked and this "+
 				"stage cannot learn which process to release or kill: %w", infoErr))

@@ -29,18 +29,14 @@ Against that, cgo buys real things. It is not superstition to want it — which 
 why the rule needs the rest of this document rather than just the paragraph
 above.
 
-## 2. The case that tested the rule
+## 2. What the kernel actually checks — MEASURED, both errnos
 
-`snug attach` — injecting a second payload into a running sandbox — is
-`setns(2)` into that sandbox's namespaces. Two kernel requirements make that
-hostile to Go, and one design concluded a cgo constructor was the only way out.
-
-The constructor argument is sound as far as it goes: a
+`setns(2)` is where the rule was tested, because two of its namespaces are
+hostile to a multithreaded runtime and one design concluded a cgo constructor
+was the only way out. The constructor argument is sound as far as it goes: a
 `__attribute__((constructor))` runs **before the Go runtime starts its threads**,
 which is precisely the state `setns` demands, and there is no pure-Go equivalent
 hook. That is the one thing cgo genuinely buys here.
-
-### What the kernel actually checks — MEASURED, both errnos
 
 | namespace | pure Go, multithreaded |
 |---|---|
@@ -53,157 +49,99 @@ when `!thread_group_empty(current)`. `mntns_install()` returns `-EINVAL` when
 `fs->users != 1` — and Go creates every thread with `CLONE_FS`, so `fs->users`
 **is** the thread count.
 
-So it is not one syscall in one place: pure Go cannot join either of the two
-namespaces that matter.
-
 **`runtime.LockOSThread` changes no row, and neither does `GOMAXPROCS=1`.**
-MEASURED. LockOSThread pins a goroutine to a thread; it does not remove the other
-threads, and it does not unshare `fs_struct`. It is the first thing anyone tries
-and it is a red herring. A Go process has **5 threads** at the first statement of
-`main`, and **3** under `GOMAXPROCS=1`. Never 1.
+MEASURED. LockOSThread pins a goroutine to a thread; it does not remove the
+other threads, and both checks count threads rather than ask which one is
+running.
 
-**Keep the two errnos apart — they are a diagnostic.** EPERM means the joiner
-lacks `CAP_SYS_ADMIN` in its *own* user namespace. EINVAL means the wrong thread
-or fs state. Confusing them costs an hour.
+**`/proc/self/exe` re-exec does not buy single-threadedness either.** A Go binary
+is never single-threaded at its own first statement, so re-execing one changes
+nothing about the two EINVAL rows. (The idea survives for a different job — §4.)
 
-## 3. The answer: the process calling `setns` does not have to be the Go process
+## 3. What snug does with that, which is not to work around it
 
-The blocking claim was true and answered the wrong question. A raw `fork` from a
-multithreaded Go program produces a child that is **single-threaded** *and* owns
-its **own `fs_struct`** — which are exactly the two states the kernel checks.
-MEASURED, including against a real `bwrap --unshare-all` sandbox rather than only
-against `unshare(1)`.
+**snug never joins a mount or user namespace.** The two EINVAL rows are a
+constraint the architecture is shaped by rather than an obstacle any code here
+steps over: `bwrap` creates those namespaces and the payload is `exec`'d into
+them by a process that was already inside. Nothing in this tree calls `setns`
+with `CLONE_NEWNS` or `CLONE_NEWUSER`.
 
-What that killed:
+The `__`-prefixed re-exec verbs exist for the OK rows, and their obstacle is a
+different one — `setns(CLONE_NEWNET)` is **per-task**, exactly as `unshare` is,
+so it moves the calling thread and not the process. A goroutine cannot be
+relied on to stay on the thread it moved, and the Go runtime may run any other
+goroutine there afterwards. So the move happens in a fresh process that does
+nothing else: `__innetns` (`internal/stage/innetns.go`) locks the OS thread,
+`setns`es into the sandbox's network namespace, re-reads its own
+`/proc/self/ns/net` and refuses if it did not move, then `exec`s. `__inengine`
+is the same shape with the engine's confinement attached, and `__inpidns` is
+the pid-namespace equivalent. A verb is one syscall plus a proof it worked, and
+that is the whole technique.
 
-- **cgo.** Not needed.
-- **A second binary.** The C helper the proof of concept carried is gone, and
-  with it a review finding about locating that helper by a path derived from an
-  environment variable — there is no helper to locate.
-- **`/proc/self/exe` re-exec as a route to single-threadedness.** It does not
-  work: a Go binary is never single-threaded at its own first statement, so
-  re-execing one changes nothing. (The idea survives for a different job — see §5.)
+### The raw-fork route, retired with its measurements
+
+There is a second answer to the EINVAL rows, it works, and nothing in this tree
+uses it any more. It is recorded because it is the answer someone re-derives:
+**a raw `fork` from a multithreaded Go program produces a child that is
+single-threaded *and* owns its own `fs_struct`** — exactly the two states the
+kernel checks. MEASURED, including against a real `bwrap --unshare-all` sandbox
+rather than only against `unshare(1)`.
+
+What it cost, and why "just be careful in the child" is not available: the child
+carries the **forking goroutine's `stackguard0`**, and the Go runtime poisons
+that value with `stackPreempt` whenever it wants the goroutine preempted — on
+every stop-the-world and on any sysmon retake of a goroutine that has run for
+10 ms. An ordinary Go function's prologue compares SP against it *before its
+first statement*, loses, and calls `runtime.newstack`, which asks the scheduler
+for threads the fork did not copy. MEASURED in isolation: a harness forking 40
+children under `runtime.GC()` pressure wedged **17 of 40** when the child's
+first call was an ordinary function, and **0 of 40** when it was
+`//go:nosplit`. MEASURED in the wild as issue #221: two bridge processes alive
+hours after their caller had died — `Threads: 1`, `wchan: futex_do_wait`,
+`SigBlk: 0`, `NoNewPrivs: 0`, `Seccomp: 0` — having executed not one
+instruction of their own first step, so they were also before their
+`PR_SET_PDEATHSIG` and killing the client did not clean them up.
+
+Making it safe was structural rather than editorial: `//go:nosplit` over the
+child's entire call graph, `//go:norace` and `//go:nocheckptr` to keep a `-race`
+or `-d=checkptr` build from injecting instrumentation into the same path, and
+the parent blocking every signal on the forking thread across the clone. **If
+anything in this tree ever raw-forks again it inherits all of that**, and the
+linker checks only half of it — the nosplit budget for the chain, not whether a
+function on the path was left unmarked.
+
+Two routes measured and rejected alongside it, so they are not re-proposed:
+
 - **A sealed memfd carrying a helper.** It works — `memfd_create` plus full
   seals, verified to refuse a later write with EPERM, plus
   `execveat(fd, "", AT_EMPTY_PATH)` — but since a *Go* binary is never
   single-threaded at start, the blob would have to be a **C** helper, making it
-  a C-helper design in disguise. It also inherits a build dependency: there is no
-  static glibc on this box, so the blob would need the loader at exec time, or
-  musl/`-nostdlib` becomes a prerequisite. Strictly worse.
+  a C-helper design in disguise. It also inherits a build dependency: there is
+  no static glibc on this box, so the blob would need the loader at exec time,
+  or musl/`-nostdlib` becomes a prerequisite.
 - **`nsenter(1)` as a drop-in.** MEASURED **FAILED** in this topology:
   `nsenter: setgroups failed: Operation not permitted`.
 
-### What the technique costs, measured a milestone later (issue #221)
+## 4. What survived from the `/proc/self/exe` idea
 
-The child is single-threaded and owns its own `fs_struct`, as claimed. What that
-sentence does not say is that it is also carrying the **forking goroutine's
-`stackguard0`**, and the Go runtime poisons that value with `stackPreempt`
-whenever it wants the goroutine preempted — on every stop-the-world and on any
-sysmon retake of a goroutine that has run for 10 ms. An ordinary Go function's
-prologue compares SP against it *before its first statement*, loses, and calls
-`runtime.newstack`, which asks the scheduler for threads the fork did not copy.
-
-So "nothing between the fork and the exec may allocate, lock, or re-enter the
-scheduler" is **not a property a reader can uphold by writing careful code**: the
-first ordinary call is already a runtime call, whatever its body says.
-
-MEASURED, twice:
-
-- In the wild. Two `snug attach` bridge processes were found alive hours after
-  their caller had died: `Threads: 1`, `wchan: futex_do_wait`, `SigBlk: 0`,
-  `NoNewPrivs: 0`, `Seccomp: 0`, and the *caller's own* namespaces — a B that had
-  not executed one instruction of its own step 1. Because that is also before
-  step 2's `PR_SET_PDEATHSIG`, killing the client did not clean it up; and
-  because B never wrote its report byte, the client sat in a read that had no
-  deadline. That pair — a hung `snug attach` and an orphan that outlives it — is
-  the whole of issue #221.
-- In isolation. A harness forking 40 children under `runtime.GC()` pressure:
-  **17 of 40 wedged** when the child's first call was an ordinary function,
-  **0 of 40** when it was `//go:nosplit`.
-
-The fix is therefore structural, not editorial: `//go:nosplit` on the child's
-entire call graph removes the prologue that consults the poisoned value,
-`//go:norace` and `//go:nocheckptr` remove the instrumentation a `-race` or
-`-d=checkptr` build would otherwise inject into the same path, and the parent
-blocks every signal on the forking thread across the clone so the child cannot
-run an inherited Go signal handler before it blocks them itself. The linker
-enforces the nosplit budget for the chain; `TestEveryFunctionOnTheChildPathIsNosplit`
-enforces the half the linker does not check — that nothing on the path is left
-unmarked or reaches outside the package.
-
-**Anything that raw-forks in this tree inherits this cost**, which today is
-`internal/attach` alone: `internal/stage` re-execs `/proc/self/exe` instead and
-so starts a fresh runtime.
-
-## 4. The decision it changed, and the one it did not
-
-**Attach IS the joiner, and it shipped.** `internal/attach` is the measured
-joiner from §3. This section previously led with the opposite — *"attach is
-fork-from-init"* — and carried the correction twenty lines below it, so a reader
-who stopped early got the wrong answer. The current truth leads; the argument
-that lost is kept below it, because it names the cost the shipped design pays.
-
-**Why fork-from-init lost** (issue #61 part (e), 2026-08-18): fork-off-the-stage
-produces a *second* sandbox rather than entry into the first. The stage holds
-the capability-carrying user and network namespaces, bwrap holds the mount and
-pid namespaces the payload runs in, and **there is no single process a
-fork-from-init design could inject into that owns all seven.** It also removed
-the control listener that design assumed: attach joins by descriptor, from the
-host, as a client, with no accept loop.
-
-**What fork-from-init would have bought, and what the joiner therefore owes.**
-Three counts, all measured, all still true as an argument: one code path instead
-of two; no window in which a process holds a full capability set in the
-sandbox's user namespace; and confinement **inherited** rather than reproduced —
-a joiner must re-apply every restriction, and every one it forgets is a hole.
-The shipped design pays the second and third: see the window described below.
-
-**Detail of the settlement.** A later
-settlement (issue #61 part (e)) measured that fork-off-the-stage produces a
-*second* sandbox rather than entry into the first — the stage holds the
-capability-carrying user and network namespaces, bwrap holds the mount and pid
-namespaces the payload actually runs in, and there is no single process a
-fork-from-init design could inject into that owns all seven. That also removed
-the control listener this section's "fallback" reading assumed: attach joins
-by descriptor, from the host, as a client, with no accept loop and no
-`start`-request authentication to attach a listener onto in the first place.
-
-`internal/attach` is the measured joiner from §3 above, unchanged in its
-kernel-level shape (raw `clone(SIGCHLD)`, raw syscalls only, one combined
-`setns` over all seven namespaces by pidfd, then a second raw fork before the
-final `execve`) and carrying the cost this section named as the reason to
-prefer fork-from-init: the interval between the `setns` and the capability
-bounding-set drop is a real window in which the raw-fork child (B) holds a
-full capability set in the *sandboxed* user namespace (never the mount-owning
-one — see the attach design's own §3.1 for why that distinction is the whole
-point). It is a handful of raw syscalls long, contains no exec and no
-further fork, and reproduces (rather than inherits) the payload's seccomp
-filter, capability bounding set, `NO_NEW_PRIVS` and environment — verified,
-not merely asserted, by a release gate that reads the raw-fork child's own
-`/proc/<pid>/status` before letting it proceed. Read together with §2's
-review of the pure-Go joiner: cgo bought nothing here either way, and the
-question this document settles is a threading one, not a capability-safety
-one — that trade is the attach design's to make, and it did.
-
-## 5. What survived from the `/proc/self/exe` idea
-
-The intuition was aimed at locating a helper. There is no helper now, but the
-property underneath it is still needed and is MEASURED twice:
+The intuition was aimed at locating a helper. There is no helper, but the
+property underneath it is what the re-exec verbs run on, and it is MEASURED
+twice:
 
 **An fd is a TOCTOU-free reference to an inode; a path is a lookup that can be
 re-pointed between the check and the exec.** Replacing a binary on disk while
 holding an fd, then `execveat`ing the fd, ran the **old** inode (`(deleted)` in
 `/proc`), while exec by path ran the new one. And `open("/proc/self/exe")`
 succeeds **inside a mount namespace that does not contain the binary's path** —
-`stat` on that path returns ENOENT while the fd works, because it is a magic link
-to the inode rather than a path resolution. Use the fd; `readlink` returns a
-stale path string.
+`stat` on that path returns ENOENT while the fd works, because it is a magic
+link to the inode rather than a path resolution. Use the fd; `readlink` returns
+a stale path string.
 
 That is how snug's own code gets into a sandbox: through snug's own inherited
 descriptor, never through a `/proc/<pid>/` path handed to a process that has
 already changed identity.
 
-## 6. A defect in shipped snug, found on the way
+## 5. A defect in shipped snug, found on the way
 
 Recorded here because this is where it was measured; it is tracked as
 https://github.com/gomoni/snug/issues/23, and it is independent of the
@@ -214,12 +152,11 @@ supervisor work.
 real snug sandbox, with a positive control.
 
 The sharp part is what currently prevents it. Two *sibling* processes inside one
-sandbox — same uid, **same user namespace**, neither a descendant of the other,
-which is exactly the shape the multi-payload attach feature produces — are
-refused, and the refusal is **Yama's descendant rule**, not snug's filter and not
-`dumpable`. The user-namespace explanation is excluded because both siblings are
-in the same one. Note also that `/proc/<pid>/fd` still *lists*: the ptrace-mode
-check gates the theft, not the enumeration.
+sandbox — same uid, **same user namespace**, neither a descendant of the other —
+are refused, and the refusal is **Yama's descendant rule**, not snug's filter and
+not `dumpable`. The user-namespace explanation is excluded because both siblings
+are in the same one. Note also that `/proc/<pid>/fd` still *lists*: the
+ptrace-mode check gates the theft, not the enumeration.
 
 So co-resident payloads are protected from each other's descriptors **by a host
 sysctl snug neither sets nor checks**. `kernel.yama.ptrace_scope = 1` is the
@@ -230,9 +167,9 @@ host one payload reads another's descriptors with no error, no warning and no
 line in `--dry-run`. That is the invariant-5 shape.
 
 Two things are true at once and both matter: snug's own machinery never needs
-ptrace — it uses `setns`, `fork` and descriptor passing — so a strict Yama
-setting costs snug nothing operationally; and *depending* on it silently is still
-wrong.
+ptrace — it uses `setns`, `exec` and descriptor passing — so a strict Yama
+setting costs snug nothing operationally; and *depending* on it silently is
+still wrong.
 
 **The fix is narrower than it first looks: deny `pidfd_getfd` only.** It is the
 theft primitive, and nothing a build, a test or an agent legitimately does calls
@@ -262,9 +199,10 @@ each other."** They are not: the same audit measured that `/proc/<pid>/fd/N`
 reopen (a `PTRACE_MODE_READ` operation, which Yama does not gate) still lets a
 sibling read another payload's *regular files* today, with this filter active.
 Seccomp cannot reach that path — it is not a syscall snug can name — so that
-finding is tracked as https://github.com/gomoni/snug/issues/47, and real
-payload-vs-payload isolation remains a
-pid-namespace/uid question for the supervisor work, not something this filter
-closes. `snug doctor` reporting `ptrace_scope` is still open (not implemented by
-the issue #23 fix); it would report information, not a warning — a `0` inside a
-container is common and not itself a defect.
+finding is tracked as https://github.com/gomoni/snug/issues/47.
+
+**That residual is also why a session is a sandbox.** Everything above is one
+sandbox's payloads reading each other, and no filter closes it. Two pieces of
+work that are mutually distrusting therefore get two sandboxes, which is the
+only boundary that holds: separate pid namespaces, separate `/proc`, separate
+`$HOME`. `SECRETS.md` §8 costs what two sandboxes on one target still share.

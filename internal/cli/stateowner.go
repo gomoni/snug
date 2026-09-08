@@ -1,15 +1,17 @@
 package cli
 
-// stateowner.go is the second liveness signal an unlink cannot detach
-// (issue #489).
+// stateowner.go is the liveness signal an unlink cannot detach (issue #489),
+// and it is the only one the orphan sweep has: the per-target lock is shared,
+// so it answers about the target and not about the run whose record is being
+// judged (orphansweep.go).
 //
-// The per-target flock is this design's only source of "is this run live",
+// The per-target flock was this design's only source of "is this run live",
 // and its weakness is that a lock is held on an INODE while it is consulted
 // by NAME. One same-uid `rm` — or an `mv`, which leaves no "(deleted)" trail
 // at all — detaches the two, and targetLockIsHeld then creates a fresh inode,
 // locks it unopposed and answers "not held" about a run that is very much
-// alive. sweepOneOrphan reads that as "the owning snug is gone" and
-// killOrphanInit SIGKILLs a live sandbox's init. MEASURED, issue #489:
+// alive. The sweep read that as "the owning snug is gone" and killOrphanInit
+// SIGKILLed a live sandbox's init. MEASURED, issue #489:
 //
 //	after the unlink, targetLockIsHeld = false, <nil>   (a live run still holds the old inode)
 //	FINDING C: `rm target-sha256_2286bd59….lock` made the sweep SIGKILL a live sandbox's init (pid 620273)

@@ -69,9 +69,4 @@ package policy
 // A fixed constant and NEVER a Profile field, for EngineCapBounding's reason
 // facing the same way: a field would let a profile hand its own sandbox's
 // supervisor back the bit this exists to remove.
-//
-// `snug attach` is already stricter than this from its own side: it drops the
-// whole bounding set to zero before its execve (`CapBnd:
-// 0000000000000000`, ATTACH.md §2 M11), which is what it must do — a
-// full-capability process put back in U would undo this gate from outside.
 var StageCapDrop = []string{"CAP_SYS_PTRACE"}

@@ -90,7 +90,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeClaude(out, p)
 	describeTTY(out, rep)
 	describeSeccomp(out, rep.Seccomp)
-	describeAttach(out, p)
+	describeShared(out, p)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)")
@@ -283,38 +283,93 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 //     "active" with no qualifier on such a host would leave a human to find
 //     out from a SIGSYS that their 32-bit binary is refused.
 //
-// describeAttach names the file `snug attach` reads, and the honesty
-// requirements on it are load-bearing: --dry-run starts nothing, so it must
-// not create anything it names.
+// describeShared enumerates the writable HOST surface a second snug sandbox on
+// this same target directory could meet this one on, and says what that lets
+// each do to the other. It is on the screen because nothing else on it says
+// so: every other block describes the boundary between this sandbox and the
+// HOST, and this is the one surface that is also a boundary between this
+// sandbox and a peer.
 //
-// It prints the EXACT path, which is possible only because the state file is
-// TARGET-keyed (issue #123, targetstate.go): the name is
-// targetStateName(p.Target) under the uid-derived targetLockBase(), so this
-// run's own pid never enters it and there is nothing to fabricate. It used to
-// print `run-<pid>/state.json` under runtimeBase() — the pre-#123 location —
-// as a PATTERN, for the good reason that inventing a pid would be the kind of
-// small lie CLAUDE.md says makes the whole artifact untrustworthy. That reason
-// still stands and no longer applies here: after the move the pattern was not
-// merely vague, it named a path with the wrong FILENAME under a base
-// ($XDG_RUNTIME_DIR/$TMPDIR-derived) that need not be the one the file lands
-// in — which is issue #123's own failure mode, reappearing on the screen whose
-// job is to be trusted.
+// It ranges over p.Mounts AND p.Grafts, and the second half is not
+// belt-and-braces. The engine store and runroot are KindGraft, they live in
+// p.Grafts, and internal/policy/validate.go REFUSES a KindGraft in p.Mounts —
+// so a sweep of the payload mount set cannot see them even in principle, and
+// would silently under-report on exactly the runs where the surface is widest.
 //
-// The per-run directory under runtimeBase() still exists and still holds this
-// run's sockets; it is simply not where attach looks.
-func describeAttach(out io.Writer, p *policy.Policy) {
-	path := "(this host has no per-user runtime directory; see the refusal a real run prints)"
-	if base, snugName, err := targetLockBase(); err == nil {
-		path = filepath.Join(base, snugName, targetStateName(p.Target))
+// A graft with no Host is skipped because it has no host side to meet on:
+// describeGrafts prints "nothing — the stage mounts a fresh proc/tmpfs here; no
+// host path is opened" for those, and each run's engine makes its own.
+//
+// A RunScoped mount or graft is skipped for a stronger reason and it is the
+// one exclusion this function makes: its host path exists for THIS run alone —
+// /snug/podman.sock under the run directory, /snug/engine/sock under
+// snug-<uid>-<pid> — so a peer is handed its own and cannot meet this one
+// there, whatever policy the peer resolves. The flag is set where those paths
+// are CONSTRUCTED (policy.BindSocket, internal/engine's GraftPathsInto), not
+// derived here by reading a pid back out of a path: a naming convention is a
+// guess, and a false row on the screen whose job is to be trusted costs more
+// than marking the paths where snug already knows the answer.
+//
+// WHAT THIS SCREEN STILL CANNOT DECIDE FOR THE READER, and therefore does not
+// claim: which of the REMAINING rows a peer actually lands on. That turns on
+// how the host side of each is keyed — the target bind by the grant, the
+// engine store and runroot by the target hash alone (internal/engine's
+// paths.go) — and the peer's own policy is not in hand here. A peer that
+// selects no `@podman*` profile has no engine store to meet this one on. So
+// those rows are printed with their host paths and the discriminator is
+// stated, rather than a subset being asserted as "shared" on a rule this
+// function would have to invent.
+//
+// Every path goes through visibleValue like the rest of this screen: a target
+// path is a string a human typed and a graft's guest path is snug's own, but
+// the block is read as one, and a value that could forge a line here would
+// forge it in the block whose job is to be trusted.
+func describeShared(out io.Writer, p *policy.Policy) {
+	type shared struct{ path, note string }
+	var rows []shared
+
+	for _, m := range p.SortedMounts() {
+		if m.Kind == policy.KindBind && m.Access == policy.AccessRW && !m.RunScoped {
+			rows = append(rows, shared{m.Guest, "host " + visibleValue(m.Host)})
+		}
 	}
-	fmt.Fprintf(out, "ATTACH   this run publishes %s (0600,\n", path)
-	fmt.Fprintln(out, "         in a 0700 directory snug owns), so `snug attach <dir>` can join it.")
-	fmt.Fprintln(out, "         The file names the sandbox's init pid, its start time and its six")
-	fmt.Fprintln(out, "         namespace ids. It carries no command, no argv and no secret.")
-	fmt.Fprintln(out, "         Attach is NOT a permission: any process with your uid can join these")
-	fmt.Fprintln(out, "         namespaces without snug. What attach adds is the run's own seccomp")
-	fmt.Fprintln(out, "         filter, an empty capability set and this policy's environment — a")
-	fmt.Fprintln(out, "         plain nsenter has none of the three.")
+	guests := make([]string, 0, len(p.Grafts))
+	for g := range p.Grafts {
+		guests = append(guests, g)
+	}
+	sort.Strings(guests)
+	for _, g := range guests {
+		gr := p.Grafts[g]
+		if gr.Access == policy.AccessRW && gr.Host != "" && !gr.RunScoped {
+			rows = append(rows, shared{g, "engine view, host " + visibleValue(gr.Host)})
+		}
+	}
+
+	fmt.Fprintln(out, "SHARED   a SECOND `snug` on this directory is a second, independent sandbox.")
+	fmt.Fprintln(out, "         It shares no namespace with this one — its own tmpfs $HOME, its own")
+	fmt.Fprintln(out, "         /tmp, its own pids and its own environment.")
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "         It could meet this one on nothing: this policy grants no writable")
+		fmt.Fprintln(out, "         host path a second sandbox could be handed too.")
+		return
+	}
+	fmt.Fprintln(out, "         The writable host paths it could meet this one on are below. This")
+	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is named after")
+	fmt.Fprintln(out, "         this run, so a second sandbox is handed its own. Whether a peer")
+	fmt.Fprintln(out, "         reaches a row below still depends on what it grants itself.")
+	for _, r := range rows {
+		fmt.Fprintf(out, "           %-40s %s\n", visibleValue(r.path), r.note)
+	}
+	fmt.Fprintln(out, "         Where they do meet, the other sandbox writes files THIS one's tools")
+	fmt.Fprintln(out, "         execute or obey — .git/hooks/*, Makefile, CLAUDE.md, .envrc,")
+	fmt.Fprintln(out, "         package.json — and this one writes files the other's tools execute or")
+	fmt.Fprintln(out, "         obey. Neither has to cooperate: a hook one drops runs under the")
+	fmt.Fprintln(out, "         other's credentials, on the other's next `git commit`.")
+	if p.Podman != policy.PodmanOff {
+		fmt.Fprintln(out, "         The engine store is keyed by the target alone, so it IS shared,")
+		fmt.Fprintln(out, "         read-write: a layer one sandbox's engine pulls or builds is a layer")
+		fmt.Fprintln(out, "         the other's engine runs.")
+	}
 }
 
 func describeSeccomp(out io.Writer, sc reportSeccomp) {
