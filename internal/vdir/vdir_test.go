@@ -476,8 +476,27 @@ func TestOpenForRemovalRefusesARootOwnedDirectory(t *testing.T) {
 			"so the caller can tell EPERM territory (a foreign owner) from EACCES territory "+
 			"(a mode we own and may chmod): %v", err)
 	}
-	if fo.UID != 0 {
-		t.Errorf("ForeignOwnerError named uid %d, want 0 — /usr is root-owned", fo.UID)
+	// /usr's owner is READ, not assumed to be 0. Inside snug's own sandbox
+	// /usr is a bind whose owner falls outside the single-entry uid map, so it
+	// stats as 65534 (nobody) and a hardcoded 0 failed there — while the
+	// branch under test, "an owner foreign to this process is refused as
+	// *ForeignOwnerError", was working exactly as intended. Asserting the real
+	// owner keeps the test running in both places instead of skipping one.
+	fi, serr := os.Stat("/usr")
+	if serr != nil {
+		t.Fatalf("control: cannot stat /usr, so this test cannot know whose uid to expect: %v", serr)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("control: /usr's FileInfo carries no *syscall.Stat_t, so the owner cannot be read")
+	}
+	if uint32(fo.UID) != st.Uid {
+		t.Errorf("ForeignOwnerError named uid %d, want %d — the uid that owns /usr here",
+			fo.UID, st.Uid)
+	}
+	if st.Uid == uint32(os.Getuid()) {
+		t.Fatalf("control: /usr is owned by this process's own uid (%d), so it is not foreign "+
+			"and the refusal under test cannot be reached through it", st.Uid)
 	}
 	// The refusal must be a decision, not a side effect: /usr is still there.
 	if _, serr := os.Stat("/usr"); serr != nil {
