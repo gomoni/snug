@@ -1668,7 +1668,7 @@ The *mechanism* a worked example would illustrate — how the netns gets created
 | | | status |
 |---|---|---|
 | **M1** | the sandbox: profile loading, the policy model, the bwrap emitter, the fd model, seccomp, `--dry-run`, `doctor`. Offline only, which is a coherent and secure product. | **done** |
-| **M2** | networking: the fd handshake, `PastaArgs`, pasta supervision and teardown, generated `resolv.conf`, `@net` / `@net-anon`. `TestHostLoopbackIsUnreachable` was the acceptance criterion and nothing shipped without it green. | **done** |
+| **M2** | networking: the fd handshake, `PastaArgs`, pasta supervision and teardown, generated `resolv.conf`, `@net`. `TestHostLoopbackIsUnreachable` was the acceptance criterion and nothing shipped without it green. | **done** |
 | **M3** | identity and agent files: the ssh-agent proxy, `[identity]`, generated gitconfig/ssh config/known_hosts, scoped `gh`, `@claude` with staged credentials and the injected `CLAUDE.md`. | **done** |
 | **M4** | containers: per-sandbox engine and store, the filtering proxy, SELinux relabel, `@podman-socket`. | **done**, with the engine on the host's network — [`ENGINE-NETNS.md`](ENGINE-NETNS.md) |
 | **M5** | `podman build`: a default-deny allowlist over the build endpoint's query string, `@podman-build`. | **done** |
