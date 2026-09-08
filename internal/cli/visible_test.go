@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -106,10 +105,6 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// @net is in the selection so describeNetwork renders its EGRESS arm and
-	// the pasta argv below it — the two sinks the network fixture below aims
-	// at. Without it both are absent and that half of the sweep measures
-	// nothing.
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net", "@podman-socket")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 	if err != nil {
@@ -142,23 +137,6 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		},
 	}
 
-	// AND THE NETWORK VALUES (redteam host round 4, F1). `address` and
-	// `gateway` used to be raw strings reaching TWO sinks unescaped: the
-	// NETWORK block's address row, and the pasta argv printed a few lines
-	// below it, which — unlike the bwrap argv beside it — was joined without
-	// escaping. A round demonstrated a profile rewriting the `host loopback
-	// UNREACHABLE` row from an `address` value while the sandbox ran normally,
-	// because pasta's `-n` parser tolerates the trailing junk.
-	//
-	// netip typing (issue #165) closes that for PREFIXES structurally — a
-	// forging rune cannot survive netip.ParsePrefix, so `p.Net.Address =
-	// <raw string>` no longer even compiles — but NOT for a GATEWAY's ZONE
-	// (J.2's correction): netip.ParseAddr accepts one and Addr.String()
-	// re-emits it verbatim. Gateway6 carries the payload here for exactly
-	// that reason; Address6 is set alongside it only so PastaArgs actually
-	// renders the pair (addrPairs skips a family whose Address is invalid).
-	p.Net.Address6 = netip.MustParsePrefix("fd00:5e79:1::2/64")
-	p.Net.Gateway6 = netip.MustParseAddr("fe80::1%\x1b[1A\r         host loopback   REACHABLE   " + forged + "-NET-GATEWAY-ZONE")
 	// dryRunText hardcodes a FRESH, empty envFakeEnv() — every other fixture
 	// above reaches the screen through p itself (inherit bakes EDITOR, PAGER
 	// and friends into p.Env at Resolve time), but the CONTAINERS block reads
@@ -170,16 +148,6 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := buf.String()
-
-	// POSITIVE CONTROL for the network fixture. The zoned gateway6 reaches the
-	// pasta argv ONLY — the NETWORK block's routes row says "the gateway
-	// above" without rendering the value itself (dryrun.go's describeNetwork),
-	// so there is one sink here, not two, unlike the pre-netip version of
-	// this fixture.
-	if want := forged + "-NET-GATEWAY-ZONE"; !strings.Contains(got, want) {
-		t.Fatalf("the network fixture's %q never reached the screen, so the NETWORK half "+
-			"of this test measures nothing:\n%s", want, got)
-	}
 
 	// POSITIVE CONTROLS for the engine-source fixture: both $SNUG_PODMAN and
 	// $SNUG_PODMAN_ROOT reached the CONTAINERS block, named so a failure says

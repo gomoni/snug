@@ -2,7 +2,6 @@ package cli
 
 import (
 	"io"
-	"slices"
 	"strings"
 	"testing"
 
@@ -70,9 +69,22 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 	})
 
 	t.Run("interception is described only when it happens", func(t *testing.T) {
-		p := dnsPolicy(t, "@net-anon")
+		// A host whose ONLY resolver is loopback (systemd-resolved) — the one
+		// remaining trigger for interception now that network anonymisation
+		// is gone.
+		reg := loadTestRegistry(t)
+		home, target := testTree(t)
+		ctx := policy.Context{
+			Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+			HostNameservers: []string{"127.0.0.53"},
+		}
+		p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net"}, ctx, policy.OSEnviron{})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
 		if !p.Net.NeedsDNSForward() {
-			t.Fatalf("fixture: @net-anon does not intercept DNS, so this arm proves nothing")
+			t.Fatalf("fixture: a loopback-only-resolver host does not intercept DNS, so this " +
+				"arm proves nothing")
 		}
 		got := networkBlock(t, p)
 		if !strings.Contains(got, "169.254.1.1") {
@@ -82,25 +94,21 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 		// WHAT THE SANDBOX IS TOLD, versus what the SCREEN says — and the
 		// distinction is the whole of issue #162 against issue #166.
 		//
-		// Since #166 the line reads `169.254.1.1 -> pasta -> 192.168.1.1`:
+		// Since #166 the line reads `169.254.1.1 -> pasta -> 127.0.0.53`:
 		// the destination is named because snug now chooses it (--dns-host)
 		// rather than leaving it to pasta's default, and a reader deciding
 		// whether to trust this sandbox needs to know where its queries end
 		// up. That is not a disclosure — --dry-run runs on the host and is
 		// read by the person whose resolver it is.
 		//
-		// What must never name a host resolver is the file the PAYLOAD reads,
-		// and TestNoAnonymisingProfileNamesAHostResolver asserts exactly that
-		// on the generated mount. So this checks the half of the line that
-		// describes the sandbox's own configuration — everything before the
-		// first arrow — rather than the whole string, which would forbid the
-		// destination #166 exists to print.
+		// So this checks the half of the line that describes the sandbox's
+		// own configuration — everything before the first arrow — rather
+		// than the whole string, which would forbid the destination #166
+		// exists to print.
 		inside, _, _ := strings.Cut(got[strings.Index(got, "dns "):], "->")
-		for _, ns := range testHostNameservers {
-			if strings.Contains(inside, ns) {
-				t.Errorf("the dns line says the sandbox itself is configured with the host "+
-					"resolver %s, for a run that intercepts:\n%s", ns, got)
-			}
+		if strings.Contains(inside, "127.0.0.53") {
+			t.Errorf("the dns line says the sandbox itself is configured with the host "+
+				"resolver 127.0.0.53, for a run that intercepts:\n%s", got)
 		}
 	})
 
@@ -160,115 +168,4 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 			}
 		}
 	})
-}
-
-// NO PROFILE THAT ANONYMISES THE SANDBOX MAY HAND IT A HOST RESOLVER ADDRESS.
-//
-// Asserted over the SET of builtin profiles that set an address rather than at
-// the @net-anon site, which is what issue #162 asked for: a future anonymising
-// profile inherits the property instead of re-opening the hole under a new
-// name. It reads the generated /etc/resolv.conf mount out of the resolved
-// policy — the bytes the sandbox will really read — not NetPolicy's fields.
-func TestNoAnonymisingProfileNamesAHostResolver(t *testing.T) {
-	reg := loadTestRegistry(t)
-
-	var anonymising []policy.ProfileName
-	for name, prof := range reg {
-		if prof.Address != "" {
-			anonymising = append(anonymising, policy.ProfileName(name))
-		}
-	}
-	if len(anonymising) == 0 {
-		t.Fatal("no builtin profile sets an address, so this test sweeps nothing — if " +
-			"@net-anon was renamed or retired, this test must follow it rather than " +
-			"silently pass over an empty set")
-	}
-
-	for _, name := range anonymising {
-		t.Run(string(name), func(t *testing.T) {
-			p := dnsPolicy(t, name)
-			if !p.Net.Address.IsValid() {
-				t.Fatalf("fixture: %s resolved to no synthetic address, so this is not an "+
-					"anonymised sandbox", name)
-			}
-			m, ok := p.Mounts["/etc/resolv.conf"]
-			if !ok {
-				t.Fatalf("no generated /etc/resolv.conf in the resolved policy for %s", name)
-			}
-			rc := string(m.Content)
-			for _, ns := range testHostNameservers {
-				if strings.Contains(rc, ns) {
-					t.Errorf("%s hides the host's address and then names the host's resolver "+
-						"%s, which discloses the network the host sits on — the disclosure "+
-						"this profile exists to prevent:\n%s", name, ns, rc)
-				}
-			}
-			if !strings.Contains(rc, "nameserver") {
-				t.Errorf("%s leaves the sandbox with no resolver at all; the property is "+
-					"withholding the HOST's resolver, not withholding DNS:\n%s", name, rc)
-			}
-		})
-	}
-
-	// CONTROL: the non-anonymising @net, resolved through the identical path,
-	// DOES name them. Without it every assertion above passes on a fixture
-	// whose nameservers never reached the policy.
-	rc := string(dnsPolicy(t, "@net").Mounts["/etc/resolv.conf"].Content)
-	for _, ns := range testHostNameservers {
-		if !strings.Contains(rc, ns) {
-			t.Fatalf("control: @net does not name the host resolver %s either, so the "+
-				"fixture's nameservers never reached the generated file and the sweep "+
-				"above distinguishes nothing:\n%s", ns, rc)
-		}
-	}
-}
-
-// EXACTLY TWO -a AND TWO -g, ONE PER FAMILY, FOR EVERY BUILTIN THAT
-// ANONYMISES (issue #165). Registry sweep over the REAL shipped builtins, not
-// this package's own resolve fixtures — internal/policy's fake registry pairs
-// profiles that only add up to a full set when combined (netty/netty-too), so
-// the same sweep there would refuse a fixture never meant to resolve alone.
-// A future anonymising profile inherits this property instead of re-opening
-// the hole under a new name, exactly as
-// TestNoAnonymisingProfileNamesAHostResolver above does for the resolver
-// half of the same disclosure.
-func TestAnonymisingPassesAnAddressInBothFamilies(t *testing.T) {
-	reg := loadTestRegistry(t)
-	var anonymising []policy.ProfileName
-	for name, prof := range reg {
-		if prof.Address != "" {
-			anonymising = append(anonymising, policy.ProfileName(name))
-		}
-	}
-	if len(anonymising) == 0 {
-		t.Fatal("no builtin profile sets an address, so this sweep covers nothing")
-	}
-
-	for _, name := range anonymising {
-		t.Run(string(name), func(t *testing.T) {
-			p := dnsPolicy(t, name)
-			args := p.PastaArgs(policy.PastaTargetChild(1))
-			aCount, gCount := 0, 0
-			for i, a := range args {
-				if a == "-a" {
-					aCount++
-					if i+1 >= len(args) || !strings.Contains(args[i+1], "/") {
-						t.Errorf("-a value carries no inline prefix: %v", args)
-					}
-				}
-				if a == "-g" {
-					gCount++
-				}
-			}
-			if aCount != 2 || gCount != 2 {
-				t.Errorf("got %d -a and %d -g, want 2 and 2 (one pair per family): %v", aCount, gCount, args)
-			}
-		})
-	}
-
-	// CONTROL: @net (no synthetic address) carries neither.
-	net := dnsPolicy(t, "@net")
-	if slices.Contains(net.PastaArgs(policy.PastaTargetChild(1)), "-a") {
-		t.Error("control: a non-anonymising profile's argv carries -a")
-	}
 }

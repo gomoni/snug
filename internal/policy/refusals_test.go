@@ -482,26 +482,6 @@ func TestGrantStrictlyInsideKindDataPathIsFatal(t *testing.T) {
 func refusalScalarConflict(t testing.TB, key string) error {
 	reg := testRegistry()
 	switch key {
-	case "address":
-		reg["addr-a"] = &Profile{Name: "addr-a", Network: "egress", Address: "10.0.0.2/24"}
-		reg["addr-b"] = &Profile{Name: "addr-b", Network: "egress", Address: "10.0.0.3/24"}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr-a", "addr-b"}, testCtx(), newFakeEnv())
-		return err
-	case "address-forging":
-		// The marker is written backwards: a bidi-rendering terminal shows
-		// "FORGED-BY-AN-ADDRESS" after the override. The second value carries
-		// the C1 spelling so the golden pins both halves of IsForgingRune.
-		reg["addr-a"] = &Profile{Name: "addr-a", Network: "egress",
-			Address: "10.0.0.2/24 \u202eSSERDDA-NA-YB-DEGROF"}
-		reg["addr-b"] = &Profile{Name: "addr-b", Network: "egress",
-			Address: "10.0.0.3/24 \u009b1AFORGED-BY-A-C1"}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr-a", "addr-b"}, testCtx(), newFakeEnv())
-		return err
-	case "gateway":
-		reg["gw-a"] = &Profile{Name: "gw-a", Network: "egress", Gateway: "10.0.0.1"}
-		reg["gw-b"] = &Profile{Name: "gw-b", Network: "egress", Gateway: "10.0.0.9"}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "gw-a", "gw-b"}, testCtx(), newFakeEnv())
-		return err
 	case "mtu":
 		reg["mtu-a"] = &Profile{Name: "mtu-a", Network: "egress", MTU: 1400}
 		reg["mtu-b"] = &Profile{Name: "mtu-b", Network: "egress", MTU: 9000}
@@ -511,73 +491,6 @@ func refusalScalarConflict(t testing.TB, key string) error {
 		t.Fatalf("unknown scalar key %q", key)
 		return nil
 	}
-}
-
-func TestConflictingAddressesAreFatal(t *testing.T) {
-	err := refusalScalarConflict(t, "address")
-	if err == nil {
-		t.Fatal("two profiles setting different network addresses were silently resolved")
-	}
-	for _, want := range []string{"addr-a", "addr-b", "10.0.0.2/24", "10.0.0.3/24"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-}
-
-func TestConflictingGatewaysAreFatal(t *testing.T) {
-	err := refusalScalarConflict(t, "gateway")
-	if err == nil {
-		t.Fatal("two profiles setting different network gateways were silently resolved")
-	}
-	for _, want := range []string{"gw-a", "gw-b", "10.0.0.1", "10.0.0.9"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-}
-
-// TestAddressConflictNamesBothProfilesForBothFamilies is the IPv6 mirror of
-// TestConflictingAddressesAreFatal/TestConflictingGatewaysAreFatal (issue
-// #165): address6/gateway6 disagreeing between two profiles is a symmetric
-// scalarConflict naming both profiles and both values, exactly as the v4
-// pair already does. Each profile carries a COMPLETE, self-consistent pair
-// (all four keys) so the refusal under test is the address6/gateway6
-// CONFLICT, never V6's half-set refusal firing first and masking it.
-func TestAddressConflictNamesBothProfilesForBothFamilies(t *testing.T) {
-	t.Run("address6", func(t *testing.T) {
-		reg := testRegistry()
-		reg["addr6-a"] = &Profile{Name: "addr6-a", Network: "egress",
-			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1"}
-		reg["addr6-b"] = &Profile{Name: "addr6-b", Network: "egress",
-			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:aaaa:1::2/64", Gateway6: "fd00:aaaa:1::1"}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "addr6-a", "addr6-b"}, testCtx(), newFakeEnv())
-		if err == nil {
-			t.Fatal("two profiles setting different network IPv6 addresses were silently resolved")
-		}
-		for _, want := range []string{"addr6-a", "addr6-b", "fd00:5e79:1::2/64", "fd00:aaaa:1::2/64"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not contain %q", err, want)
-			}
-		}
-	})
-
-	t.Run("gateway6", func(t *testing.T) {
-		reg := testRegistry()
-		reg["gw6-a"] = &Profile{Name: "gw6-a", Network: "egress",
-			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::/64", Gateway6: "fd00:5e79:1::1"}
-		reg["gw6-b"] = &Profile{Name: "gw6-b", Network: "egress",
-			Address: "10.13.13.2/24", Gateway: "10.13.13.1", Address6: "fd00:5e79:1::/64", Gateway6: "fd00:5e79:1::9"}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "gw6-a", "gw6-b"}, testCtx(), newFakeEnv())
-		if err == nil {
-			t.Fatal("two profiles setting different network IPv6 gateways were silently resolved")
-		}
-		for _, want := range []string{"gw6-a", "gw6-b", "fd00:5e79:1::1", "fd00:5e79:1::9"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not contain %q", err, want)
-			}
-		}
-	})
 }
 
 func TestConflictingMTUsAreFatal(t *testing.T) {
@@ -905,19 +818,7 @@ func TestGoldenRefusals(t *testing.T) {
 			return err
 		}},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},
-		{"scalar_conflict_address", func(t testing.TB) error { return refusalScalarConflict(t, "address") }},
-		{"scalar_conflict_gateway", func(t testing.TB) error { return refusalScalarConflict(t, "gateway") }},
 		{"scalar_conflict_mtu", func(t testing.TB) error { return refusalScalarConflict(t, "mtu") }},
-		// The VALUES in a scalar conflict are profile text snug did not write,
-		// and `address` is unvalidated for these runes at parse time (issue
-		// #62), so this message is the one place a forging rune reaches a screen
-		// through the network keys. The round-3 sweep escaped describeNode and
-		// the two join conflicts and did not reach scalarConflict, which issue
-		// #64 had named — this case is what makes that visible in a diff rather
-		// than in someone's memory.
-		{"scalar_conflict_address_forging", func(t testing.TB) error {
-			return refusalScalarConflict(t, "address-forging")
-		}},
 		{"poststaging_nested_grant_under_later_replace", refusalNestedGrantUnderLaterReplace},
 		{"forbidden_env_unset_on_host", refusalForbiddenEnvUnsetOnHost},
 

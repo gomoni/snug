@@ -278,8 +278,7 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@parent-ro` | The target's parent, read-only. |
 | `@git-ro` | Your git name and email, extracted from the host config and regenerated. Never bound. |
 | `@tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
-| `@net` | Internet access. Host loopback unreachable. |
-| `@net-anon` | As `@net`, but the sandbox gets a synthetic address in both families instead of your host's. |
+| `@net` | Internet access. Copies your host's address in (small disclosure). Host loopback and every address the host owns are unreachable regardless. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
 | `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
@@ -516,6 +515,12 @@ never a key.
 Each sandbox gets its own network namespace with a `pasta` helper. Egress is
 unrestricted; the host's `127.0.0.1` is not merely blocked but *not
 expressible* — the sandbox's loopback is a different loopback.
+
+`@net` copies your host's address into the sandbox (a small, accepted
+disclosure) and drives your host's resolver for DNS. Every address the host
+itself owns — including one `pasta` never copies, the host's own link-local —
+is sealed as a local route inside the sandbox's network namespace, so a
+connect to one is refused before it ever leaves the sandbox.
 
 That namespace also isolates **abstract AF_UNIX sockets**, which is what keeps
 X11 and D-Bus out for free. Filesystem sandboxing does nothing about those;

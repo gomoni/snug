@@ -1041,40 +1041,30 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
-### 4b-ter. An IPv6 prefix snug cannot deliver is refused
+### 4b-ter. A retired network-anonymisation key is refused, not ignored
 
-`address6` carries its prefix inline, and pasta PARSES it and throws it away:
-there is no `c->ip6.prefix_len`, the address is configured with a literal 64,
-and the RA's Prefix Information option hardcodes 64. Its man page says so under
-`-a`: *"it will in the current code version be overridden by the default value
-of 64"*. So `address6 = "fd00::2/112"` used to resolve and hand the sandbox a
-**/64** — a wider on-link set than the profile asked for, which is the silent
-downgrade invariant 5 forbids. The v4 half needs no rule; pasta keeps that
-prefix.
+`address`/`gateway`/`address6`/`gateway6` configured a synthetic address in
+place of the sandbox's real one. The feature is gone — `@net` copies the
+host's addresses unconditionally now — and the fix is "remove the key", not
+"write it a different way", so a profile still carrying one must be refused
+by name rather than silently accepted with no effect.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
-cat > $X/snug/profiles.d/p.toml <<'PROF'
-[profile.pfx]
-description = "a v6 prefix pasta cannot deliver"
-network  = "egress"
-address  = "10.13.13.2/24"
-gateway  = "10.13.13.1"
-address6 = "fd00::2/112"
-gateway6 = "fd00::1"
-PROF
+printf '[profile.pfx]\ndescription = "a retired anonymisation key"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
+  > $X/snug/profiles.d/p.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect a refusal naming the profile and the fix, `exit=77`:
+Expect a refusal naming both keys and the fix, `exit=77`:
 
 ```
-snug: network address6 fd00::2/112 is a /112: pasta discards an inline IPv6 prefix and configures the address as a /64 regardless (its own man page says so under `-a`), so the sandbox would treat a WIDER set of addresses as on-link than this profile asks for. Write fd00::2/64, or pick a narrower ADDRESS
+snug: profile "pfx" sets address, gateway, which snug no longer accepts.
+       snug no longer supports network anonymisation: `@net` copies the host's
+       addresses into the sandbox's network namespace (a small accepted disclosure)
+       rather than handing the sandbox a synthetic one. There is no replacement key —
+       remove address, gateway from this profile
 ```
-
-**Positive controls.** `address6` changed to `fd00::2/64` resolves, as does a v4
-`address` of `/16` or `/30` — the rule is v6-only, so a working v4 prefix must
-not be caught by it.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
@@ -2676,44 +2666,30 @@ the golden files, while the exhaustiveness test stays green.
 
 Two questions on one screen, and until issue #28 they were answered by a
 hardcoded line rather than by the policy: *which resolver does the sandbox
-actually get*, and *does `--dry-run` describe that run*. `@net-anon` makes the
-second question load-bearing, because it is the profile whose whole purpose is
-that the sandbox does not learn where the host sits.
+actually get*, and *does `--dry-run` describe that run*.
 
 ```bash
 echo "HOST:"; grep ^nameserver /etc/resolv.conf
 
-for p in @net @net-anon; do
-  echo "== $p =="
-  ./bin/snug --dry-run -p $p $SC/proj/sub -- true | grep -A3 '^ *dns '
-  ./bin/snug -p $p $SC/proj/sub -- /bin/sh -c 'grep ^nameserver /etc/resolv.conf'
-done
+./bin/snug --dry-run -p @net $SC/proj/sub -- true | grep -A3 '^ *dns '
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'grep ^nameserver /etc/resolv.conf'
 
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
   'getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED'
 ```
 
 Expect, on a host whose own resolvers are routable (an ordinary LAN router, the
-common case):
+common case): `@net` names **the host's own resolvers** in both places — on the
+screen and in the file — with the screen saying plainly that a LAN resolver
+address discloses the network the host sits on. That is a disclosure matching
+a grant: `@net` copies the host's address by design and says so on the next
+line. Expect `RESOLVED` either way.
 
-- `@net` names **the host's own resolvers** in both places — on the screen and
-  in the file — with the screen saying plainly that a LAN resolver address
-  discloses the network the host sits on. That is a disclosure matching a grant:
-  `@net` copies the host's address by design and says so on the next line.
-- `@net-anon` names **`169.254.1.1` in both places**, and **neither** of the
-  host's resolver addresses anywhere. This is the fix for issue #162: the
-  profile used to hide the host's LAN address and then hand back the host's LAN
-  resolver, which discloses the same prefix — the router is normally the
-  resolver.
-- `RESOLVED`. The property is withholding the *host's* resolver, not withholding
-  DNS; pasta re-issues the query from the host side. If this prints
-  `RESOLVE-FAILED`, the disclosure was traded for a broken sandbox and that is a
-  regression, not a tightening.
-
-On a `systemd-resolved` host (every resolver on `127.0.0.53`) both profiles show
-`169.254.1.1`, because interception is the only arm available — the comparison
-above distinguishes nothing there, which is why the automated version of this
-check skips such a host rather than passing on it.
+On a `systemd-resolved` host (every resolver on `127.0.0.53`) the file names
+`169.254.1.1` instead — pasta's interception address — because there is no
+routable resolver to name directly, and `RESOLVED` must still print: the
+property is that interception is invisible to the payload, not that it costs
+correctness.
 
 The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
@@ -2742,61 +2718,50 @@ The message quotes the offending value and names the accepted set — the two
 things a reader needs to fix their own file. `ssh_mode` behaves identically:
 `agent-proxy` and `none`, anything else refused with the same shape.
 
-**And the forwarder's destination is named.** Under `@net-anon` the dns line
-reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's first
-nameserver, pinned by snug with `--dns-host` rather than left to pasta's own
-default (issue #166). Check it against the argv:
+**And the forwarder's destination is named.** On a systemd-resolved host the
+dns line reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's
+first nameserver, pinned by snug with `--dns-host` rather than left to pasta's
+own default (issue #166). Check it against the argv:
 
 ```bash
-./bin/snug --dry-run -p @net-anon $SC/proj/sub -- true | grep -E '^ *dns |--dns-host'
+./bin/snug --dry-run -p @net $SC/proj/sub -- true | grep -E '^ *dns |--dns-host'
 ```
 
 Both must name the same address. They are two authors of one fact and this is
 the line where they are made to agree.
 
-**Two more lines in the same block, fixed by issue #165's v6 pair.** Under
-`@net-anon` the block now prints an `address v4` row and an `address v6` row,
-each carrying its own synthetic value — `10.13.13.2/24` and
-`fd00:5e79:1::2/64`. Check that against the interface:
+**The host is unreachable on every address it owns — SEALED, not incidental.**
+`@net` copies the host's addresses onto snug0 by design, which would otherwise
+make the host's own LAN address reachable from inside: the packet stays on
+what looks like the sandbox's own interface, so nothing refuses it locally
+(issue #176's finding). snug closes that by assigning every address the host
+owns onto snug0 as a `local` route inside the sandbox's OWN network namespace,
+so a connect to one short-circuits to local delivery and is refused before it
+ever reaches pasta:
 
 ```bash
-ip -br addr show scope global
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c 'ip -br addr show dev snug0; ip -6 route show default'
-```
-
-Expect the sandbox's `snug0` to carry **only** `10.13.13.2/24` and
-`fd00:5e79:1::2/64` (plus a link-local address whose EUI-64 comes from a
-per-run random tap MAC) — **none of the host's own addresses, in either
-family** — and a default route via `fd00:5e79:1::1`, never a `proto ra` route
-through the router's own link-local address. That is issue #165, fixed: the
-v4-only address used to leave pasta's IPv6 default in place (copy the
-addresses from the interface holding the default route), so the sandbox kept
-the host's own GLOBAL v6 addresses verbatim — the weaker (RFC1918) half hidden,
-the stronger (globally routable, geolocatable) half disclosed. If either of the
-host's addresses from the first command ever reappears in the second, that is
-the regression this line exists to catch.
-
-**The host's own address becomes reachable *because* it is hidden — issue
-#176, and it is documented, not closed.** Anonymising an address takes it off
-the sandbox's own interface, so a connection to it stops being refused by the
-sandbox's own kernel and instead leaves the netns for pasta to open on the
-real host. `@net` is the control that makes this checkable: the same address
-must be refused there and reached under `@net-anon`.
-
-```bash
-python3 -m http.server -b "$(hostname -I | awk '{print $1}')" 8199 &
+python3 -m http.server -b :: 8199 &
 HOSTPY=$!
 ./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
   "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
-  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
+```
+
+Expect `REFUSED` (or a curl connect-error line). **Host loopback stays closed
+too** — `127.0.0.1`/`::1` are never reachable — **and so does the host's own
+link-local address**, which pasta itself does not copy onto snug0 and which
+only the seal closes. `-b ::` above binds a dual-stack wildcard, so the SAME
+listener answers here too:
+
+```bash
+LL=$(ip -6 addr show scope link | awk '/inet6/{print $2}' | cut -d/ -f1 | head -1)
+IFACE=$(ip -6 addr show scope link | awk '/inet6/{print $NF; exit}')
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
+  "curl -gs -o /dev/null -w '%{http_code}\n' --max-time 3 'http://[$LL%$IFACE]:8199/' || echo REFUSED"
 kill $HOSTPY
 ```
 
-Expect `REFUSED` (or a curl connect-error line) under `@net`, and `200` under
-`@net-anon`. **Host loopback stays closed in both** — `127.0.0.1`/`::1` are
-never reachable, and that is the property this project promises regardless of
-which profile is selected; only the host's *own, non-loopback* address moves.
+Expect `REFUSED` here too, from inside a sandbox whose own snug0 now carries
+the host's link-local address as a sealed local route.
 
 ## 8. Profile order is irrelevant
 
@@ -2995,9 +2960,8 @@ $ ./bin/snug profile show @podman-socket | grep -A2 podman
 
 What to check:
 
-1. `@net` names `network` and `dns`, `@net-anon` names both synthetic address
-   pairs, `@podman-socket` names `podman`. Before #195 all three printed nothing
-   about any of it.
+1. `@net` names `network` and `dns`, `@podman-socket` names `podman`. Before
+   #195 both printed nothing about any of it.
 2. Each row carries the **consequence**, not just the value. "egress" is a word;
    "the sandbox reaches the whole internet" is the thing being agreed to.
 3. `@sys` prints **no** capability rows at all — it grants only paths, and an

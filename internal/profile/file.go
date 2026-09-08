@@ -65,17 +65,14 @@ type rawProfile struct {
 
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
-	Address string `toml:"address"`
-	Gateway string `toml:"gateway"`
-	// Address6/Gateway6 are the IPv6 half of an anonymising profile's
-	// synthetic address pair (issue #165). Two scalars, not a list: a list
-	// re-imports arity and order into the profile language (pasta itself does
-	// not enforce arity — `-a` twice in one family exits 0 silently, measured
-	// — so with per-family keys "which family" is answered by the key's NAME,
-	// never by inspecting the value), and every list-valued key in this model
-	// is UNIONED across profiles while an address is not unionable — giving it
-	// list syntax would invite a future Resolve to union two profiles' v6
-	// addresses into a two-`-a` argv pasta accepts silently.
+	// Address/Gateway/Address6/Gateway6 are the retired network-anonymisation
+	// spellings, kept as FIELDS for the same reason Env and Path are above —
+	// so toEnvGrants can name them in retiredAnonKey rather than let
+	// DisallowUnknownFields produce the generic "unknown key" message. The
+	// feature they configured (a synthetic address in place of the sandbox's
+	// real one) is retired, not moved: there is no replacement spelling.
+	Address  string `toml:"address"`
+	Gateway  string `toml:"gateway"`
 	Address6 string `toml:"address6"`
 	Gateway6 string `toml:"gateway6"`
 	MTU      int    `toml:"mtu"`
@@ -167,8 +164,8 @@ func nameByteDesc(c byte) string { return policy.NameByteDesc(c) }
 // position keeps every printable ASCII symbol free to become a sigil later
 // without breaking a name somebody already chose. '@' is already one.
 //
-// The hyphen is IN — decided by the owner, and seven builtins depend on it
-// (cwd-rw, parent-ro, tmp-shared, git-ro, net-anon, podman-socket,
+// The hyphen is IN — decided by the owner, and six builtins depend on it
+// (cwd-rw, parent-ro, tmp-shared, git-ro, podman-socket,
 // podman-build), so "alphanumerics only" would outlaw snug's own names.
 // Underscore is OUT until someone asks: adding a character later is additive,
 // removing one is a breaking change.
@@ -338,10 +335,6 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Environ:     environ,
 			Network:     r.Network,
 			DNS:         r.DNS,
-			Address:     r.Address,
-			Gateway:     r.Gateway,
-			Address6:    r.Address6,
-			Gateway6:    r.Gateway6,
 			MTU:         r.MTU,
 			Podman:      r.Podman,
 			Git:         r.Git,
@@ -354,7 +347,9 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 }
 
 // toEnvGrants turns one profile's raw `environ` block into the value the
-// resolver folds, and refuses the two keys it replaced.
+// resolver folds, and refuses the retired keys: the two `environ` replaced,
+// and the four network-anonymisation scalars snug no longer supports at all
+// (retiredAnonKey).
 func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	g := policy.EnvGrants{}
 	if e := r.Environ; e != nil {
@@ -380,24 +375,36 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	if len(r.Path) > 0 {
 		return g, retiredPathKey(source, name, r.Path)
 	}
+	if r.Address != "" || r.Gateway != "" || r.Address6 != "" || r.Gateway6 != "" {
+		return g, retiredAnonKey(source, name, r.Address, r.Gateway, r.Address6, r.Gateway6)
+	}
 	return g, nil
 }
 
-// The two retired keys, and why they are FIELDS on rawProfile rather than
+// The retired keys, and why they are FIELDS on rawProfile rather than
 // deletions.
 //
 // A key that never should have existed is retired by deleting its struct field
 // and letting DisallowUnknownFields fire, which yields the generic "unknown key"
-// message. That is right for such a key and wrong for one
-// whose MEANING MOVED: `env = [...]` is still a thing a profile wants to say,
-// and the reader needs to be told the new spelling rather than told the key does
-// not exist. So both fields stay, and both errors name the replacement — spelled
-// out with this profile's own variables, so the fix can be pasted.
+// message. That is right for such a key and wrong for two other classes, which
+// is why all of the fields below stay.
 //
-// The prefix changed deliberately. `env` became `environ.inherit` and not
-// `environ.env`, because a silently CHANGED meaning is worse than a removed key:
-// anyone whose muscle memory reaches for the old word gets an error naming the
-// new one, rather than a subtly different grant that parses.
+// The first class is a key whose MEANING MOVED: `env = [...]` is still a thing
+// a profile wants to say, and the reader needs to be told the new spelling
+// rather than told the key does not exist. Both errors name the replacement —
+// spelled out with this profile's own variables, so the fix can be pasted. The
+// prefix changed deliberately. `env` became `environ.inherit` and not
+// `environ.env`, because a silently CHANGED meaning is worse than a removed
+// key: anyone whose muscle memory reaches for the old word gets an error
+// naming the new one, rather than a subtly different grant that parses.
+//
+// The second class is a key whose FEATURE was removed after shipping:
+// `address`/`gateway`/`address6`/`gateway6` named a synthetic address that
+// hid the sandbox's real one, and network anonymisation is not a capability
+// snug offers any more (retiredAnonKey). There is no replacement spelling to
+// point at, so this refusal's fix is "remove it" rather than "write it this
+// other way" — a generic "unknown key" would read as a typo and send the
+// author looking for the field that moved, when the field is simply gone.
 
 func retiredEnvKey(source, name string, names []string) error {
 	var b strings.Builder
@@ -426,6 +433,30 @@ func retiredPathKey(source, name string, dirs []string) error {
 	b.WriteString("       Note that the profile must now GRANT the directories it names: a variable\n")
 	b.WriteString("       pointing at a path that is not inside the sandbox is worse than an absent one.")
 	return fmt.Errorf("%s", b.String())
+}
+
+// retiredAnonKey refuses whichever of `address`/`gateway`/`address6`/`gateway6`
+// name is non-empty, and names exactly which — the FEATURE they configured
+// (a synthetic address standing in for the sandbox's real one) is gone, not
+// moved, so there is no replacement spelling to point at.
+func retiredAnonKey(source, name, address, gateway, address6, gateway6 string) error {
+	var present []string
+	for _, kv := range []struct {
+		key, val string
+	}{
+		{"address", address}, {"gateway", gateway},
+		{"address6", address6}, {"gateway6", gateway6},
+	} {
+		if kv.val != "" {
+			present = append(present, kv.key)
+		}
+	}
+	return fmt.Errorf("%s: profile %q sets %s, which snug no longer accepts.\n"+
+		"       snug no longer supports network anonymisation: `@net` copies the host's\n"+
+		"       addresses into the sandbox's network namespace (a small accepted disclosure)\n"+
+		"       rather than handing the sandbox a synthetic one. There is no replacement key —\n"+
+		"       remove %s from this profile",
+		source, name, strings.Join(present, ", "), strings.Join(present, ", "))
 }
 
 func quotedList(in []string) string {

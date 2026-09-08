@@ -85,10 +85,8 @@ func TestGoldenProfileShow(t *testing.T) {
 		// ISSUE #195. Before this pair existed, every golden here was a
 		// path-only profile, so the nine missing capability rows produced no
 		// diff when they were absent and would have produced none when a tenth
-		// went missing. @net carries `network` and `dns`; @net-anon carries the
-		// two synthetic address pairs and nothing else of its own.
+		// went missing. @net carries `network` and `dns`.
 		{"@net", "network and dns — the grant that read as no grant at all"},
-		{"@net-anon", "the v4 and v6 synthetic address pairs, on their own"},
 	}
 
 	for _, tc := range cases {
