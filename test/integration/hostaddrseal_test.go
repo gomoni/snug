@@ -68,6 +68,39 @@ func hostDefaultIfaceLinkLocal6(t *testing.T) (iface string, ll netip.Addr, ok b
 	return "", netip.Addr{}, false
 }
 
+// hostGlobalAddr6 returns a global-scope IPv6 address on iface, if any —
+// one of the host's OWN routable addresses that pasta copies onto snug0. The
+// seal covers it too (the copy makes it local, the seal's own add is a
+// harmless EEXIST), and a distinct probe against it asserts the whole CLASS
+// the seal closes rather than only the link-local instance that found it.
+// (false) when the interface carries no global v6, the caller's cue to skip
+// that one probe.
+func hostGlobalAddr6(iface string) (netip.Addr, bool) {
+	ifc, err := net.InterfaceByName(iface)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipNet.IP)
+		if !ok {
+			continue
+		}
+		ip = ip.Unmap()
+		if ip.Is6() && ip.IsGlobalUnicast() && !ip.IsPrivate() {
+			return ip, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
 // hostHasV6Internet reports whether this host can reach a real IPv6 endpoint
 // on the public internet — the precondition for this test's v6 EGRESS
 // positive control, which is a separate fact from having an IPv6 link-local
@@ -145,6 +178,9 @@ func TestNetSealsHostOwnedAddressesFromInside(t *testing.T) {
 			"exercise the fix")
 	}
 	haveV6Egress := hostHasV6Internet()
+	v4Primary, v4err := hostOutboundAddr()
+	haveV4 := v4err == nil && v4Primary != ""
+	g6, haveG6 := hostGlobalAddr6(iface)
 
 	proj, _ := target(t)
 
@@ -222,6 +258,18 @@ probe("host-ll", socket.AF_INET6, %[1]q, %[2]d, scope)
 probe("v4-loop", socket.AF_INET, "127.0.0.1", %[2]d)
 probe("v6-loop", socket.AF_INET6, "::1", %[2]d, scope)
 
+# THE CLASS, not just the instance: the host's OTHER own addresses must be
+# sealed too. The v4 primary and any v6 global are COPIED onto snug0 by pasta,
+# so they were already local (and refused) before the seal existed; probing
+# them keeps that guarantee asserted. 127.0.0.2 is a loopback address the seal
+# deliberately does NOT enumerate — it must stay refused anyway, because the
+# sandbox's own lo owns the whole 127.0.0.0/8.
+if %[5]s:
+    probe("host-v4", socket.AF_INET, %[4]q, %[2]d)
+probe("lo-127-0-0-2", socket.AF_INET, "127.0.0.2", %[2]d)
+if %[7]s:
+    probe("host-v6-global", socket.AF_INET6, %[6]q, %[2]d)
+
 # POSITIVE: the seal must not have blanket-closed ordinary egress along with
 # the host's own addresses.
 probe("egress-v4", socket.AF_INET, "8.8.8.8", 53)
@@ -234,7 +282,12 @@ if %[3]s:
         print("RESULT", "v6-name", "ERROR", e)
 
 print("PROBE-COMPLETE")
-`, ll.String(), port, map[bool]string{true: "True", false: "False"}[haveV6Egress])
+`, ll.String(), port,
+		map[bool]string{true: "True", false: "False"}[haveV6Egress],
+		v4Primary,
+		map[bool]string{true: "True", false: "False"}[haveV4],
+		g6.String(),
+		map[bool]string{true: "True", false: "False"}[haveG6])
 
 	if err := os.WriteFile(filepath.Join(proj, "seal.py"), []byte(probe), 0o644); err != nil {
 		t.Fatal(err)
@@ -280,6 +333,29 @@ print("PROBE-COMPLETE")
 		if got := verdicts[label]; got != "REFUSED" {
 			t.Errorf("%s = %q, want REFUSED (host loopback must stay closed regardless of "+
 				"the seal):\n%s", label, got, r.out)
+		}
+	}
+
+	// THE CLASS: the host's other own addresses, not just the link-local that
+	// found the hole. A regression here is the same escape wearing a different
+	// address, which is exactly what "closable only once" is meant to catch.
+	if haveV4 {
+		if got := verdicts["host-v4"]; !strings.HasPrefix(got, "REFUSED") {
+			t.Errorf("host-v4 = %q, want REFUSED — the host's own primary v4 address %s is "+
+				"copied onto snug0, so a connect must resolve local and refuse before it "+
+				"reaches pasta:\n%s", got, v4Primary, r.out)
+		}
+	}
+	if got := verdicts["lo-127-0-0-2"]; !strings.HasPrefix(got, "REFUSED") {
+		t.Errorf("lo-127-0-0-2 = %q, want REFUSED — 127.0.0.2 is a loopback address the seal "+
+			"deliberately does NOT enumerate; it must stay closed anyway because the "+
+			"sandbox's own lo owns the whole 127.0.0.0/8:\n%s", got, r.out)
+	}
+	if haveG6 {
+		if got := verdicts["host-v6-global"]; !strings.HasPrefix(got, "REFUSED") {
+			t.Errorf("host-v6-global = %q, want REFUSED — the host's own global v6 %s is "+
+				"copied onto snug0 and must resolve local, not leave the netns:\n%s",
+				got, g6, r.out)
 		}
 	}
 
