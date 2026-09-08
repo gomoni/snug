@@ -368,8 +368,15 @@ func (s *Stage) Pid() int { return s.pid }
 // offline @podman-socket run, which still needs a stage for the container
 // engine's own U even though N carries no egress. The caller picks it from
 // the resolved policy's Net.Mode; this package never guesses.
-func (s *Stage) WaitNetReady(timeout time.Duration, iface string) error {
-	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface}); err != nil {
+//
+// hostAddrs is every address the HOST holds, on every interface — nil on the
+// "lo" arm, where there is nothing to seal. On the snug0 arm the stage
+// assigns each one onto snug0 as a local /32 or /128 before this call
+// returns, closing the host addresses pasta itself does not copy there (the
+// host's own link-local, and any second alias on another interface); see
+// sealHostAddresses in internal/stage/loopback.go.
+func (s *Stage) WaitNetReady(timeout time.Duration, iface string, hostAddrs []string) error {
+	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface, HostAddrs: hostAddrs}); err != nil {
 		return fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
 	}
 	ev, err := recvEventTimeout(s.control, timeout)

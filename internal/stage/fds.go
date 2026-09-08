@@ -100,6 +100,16 @@ const (
 	// ordering constraint.
 	fdNetSock = 66
 
+	// fdNetlinkSock is an AF_NETLINK/NETLINK_ROUTE socket CREATED INSIDE N,
+	// alongside fdNetSock and for the same reason: a socket's namespace is
+	// fixed at creation, so this one still speaks for N after the move.
+	// __stage-serve uses it, on the "netready" request for the snug0 arm
+	// only, to assign every host-owned address onto the sandbox's interface
+	// as a /32 or /128 (sealHostAddresses in loopback.go) — the fix for a
+	// host service reachable via an address pasta does not copy onto snug0
+	// (its own link-local, or a second alias on another interface).
+	fdNetlinkSock = 67
+
 	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
 	// it never collides with the pass-through block above, whose size is
 	// policy-dependent (as many data mounts as a resolved Policy has, plus one
@@ -118,7 +128,7 @@ const (
 	// covers the other direction and is the half checkFDBudget cannot see:
 	// this process's OWN descriptors, allocated above the block by the Go
 	// runtime rather than by any policy, landing here first.
-	fdNetnsN = 67
+	fdNetnsN = 68
 )
 
 // fdPremainSlack is how many descriptor numbers are left free BETWEEN the top
@@ -204,16 +214,16 @@ func checkFDBudget(n int) error {
 		return fmt.Errorf("stage: this policy needs %d pass-through descriptors, so the block "+
 			"would run from fd %d to fd %d and reach the numbers reserved above it: fd %d..%d, "+
 			"the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and then "+
-			"the N socket at fd %d and the pinned network namespace descriptor at fd %d "+
-			"(the budget is %d).\n"+
-			"      The fix is to RAISE fdNetSock and fdNetnsN in internal/stage/fds.go above "+
-			"the block — they are a free choice, not kernel constants, and each descriptor is "+
-			"dup3'd to its number explicitly. Do not lower the descriptor count: it is what the resolved policy "+
-			"actually needs (one per generated file, one for the seccomp filter, one for "+
-			"bwrap's --info-fd, two more for the --block-fd/--sync-fd gate on a container "+
-			"run, and one for the args memfd)",
+			"the N socket at fd %d, the N netlink socket at fd %d and the pinned network "+
+			"namespace descriptor at fd %d (the budget is %d).\n"+
+			"      The fix is to RAISE fdNetSock, fdNetlinkSock and fdNetnsN in "+
+			"internal/stage/fds.go above the block — they are a free choice, not kernel "+
+			"constants, and each descriptor is dup3'd to its number explicitly. Do not lower "+
+			"the descriptor count: it is what the resolved policy actually needs (one per "+
+			"generated file, one for the seccomp filter, one for bwrap's --info-fd, two more "+
+			"for the --block-fd/--sync-fd gate on a container run, and one for the args memfd)",
 			n, fdSandboxBase, fdSandboxBase+n-1, fdSandboxBase+maxPassthrough, fdNetSock-1,
-			fdNetSock, fdNetnsN, maxPassthrough)
+			fdNetSock, fdNetlinkSock, fdNetnsN, maxPassthrough)
 	}
 	return nil
 }
@@ -259,12 +269,12 @@ func requireFDFree(fd int, what string) error {
 		"have reached the reserved range. If the occupant above is one of the Go runtime's "+
 		"(a cgroup cpu limit file, an eventpoll, an eventfd), it was opened before main and "+
 		"no reservation can preempt it: RAISE fdPremainSlack in internal/stage/fds.go. "+
-		"Otherwise RAISE fdNetSock and fdNetnsN above the block, exactly as checkFDBudget's "+
-		"message says. All three are a free choice, not kernel constants",
+		"Otherwise RAISE fdNetSock, fdNetlinkSock and fdNetnsN above the block, exactly as "+
+		"checkFDBudget's message says. All four are a free choice, not kernel constants",
 		fd, what, occupant)
 }
 
-// reserveParkingFDs claims fdNetSock and fdNetnsN at P1's first instant, before
+// reserveParkingFDs claims fdNetSock, fdNetlinkSock and fdNetnsN at P1's first instant, before
 // this process has allocated a descriptor of its own, so that every later
 // allocation avoids them BY CONSTRUCTION rather than by a check racing an
 // allocator snug does not control.
@@ -291,6 +301,7 @@ func reserveParkingFDs() error {
 		what string
 	}{
 		{fdNetSock, "the N socket"},
+		{fdNetlinkSock, "the N netlink socket"},
 		{fdNetnsN, "the pinned netns descriptor"},
 	} {
 		if err := requireFDFree(r.fd, r.what); err != nil {

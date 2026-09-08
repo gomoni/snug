@@ -2,6 +2,7 @@ package stage
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,13 @@ func MainServe() error {
 	requireFD(fdNetSock, "N socket")
 	if err := setCloexec(fdNetSock); err != nil {
 		return fmt.Errorf("__stage-serve: marking fd %d CLOEXEC: %w", fdNetSock, err)
+	}
+	// Same instant, same reason: the netlink socket used to seal the host's
+	// addresses onto snug0 (sealHostAddresses) is no more a bwrap or payload
+	// inheritance than fdNetSock is.
+	requireFD(fdNetlinkSock, "N netlink socket")
+	if err := setCloexec(fdNetlinkSock); err != nil {
+		return fmt.Errorf("__stage-serve: marking fd %d CLOEXEC: %w", fdNetlinkSock, err)
 	}
 
 	pinned := fdNS(fdNetnsN)
@@ -155,6 +163,19 @@ func MainServe() error {
 			ev := event{Op: "netready"}
 			if err := waitForIface(fdNetSock, iface, netReadyTimeout); err != nil {
 				ev.Err = err.Error()
+			} else if iface == NetIfaceName {
+				// ONLY the snug0 arm, never "lo" (the podman-socket-only
+				// offline stage, which starts no pasta and has nothing to
+				// seal): this is the seal (host-bridge's fix for the host's
+				// link-local, uncopied by pasta onto snug0). It runs here,
+				// after the interface is confirmed up and BEFORE the event
+				// below reports success — and "start" is refused until a
+				// "netready" like this one has already succeeded (see the
+				// "start" case) — so no payload can exist before the host's
+				// addresses are sealed.
+				if err := sealNetready(req.HostAddrs, iface); err != nil {
+					ev.Err = err.Error()
+				}
 			}
 			if err := sendEvent(control, ev); err != nil {
 				return fmt.Errorf("__stage-serve: reporting netready: %w", err)
@@ -190,6 +211,27 @@ func MainServe() error {
 			return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
 		}
 	}
+}
+
+// sealNetready parses raw (P0's own rendering of the host's addresses,
+// net.IP.String() through netip so this side refuses rather than silently
+// drops one it cannot parse — this wire carries P0's OWN text, but it is
+// still input to this process rather than a local fact) and assigns each
+// onto iface's ifindex via sealHostAddresses.
+func sealNetready(raw []string, iface string) error {
+	idx, err := ifaceIndex(fdNetSock, iface)
+	if err != nil {
+		return fmt.Errorf("sealing the host's addresses onto %s: %w", iface, err)
+	}
+	addrs := make([]netip.Addr, 0, len(raw))
+	for _, s := range raw {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return fmt.Errorf("sealing the host's addresses onto %s: parsing %q: %w", iface, s, err)
+		}
+		addrs = append(addrs, a)
+	}
+	return sealHostAddresses(fdNetlinkSock, idx, addrs)
 }
 
 // NetIfaceName is the interface pasta creates inside N. It is not a guess: snug
