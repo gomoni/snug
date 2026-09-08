@@ -1998,8 +1998,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		// intercepted while the sandbox was actually handed `nameserver
 		// 192.168.1.1` — a false fact about DNS on the screen whose entire job
 		// is letting a human decide whether a sandbox leaks its network
-		// position, four lines above an offer of '@net-anon' because "the
-		// host's LAN address is hidden".
+		// position.
 		//
 		// The gate went for the same reason the literal did: it made the SCREEN
 		// consult a field the file's own author does not, so a profile writing

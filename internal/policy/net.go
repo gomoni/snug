@@ -280,8 +280,8 @@ func (n NetPolicy) Resolver() ResolverConfig {
 // Unmap()'d before it is kept (red team F3): a host naming a 4-in-6 mapped
 // resolver (`::ffff:8.8.8.8`) classifies as Is4()||Is4In6() everywhere this
 // file picks a family from it (forwardAddr, DNSHost), but String() on the
-// UNmapped value still renders the v6-mapped spelling — so an anonymising
-// policy on such a host emitted `--dns-forward 169.254.1.1 --dns-host
+// UNmapped value still renders the v6-mapped spelling — so @net's DNS
+// interception path on such a host emitted `--dns-forward 169.254.1.1 --dns-host
 // ::ffff:8.8.8.8`: a v4 forwarder paired with a v6-spelled --dns-host, which
 // pasta cannot answer (this file's own measured rule: pasta never crosses
 // families when forwarding). Unmapping here makes the RENDERED value agree
@@ -298,20 +298,6 @@ func (n NetPolicy) parsedNameservers() []netip.Addr {
 			continue
 		}
 		out = append(out, a.Unmap())
-	}
-	return out
-}
-
-// renderAddrs renders a list of parsed addresses back to strings, through
-// netip's own String() — the belt half of "parse, then render", never the
-// host's original bytes.
-func renderAddrs(addrs []netip.Addr) []string {
-	if len(addrs) == 0 {
-		return nil
-	}
-	out := make([]string, len(addrs))
-	for i, a := range addrs {
-		out[i] = a.String()
 	}
 	return out
 }

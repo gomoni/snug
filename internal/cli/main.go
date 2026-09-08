@@ -584,8 +584,8 @@ func run(cfg config) int {
 	// pasta or shares the host's own resolvers (pol.Net.Mode != NetIsolated)
 	// and still ending up with no server at all means every nameserver this
 	// host names was either absent or failed to parse (net.go's
-	// parsedNameservers) — the same fate Resolver() gives an anonymising
-	// profile with no usable resolver of either family.
+	// parsedNameservers) — the same fate Resolver() gives @net with no
+	// usable resolver of either family.
 	// NOT gated on startsNothing, unlike every other host-touching branch in
 	// run. It touches nothing — it only records a note — and the guard it used
 	// to carry meant the note was COLLECTED nowhere: silent on a real run
