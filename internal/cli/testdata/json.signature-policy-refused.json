@@ -31,7 +31,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/dev",
@@ -44,7 +45,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/lib",
@@ -57,7 +59,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/lib64",
@@ -70,7 +73,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/proc",
@@ -83,7 +87,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/sbin",
@@ -96,7 +101,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/tmp",
@@ -110,7 +116,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/usr",
@@ -123,7 +130,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/group",
@@ -136,7 +144,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/ld.so.cache",
@@ -149,7 +158,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/ld.so.conf",
@@ -162,7 +172,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/nsswitch.conf",
@@ -175,7 +186,8 @@
       "optional": true,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/passwd",
@@ -188,7 +200,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/etc/resolv.conf",
@@ -201,7 +214,8 @@
       "optional": false,
       "authored": true,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     },
     {
       "guest": "/home/u",
@@ -215,7 +229,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.cache",
@@ -229,7 +244,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.config",
@@ -243,7 +259,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local",
@@ -257,7 +274,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/proj",
@@ -271,7 +289,8 @@
       "authored": true,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local/share",
@@ -285,7 +304,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/.local/state",
@@ -299,7 +319,8 @@
       "authored": false,
       "executable": false,
       "yielded": false,
-      "size_bytes": 1073741824
+      "size_bytes": 1073741824,
+      "run_scoped": false
     },
     {
       "guest": "/home/u/proj/sub",
@@ -312,7 +333,8 @@
       "optional": false,
       "authored": false,
       "executable": false,
-      "yielded": false
+      "yielded": false,
+      "run_scoped": false
     }
   ],
   "grafts": [],

@@ -250,12 +250,12 @@ func TestTargetLockIsHeldSeesAShodRunAndACorpse(t *testing.T) {
 	}
 }
 
-// TestStateFileIsWrittenSixOhOhInASevenHundredDirectory is §13.1 test 6:
-// pins §6.3's mode table end to end, through the real openRuntimeDir()/
-// writeRunState() path rather than by asserting a literal 0o600/0o700
-// somewhere in the source — a test that reads the mode off the filesystem
-// is the one thing a refactor of HOW the file is opened cannot quietly break
-// without also breaking real attach.
+// TestStateFileIsWrittenSixOhOhInASevenHundredDirectory pins the mode pair
+// end to end, through the real openRuntimeDir()/writeRunState() path rather
+// than by asserting a literal 0o600/0o700 somewhere in the source. The modes
+// are the whole of the record's confidentiality: state.json names this run's
+// init pid and its namespace inodes, so a group- or world-readable file or
+// directory hands a same-uid process on the host the pid to walk.
 func TestStateFileIsWrittenSixOhOhInASevenHundredDirectory(t *testing.T) {
 	snugDir := useTargetLockBase(t)
 	// $XDG_RUNTIME_DIR still governs the RUN directory (sockets, the run

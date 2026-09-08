@@ -217,8 +217,14 @@ func lockTarget(abs string) (unlock func(), err error) {
 
 	lock, err := openAndHoldTargetLock(snugRoot, filepath.Join(base, snugName), targetLockName(real), real, unix.LOCK_SH)
 	if err != nil {
-		// The one thing that can hold a target EXCLUSIVELY for longer than the
-		// retry budget is `snug engine gc` reclaiming this target's store, and
+		// Two things take this lock exclusively, and only one of them can
+		// outlast the retry budget. `snug engine gc` reclaims the target's
+		// store and holds it for the whole reclaim, so it is what the message
+		// names. orphansweep.go's sweepOneStaleLock also takes LOCK_EX on this
+		// name, but its hold is an fstat, an Lstat and two unlinks on a tmpfs
+		// — the budget is sized against exactly that — so it is named as the
+		// other possibility rather than made the headline.
+		//
 		// targetBusyError's own text — written for gc, which discards it —
 		// says "a run is live", which would send the reader looking for a
 		// sandbox that is not the problem.
@@ -226,7 +232,9 @@ func lockTarget(abs string) (unlock func(), err error) {
 		if errors.As(err, &busy) {
 			return noop, fmt.Errorf("target lock: %s is held exclusively by something else, most "+
 				"likely `snug engine gc` reclaiming this target's container store - another "+
-				"`snug` run is NOT a reason for this (runs share the lock). Wait for the gc to "+
+				"`snug` run is NOT a reason for this (runs share the lock). A second `snug` "+
+				"starting up can hold it for a few milliseconds while it sweeps this target's "+
+				"leftovers, so on a loaded host, retry once. Otherwise wait for the gc to "+
 				"finish and start again: %w", real, err)
 		}
 		return noop, err

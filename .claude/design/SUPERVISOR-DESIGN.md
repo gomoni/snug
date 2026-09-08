@@ -515,30 +515,3 @@ Three consequences worth stating:
   have been shorter and would have quietly turned a one-shot stage into a
   server, and the stage is not one: it answers a fixed number of requests from
   the single parent that forked it, and returns.
-
----
-
-## 8. Nothing here is deferred
-
-Every item this section used to list is now either built or cut, and each one
-is stated where it is enforced rather than here:
-
-- **The control listener is CUT**, not pending — §3.3, and the settlement on
-  issue [#61](https://github.com/gomoni/snug/issues/61). Nothing replaced it:
-  a second session on a target is a second sandbox, not a client of this one.
-- **The stage's own hardening is DONE**, in the one form that was measured to
-  work: it drops `CAP_SYS_PTRACE` from its bounding set at the
-  `__stage-setup` -> `__stage-serve` execve, `__stage-serve` refuses to serve
-  if that did not stick, and `--dry-run` says so. `policy.StageCapDrop` carries
-  the reasoning, the scope, the abuse sentence and the split with Yama — the
-  capability closes the cross-uid route, `ptrace_scope` closes the same-uid
-  sibling route, and preflight P6 refuses a container run where the second one
-  is off rather than keeping an argument that no longer holds. `NoNewPrivs`, a seccomp
-  filter on P1, and P1's own IPC/UTS namespaces were each measured and each
-  rejected — the reasons are on that constant and in `internal/stage`'s
-  clone-flag comments, because a rejected option is only worth recording where
-  someone would otherwise add it.
-- **Subuid delegation is DONE** — §3.6. `Topology.Attach` was CUT along with
-  the listener (`internal/policy/topology.go`).
-- **The engine in the sandbox's netns is DONE** — §2's second leg, and
-  [`ENGINE-WIRING.md`](ENGINE-WIRING.md) for how it composes with this stage.

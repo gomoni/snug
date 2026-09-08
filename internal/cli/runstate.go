@@ -38,8 +38,9 @@ import (
 const runStateSchema = 1
 
 // runState is state.json's Go shape. Field order here is cosmetic; the JSON
-// key names are the contract (§6.2 of the attach design) and every one of
-// them is tagged explicitly rather than left to reflection's default
+// key names are the contract — the orphan sweep of a LATER snug reads a
+// record this one wrote, so a rename is a cross-version break — and every one
+// of them is tagged explicitly rather than left to reflection's default
 // casing, so a struct-field rename can never silently change the file.
 type runState struct {
 	Schema  int             `json:"schema"`

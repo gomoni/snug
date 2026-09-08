@@ -740,8 +740,9 @@ func reportInfo(infoR *os.File, opts Options, named *initReporter, translate fun
 			return
 		}
 		// bwrap's number is relative to bwrap's own pid namespace. Everything
-		// downstream — fillMissingNamespaceIDs' /proc reads, the record attach
-		// joins, killOrphanInit's target — is a HOST pid. See hostInitPID.
+		// downstream — fillMissingNamespaceIDs' /proc reads, the record the
+		// orphan sweep reads back, killOrphanInit's target — is a HOST pid.
+		// See hostInitPID.
 		if translate != nil {
 			pid, ok := translate(info.InitPID)
 			if !ok {

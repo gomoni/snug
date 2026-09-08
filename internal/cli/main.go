@@ -136,6 +136,22 @@ func Main() {
 		case "help":
 			usage()
 			os.Exit(0)
+		case "attach":
+			// `attach` is a DELETED verb and stays a reserved word, which is
+			// the whole point of the arm. Without it the word falls through
+			// to parseArgs as a positional, and `snug attach` in a tree that
+			// happens to contain an ./attach directory starts a sandbox on
+			// that directory instead — a removed verb silently doing
+			// something else is invariant 5's failure with no error to read.
+			// A script or a habit gets told what replaced it.
+			fmt.Fprintln(os.Stderr, "snug: `snug attach` was removed. A second session on a\n"+
+				"      directory is a second, independent sandbox: run `snug "+
+				"<dir>` again.\n      It shares no namespace with the first — its own tmpfs "+
+				"$HOME, its\n      own /tmp, its own pids, its own environment. `snug --dry-run "+
+				"<dir>`\n      names the writable host paths the two would meet on.\n\n"+
+				"      To sandbox a directory actually named \"attach\", write it as a\n"+
+				"      path: `snug ./attach`.")
+			os.Exit(exitUsage)
 		}
 	}
 

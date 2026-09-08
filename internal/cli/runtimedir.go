@@ -20,8 +20,7 @@ import (
 // before snug gets there, not just after.
 //
 // Two guards, both load-bearing (issue #61 part (c), which promoted this
-// from #31's low-severity list once it became the prerequisite for `snug
-// attach`):
+// from #31's low-severity list):
 //
 //   - Every directory this function creates or reuses — the shared "snug"
 //     directory and this run's own subdirectory — is opened through

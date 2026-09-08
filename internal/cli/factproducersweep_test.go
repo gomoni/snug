@@ -36,6 +36,15 @@ import (
 // been written inline. What it does catch is every producer that is a function,
 // which is what all seven of #332's were.
 //
+// describeShared (dryrun.go) is the worked example of exactly this blind
+// spot, found once rather than hypothesised: it reads m.RunScoped and
+// gr.RunScoped directly out of p.Mounts/p.Grafts in its own filter, calling
+// no producer function, so this sweep cannot see it — and would not have
+// caught the JSON document shipping with no run_scoped key at all.
+// TestJSONRunScopedSharedSetAgreesWithDescribeShared (runscopedjson_test.go)
+// is what closes that one gap, by comparing the two renderings directly
+// rather than trusting this sweep to have reached them both.
+//
 // The producer predicate is DERIVED, never a list:
 //
 //	internal/policy   any package-level policy.X(...) call, and any method

@@ -16,8 +16,8 @@ walking `/proc`:
   reads no record at all beside an unheld lock: every one of them describes a
   corpse.
 - **`snug engine gc`.** The engine store is keyed by the target hash alone
-  (issue #276 removed the profile set from the key), so collecting it is safe
-  only while no sandbox on that target can be writing it.
+  (issue #276), so collecting it is safe only while no sandbox on that target
+  can be writing it.
 
 The orphan sweep is deliberately not one of them — §3.
 

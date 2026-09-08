@@ -2339,6 +2339,101 @@ A build that stages the host bytes in the first case has fallen back to the old
 behaviour, which is the one regression that would undo this change with nothing
 on screen to say so.
 
+### 6n-bis. A credential minted INSIDE one session is unreachable from another
+
+§6n bounds what the host hands a sandbox on the way IN. It says nothing about a
+credential that comes into being INSIDE one. `/login` in a running session
+completes a fresh OAuth flow and writes a full credential set — `refreshToken`
+included — into `~/.claude/.credentials.json`, which is a writable file on the
+`~/.claude` tmpfs and is Claude Code's to rewrite once snug has handed off.
+Measured on claude 2.1.263: that file's mtime landed 1421 s after the payload
+started, both dropped keys were back, and `refreshTokenExpiresAt` was 29 days
+out.
+
+So the question here is not what snug carried in, but: given a live credential
+that exists only inside session A, can session B read it.
+
+Use a canary rather than a real `/login`. The write path is the same file on the
+same tmpfs, and minting a real 29-day token to prove a point is worse than the
+thing being proved. Terminal 1, session A:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c \
+  'printf %s snug-canary-42 > ~/.claude/.credentials.json; exec /bin/sleep 300'
+```
+
+`exec` is load-bearing. The canary reaches A through argv, so without it the
+string sits in a `/proc/<pid>/cmdline` for the whole run and the sweep below
+answers a different question. After the exec the payload's cmdline is
+`/bin/sleep 300` and the only live copy of the canary is the file itself.
+
+Terminal 2 is the POSITIVE CONTROL, and it is also the honest limit of the
+claim. Run it on the HOST, as yourself, while A lives:
+
+```bash
+p=$(pgrep -f '/bin/sleep 300' | head -1)
+cat /proc/$p/root$HOME/.claude/.credentials.json; echo
+```
+
+Expect `snug-canary-42`. The host reads it because `/proc/<pid>/root` takes
+`PTRACE_MODE_READ`, which Yama does not gate at any `ptrace_scope`, and the
+sandbox runs under your own uid — `nsenter`, `/proc/<pid>/mem` and gdb are yours
+as well. snug's line runs between the sandbox and the host, not between you and
+a process you started yourself. If this prints nothing, everything below is
+vacuous: A may never have written the file, or may already have died.
+
+Terminal 3, session B, launched while A is still alive. `/proc/*/root` is swept
+explicitly rather than assumed empty — that traversal is exactly what just
+worked from the host, and it is what must not work here:
+
+```bash
+./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c '
+  echo "visible-pids: $(ls -d /proc/[0-9]* | wc -l)"
+  grep -rl snug-canary-42 "$HOME" /tmp /dev/shm 2>/dev/null
+  for p in /proc/[0-9]*; do
+    c="$p/root$HOME/.claude/.credentials.json"
+    [ -r "$c" ] && { echo "== $c"; cat "$c"; echo; }
+  done'
+```
+
+Expect `visible-pids` to be a handful — B's own payload and its children, not
+the host's hundreds — and no `grep` output at all. The only `==` blocks may be
+B's OWN pids, showing B's own staged credential, which is §6n's file and carries
+no `refreshToken`; if you have never run Claude Code on this host there will be
+no `==` block at all. No block may contain `snug-canary-42`, and none may name
+A's pid — `/proc/<A>/root` resolving is a separate failure from reading the
+file, because it means B's PID namespace is not private, which is a different
+bug with a different fix.
+
+**What makes this true**, so a later reader can tell whether a refactor has
+quietly removed it. Staged `policy.KindData` content never has a filesystem name
+at all: snug puts it in an anonymous `memfd` and passes the descriptor to bwrap,
+which materialises it inside the sandbox's own tmpfs — device `0:163` in a
+measured run, an anonymous superblock whose `mountinfo` root is `/`, unlike
+every host bind, which names its host subtree. A second session gets a second
+private mount namespace, so there is no name in B for the tmpfs holding A's
+file, and B's private PID namespace means `/proc` in B contains no pid of A's to
+traverse through.
+
+**And the direction this does NOT close**, which matters here because the two
+sessions above share one target. B cannot read A's credential; B can arrange for
+A to hand it over. Measured, three runs on one target with a synthetic
+credential: a `@cwd-rw` run with no credential of its own writes
+`.git/hooks/pre-commit` carrying `cp "$HOME/.claude/.credentials.json"
+./.stolen-token`; a later `@claude` run does an ordinary `git commit`, git fires
+the hook, and the first run reads the second's `accessToken` out of the target.
+What bounded that was §6n's projection and nothing else — the file the hook
+copied carries no `refreshToken`, so what moved expires in hours rather than in
+29 days. Use two directories if that is not a trade you want.
+
+The automated equivalent, which uses two targets rather than one and asserts the
+same two negatives separately:
+
+```bash
+SNUG_REQUIRE_SANDBOX=1 go test -tags integration -timeout 2m -v \
+  -run TestOneSessionsClaudeCredentialIsNotReadableFromAnother ./test/integration/
+```
+
 ## 6c. The seccomp filter is actually installed
 
 Requested is not the same as active. Check the kernel's view first:
@@ -4504,14 +4599,20 @@ box had 23, the oldest 12 h old.
 The answer is deferred rather than real-time, the same trade issue #85 made for
 the run directory: the next `snug` run cleans it up.
 
-Make one on purpose. The run's state file lands at about 165 ms and the orphan
-window is open from ~150 ms to ~350 ms, so waiting for that file and killing
-immediately afterwards lands inside it — measured 5 attempts out of 5:
+Make one on purpose, and it must be the **staged** arm — `-p @net`. On the
+offline arm snug's own intermediate pid namespace (`__inpidns`) collapses when
+snug is killed and takes the init with it: `SIGKILL` at a fixed offset of 50,
+100, 150, 200, 250, 300 and 350 ms produced **0 orphans out of 3 at every
+offset**. The staged arm has no such namespace between snug and bwrap, and
+there the window is real — 3 of 3 at 150 ms and 3 of 3 at 200 ms, 0 of 3 at
+100 ms (nothing to leak yet) and 0 of 3 at 300 ms (`--die-with-parent` is
+armed by then). The state file lands inside that window, so waiting for it and
+killing immediately afterwards is the reliable way in — **5 attempts out of 5**:
 
 ```bash
-SP=/run/user/$(id -u)/snug/target-$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1).json
-rm -f $SP
-./bin/snug $SC/proj/sub -- /bin/sleep 300 & SNUG=$!
+H=$(printf %s "$(readlink -f $SC/proj/sub)" | sha256sum | cut -d' ' -f1)
+./bin/snug -p @net $SC/proj/sub -- /bin/sleep 300 & SNUG=$!
+SP=/run/user/$(id -u)/snug/target-sha256_$H.$SNUG.json
 while [ ! -f $SP ]; do sleep 0.002; done
 kill -9 $SNUG; wait $SNUG 2>/dev/null; sleep 1
 PID=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sandbox']['init_pid'])" $SP)
@@ -4522,7 +4623,7 @@ Expect a live process whose parent is **not** your shell — it has been
 reparented, which is what "its snug is gone" looks like:
 
 ```
- 325698    8266 S    /usr/bin/bwrap --args 7 -- /bin/sleep 300
+ 163983    6736 S    /usr/bin/bwrap --args 10 -- /bin/sleep 300
 ```
 
 That is the positive control: without it the next step proves nothing, because
@@ -4537,15 +4638,16 @@ ps -p $PID >/dev/null && echo "STILL ALIVE <-- FAIL" || echo "swept: ok"
 Expect the notice and then `swept: ok`:
 
 ```
-snug: killed orphaned sandbox init pid 325698 for target /tmp/.../proj/sub (its snug is
+snug: killed orphaned sandbox init pid 163983 for target /tmp/.../proj/sub (its snug is
       gone; left behind by a run that did not exit cleanly)
 ```
 
 **Why this cannot reach a live sandbox**, and it is worth checking rather than
 believing: start a run in one terminal, run `snug` on a different directory in
-another, and the first is untouched. The sweep acts only on a state file whose
-per-target lock is **not held** — a live run holds that lock for its whole life
-and the kernel releases it only when that process dies — and only when the
+another, and the first is untouched — §14c is that check. Each record names
+its own owner, and the sweep acts only where that owner is gone; it consults
+no target lock at all, which is what lets it reap a dead run's orphan while a
+peer on the SAME target is still live (§14d). The second condition is that the
 recorded start time still matches `/proc/<pid>/stat` field 22, which is the
 pid-reuse guard the record carries a start time for.
 

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,13 +231,6 @@ func TestTargetIsIdleAfterHolderKilled(t *testing.T) {
 		t.Fatal("a target whose only holder was killed still read as live — the sweep is wedged " +
 			"out of this directory forever")
 	}
-}
-
-// asTargetBusy wraps errors.As to keep an assertion terse. targetBusyError is
-// no longer produced for a run — it is `snug engine gc`'s liveness sentinel
-// from openAndHoldTargetLock's exclusive arm.
-func asTargetBusy(err error, target **targetBusyError) bool {
-	return errors.As(err, target)
 }
 
 // useTargetLockBase points targetLockBase's canonical per-uid runtime directory

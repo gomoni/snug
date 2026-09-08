@@ -41,7 +41,9 @@ var notADesignDoc = map[string]string{
 //
 // IT IS EMPTY, and that is the state to keep it in. The five entries it
 // shipped with — 42 citations across 19 files — were resolved by issue #156:
-// ENGINE-WIRING.md and ATTACH.md were promoted into .claude/design/, and the
+// ENGINE-WIRING.md and ATTACH.md were promoted into .claude/design/ (ATTACH.md
+// has since been deleted along with the verb, and so have its citations, which
+// is the other way an entry leaves this map), and the
 // three whose sources no longer existed anywhere (ISSUE-40-DESIGN.md,
 // BRAINSTORM.md, RESEARCH-18-BROKER.md) had their citations repointed at the
 // GitHub issues that carry the same subject — a citation a reader can follow

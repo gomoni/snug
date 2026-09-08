@@ -591,6 +591,13 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 // and the reason Policy.join needs no meet for this field the way it does for
 // Authored (issue #291 part 1c): a profile's grant is folded before either
 // runs, so join never sees the field set at all.
+//
+// The sweep is by NAME, not by type (findFieldWrites' own doc comment), so
+// `--dry-run --json` carrying this fact does not land here: the DTO field is
+// spelled jsonMount.HostIsRunScoped / jsonGraft.HostIsRunScoped, which is the
+// same move internal/cli's SnugAuthored makes against the Authored sweep. The
+// list below stays the DECIDING writers, and nothing was added to it to admit
+// a copy.
 func TestRunScopedWritersAreTheTwoFunctionsTheFieldNames(t *testing.T) {
 	root, err := modroot.Find()
 	if err != nil {

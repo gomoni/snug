@@ -667,8 +667,18 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 | host services on `127.0.0.1` | private netns |
 | X11 keylogging, D-Bus, the desktop session | not mounted; netns-scoped |
 | host persistence (`.bashrc`, autostart, cron) | `$HOME` is an ephemeral tmpfs |
+| one session's Claude credential from another session | private mount and pid namespaces; staged files are memfd-backed and have no path to name |
 
-## What snug does not defends against
+A credential minted *inside* a session is covered too. `/login` writes a full
+set, `refreshToken` included, to `~/.claude/.credentials.json` on the sandbox's
+own tmpfs; a second session cannot read it. Not "cannot be read" — same uid on
+the host, so `/proc/<pid>/root`, `nsenter` and gdb are still yours. The line
+runs between sandboxes, not between you and a process you started. What still
+crosses is the shared target: one sandbox plants `.git/hooks/pre-commit`, the
+other's `git commit` runs it. `VERIFY.md` §6n-bis is the by-hand check, positive
+control included.
+
+## What snug does not defend against
 
 Kernel zero days - the security perimeter is a Linux itself, so escape by
 exploit is possible. Run the VM if expects more strict isolation though.
