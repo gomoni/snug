@@ -2,16 +2,15 @@
 
 How a credential the host holds is made useful to code snug does not trust.
 
-**[M]** measured on this host, 2026-09-01 or 2026-09-06 · **[M-prior]** measured
-2026-08-13 and not re-measured since · **[R]** read from source or a vendor
-bundle, not executed. Versions at measurement: snug `f47beda` then `18a3aff`,
-claude 2.1.252 then 2.1.263, gh 2.98.0, podman 6.0.2, bwrap 0.11.2, git 2.55.0,
-Go 1.27.0, kernel 7.2.0.
+**[M]** measured on this host · **[M-prior]** measured against an older tree and
+not re-run against this one · **[R]** read from source or a vendor bundle, not
+executed. Versions at measurement: snug `f47beda` and `18a3aff`, claude 2.1.252
+and 2.1.263, gh 2.98.0, podman 6.0.2, bwrap 0.11.2, git 2.55.0, Go 1.27.0,
+kernel 7.2.0.
 
-The distinction is not bookkeeping. A carried measurement is one nobody has run
-against this tree, and at least one of the ones below was **wrong** when re-read:
-the `gh` token's scopes no longer include `admin:public_key`, which was the
-worked example under §7.2.
+The distinction is not bookkeeping. An **[M-prior]** line is one nobody has run
+against this tree, so it can be false here with nothing in the document showing
+it.
 
 There is no single mechanism. There are four, a test that picks one, and a list
 of shapes that are refused with the measurement that refused them. §7 is not an
@@ -240,8 +239,7 @@ is inside.
   object, not a netns object, so the listener sits in P0 in the host netns and
   reaches the sandbox as a bind mount. The netns question arises only for the
   *fallback relay* below, which must be in the sandbox's netns and carries no
-  credential. Stating those as one sentence is how the earlier refutation reached
-  its conclusion.
+  credential.
 - **No `deriveTopology` change, no new lattice point, no `CAP_SYS_ADMIN`
   ancestor** — `internal/cli/identity.go:169-177` is the shipped precedent at the
   same topology: `sshproxy.New` (which listens and `chmod`s `0600` before
@@ -258,10 +256,10 @@ is inside.
   `connect: Network is unreachable` to `1.1.1.1:443` as printed negative controls
   **[M-prior]**.
 - **`ANTHROPIC_UNIX_SOCKET` removes the in-sandbox forwarder entirely**, and with
-  it four costs that were previously accepted: an extra process as the payload's
+  it four costs: an extra process as the payload's
   parent, snug wrapping the payload argv (which interacts with `snug shell`), an
   availability regression if the payload kills it, and a second executable in
-  `StagedBinDir`. The forwarder existed only because `ANTHROPIC_BASE_URL` must be
+  `StagedBinDir`. The forwarder exists only because `ANTHROPIC_BASE_URL` must be
   an `http://host:port` URL — and the socket variable is the vendor's own answer
   to that. The forwarder stays in the design for tools that have **no** socket
   knob (below), never for this one.
@@ -712,8 +710,7 @@ interpreter ran is not a negative result.
   `core_pattern` is a pipe.
 - **Prefer an inherited descriptor to a pathname socket.** **[M]**
   `/proc/self/mountinfo` inside a sandbox prints the **host** source path of every
-  bind — re-measured, and what it published was the container-storage overlay
-  chain under `/home/<user>/.local/share/containers/storage/overlay/...`. A
+  bind — what it publishes is the container-storage overlay chain under `/home/<user>/.local/share/containers/storage/overlay/...`. A
   control socket bind-mounted at a pathname publishes it to every process in the
   sandbox, forever.
 
@@ -909,7 +906,7 @@ the next invocation and refreshing it means trusting the DNS the pin replaced.
 Also **[M-prior]**: GitHub's published ranges are ~10 260 addresses for `api`,
 ~10 280 for `git` and ~27.9 M for `actions` — effectively a cloud.
 
-**[M]** And the sharpest one re-measured today: `185.199.108.0/22` is Fastly, not
+**[M]** And the sharpest one: `185.199.108.0/22` is Fastly, not
 GitHub's own network, and it serves `*.github.io` under a wildcard certificate —
 `curl --resolve octocat.github.io:443:185.199.108.133 https://octocat.github.io/`
 returns `http=200 ssl_verify_result=0 ip=185.199.108.133`. **An IP pin authorises
@@ -963,18 +960,18 @@ not a mechanism.
 
 **[M]** Any secret held by a process inside the payload's pid namespace is
 readable by every other process there via `/proc/<pid>/mem`, which the seccomp
-`ptrace` denial does not cover — re-measured inside a default `snug` sandbox on
-this tree: a sibling's sentinel string was recovered by walking
-`/proc/<pid>/maps` and reading `/proc/<pid>/mem`, with `CapEff` zero. Execute-only modes do not help and the payload can
+`ptrace` denial does not cover — inside a default `snug` sandbox on this tree, a
+sibling's sentinel string was recovered by walking `/proc/<pid>/maps` and reading
+`/proc/<pid>/mem`, with `CapEff` zero. Execute-only modes do not help and the
+payload can
 `LD_PRELOAD` a stub's children. The answer is not a uid — §5.2 refuses that — but
 **not being in that pid namespace**: P0 or a second sandbox, which is why a stub
 that *holds* the token is never a placement.
 
-**And "not in that pid namespace" is now structural rather than a rule to
-observe.** snug has no verb that places a process into a running sandbox's
-namespaces: a second session on a target is a second sandbox. The route that
-would have made the placement tempting was measured shut on the way to deleting
-it — a private mount namespace hides a path from the host's view but not from a
+**"Not in that pid namespace" is structural, not a rule to observe.** snug has no
+verb that places a process into a running sandbox's namespaces: a second session
+on a target is a second sandbox. The placement is shut on its own terms too — a
+private mount namespace hides a path from the host's view but not from a
 same-uid process that can name the pid (`/proc/<pid>/root` takes
 `PTRACE_MODE_READ`, which Yama does not gate), and making that privacy real
 needs a private `/proc` the payload's user namespace cannot mount:
