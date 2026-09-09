@@ -197,7 +197,7 @@ func TestEveryParkedDescriptorIsGuarded(t *testing.T) {
 
 	ri := strings.Index(text, "reserveParkingFDs()")
 	if ri < 0 {
-		t.Fatal("MainSetup does not call reserveParkingFDs: the two parked numbers are then " +
+		t.Fatal("MainSetup does not call reserveParkingFDs: the three parked numbers are then " +
 			"claimed by nothing, and the Go runtime's netpoll pair can take them first")
 	}
 	// Everything MainSetup does before the reservation must be incapable of

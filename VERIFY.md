@@ -7335,11 +7335,13 @@ into disagreeing. The refusal's own text names the new command:
       Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter), or `sudo snug fix sysctl -w`
 ```
 
-## 28. The stage's two parked descriptors are where fds.go says (issue #525)
+## 28. The stage's three parked descriptors are where fds.go says (issue #525)
 
-P1 parks two descriptors at fixed numbers: an `AF_INET` socket created inside N
-at fd 66, and the pinned network namespace at fd 67. Both arrive there by
-`dup3`, and **`dup3` onto an occupied descriptor closes it and reports
+P1 parks three descriptors at fixed numbers: an `AF_INET` socket created inside
+N at fd 66, an `AF_NETLINK`/`NETLINK_ROUTE` socket created in N alongside it at
+fd 67 (the one `sealHostAddresses` writes `RTM_NEWADDR` over, §4.5a of
+`INDEX.md`), and the pinned network namespace at fd 68. All three arrive there
+by `dup3`, and **`dup3` onto an occupied descriptor closes it and reports
 success** — so a collision has no error in it. Look at a live stage:
 
 ```
@@ -7348,29 +7350,31 @@ $ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | s
 0 -> /dev/null
 1 -> /tmp/snugrun.out
 2 -> /tmp/snugrun.out
-3 -> socket:[4688751]
-4 -> pipe:[4688752]
-5 -> pipe:[4688749]
-14 -> anon_inode:[eventpoll]
-15 -> anon_inode:[eventfd]
+3 -> socket:[2312963]
+4 -> pipe:[2312964]
+5 -> pipe:[2312961]
+15 -> anon_inode:[eventpoll]
+16 -> anon_inode:[eventfd]
 18 -> anon_inode:[pidfd]
-66 -> socket:[4696344]
-67 -> net:[4026533692]
+66 -> socket:[2309953]
+67 -> socket:[2309954]
+68 -> net:[4026532559]
 ```
 
-Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 66 and 67 are
-the two parked descriptors, and `socket:` / `net:` is what says they are the
-right ones. Rows 14 and 15 are the pair that make this a bug rather than a
-comment: they are **the Go runtime's own epoll and eventfd, and they sit
-immediately above the pass-through block**. The block was open when they were
-allocated — a new descriptor takes the lowest free number, which is why these
-two are at 14 and 15 rather than at 6 and 7 — and it is closed again by the
-time this snapshot is taken, which is why the listing skips from 5 to 14.
+Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 66, 67 and 68
+are the three parked descriptors, and `socket:` / `socket:` / `net:` is what
+says they are the right ones — two sockets and a namespace, in that order.
+Rows 15 and 16 are the pair that make this a bug rather than a comment: they
+are **the Go runtime's own epoll and eventfd, and they sit immediately above
+the pass-through block**. The block was open when they were allocated — a new
+descriptor takes the lowest free number, which is why these two are in the
+teens rather than at 6 and 7 — and it is closed again by the time this snapshot
+is taken, which is why the listing skips from 5 to 15.
 
 So the runtime's descriptors follow the block wherever it ends. On a shipped
 profile the block is small and they land in the teens, as here. Which is why
-the two numbers 66 and 67 are CLAIMED at P1's first instant —
-`reserveParkingFDs` dup3's `fdControl` onto both before this process has
+the three numbers 66, 67 and 68 are CLAIMED at P1's first instant —
+`reserveParkingFDs` dup3's `fdControl` onto all three before this process has
 allocated anything of its own — rather than checked at the parking: the
 descriptors that would collide are the Go runtime's, and nothing orders them
 against a check.
@@ -7382,9 +7386,13 @@ two under v1), and netpoll's pair when a timer is armed that early. `fd 62..65`
 is the slack left free for them — four numbers between the largest permitted
 block and fd 66 — and §28a is where you can see them land in it.
 
-One thing about running this by hand: `pgrep -f __stage-serve` matches EVERY
+Two things about running this by hand. `pgrep -f __stage-serve` matches EVERY
 snug on the machine, so quit your other sandboxes first, or the listing you get
-is somebody else's run rather than the one you just started.
+is somebody else's run rather than the one you just started. It also matches
+the SHELL you type it in, whose own command line now contains the string — put
+the pipeline in a script file, or take the stage from `pgrep -P $!` after
+backgrounding snug, and you get the process you meant rather than your own
+`bash -c`.
 
 ## 28a. The budget P0 accepts is one the stage can actually build
 
@@ -7416,8 +7424,8 @@ XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- true
 snug: stage: this policy needs 209 pass-through descriptors, so the block would
       run from fd 6 to fd 214 and reach the numbers reserved above it: fd 62..65,
       the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
-      then the N socket at fd 66 and the pinned network namespace descriptor at
-      fd 67 (the budget is 56).
+      then the N socket at fd 66, the N netlink socket at fd 67 and the pinned
+      network namespace descriptor at fd 68 (the budget is 56).
 ```
 
 209 for 200 doors, so on THIS host everything besides the doors costs 9 — one
@@ -7439,8 +7447,8 @@ second:
 snug: stage: this policy needs 57 pass-through descriptors, so the block would
       run from fd 6 to fd 62 and reach the numbers reserved above it: fd 62..65,
       the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
-      then the N socket at fd 66 and the pinned network namespace descriptor at
-      fd 67 (the budget is 56).
+      then the N socket at fd 66, the N netlink socket at fd 67 and the pinned
+      network namespace descriptor at fd 68 (the budget is 56).
 ```
 
 The point is that the boundary is in ONE place, and it took two corrections to
@@ -7457,18 +7465,20 @@ cannot. Run the 47-door case again and look at the stage while the payload
 sleeps:
 
 ```
-$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -6
-5 -> pipe:[4561731]
-62 -> anon_inode:[eventpoll]
-63 -> anon_inode:[eventfd]
-66 -> socket:[4551085]
-67 -> net:[4026533482]
-68 -> anon_inode:[pidfd]
+$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -8
+4 -> pipe:[2297692]
+5 -> pipe:[2297689]
+63 -> anon_inode:[eventpoll]
+64 -> anon_inode:[eventfd]
+66 -> socket:[2318608]
+67 -> socket:[2318609]
+68 -> net:[4026532559]
+69 -> anon_inode:[pidfd]
 ```
 
-62 and 63 are the numbers the two parked descriptors used to occupy, and here
-the runtime's epoll and eventfd are sitting on them — with the block at its
-maximum they land exactly there, which is what the four free numbers are for.
+`fd 62..65` is the slack, and here the runtime's epoll and eventfd are sitting
+inside it at 63 and 64 — with the block at its maximum they land exactly there,
+which is what the four free numbers are for.
 On a host whose `/proc/self/cgroup` resolves, one more of them is the cgroup
 CPU limit file the runtime opens before `main` and keeps; that is the one that
 failed CI at exactly this K while passing here, where `/proc/self/cgroup` reads

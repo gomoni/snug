@@ -344,7 +344,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | `env` | name set | union | more variables |
 | `path` | dir set | union, then sorted | more PATH entries (grants nothing) |
 
-**No key in the model is last-writer-wins**, and `address`, `gateway` and `mtu` are the three that would most easily become it — taking whichever profile the sorted fold reached last, which is exactly the shape of dependence §2.2 forbids. There is no "more open" IP address, so they cannot be joins either: two profiles disagreeing is a **symmetric ERROR naming both profiles and both values**, as `identity` is. They remain pasta cosmetics — they change which address the sandbox *sees*, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different synthetic address was never a coherent request.
+**No key in the model is last-writer-wins**, and `mtu` is the one that would most easily become it — taking whichever profile the sorted fold reached last, which is exactly the shape of dependence §2.2 forbids. There is no "more open" MTU, so it cannot be a join either: two profiles disagreeing is a **symmetric ERROR naming both profiles and both values**, as `identity` is. It remains a pasta cosmetic — it changes how the sandbox's stack segments, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different MTU was never a coherent request.
 
 `listen_names` is a **set** for the same reason every other set-valued key is: two profiles naming `"web"` declare ONE door, and the resolved value must not depend on which profile the fold reached first.
 
@@ -873,7 +873,7 @@ pasta \
 Deliberately **not** passed:
 
 - `--map-guest-addr` — defaults to `none`, and `snug` wants no host→guest special address. Its absence is asserted behaviourally, not by trusting the default.
-- `-a`/`-g`/`-n` — `pasta` copies the host's addresses and routes into the namespace by default, so the sandbox sees the host's LAN address, **in both families** (**VERIFIED**: `192.168.1.120/24` and the host's global IPv6 addresses, temporary privacy-extension one included, all inside the ns). This is a real, accepted information disclosure, worse for v6 than v4 (globally routable and geolocatable vs. RFC1918). There is no flag here that withholds it; see §4.5a for how the host stays unreachable anyway.
+- `-a`/`-g`/`-n` — `pasta` copies the host's addresses and routes into the namespace by default, so the sandbox sees the host's LAN address, **in both families** (**VERIFIED**: `192.168.1.120/24` and the host's global IPv6 addresses, temporary privacy-extension one included, all inside the ns). This is a real, accepted information disclosure, worse for v6 than v4 (globally routable and geolocatable vs. RFC1918). There is no flag here that withholds it; see §4.5a for how the host stays unreachable anyway — and note that the seal there makes the disclosure WIDER than this bullet, because `pasta` copies one interface and the seal writes every one.
 - `--mtu` by default — `pasta` defaults to 65520 (**VERIFIED** inside the sandbox), which is correct: `pasta` is a userspace stack that does its own segmentation, and a large namespace-side MTU avoids pointless fragmentation. Exposed as a knob for pathological networks.
 
 ### 4.5a The seal — the host's own addresses become local routes in N
