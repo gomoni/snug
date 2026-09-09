@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -419,5 +420,70 @@ func TestUsageListsEveryReservedWord(t *testing.T) {
 			t.Errorf("usage() never writes `snug %s`, but that word is dispatched and the "+
 				"ambiguity refusal will name it:\n%s", word, stderr)
 		}
+	}
+}
+
+// TestTheReservedWordSetIsExactlyThis is the tripwire on issue #548's answer,
+// and it is the only thing in the tree that makes that answer bind.
+//
+// #548 asked where tomorrow's command goes, researched grouping against git,
+// podman, docker, gh, nix, kubectl, flatpak, systemctl, npm, go and aws, and
+// answered: the tree stays FLAT, because grouping aims at the wrong words here.
+// Measured over 13,806 directories on the maintainer's host, the words a `host`
+// noun would release are `doctor` (0 directories) and `fix` (1), while the words
+// it cannot take are `config` (20) and `proxy` (7). subcommands() carries the
+// full rule and the argument.
+//
+// The answer has a shelf life and nothing else notices when it expires. Every
+// tool in that survey grouped EVENTUALLY: docker regrouped at forty-plus
+// commands, and its stated reason — help length and tab completion — is a
+// threshold snug has not reached at seven and will reach at some number nobody
+// can name in advance. So the decision that is actually being pinned is not
+// "flat forever"; it is "flat at this size, re-argued at the next one".
+//
+// A comment cannot enforce that, and neither can a CI note asking for scrutiny:
+// both are read by people who already agree. A failing test is read by the
+// person adding the word, at the moment they add it, which is the only moment
+// the rule is worth anything. Adding a top-level word must therefore cost an
+// edit HERE, to a test that argues back — the same friction a golden argv diff
+// applies to the security boundary, applied to the namespace.
+//
+// So this test does not fail because a new word is wrong. It fails because a new
+// word is a DECISION, and the four tests in subcommands() are what it has to be
+// decided against — in order, first answer wins:
+//
+//  1. it can be a flag on the default action  -> make it a flag;
+//  2. an existing word already owns the subject -> make it a sub-verb;
+//  3. it needs a new word -> only if that subject will answer two or more
+//     commands, and then the word is a NOUN holding verbs, not a verb;
+//  4. a word that moves is deleted, never aliased.
+//
+// If a word passes all four, edit the list below and say in the commit message
+// which test admitted it. If several arrive at once, that is the signal #548
+// deferred: re-run its measurement rather than growing this list one row at a
+// time, because seven words that each passed test 3 in isolation is exactly how
+// docker reached forty.
+func TestTheReservedWordSetIsExactlyThis(t *testing.T) {
+	// Sorted, so the diff a new word produces is one line in a stable place.
+	want := []string{"config", "doctor", "engine", "fix", "help", "profile", "proxy"}
+
+	var got []string
+	for word := range subcommands() {
+		got = append(got, word)
+	}
+	slices.Sort(got)
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("the top-level reserved-word set changed.\n"+
+			"  have: %v\n"+
+			"  want: %v\n"+
+			"Every word here permanently costs a caller one bare directory name, so this is a\n"+
+			"decision and not a detail. Read subcommands() in main.go: a command becomes a flag\n"+
+			"if it can (test 1), a sub-verb of a word that already owns its subject if it can\n"+
+			"(test 2), and a new word ONLY if its subject will answer two or more commands\n"+
+			"(test 3). If it passed, update `want` above and name the test that admitted it in\n"+
+			"the commit message. If several words are arriving at once, re-argue issue #548\n"+
+			"instead: the flat tree was measured at seven words and is not a permanent answer.",
+			got, want)
 	}
 }

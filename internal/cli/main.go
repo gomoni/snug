@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -143,14 +144,73 @@ func Main() {
 // subcommands is snug's entire top-level reserved-word set. It is a map rather
 // than a switch so that ONE list both dispatches the word and defines the
 // ambiguity refusal over it: a second set written beside the dispatch would be
-// a copy of state, and issue #548 exists precisely to move words in and out of
-// this one.
+// a copy of state.
 //
-// Everything here permanently costs a caller one bare directory name, which is
-// #548's whole argument; `snug ./NAME` is the spelling that gets it back.
-// usage() states that rule for somebody who goes looking, and
-// ambiguousWordMessage states it at the moment of the collision, to somebody
-// who did not.
+// Everything here permanently costs a caller one bare directory name;
+// `snug ./NAME` is the spelling that gets it back. usage() states that rule for
+// somebody who goes looking, and ambiguousWordMessage states it at the moment of
+// the collision, to somebody who did not.
+//
+// # Where tomorrow's command goes (issue #548)
+//
+// The top level belongs to the TARGET DIRECTORY. Four tests, in order, and the
+// first one that answers wins:
+//
+//  1. Can it be a flag on the default action? Then it is a flag. `--explain` is
+//     a diagnostic verb spelled as a flag and it is the shape to copy;
+//     `--version` is the same answer, which is why there is no `version` word
+//     (issue #36 builds the flag; this is the ruling it builds against).
+//  2. Does an existing word already own the subject? Then it is a SUB-verb of
+//     that word and costs nothing. `snug prune` (INDEX §11, designed) is
+//     `snug engine prune`; a second host repair is `snug fix <subject>`.
+//  3. Does it need a NEW word? Then it may have one only if its subject will
+//     answer two or more commands. A subject with one command folds into
+//     test 2's nearest word, and if none fits, go back to test 1.
+//  4. A word that moves is DELETED, never aliased and never hidden. A kept old
+//     spelling is a reserved word that grants nothing — a directory name spent
+//     permanently on a redirect, and ambiguousWordMessage would then name a
+//     spelling snug help no longer lists. TestADeletedVerbIsNotAReservedWord
+//     pins this for `attach`; it is the same event for a rename.
+//
+// # Why this list is flat, which is the part that looks like an omission
+//
+// It is not an omission and it is not "nobody got round to grouping". Grouping
+// `doctor` and `fix` under a `host` noun was researched against git, podman,
+// docker, gh, nix, kubectl, flatpak, systemctl, npm, go and aws, and refused on
+// snug's own numbers. The industry rule is real — gh states it as "Command: the
+// object you want to interact with / Subcommand: the action you want to take on
+// that object" — but every tool that follows it has a top level costing a HELP
+// LINE, and docker's stated reason for the 1.13 regrouping was help length and
+// tab completion with forty-plus commands. snug has seven and its usage() fits
+// on a screen, so snug does not have the problem the convention solves.
+//
+// What snug has instead is this map costing directory names, and the measured
+// answer is that grouping aims at the wrong words. Over 13,806 directories on
+// the maintainer's host: `config` 20, `proxy` 7, `engine` 3, `profile` 2,
+// `fix` 1, `help` 1, `doctor` 0. A `host` noun releases `doctor` and `fix` —
+// 1 directory between them — spends a new word on `host` (3), and keeps the two
+// words that actually collide, because `config` and `proxy` are exactly the
+// words no grouping can take. The trade is one directory name for two extra
+// words on the command a new user types first.
+//
+// The corroborating survey result: of the tools that were checked, the three
+// that group their host repair verbs (podman `system`, gh `auth`, docker) are
+// the three that ALREADY had the noun, and the three that keep it flat (git
+// `gc`/`fsck`/`maintenance`, flatpak `repair`, systemctl `daemon-reload`) never
+// invented one. Inventing a noun to hold two verbs is the move nobody made.
+//
+// snug does group — one level down, which is where its grouping is free.
+// `profile list|show|tree|dot`, `fix subuid|sysctl` and `engine gc` are four,
+// two and one verbs behind three words, and that is test 3 already paying off:
+// `snug fix sysctl` (issue #526) and `snug fix subuid` (issue #502) arrived as
+// two separate commands and cost ZERO words between them.
+//
+// `snug host` stays RESERVED — fixcmd.go says what for, an integration the host
+// provides, as opposed to `fix`, which restores something the host is MISSING.
+// It is reserved by not being taken, which costs nothing until something needs
+// it. Test 3 is what will admit it: the day two commands are about an
+// integration the host provides, `host` is the word, and until then a word held
+// empty would be a directory name spent on nothing.
 func subcommands() map[string]func(argv []string) int {
 	return map[string]func(argv []string) int{
 		"doctor":  doctor,
@@ -619,7 +679,16 @@ func run(cfg config) int {
 		// branch is refusePolicy's, not this call site's. Either way, a
 		// non-nil err means this policy must never be executed: it is never
 		// run below, whichever shape came back.
-		return refusePolicy(cfg, exitPolicy, err, pol, env)
+		//
+		// The code is 77 EXCEPT for an unusable target, which is 64: naming a
+		// directory that is not there is a usage error, and 77 means snug read
+		// the selection and the target and found them in conflict. See
+		// policy.ErrTargetUnusable.
+		code := exitPolicy
+		if errors.Is(err, policy.ErrTargetUnusable) {
+			code = exitUsage
+		}
+		return refusePolicy(cfg, code, err, pol, env)
 	}
 	// NOTE, do not exit — the rule that unifies this with the refusal above
 	// (invariant 5's two shapes, issue #162's remnant): say something when the

@@ -86,28 +86,36 @@ reasons, heaviest first — and one that was claimed and does not hold.
 
 **(c) `append` later cost a nested field, not a sixth root key.**
 
-**"The flat spelling does not parse" is FALSE, and it is a measurement taken
-against the wrong parser.** Multi-line inline tables are invalid in **TOML 1.0**
-and `python3 -m tomllib` refuses them — but snug uses `go-toml/v2 v2.4.3`, which
-**accepts** them. Check the parser snug actually links, not the spec:
+**"The flat spelling does not parse" is FALSE, and there is no portability
+argument underneath it either.** The flat form
 
-```
-environ-set = {                 python3 tomllib:      Invalid initial character for a key part
-  XDG_CONFIG_HOME = "...",      go-toml/v2 v2.4.3:    accepted, parses to a nested map
+```toml
+environ = { set = {
+  XDG_CONFIG_HOME = "...",
   XDG_CACHE_HOME  = "...",
-}
+} }
 ```
 
-**Check the version the project actually builds with, not the one a scratch
-module resolves to** — a scratch module pins whatever it likes, and a
-"verification" against v2.2.3 says nothing about the version in `go.mod`.
+is **valid TOML**. TOML 1.1.0 (released 2025-12-18) allows newlines *and* a
+trailing comma inside an inline table — "Allow newlines and trailing commas in
+inline tables" — and `go-toml/v2 v2.4.3`, the version in `go.mod`, states its
+own conformance as "This library supports TOML v1.1.0". Measured through that
+version: the multi-line form, the outer-only multi-line form, the trailing-comma
+form, the single-line form and the header form all decode with a nil error.
 
-What survives is smaller and worth stating on its own: the flat form is
-spec-invalid but *silently accepted here*, so a profile written that way works on
-this host and breaks on any TOML 1.0 parser. That is a portability trap, not a
-parse error — a weaker argument for nesting than (a)–(c), and an argument for
-snug rejecting the form deliberately rather than inheriting whatever the
-dependency allows this month.
+So accepting it is conformance, not laxity, and it is nothing snug inherited by
+accident. A pass over the document text to refuse the form would refuse
+documents a conformant parser accepts — and it would have to be a second,
+independent pass, because the decoded value is byte-identical to the header form
+and go-toml exposes no syntax provenance. snug does not do this and must not
+start. **No comment anywhere may claim snug refuses the flat form.**
+
+TOML 1.0 forbade both spellings, which is why a `python3 -m tomllib` reading
+refuses them — that measurement is against a 1.0 parser, not a stricter one, and
+1.0 is superseded. Reasons (a)–(c) above are the whole case for the header form,
+and they are style and greppability rather than validity: the header form is what
+every shipped profile uses (`base.toml` contains zero inline tables) and it is
+what keeps `grep -rn 'environ.prepend'` finding every ordered claim on a host.
 
 Greppability survive — why verbs beat inferring operation from value type: `grep -rn 'environ.prepend' ~/.config/snug/profiles.d/` find every ordered claim on host, because header spell whole path. That would **not** hold for nested inline form.
 
