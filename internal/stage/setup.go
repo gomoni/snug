@@ -19,12 +19,12 @@ import (
 // THE ORDER IS THE SPECIFICATION (SUPERVISOR-DESIGN.md §4 Step 4, extended
 // by issue #63 Tier B's step 0):
 //
-//  0. Reserve fdNetSock and fdNetnsN, before this process has allocated a
-//     descriptor of its own. Both are parked onto later, and dup3 onto an
-//     occupied descriptor closes it and reports success — so the numbers are
-//     CLAIMED here rather than checked at the parking, where the allocator
-//     that would collide with them is the Go runtime's and nothing orders it
-//     against a check. See reserveParkingFDs.
+//  0. Reserve fdNetSock, fdNetlinkSock and fdNetnsN, before this process has
+//     allocated a descriptor of its own. All three are parked onto later, and
+//     dup3 onto an occupied descriptor closes it and reports success — so the
+//     numbers are CLAIMED here rather than checked at the parking, where the
+//     allocator that would collide with them is the Go runtime's and nothing
+//     orders it against a check. See reserveParkingFDs.
 //  1. IF the uid/gid map was left for P0 to write (Config.Topology.Subuid ==
 //     SubuidFull — see stage.go's own comment on why), ask for it over the
 //     control socket, block until it lands, and RE-EXEC __stage-setup itself
@@ -46,11 +46,12 @@ import (
 //  2. uid 0 / full caps, or refuse.
 //  3. make / private.
 //  4. open a socket IN N and bring lo up through it, then park that socket at
-//     fdNetSock without CLOEXEC — both halves must happen while still in N,
-//     because a socket's namespace is fixed at creation and lo is configured
-//     in whichever namespace the caller is in. Both parkings (this one and
-//     step 7) dup3 onto a number step 0 already reserved, and both refuse if
-//     that reservation is gone.
+//     fdNetSock without CLOEXEC; open a second, AF_NETLINK/NETLINK_ROUTE
+//     socket IN N and park it at fdNetlinkSock, same discipline — both must
+//     happen while still in N, because a socket's namespace is fixed at
+//     creation and lo is configured in whichever namespace the caller is in.
+//     Every parking here and at step 7 dup3s onto a number step 0 already
+//     reserved, and each refuses if that reservation is gone.
 //  5. lock the OS thread.
 //  6. pin N via /proc/thread-self/ns/net.
 //  7. dup3 it to fdNetnsN WITHOUT CLOEXEC — it must survive the exec that
@@ -151,6 +152,24 @@ func MainSetup() error {
 		return fmt.Errorf("__stage-setup: parking the N socket at fd %d: %w", fdNetSock, err)
 	}
 	unix.Close(netSock)
+
+	// Same reasoning as the AF_INET socket just above, for the AF_NETLINK one
+	// __stage-serve needs to seal the host's addresses onto snug0
+	// (sealHostAddresses in loopback.go): opened here, while still in N,
+	// because a socket's namespace is fixed at creation.
+	netlinkSock, err := openNetlinkSocketInN()
+	if err != nil {
+		return fmt.Errorf("__stage-setup: %w", err)
+	}
+	if err := requireFDReserved(fdNetlinkSock, "the N netlink socket"); err != nil {
+		unix.Close(netlinkSock)
+		return fmt.Errorf("__stage-setup: %w", err)
+	}
+	if err := unix.Dup3(netlinkSock, fdNetlinkSock, 0); err != nil {
+		unix.Close(netlinkSock)
+		return fmt.Errorf("__stage-setup: parking the N netlink socket at fd %d: %w", fdNetlinkSock, err)
+	}
+	unix.Close(netlinkSock)
 
 	runtime.LockOSThread()
 

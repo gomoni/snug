@@ -293,9 +293,24 @@ git = "extract"
 
 # ── networking ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can reach the whole internet — exfiltrate anything it can
-# read, fetch and run anything it likes. What it CANNOT reach is the host's
-# 127.0.0.1, and it cannot reach abstract AF_UNIX sockets (X11, D-Bus) because
-# those are scoped by the network namespace. Those two closures are the point.
+# read, fetch and run anything it likes. It copies the host's addresses into
+# the sandbox's own network namespace and drives the host's own resolver for
+# DNS. What it CANNOT reach: host loopback (127.0.0.1 / ::1), abstract AF_UNIX
+# sockets (X11, D-Bus — scoped by the network namespace), and every address the
+# HOST itself owns, in both families — snug seals each one as a local route
+# inside the sandbox's own network namespace, so a connect to it short-circuits
+# to local delivery and is refused rather than reaching pasta and the host
+# beyond it. Those closures are the point.
+#
+# ABUSE (disclosure): the seal is what makes the address disclosure WIDER than
+# pasta's copy, and this is the sentence the screen has to carry. pasta copies
+# the DEFAULT-ROUTE interface only; the seal assigns every address the host owns
+# on EVERY host interface. So `ip addr` inside inventories the docker and podman
+# bridges, virbr0, and a corporate VPN's internal address — the names of every
+# network the host is attached to — not just its LAN address. Reachability is
+# unchanged (a sealed address is refused locally, and whatever pasta's copied
+# routes already reached is pre-existing @net); what is new is that the payload
+# can ENUMERATE them. Accepted, and it is the cost of the closure above.
 #
 # There is deliberately no "offline" profile. Offline is the ABSENCE of this
 # one, which is why it cannot be switched back on by adding something.
@@ -339,78 +354,6 @@ dns = true
 # no mode where it dials a port your payload chose to bind: the port number would
 # be public inside, so a hostile postinstall could bind it first and serve your
 # browser its own page.
-
-# The sandbox does not learn your LAN address. pasta copies the host's addresses
-# into the namespace by default, which is a small information disclosure.
-#
-# Setting an address also switches DNS onto pasta's interception path, and that
-# is not a second feature — it is the same one. This profile used to hide the
-# host's address and then name the host's LAN resolver in the sandbox's
-# /etc/resolv.conf, which gives the hidden network straight back: a LAN resolver
-# is normally the router, so 192.168.1.1 discloses the /24 the host sits in, and
-# an IPv6 ULA resolver discloses a randomly-generated, stable per-site prefix.
-# The search domain was anonymised here from the beginning and the nameserver
-# was not — one rule applied to one of its two halves (issue #162). The sandbox
-# is now told `nameserver 169.254.1.1`, an address that does not exist, and
-# pasta re-issues the query from the host side.
-#
-# ABUSE: unchanged from @net — the whole internet, in and out. What this profile
-# adds is a WITHHOLDING, not a hole. What it still does not hide: the sandbox
-# has full egress, so a payload that wants to know where it is can ask any
-# server it can reach, and DNS answers still tell it what the host's resolver
-# would have told it. This bounds passive disclosure, not an active question.
-#
-# ABUSE (dns): a hostile process inside drives the HOST's resolver with
-# arbitrary queries — any name, any type, UDP and TCP — from the host's network
-# position. On a host with a routable resolver that is no new reach: it could
-# query 192.168.1.1 directly over the egress @net already grants. On a
-# systemd-resolved host it IS new reach, and this is the sentence to carry:
-# 127.0.0.53 is a resolver process the sandbox can reach no other way, and it
-# holds a cache of what the host user has been resolving plus any split-DNS
-# domains a VPN put on that link — so `search .` withholds the internal domain
-# NAMES while this resolves them anyway.
-#
-# What it does NOT get at that address, measured inside a live sandbox rather
-# than reasoned about: 169.254.1.1 answers on port 53 over UDP and TCP and
-# refuses 631, 853 and 3100; 169.254.1.2:53 is refused, so the forwarder
-# answers on exactly one address. That measurement is what earns the phrase
-# "not a hole" above; without it the phrase is an assertion.
-#
-# BOTH FAMILIES, and the v6 half is the one that mattered. `address` alone was a
-# single IPv4 value, so pasta's IPv6 default -- copy the addresses from the
-# interface holding the default route -- still applied, and the sandbox kept the
-# host's own GLOBAL v6 addresses verbatim, the privacy-extension temporary one
-# included, plus a v6 default route through the router's link-local address,
-# which carries the router's MAC. The withheld half was RFC1918 and says almost
-# nothing; the disclosed half is globally routable, geolocatable and
-# ISP-attributable (issue #165). MEASURED closed: snug0 now carries only
-# 10.13.13.2/24, fd00:5e79:1::2/64 and a link-local whose EUI-64 comes from a
-# per-run random tap MAC, never the host's NIC.
-#
-# ABUSE: a hostile process inside can reach any service the HOST has bound on
-# its own address -- including one bound to 0.0.0.0 or :: -- and the host's
-# listener sees the connection as coming from the host itself, so an ACL that
-# trusts "local" is satisfied. That is not new with the v6 pair and it is not a
-# consequence of anonymising v6 in particular: it is what anonymising ANY family
-# does, because the host's address stops being the sandbox's own address and the
-# packet therefore leaves the netns instead of being refused by the sandbox's own
-# stack. MEASURED, with plain @net as the control: under @net a listener on the
-# host's LAN address and on 0.0.0.0 is refused from inside; under @net-anon the
-# v4 ones are REACHED; with the v6 pair the v6 ones are too. HOST LOOPBACK STAYS
-# CLOSED in all three -- 127.0.0.1 and ::1 are refused every time, and that is
-# the property this project promises. Bind your host services to loopback.
-# (issues #165, #176.)
-#
-# ABUSE (dns): unchanged in kind. Where the host's only resolver is IPv6, the
-# forwarder is fd00:5e79:1::53 rather than 169.254.1.1 -- same interception, same
-# sentence, one family over.
-[profile.net-anon]
-description = "As net, but the sandbox gets a synthetic address in BOTH families instead of the host's."
-include = ["net"]
-address  = "10.13.13.2/24"
-gateway  = "10.13.13.1"
-address6 = "fd00:5e79:1::2/64"
-gateway6 = "fd00:5e79:1::1"
 
 # THERE IS NO `network = "host"`, and its absence is the grant this file does
 # not make. Sharing the host's network namespace means every service on the

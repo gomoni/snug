@@ -331,44 +331,6 @@ func (p *Policy) Validate(env Environ) error {
 	// sequence (Resolve, then Replace) that Validate always runs after. Grafts
 	// are the same shape in the shipped path (Policy.Graft) but nothing forces a
 	// hand-built Policy through it, so Validate is the backstop.
-	// THE NETWORK VALUES ARE PROFILE TEXT AND THEY REACH TWO SCREENS.
-	//
-	// `address`/`gateway`/`address6`/`gateway6` are the only profile-supplied
-	// scalars typed as netip rather than string (net.go's NetPolicy). The
-	// parse a Prefix goes through is a SUPERSET of the old forging refusal for
-	// that half of the pair — ParsePrefix refuses a v6 ZONE outright and
-	// refuses trailing junk after the prefix, both measured — so the loop that
-	// used to run IsForgingRune over these two raw strings is retired for
-	// prefixes.
-	//
-	// It is NOT retired for gateways, and this is the one place the netip
-	// claim above was wrong: a ZONE is arbitrary text on a netip.Addr, and
-	// Addr.String() re-emits it verbatim wherever the value is later shown —
-	// the NETWORK block and the pasta argv four lines below it, including the
-	// `host loopback UNREACHABLE` row directly above. A red team round
-	// demonstrated the pre-netip version of this exact hazard (an ESC/CR
-	// payload in a raw `address` string), and the run stayed HEALTHY while the
-	// screen lied: pasta's `-n` parser tolerated the trailing junk, so the
-	// forged profile launched and worked, which removed the one signal that
-	// would otherwise give it away. checkAddressPair's V7 is what closes the
-	// zone half, and it has to run here too, not only in Resolve's own parse:
-	// a hand-built Policy can hold a Gateway built directly from
-	// netip.MustParseAddr("fe80::1%<payload>") — or an Address built from
-	// netip.PrefixFrom(zonedAddr, bits) — without ever going through the
-	// parse that would have refused it.
-	//
-	// One body (net.go's checkAddressPair) for both call sites, invoked here
-	// with a nil owner map — Validate has no fold to attribute a value to —
-	// because two spellings of the pair-and-zone rule are exactly what a
-	// reader would have to diff to trust either. The renderers escape as well
-	// (visibleValue), and that belt-and-braces is the same pairing
-	// checkEnvValue and VisibleText already have: refusing what a profile may
-	// CONTAIN and escaping what a screen may SHOW are two guarantees, not one
-	// done twice.
-	if err := p.Net.checkAddressPair(nil); err != nil {
-		return err
-	}
-
 	grafts := make([]string, 0, len(p.Grafts))
 	for g := range p.Grafts {
 		grafts = append(grafts, g)

@@ -211,9 +211,13 @@ type reportNetwork struct {
 	// no host resolver address is named inside (NeedsDNSForward).
 	DNSForwarded bool
 	DNSHost      string
-	Anonymised   bool
-	Address      string
-	Address6     string
+	// HostAddressesSealed says every address the host owns is assigned onto
+	// the sandbox's own interface as a local route (policy.NetPolicy's own
+	// predicate), so a connect to one of them short-circuits to local
+	// delivery and is refused rather than reaching pasta and the host beyond
+	// it — the fix for the addresses pasta itself does not copy onto snug0
+	// (the host's link-local, and any second alias on another interface).
+	HostAddressesSealed bool
 }
 
 type reportTopology struct {
@@ -583,10 +587,10 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 		// machine reading this document asks whether host loopback is
 		// reachable, and an absent key is not an answer. These are the two
 		// facts a consumer would otherwise have to infer from a mode name.
-		HostLoopback:    false,
-		AbstractSockets: false,
-		DNS:             p.Net.Resolver().Servers,
-		Anonymised:      p.Net.Anonymised(),
+		HostLoopback:        false,
+		AbstractSockets:     false,
+		DNS:                 p.Net.Resolver().Servers,
+		HostAddressesSealed: p.Net.HostAddressesSealed(),
 	}
 	// NeedsDNSForward and DNSHost only mean anything where a pasta actually
 	// runs, which is NetEgress alone — naming an interception address with
@@ -597,16 +601,6 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 	if p.Net.Mode == policy.NetEgress && p.Net.NeedsDNSForward() {
 		n.DNSForwarded = true
 		n.DNSHost = p.Net.DNSHost()
-	}
-	// Anonymised(), not Address.IsValid(): a hand-built Policy can carry
-	// Address6 without Address (net.go's checkAddressPair refuses it, but a
-	// Policy that never went through Resolve did not meet that refusal), and
-	// this must render what is there rather than what the ordinary case pairs.
-	if p.Net.Address.IsValid() {
-		n.Address = p.Net.Address.String()
-	}
-	if p.Net.Address6.IsValid() {
-		n.Address6 = p.Net.Address6.String()
 	}
 	return n
 }

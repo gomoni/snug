@@ -927,15 +927,6 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 				"Claude Code auto-loads each named plugin's command tables — measured on the "+
 				"development host as hooks.json running bash/sh/python3 (issue #68)"))
 	}
-	// Address and gateway render as ONE entry per family. They are a pair by
-	// construction (checkAddressPair requires all four or none, issue #165), and
-	// two rows would invite reading them as two independent grants.
-	if p.Address != "" || p.Gateway != "" {
-		show("address", addressRows(p.Address, p.Gateway))
-	}
-	if p.Address6 != "" || p.Gateway6 != "" {
-		show("address6", addressRows(p.Address6, p.Gateway6))
-	}
 	if p.MTU != 0 {
 		show("mtu", []string{strconv.Itoa(p.MTU)})
 	}
@@ -1002,18 +993,6 @@ func networkConsequence(mode string) string {
 	default:
 		return ""
 	}
-}
-
-func addressRows(addr, gw string) []string {
-	value := addr
-	if gw != "" {
-		if value == "" {
-			value = "(no address)"
-		}
-		value += " via " + gw
-	}
-	return capRows(value, "synthetic; the host's own address is not copied inside, "+
-		"so the sandbox does not learn your LAN or ISP-attributable address")
 }
 
 // showIdentity renders the pin. WHICH account is the whole point of an identity

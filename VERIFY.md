@@ -1041,40 +1041,30 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
-### 4b-ter. An IPv6 prefix snug cannot deliver is refused
+### 4b-ter. A retired network-anonymisation key is refused, not ignored
 
-`address6` carries its prefix inline, and pasta PARSES it and throws it away:
-there is no `c->ip6.prefix_len`, the address is configured with a literal 64,
-and the RA's Prefix Information option hardcodes 64. Its man page says so under
-`-a`: *"it will in the current code version be overridden by the default value
-of 64"*. So `address6 = "fd00::2/112"` used to resolve and hand the sandbox a
-**/64** — a wider on-link set than the profile asked for, which is the silent
-downgrade invariant 5 forbids. The v4 half needs no rule; pasta keeps that
-prefix.
+`address`/`gateway`/`address6`/`gateway6` configured a synthetic address in
+place of the sandbox's real one. The feature is gone — `@net` copies the
+host's addresses unconditionally now — and the fix is "remove the key", not
+"write it a different way", so a profile still carrying one must be refused
+by name rather than silently accepted with no effect.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
-cat > $X/snug/profiles.d/p.toml <<'PROF'
-[profile.pfx]
-description = "a v6 prefix pasta cannot deliver"
-network  = "egress"
-address  = "10.13.13.2/24"
-gateway  = "10.13.13.1"
-address6 = "fd00::2/112"
-gateway6 = "fd00::1"
-PROF
+printf '[profile.pfx]\ndescription = "a retired anonymisation key"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
+  > $X/snug/profiles.d/p.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect a refusal naming the profile and the fix, `exit=77`:
+Expect a refusal naming both keys and the fix, `exit=77`:
 
 ```
-snug: network address6 fd00::2/112 is a /112: pasta discards an inline IPv6 prefix and configures the address as a /64 regardless (its own man page says so under `-a`), so the sandbox would treat a WIDER set of addresses as on-link than this profile asks for. Write fd00::2/64, or pick a narrower ADDRESS
+snug: profile "pfx" sets address, gateway, which snug no longer accepts.
+       snug no longer supports network anonymisation: `@net` copies the host's
+       addresses into the sandbox's network namespace (a small accepted disclosure)
+       rather than handing the sandbox a synthetic one. There is no replacement key —
+       remove address, gateway from this profile
 ```
-
-**Positive controls.** `address6` changed to `fd00::2/64` resolves, as does a v4
-`address` of `/16` or `/30` — the rule is v6-only, so a working v4 prefix must
-not be caught by it.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
@@ -2676,44 +2666,30 @@ the golden files, while the exhaustiveness test stays green.
 
 Two questions on one screen, and until issue #28 they were answered by a
 hardcoded line rather than by the policy: *which resolver does the sandbox
-actually get*, and *does `--dry-run` describe that run*. `@net-anon` makes the
-second question load-bearing, because it is the profile whose whole purpose is
-that the sandbox does not learn where the host sits.
+actually get*, and *does `--dry-run` describe that run*.
 
 ```bash
 echo "HOST:"; grep ^nameserver /etc/resolv.conf
 
-for p in @net @net-anon; do
-  echo "== $p =="
-  ./bin/snug --dry-run -p $p $SC/proj/sub -- true | grep -A3 '^ *dns '
-  ./bin/snug -p $p $SC/proj/sub -- /bin/sh -c 'grep ^nameserver /etc/resolv.conf'
-done
+./bin/snug --dry-run -p @net $SC/proj/sub -- true | grep -A3 '^ *dns '
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c 'grep ^nameserver /etc/resolv.conf'
 
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
   'getent hosts example.com >/dev/null && echo RESOLVED || echo RESOLVE-FAILED'
 ```
 
 Expect, on a host whose own resolvers are routable (an ordinary LAN router, the
-common case):
+common case): `@net` names **the host's own resolvers** in both places — on the
+screen and in the file — with the screen saying plainly that a LAN resolver
+address discloses the network the host sits on. That is a disclosure matching
+a grant: `@net` copies the host's address by design and says so on the next
+line. Expect `RESOLVED` either way.
 
-- `@net` names **the host's own resolvers** in both places — on the screen and
-  in the file — with the screen saying plainly that a LAN resolver address
-  discloses the network the host sits on. That is a disclosure matching a grant:
-  `@net` copies the host's address by design and says so on the next line.
-- `@net-anon` names **`169.254.1.1` in both places**, and **neither** of the
-  host's resolver addresses anywhere. This is the fix for issue #162: the
-  profile used to hide the host's LAN address and then hand back the host's LAN
-  resolver, which discloses the same prefix — the router is normally the
-  resolver.
-- `RESOLVED`. The property is withholding the *host's* resolver, not withholding
-  DNS; pasta re-issues the query from the host side. If this prints
-  `RESOLVE-FAILED`, the disclosure was traded for a broken sandbox and that is a
-  regression, not a tightening.
-
-On a `systemd-resolved` host (every resolver on `127.0.0.53`) both profiles show
-`169.254.1.1`, because interception is the only arm available — the comparison
-above distinguishes nothing there, which is why the automated version of this
-check skips such a host rather than passing on it.
+On a `systemd-resolved` host (every resolver on `127.0.0.53`) the file names
+`169.254.1.1` instead — pasta's interception address — because there is no
+routable resolver to name directly, and `RESOLVED` must still print: the
+property is that interception is invisible to the payload, not that it costs
+correctness.
 
 The cross-check is the point of running both commands rather than either one.
 A screen that agrees with a file is worth more than either alone: issue #28 was
@@ -2742,61 +2718,61 @@ The message quotes the offending value and names the accepted set — the two
 things a reader needs to fix their own file. `ssh_mode` behaves identically:
 `agent-proxy` and `none`, anything else refused with the same shape.
 
-**And the forwarder's destination is named.** Under `@net-anon` the dns line
-reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's first
-nameserver, pinned by snug with `--dns-host` rather than left to pasta's own
-default (issue #166). Check it against the argv:
+**And the forwarder's destination is named.** On a systemd-resolved host the
+dns line reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's
+first nameserver, pinned by snug with `--dns-host` rather than left to pasta's
+own default (issue #166). Check it against the argv:
 
 ```bash
-./bin/snug --dry-run -p @net-anon $SC/proj/sub -- true | grep -E '^ *dns |--dns-host'
+./bin/snug --dry-run -p @net $SC/proj/sub -- true | grep -E '^ *dns |--dns-host'
 ```
 
 Both must name the same address. They are two authors of one fact and this is
 the line where they are made to agree.
 
-**Two more lines in the same block, fixed by issue #165's v6 pair.** Under
-`@net-anon` the block now prints an `address v4` row and an `address v6` row,
-each carrying its own synthetic value — `10.13.13.2/24` and
-`fd00:5e79:1::2/64`. Check that against the interface:
+**The host is unreachable on every address it owns — SEALED, not incidental.**
+`@net` copies the host's addresses onto snug0 by design, which would otherwise
+make the host's own LAN address reachable from inside: the packet stays on
+what looks like the sandbox's own interface, so nothing refuses it locally
+(issue #176's finding). snug closes that by assigning every address the host
+owns onto snug0 as a `local` route inside the sandbox's OWN network namespace,
+so a connect to one short-circuits to local delivery and is refused before it
+ever reaches pasta:
 
 ```bash
-ip -br addr show scope global
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c 'ip -br addr show dev snug0; ip -6 route show default'
-```
-
-Expect the sandbox's `snug0` to carry **only** `10.13.13.2/24` and
-`fd00:5e79:1::2/64` (plus a link-local address whose EUI-64 comes from a
-per-run random tap MAC) — **none of the host's own addresses, in either
-family** — and a default route via `fd00:5e79:1::1`, never a `proto ra` route
-through the router's own link-local address. That is issue #165, fixed: the
-v4-only address used to leave pasta's IPv6 default in place (copy the
-addresses from the interface holding the default route), so the sandbox kept
-the host's own GLOBAL v6 addresses verbatim — the weaker (RFC1918) half hidden,
-the stronger (globally routable, geolocatable) half disclosed. If either of the
-host's addresses from the first command ever reappears in the second, that is
-the regression this line exists to catch.
-
-**The host's own address becomes reachable *because* it is hidden — issue
-#176, and it is documented, not closed.** Anonymising an address takes it off
-the sandbox's own interface, so a connection to it stops being refused by the
-sandbox's own kernel and instead leaves the netns for pasta to open on the
-real host. `@net` is the control that makes this checkable: the same address
-must be refused there and reached under `@net-anon`.
-
-```bash
-python3 -m http.server -b "$(hostname -I | awk '{print $1}')" 8199 &
+python3 -m http.server -b :: 8199 &
 HOSTPY=$!
 ./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
   "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
-./bin/snug -p @net-anon $SC/proj/sub -- /bin/sh -c \
-  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 3 http://$(hostname -I | awk '{print $1}'):8199/ || echo REFUSED"
+```
+
+Expect `REFUSED` (or a curl connect-error line). **Host loopback stays closed
+too** — `127.0.0.1`/`::1` are never reachable — **and so does the host's own
+link-local address**, which pasta itself does not copy onto snug0 and which
+only the seal closes. `-b ::` above binds a dual-stack wildcard, so the SAME
+listener answers here too:
+
+```bash
+LL=$(ip -6 addr show scope link | awk '/inet6/{print $2}' | cut -d/ -f1 | head -1)
+IFACE=$(ip -6 addr show scope link | awk '/inet6/{print $NF; exit}')
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
+  "curl -gs -o /dev/null -w '%{http_code}\n' --max-time 3 'http://[$LL%$IFACE]:8199/' || echo REFUSED"
 kill $HOSTPY
 ```
 
-Expect `REFUSED` (or a curl connect-error line) under `@net`, and `200` under
-`@net-anon`. **Host loopback stays closed in both** — `127.0.0.1`/`::1` are
-never reachable, and that is the property this project promises regardless of
-which profile is selected; only the host's *own, non-loopback* address moves.
+Expect `REFUSED` here too, from inside a sandbox whose own snug0 now carries
+the host's link-local address as a sealed local route.
+
+**And the seal did not close ordinary egress along with the host's own
+addresses.** The positive control for the whole section — every `REFUSED`
+above is worth nothing if it turns out this sandbox has no network at all:
+
+```bash
+./bin/snug -p @net $SC/proj/sub -- /bin/sh -c \
+  "curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 https://example.com/ || echo UNREACHABLE"
+```
+
+Expect `200` (or another ordinary HTTP status) — not `UNREACHABLE`.
 
 ## 8. Profile order is irrelevant
 
@@ -2995,9 +2971,8 @@ $ ./bin/snug profile show @podman-socket | grep -A2 podman
 
 What to check:
 
-1. `@net` names `network` and `dns`, `@net-anon` names both synthetic address
-   pairs, `@podman-socket` names `podman`. Before #195 all three printed nothing
-   about any of it.
+1. `@net` names `network` and `dns`, `@podman-socket` names `podman`. Before
+   #195 both printed nothing about any of it.
 2. Each row carries the **consequence**, not just the value. "egress" is a word;
    "the sandbox reaches the whole internet" is the thing being agreed to.
 3. `@sys` prints **no** capability rows at all — it grants only paths, and an
@@ -7360,11 +7335,13 @@ into disagreeing. The refusal's own text names the new command:
       Fix: sysctl kernel.yama.ptrace_scope=1 (or stricter), or `sudo snug fix sysctl -w`
 ```
 
-## 28. The stage's two parked descriptors are where fds.go says (issue #525)
+## 28. The stage's three parked descriptors are where fds.go says (issue #525)
 
-P1 parks two descriptors at fixed numbers: an `AF_INET` socket created inside N
-at fd 66, and the pinned network namespace at fd 67. Both arrive there by
-`dup3`, and **`dup3` onto an occupied descriptor closes it and reports
+P1 parks three descriptors at fixed numbers: an `AF_INET` socket created inside
+N at fd 66, an `AF_NETLINK`/`NETLINK_ROUTE` socket created in N alongside it at
+fd 67 (the one `sealHostAddresses` writes `RTM_NEWADDR` over, §4.5a of
+`INDEX.md`), and the pinned network namespace at fd 68. All three arrive there
+by `dup3`, and **`dup3` onto an occupied descriptor closes it and reports
 success** — so a collision has no error in it. Look at a live stage:
 
 ```
@@ -7373,29 +7350,31 @@ $ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | s
 0 -> /dev/null
 1 -> /tmp/snugrun.out
 2 -> /tmp/snugrun.out
-3 -> socket:[4688751]
-4 -> pipe:[4688752]
-5 -> pipe:[4688749]
-14 -> anon_inode:[eventpoll]
-15 -> anon_inode:[eventfd]
+3 -> socket:[2312963]
+4 -> pipe:[2312964]
+5 -> pipe:[2312961]
+15 -> anon_inode:[eventpoll]
+16 -> anon_inode:[eventfd]
 18 -> anon_inode:[pidfd]
-66 -> socket:[4696344]
-67 -> net:[4026533692]
+66 -> socket:[2309953]
+67 -> socket:[2309954]
+68 -> net:[4026532559]
 ```
 
-Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 66 and 67 are
-the two parked descriptors, and `socket:` / `net:` is what says they are the
-right ones. Rows 14 and 15 are the pair that make this a bug rather than a
-comment: they are **the Go runtime's own epoll and eventfd, and they sit
-immediately above the pass-through block**. The block was open when they were
-allocated — a new descriptor takes the lowest free number, which is why these
-two are at 14 and 15 rather than at 6 and 7 — and it is closed again by the
-time this snapshot is taken, which is why the listing skips from 5 to 14.
+Rows 3, 4 and 5 are `fdControl`, `fdLife` and `fdBwrapInfo`. Rows 66, 67 and 68
+are the three parked descriptors, and `socket:` / `socket:` / `net:` is what
+says they are the right ones — two sockets and a namespace, in that order.
+Rows 15 and 16 are the pair that make this a bug rather than a comment: they
+are **the Go runtime's own epoll and eventfd, and they sit immediately above
+the pass-through block**. The block was open when they were allocated — a new
+descriptor takes the lowest free number, which is why these two are in the
+teens rather than at 6 and 7 — and it is closed again by the time this snapshot
+is taken, which is why the listing skips from 5 to 15.
 
 So the runtime's descriptors follow the block wherever it ends. On a shipped
 profile the block is small and they land in the teens, as here. Which is why
-the two numbers 66 and 67 are CLAIMED at P1's first instant —
-`reserveParkingFDs` dup3's `fdControl` onto both before this process has
+the three numbers 66, 67 and 68 are CLAIMED at P1's first instant —
+`reserveParkingFDs` dup3's `fdControl` onto all three before this process has
 allocated anything of its own — rather than checked at the parking: the
 descriptors that would collide are the Go runtime's, and nothing orders them
 against a check.
@@ -7407,9 +7386,13 @@ two under v1), and netpoll's pair when a timer is armed that early. `fd 62..65`
 is the slack left free for them — four numbers between the largest permitted
 block and fd 66 — and §28a is where you can see them land in it.
 
-One thing about running this by hand: `pgrep -f __stage-serve` matches EVERY
+Two things about running this by hand. `pgrep -f __stage-serve` matches EVERY
 snug on the machine, so quit your other sandboxes first, or the listing you get
-is somebody else's run rather than the one you just started.
+is somebody else's run rather than the one you just started. It also matches
+the SHELL you type it in, whose own command line now contains the string — put
+the pipeline in a script file, or take the stage from `pgrep -P $!` after
+backgrounding snug, and you get the process you meant rather than your own
+`bash -c`.
 
 ## 28a. The budget P0 accepts is one the stage can actually build
 
@@ -7441,8 +7424,8 @@ XDG_CONFIG_HOME=$X ./bin/snug -p @net -p doors $SC/proj -- true
 snug: stage: this policy needs 209 pass-through descriptors, so the block would
       run from fd 6 to fd 214 and reach the numbers reserved above it: fd 62..65,
       the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
-      then the N socket at fd 66 and the pinned network namespace descriptor at
-      fd 67 (the budget is 56).
+      then the N socket at fd 66, the N netlink socket at fd 67 and the pinned
+      network namespace descriptor at fd 68 (the budget is 56).
 ```
 
 209 for 200 doors, so on THIS host everything besides the doors costs 9 — one
@@ -7464,8 +7447,8 @@ second:
 snug: stage: this policy needs 57 pass-through descriptors, so the block would
       run from fd 6 to fd 62 and reach the numbers reserved above it: fd 62..65,
       the slack the Go runtime's pre-main descriptors need (fdPremainSlack), and
-      then the N socket at fd 66 and the pinned network namespace descriptor at
-      fd 67 (the budget is 56).
+      then the N socket at fd 66, the N netlink socket at fd 67 and the pinned
+      network namespace descriptor at fd 68 (the budget is 56).
 ```
 
 The point is that the boundary is in ONE place, and it took two corrections to
@@ -7482,18 +7465,20 @@ cannot. Run the 47-door case again and look at the stage while the payload
 sleeps:
 
 ```
-$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -6
-5 -> pipe:[4561731]
-62 -> anon_inode:[eventpoll]
-63 -> anon_inode:[eventfd]
-66 -> socket:[4551085]
-67 -> net:[4026533482]
-68 -> anon_inode:[pidfd]
+$ ls -l /proc/$(pgrep -f __stage-serve)/fd | awk 'NR>1 {print $9, $10, $11}' | sort -n | tail -8
+4 -> pipe:[2297692]
+5 -> pipe:[2297689]
+63 -> anon_inode:[eventpoll]
+64 -> anon_inode:[eventfd]
+66 -> socket:[2318608]
+67 -> socket:[2318609]
+68 -> net:[4026532559]
+69 -> anon_inode:[pidfd]
 ```
 
-62 and 63 are the numbers the two parked descriptors used to occupy, and here
-the runtime's epoll and eventfd are sitting on them — with the block at its
-maximum they land exactly there, which is what the four free numbers are for.
+`fd 62..65` is the slack, and here the runtime's epoll and eventfd are sitting
+inside it at 63 and 64 — with the block at its maximum they land exactly there,
+which is what the four free numbers are for.
 On a host whose `/proc/self/cgroup` resolves, one more of them is the cgroup
 CPU limit file the runtime opens before `main` and keeps; that is the one that
 failed CI at exactly this K while passing here, where `/proc/self/cgroup` reads

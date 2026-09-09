@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
-	"net/netip"
 	"sort"
 	"strings"
 	"testing"
@@ -258,24 +257,15 @@ func testRegistry() map[ProfileName]*Profile {
 		// Carries the SCALARS, so the commutativity and idempotence property
 		// tests actually exercise them now that canon() renders them. Without a
 		// fixture setting one, widening canon() would assert nothing: the
-		// last-writer-wins bug in address/gateway/mtu was invisible to
-		// TestResolveIsCommutative for exactly that reason. Kept off testDefaults
-		// so the goldens still describe the sandbox a real user gets.
-		// Address6/Gateway6 alongside Address/Gateway: since issue #165's V6
-		// (all four network-address keys, or none), a profile carrying only
-		// the v4 half no longer resolves at all, and this fixture is used
-		// alone (topology_test.go's "egress" base) as well as combined with
-		// netty-too below.
+		// last-writer-wins bug in mtu was invisible to TestResolveIsCommutative
+		// for exactly that reason. Kept off testDefaults so the goldens still
+		// describe the sandbox a real user gets. Used alone (topology_test.go's
+		// "egress" base) as well as combined with netty-too below.
 		"netty": {Name: "netty", Network: "egress", DNS: true,
-			Address: "10.13.13.2/24", Gateway: "10.13.13.1",
-			Address6: "fd00:5e79:1::2/64", Gateway6: "fd00:5e79:1::1",
 			MTU: 1400, Podman: "socket", Plugins: []string{"caveman", "superpowers"}},
 		// Same values, different name: two profiles agreeing on a scalar must
-		// join, not conflict, whichever order they are folded in. Both
-		// families, matching netty's — TestPublishUnionsAndAddressesAgree
-		// resolves the two together.
-		"netty-too": {Name: "netty-too", Network: "egress",
-			Address: "10.13.13.2/24", Address6: "fd00:5e79:1::2/64",
+		// join, not conflict, whichever order they are folded in.
+		"netty-too": {Name: "netty-too", Network: "egress", MTU: 1400,
 			Plugins: []string{"superpowers", "code-review"}},
 		// THERE IS NO `network = "host"` FIXTURE, and the absence is deliberate
 		// rather than an omission: ParseNetMode refuses that spelling, so a
@@ -398,9 +388,8 @@ func canon(p *Policy) string {
 			fmt.Fprintf(&b, "env %s drop %s %s %v\n", name, d.Value, d.Reason, d.From)
 		}
 	}
-	fmt.Fprintf(&b, "net mode=%s dns=%v nameservers=%v address=%s gateway=%s address6=%s gateway6=%s mtu=%d\n",
-		p.Net.Mode, p.Net.DNS, p.Net.Nameservers,
-		p.Net.Address, p.Net.Gateway, p.Net.Address6, p.Net.Gateway6, p.Net.MTU)
+	fmt.Fprintf(&b, "net mode=%s dns=%v nameservers=%v mtu=%d\n",
+		p.Net.Mode, p.Net.DNS, p.Net.Nameservers, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
 	// Git joins by max like every other scalar, and it was added without this
 	// line — the exact omission this function's own comment warns about, three
@@ -1253,16 +1242,13 @@ func TestSysStyleNestedBindOfTheSameTreeIsAllowed(t *testing.T) {
 // publish is a SET, unioned — not a list appended to. `publish = [3000]` in
 // two profiles used to resolve to [3000 3000], reaching pasta's -t as a
 // duplicate and depending on fold order for WHICH copy survived where. Two
-// profiles agreeing on an address, and one repeating a port the other already
+// profiles agreeing on an MTU, and one repeating a port the other already
 // named, must join cleanly rather than conflict or duplicate.
 func TestScalarsAndSetsAgreeAcrossProfiles(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw", "netty", "netty-too")
 
-	if want := netip.MustParsePrefix("10.13.13.2/24"); p.Net.Address != want {
-		t.Errorf("address = %s, want %s — two profiles agreeing on a scalar must join, not conflict", p.Net.Address, want)
-	}
-	if want := netip.MustParsePrefix("fd00:5e79:1::2/64"); p.Net.Address6 != want {
-		t.Errorf("address6 = %s, want %s — two profiles agreeing on a scalar must join, not conflict", p.Net.Address6, want)
+	if p.Net.MTU != 1400 {
+		t.Errorf("mtu = %d, want 1400 — two profiles agreeing on a scalar must join, not conflict", p.Net.MTU)
 	}
 
 	// Plugins union the same way (issue #68): netty names caveman+superpowers,

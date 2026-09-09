@@ -92,10 +92,11 @@ func spec() string {
 	fmt.Fprintf(&b, "  fd %-4d.. slack       %d numbers left free for what the Go runtime opens BEFORE main and keeps\n",
 		fdSandboxBase+maxPassthrough, fdPremainSlack)
 	fmt.Fprintf(&b, "  fd %-4d N-socket      AF_INET socket CREATED IN N; still answers for N after the move\n", fdNetSock)
+	fmt.Fprintf(&b, "  fd %-4d N-netlink     AF_NETLINK/NETLINK_ROUTE socket CREATED IN N; seals the host's addresses onto snug0\n", fdNetlinkSock)
 	fmt.Fprintf(&b, "  fd %-4d netns-N       the descriptor P1 pins on N before it leaves (not CLOEXEC until __stage-serve)\n", fdNetnsN)
 	fmt.Fprintf(&b, "  budget        K <= %d, checked on BOTH sides of the control socket (checkFDBudget)\n", maxPassthrough)
-	fmt.Fprintf(&b, "  reservation   fd %d and fd %d are CLAIMED at P1's first instant (reserveParkingFDs, refused if already open)\n", fdNetSock, fdNetnsN)
-	fmt.Fprintf(&b, "  parking       the same two are dup3 TARGETS later; each is refused if its reservation is gone (requireFDReserved)\n")
+	fmt.Fprintf(&b, "  reservation   fd %d, fd %d and fd %d are CLAIMED at P1's first instant (reserveParkingFDs, refused if already open)\n", fdNetSock, fdNetlinkSock, fdNetnsN)
+	fmt.Fprintf(&b, "  parking       the same three are dup3 TARGETS later; each is refused if its reservation is gone (requireFDReserved)\n")
 	fmt.Fprintln(&b)
 
 	fmt.Fprintln(&b, "BWRAP UNSHARE SET under policy.NetnsStage (internal/policy/bwrap.go)")

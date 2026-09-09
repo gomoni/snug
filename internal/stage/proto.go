@@ -64,6 +64,16 @@ type request struct {
 	// empty falls back to "snug0" for a caller on the pre-Tier-B protocol.
 	NetIface string `json:"net_iface,omitempty"`
 
+	// "netready" only, and only on the snug0 arm (empty on the "lo" one, which
+	// starts no pasta): every address the HOST holds, on every interface, as
+	// P0 enumerated it (net.Interfaces()/Addrs(), internal/sandbox). The
+	// stage assigns each onto NetIface as a /32 or /128 (sealHostAddresses in
+	// loopback.go) so a connect to it from inside short-circuits to local
+	// delivery — the fix for the addresses pasta itself does not copy onto
+	// snug0 (the host's link-local, and any second alias on another
+	// interface).
+	HostAddrs []string `json:"host_addrs,omitempty"`
+
 	// "start" only.
 	Bwrap string   `json:"bwrap,omitempty"`
 	Argv  []string `json:"argv,omitempty"`

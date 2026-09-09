@@ -580,8 +580,18 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// already existed.
 	var helper *netHelper
 	netIface := "lo"
+	var hostAddrs []string
 	if p.Net.Mode == policy.NetEgress {
 		netIface = stage.NetIfaceName
+
+		// Enumerated HERE, in P0's own netns, never by the stage: the stage's
+		// job is to ASSIGN these onto snug0 (sealHostAddresses), not to decide
+		// which addresses the host owns — one author for that fact, same as
+		// every other host lookup in this package.
+		hostAddrs, err = hostAddresses()
+		if err != nil {
+			return 0, err
+		}
 
 		helper, err = startPasta(p, st.Target())
 		if err != nil {
@@ -599,7 +609,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// before reading. An offline podman run has no pasta to race against, so
 	// it simply waits.
 	ready := make(chan error, 1)
-	go func() { ready <- st.WaitNetReady(netReadyTimeout, netIface) }()
+	go func() { ready <- st.WaitNetReady(netReadyTimeout, netIface, hostAddrs) }()
 	if helper != nil {
 		select {
 		case err := <-ready:

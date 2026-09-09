@@ -180,15 +180,15 @@ func TestParkingRefusesADescriptorThatIsAlreadyOpen(t *testing.T) {
 	}
 }
 
-// TestBothParkedDescriptorsAreGuarded pins the OTHER half of #525: the
+// TestEveryParkedDescriptorIsGuarded pins the OTHER half of #525: the
 // reservation is worthless unless it happens BEFORE anything in MainSetup can
 // allocate, and unless every dup3 whose target is one of this package's fixed
 // descriptors checks that its reservation is still there. MainSetup needs a
 // user namespace and a clone, so this reads the source rather than running it
-// — a change that added a third parking, moved the reservation down past the
-// control-socket exchange, or deleted a guard, is exactly what it must fail
-// on.
-func TestBothParkedDescriptorsAreGuarded(t *testing.T) {
+// — a change that added an unreserved fourth parking, moved the reservation
+// down past the control-socket exchange, or deleted a guard, is exactly what
+// it must fail on.
+func TestEveryParkedDescriptorIsGuarded(t *testing.T) {
 	src, err := os.ReadFile("setup.go")
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestBothParkedDescriptorsAreGuarded(t *testing.T) {
 
 	ri := strings.Index(text, "reserveParkingFDs()")
 	if ri < 0 {
-		t.Fatal("MainSetup does not call reserveParkingFDs: the two parked numbers are then " +
+		t.Fatal("MainSetup does not call reserveParkingFDs: the three parked numbers are then " +
 			"claimed by nothing, and the Go runtime's netpoll pair can take them first")
 	}
 	// Everything MainSetup does before the reservation must be incapable of
@@ -208,7 +208,7 @@ func TestBothParkedDescriptorsAreGuarded(t *testing.T) {
 			"runtime's netpoll epoll/eventfd can land on fdNetSock or fdNetnsN first")
 	}
 
-	for _, target := range []string{"fdNetSock", "fdNetnsN"} {
+	for _, target := range []string{"fdNetSock", "fdNetlinkSock", "fdNetnsN"} {
 		guard := "requireFDReserved(" + target
 		park := target + ", 0)"
 		gi := strings.Index(text, guard)
@@ -229,8 +229,8 @@ func TestBothParkedDescriptorsAreGuarded(t *testing.T) {
 		}
 	}
 
-	if n := strings.Count(text, "unix.Dup3("); n != 2 {
-		t.Errorf("setup.go has %d dup3 call(s), want 2 — a new one needs a reserved number "+
+	if n := strings.Count(text, "unix.Dup3("); n != 3 {
+		t.Errorf("setup.go has %d dup3 call(s), want 3 — a new one needs a reserved number "+
 			"of its own, its own requireFDReserved and its own row in this test (issue #525)", n)
 	}
 }

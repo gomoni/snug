@@ -26,11 +26,8 @@ func pastaGoldenCtx() policy.Context {
 // nothing), so a change whose entire content IS a change to the pasta argv —
 // exactly what issues #162 and #165 are — had no review artifact.
 //
-// @net is the CONTROL and must be byte-identical to what shipped before this
-// milestone: no security-relevant flag may move for a fix scoped to
-// @net-anon. @net-anon is the artifact a human actually reads: `-n 24` is
-// gone, both prefixes are inline, one new `-a`/`-g` pair appears, and
-// `--map-host-loopback none` still appears EXACTLY once.
+// @net must be byte-identical to what shipped before this milestone: no
+// security-relevant flag may move without this golden showing it.
 func TestGoldenPastaArgv(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -42,7 +39,6 @@ func TestGoldenPastaArgv(t *testing.T) {
 		sel  []policy.ProfileName
 	}{
 		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"egress-anon", []policy.ProfileName{"@sys", "@cwd-rw", "@net-anon"}},
 	}
 
 	for _, tc := range cases {

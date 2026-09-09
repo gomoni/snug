@@ -48,10 +48,6 @@ var probes = map[string]string{
 	"DNS":         "resolv.conf",
 	"Plugins":     "probe-plugin",
 	"ListenNames": "probe-door",
-	"Address":     "10.99.99.2/24",
-	"Gateway":     "10.99.99.1",
-	"Address6":    "fd00:99::2/64",
-	"Gateway6":    "fd00:99::1",
 	"MTU":         "1428",
 	"Podman":      "socket",
 	"Git":         "extract",
@@ -84,10 +80,6 @@ network  = "egress"
 dns      = true
 plugins  = ["probe-plugin"]
 listen_names = ["probe-door"]
-address  = "10.99.99.2/24"
-gateway  = "10.99.99.1"
-address6 = "fd00:99::2/64"
-gateway6 = "fd00:99::1"
 mtu      = 1428
 podman   = "socket"
 git      = "extract"
@@ -215,8 +207,8 @@ func TestProfileShowCapabilityRowsFitAnEightyColumnScreen(t *testing.T) {
 }
 
 var capabilityLabels = map[string]bool{
-	"network": true, "dns": true, "address": true, "listen_names": true,
-	"address6": true, "mtu": true, "podman": true, "git": true, "identity": true,
+	"network": true, "dns": true, "listen_names": true,
+	"mtu": true, "podman": true, "git": true, "identity": true,
 }
 
 // A profile that grants nothing beyond paths must not grow an empty capability

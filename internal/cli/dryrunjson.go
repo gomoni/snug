@@ -33,7 +33,7 @@ import (
 // gets the same guarantee more cheaply — the golden fixture
 // (testdata/json.defaults.json) makes every format change a reviewable diff,
 // which is the rule this repo already applies to the bwrap argv.
-const dryRunFormat = 1
+const dryRunFormat = 2
 
 // renderJSON writes the WHOLE of stdout for a machine-readable dry run — one
 // object, never NDJSON, and for every exit code `run` produces.
@@ -543,9 +543,11 @@ type jsonNetwork struct {
 	DNS             []string `json:"dns"`
 	DNSForwarded    bool     `json:"dns_forwarded"`
 	DNSHost         string   `json:"dns_host"`
-	Anonymised      bool     `json:"anonymised"`
-	Address         string   `json:"address"`
-	Address6        string   `json:"address6"`
+	// HostAddressesSealed is reportNetwork's own field of the same name: every
+	// address the host owns is assigned onto the sandbox's own interface as a
+	// local route, so a connect to one is refused rather than reaching pasta
+	// and the host beyond it.
+	HostAddressesSealed bool `json:"host_addresses_sealed"`
 }
 
 type jsonTopology struct {
@@ -762,16 +764,14 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Implied:  policy.NameStrings(rep.Implied),
 		},
 		Network: jsonNetwork{
-			Mode:            rep.Network.Mode,
-			Egress:          rep.Network.Egress,
-			HostLoopback:    rep.Network.HostLoopback,
-			AbstractSockets: rep.Network.AbstractSockets,
-			DNS:             rep.Network.DNS,
-			DNSForwarded:    rep.Network.DNSForwarded,
-			DNSHost:         rep.Network.DNSHost,
-			Anonymised:      rep.Network.Anonymised,
-			Address:         rep.Network.Address,
-			Address6:        rep.Network.Address6,
+			Mode:                rep.Network.Mode,
+			Egress:              rep.Network.Egress,
+			HostLoopback:        rep.Network.HostLoopback,
+			AbstractSockets:     rep.Network.AbstractSockets,
+			DNS:                 rep.Network.DNS,
+			DNSForwarded:        rep.Network.DNSForwarded,
+			DNSHost:             rep.Network.DNSHost,
+			HostAddressesSealed: rep.Network.HostAddressesSealed,
 		},
 		Topology: jsonTopology{
 			Processes:             rep.Topology.Processes,

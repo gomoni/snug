@@ -104,7 +104,7 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 		nil,       // Plugins
 		nil,       // ListenNames
 		"", false, // Network, DNS
-		"", "", "", "", 0, // Address, Gateway, Address6, Gateway6, MTU
+		0,           // MTU
 		"",          // Podman
 		"",          // Git
 		nil,         // Identity

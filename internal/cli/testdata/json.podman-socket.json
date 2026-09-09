@@ -1,6 +1,6 @@
 {
   "snug": {
-    "format": 1,
+    "format": 2,
     "outcome": "ok",
     "lossy": false,
     "exit_code": 0,
@@ -355,9 +355,7 @@
     "dns": null,
     "dns_forwarded": false,
     "dns_host": "",
-    "anonymised": false,
-    "address": "",
-    "address6": ""
+    "host_addresses_sealed": false
   },
   "topology": {
     "processes": [
