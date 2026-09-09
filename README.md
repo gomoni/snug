@@ -110,7 +110,7 @@ One needs an up to date Go compiler.
 # build the binary
 $ make build
 # inspect if the system can run snug - reports missing dependencies,
-$ ./bin/snug docktor
+$ ./bin/snug doctor
 # fix subuids - I am sure most of Linux users have no idea
 # what is this and what to write there - use -w in case you're OK with snug writing to /etc
 $ ./bin/snug fix subuid

@@ -141,10 +141,16 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 			says:    "unknown profile",
 		},
 		{
+			// 64, not 77, and it is the one row here that is a USAGE error
+			// rather than a refused policy: the human named a directory that is
+			// not there. policy.ErrTargetUnusable marks it and run() maps it
+			// (issue #548). The document still says "refused", because the
+			// outcome field describes what happened to the policy and no policy
+			// was admitted — only the code distinguishes why.
 			name:    "target does not exist",
 			cfg:     config{dryRun: true, json: true, target: filepath.Join(proj, "nope")},
 			xdg:     goodCfg,
-			code:    77,
+			code:    64,
 			outcome: "refused",
 			says:    "no such file",
 		},
@@ -477,9 +483,13 @@ func TestTheRefusalDocumentEscapesForgingRunes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 64: a target that does not exist is a usage error (issue #548,
+	// policy.ErrTargetUnusable). The code is incidental to what this test is
+	// about — that the poisoned path reaches the document escaped — and is
+	// asserted only so a silent change to it is not mistaken for one.
 	stdout, stderr, code := captureRun(t, config{dryRun: true, json: true, target: missing})
-	if code != 77 {
-		t.Fatalf("exit %d, want 77\nstderr:\n%s", code, stderr)
+	if code != 64 {
+		t.Fatalf("exit %d, want 64\nstderr:\n%s", code, stderr)
 	}
 	// POSITIVE CONTROL: the poisoned name really did reach the document, or
 	// "nothing raw" is a statement about a document that never mentioned it.

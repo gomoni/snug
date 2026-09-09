@@ -12,6 +12,39 @@ import (
 	"strings"
 )
 
+// ErrTargetUnusable marks the four ways step 2 of Resolve can reject the target
+// directory: none named, it does not exist, it cannot be canonicalised, or it is
+// not a directory. It exists so a CALLER can tell those apart from every other
+// Resolve failure, and there is exactly one thing that turns on the distinction:
+// the exit code.
+//
+// snug's codes are sysexits-style and documented as such (INDEX §11.1): 64 is a
+// usage error, 77 a policy conflict. `snug nosuchdir` is a usage error — the
+// human named a directory that is not there — and it exited 77 until this
+// sentinel existed, because run() maps every Resolve failure to exitPolicy. A
+// wrong code is not cosmetic here: 77 tells a script that snug REFUSED a policy,
+// which is the one answer that means the profiles and the target were read and
+// found to conflict, and a caller distinguishing "your invocation was wrong"
+// from "your policy was refused" got the wrong answer for a typo.
+//
+// The four cases are one sentinel rather than four because nothing needs to tell
+// them apart: they share a cause (the positional argument does not name a usable
+// directory), a fix (name one that does) and a code.
+var ErrTargetUnusable = errors.New("target unusable")
+
+// unusableTarget marks an error as ErrTargetUnusable WITHOUT changing what it
+// says. A `fmt.Errorf("%w: ...", ErrTargetUnusable, ...)` would have prefixed
+// every message with "target unusable: ", which is a second, worse spelling of
+// the `target %q:` the message already opens with — so the marker carries no
+// text of its own. Unwrap keeps the chain intact, which matters because the
+// wrapped error is usually an fs error and internal/cli asks `errors.Is(err,
+// fs.ErrNotExist)` about it elsewhere.
+type unusableTarget struct{ error }
+
+func (unusableTarget) Is(target error) bool { return target == ErrTargetUnusable }
+
+func (e unusableTarget) Unwrap() error { return e.error }
+
 // Resolve turns a selection of profiles into a Policy.
 //
 // It is commutative and idempotent in `selected`: Resolve([a,b]) == Resolve([b,a])
@@ -46,17 +79,22 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	// 2. Canonicalise the target. Fail closed: no target means no policy.
+	//
+	// All four failures here are ErrTargetUnusable, so the CLI can exit 64
+	// rather than 77. The messages are unchanged by the marking — see
+	// unusableTarget, which is a marker and not a prefix, precisely so this
+	// stays a change to an exit code and not to what a user reads.
 	if ctx.Target == "" {
-		return nil, fmt.Errorf("no target directory")
+		return nil, unusableTarget{errors.New("no target directory")}
 	}
 	target, err := env.EvalSymlinks(ctx.Target)
 	if err != nil {
-		return nil, fmt.Errorf("target %q: %w", ctx.Target, err)
+		return nil, unusableTarget{fmt.Errorf("target %q: %w", ctx.Target, err)}
 	}
 	if fi, err := env.Stat(target); err != nil {
-		return nil, fmt.Errorf("target %q: %w", target, err)
+		return nil, unusableTarget{fmt.Errorf("target %q: %w", target, err)}
 	} else if !fi.IsDir() {
-		return nil, fmt.Errorf("target %q is not a directory", target)
+		return nil, unusableTarget{fmt.Errorf("target %q is not a directory", target)}
 	}
 
 	// Canonicalise $HOME for the same reason the target is canonicalised: grants

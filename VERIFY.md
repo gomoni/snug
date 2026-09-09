@@ -344,7 +344,7 @@ print(d["snug"]["lossy"], d["snug"]["policy_resolved"])'
 ```
 
 ```
-exit=77
+exit=64
 0
 2
 False False
@@ -353,6 +353,14 @@ False False
 Zero raw, escaped twice, `lossy` still false and `policy_resolved` false — the
 same guarantee the policy-bearing document gives, in the shape that carries no
 policy.
+
+**`exit=64` here and `77` above, and the difference is the point.** `$BAD` is
+never created, so this is a target that does not exist — a usage error, not a
+refused policy (`policy.ErrTargetUnusable`, issue #548). The two blocks before
+this one exit `77` because a profile was unknown or a policy was refused: snug
+read the selection and the target and found them in conflict. A caller that
+cannot tell "your invocation was wrong" from "your policy was refused" gets the
+wrong answer for a typo, which is what `77` for a missing directory was.
 
 **One exit is still not a document, and it is named rather than left for a
 redirect to find:** a flag that does not PARSE exits 64 with the usage screen,
@@ -7675,8 +7683,16 @@ word, walking `subcommands()` itself so a new verb is covered the day it lands),
 `TestThePathSpellingSandboxesTheDirectory`,
 `TestAFileNamedLikeAReservedWordIsNotAmbiguous`,
 `TestASymlinkToADirectoryIsAmbiguousToo`, `TestADanglingSymlinkIsNotAmbiguous`,
-`TestALeadingFlagStillReadsAReservedWordAsADirectory` and
-`TestUsageListsEveryReservedWord`.
+`TestALeadingFlagStillReadsAReservedWordAsADirectory`,
+`TestUsageListsEveryReservedWord` and `TestTheReservedWordSetIsExactlyThis`.
+
+**The set itself is pinned, which is issue #548's answer rather than #564's.**
+The tree is flat and stays flat by a rule, not by nobody having got round to
+grouping: `subcommands()` carries the four tests a new command is placed
+against, and `TestTheReservedWordSetIsExactlyThis` fails on any change to the
+set with those four tests in its failure message. There is nothing to check by
+hand here — the point of the tripwire is that it fires at the person adding the
+word rather than at whoever reads this file later.
 
 ## If a check fails
 

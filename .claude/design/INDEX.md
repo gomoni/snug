@@ -1530,6 +1530,43 @@ There is no flag that grants less. A read-only project means not selecting `@cwd
 | `snug fix SUBJECT` | Repair one named host prerequisite under the human's own `sudo` — `subuid`, `sysctl`. |
 | `snug help` | `usage()`, on stderr, exit 0. |
 
+**The tree is FLAT, and that is a decision with a measurement behind it.** A
+command earns a top-level word only under four tests, applied in order, first
+answer winning: (1) it can be a flag on the default action — then it is a flag,
+which is what `--explain` is and what `--version` will be; (2) an existing word
+already owns its subject — then it is a sub-verb, which is why the designed
+`snug prune` (§8.2) is `snug engine prune`; (3) it needs a new word — allowed
+only if that subject will answer two or more commands, and then the word is a
+noun holding verbs; (4) a word that moves is **deleted, never aliased and never
+hidden**, because a kept old spelling is a reserved word that grants nothing.
+`subcommands()` (`internal/cli/main.go`) carries the rule and the argument;
+`TestTheReservedWordSetIsExactlyThis` makes adding a word cost an edit to a test
+that states the four tests back.
+
+Grouping `doctor` and `fix` under a `host` noun was researched against git,
+podman, docker, gh, nix, kubectl, flatpak, systemctl, npm, go and aws, and
+refused on snug's own numbers: every one of those tools pays for a top-level word
+in HELP LENGTH — docker's stated reason for regrouping was forty-plus commands
+cluttering help and tab-completion — while snug pays in directory names, and the
+two costs point at different words. Measured over 13,806 directories: `config`
+20, `proxy` 7, `engine` 3, `profile` 2, `fix` 1, `help` 1, `doctor` 0. A `host`
+noun releases the two words that were never going to collide and cannot take the
+two that do. Corroborating: the three surveyed tools that group host repair
+(podman `system`, gh `auth`, docker) are the three that already had the noun;
+the three that keep it flat (git `gc`/`fsck`/`maintenance`, flatpak `repair`,
+systemctl `daemon-reload`) never invented one.
+
+snug does group, one level down, where grouping is free: `profile
+list|show|tree|dot`, `fix subuid|sysctl` and `engine gc` hold seven verbs behind
+three words. `snug fix sysctl` and `snug fix subuid` arrived as two separate
+commands and cost zero words between them. **This is flat at seven words, not
+flat forever** — every tool in the survey grouped eventually, and the tripwire
+test exists because nothing else notices when the threshold is crossed.
+
+`snug host` is RESERVED — `fixcmd.go` says what for: operating an integration the
+host provides, as against `fix`, which restores something the host is MISSING. It
+is reserved by not being taken, which costs nothing until test 3 admits it.
+
 **A reserved word beats a directory of the same name, and where both are live
 snug refuses.** The table above is one namespace with the primary positional:
 every verb permanently costs a caller one bare directory name, and `snug ./NAME`
@@ -1569,6 +1606,13 @@ record's own owning `snug` process.
 ### 11.1 Exit codes
 
 `snug` propagates the payload's exit code verbatim, so `snug ... -- make test` is usable in a pipeline. `snug`'s own failures use `64`–`78` (sysexits-style) to stay distinguishable: `64` usage, `69` a required host capability is unavailable, `70` an internal error, `77` a policy conflict.
+
+**A target that does not exist is `64`, not `77`**, and the distinction is the
+whole reason `policy.ErrTargetUnusable` exists: `77` means snug read the
+selection and the target and found them in conflict, so a caller that gets `77`
+for a mistyped directory learns the wrong thing. All four ways `Resolve` rejects
+the target — none named, cannot be canonicalised, does not exist, is not a
+directory — carry that marker, and the marker changes no message.
 
 ### 11.2 `snug --dry-run` — the trust surface
 

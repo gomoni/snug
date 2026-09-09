@@ -334,24 +334,34 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 		// that started hitting a different refusal would still pass every
 		// assertion below, which is the "test that cannot fail" shape.
 		says string
+		// code is the exit status. 77 is a refused policy; 64 is a usage
+		// error, and a target that does not exist is one (issue #548,
+		// policy.ErrTargetUnusable). Both still produce the document — the
+		// zero-byte redirect this test exists for is about the DOCUMENT, not
+		// about which failure produced it — so the code is per-case rather
+		// than a second table.
+		code int
 	}{
 		{
 			name: "unparseable profile file",
 			env:  append(os.Environ(), "XDG_CONFIG_HOME="+badCfg, "SNUG_TEST=1"),
 			args: []string{"--dry-run", "--json", proj},
 			says: "did not load",
+			code: 77,
 		},
 		{
 			name: "unknown profile",
 			env:  baseEnv(),
 			args: []string{"--dry-run", "--json", "-p", "@nosuchprofile", proj},
 			says: "unknown profile",
+			code: 77,
 		},
 		{
 			name: "target does not exist",
 			env:  baseEnv(),
 			args: []string{"--dry-run", "--json", filepath.Join(proj, "nope")},
 			says: "no such file",
+			code: 64,
 		},
 	}
 
@@ -383,9 +393,9 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 				}
 				code = ee.ExitCode()
 			}
-			if code != 77 {
-				t.Fatalf("exit %d, want 77 — this case is meant to be a refusal\nstderr:\n%s",
-					code, errb.String())
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d — this case is meant to fail before a policy exists\nstderr:\n%s",
+					code, tc.code, errb.String())
 			}
 
 			b, err := os.ReadFile(path)
