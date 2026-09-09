@@ -126,10 +126,12 @@ func TestADeletedVerbIsNotAReservedWord(t *testing.T) {
 	}
 }
 
-// TestALiveSubcommandIsStillAReservedWord is the contrast that makes the test
-// above readable, and it is the one that fails if somebody re-adds `attach`
-// to the switch: a word that IS dispatched swallows a directory of the same
-// name, and that is the cost issue #548 is weighing.
+// TestALiveSubcommandIsStillAReservedWord is the contrast that makes the two
+// tests around it readable: a live verb, in a tree where NOTHING of that name
+// exists, dispatches exactly as before. Issue #564 narrowed when the word loses
+// to a directory; it did not change what the word does when there is no
+// directory to lose to, and a refusal that fired on every `snug config` would
+// pass TestAReservedWordThatAlsoNamesADirectoryIsRefused just as well.
 //
 // The witness is structural rather than the exit code. run()'s first
 // host-visible act is lockTarget, so if `snug config` were ever read as a
@@ -142,12 +144,16 @@ func TestADeletedVerbIsNotAReservedWord(t *testing.T) {
 // "pasta.avx2" shape: a check that always reads zero).
 func TestALiveSubcommandIsStillAReservedWord(t *testing.T) {
 	dir := t.TempDir()
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	// The lock path a bare `snug config` WOULD take if the word were read as a
+	// relative target: the cwd's own ./config, which this tree deliberately does
+	// not contain. lockTarget resolves symlinks, so the control below has to
+	// create it to compute the same path snug would.
 	configDir := filepath.Join(dir, "config")
 	if err := os.Mkdir(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
-
 	lockPath := lockPathForTarget(t, configDir)
 	t.Cleanup(func() { os.Remove(lockPath) })
 	if _, err := os.Lstat(lockPath); err == nil {
@@ -171,12 +177,21 @@ func TestALiveSubcommandIsStillAReservedWord(t *testing.T) {
 	}
 
 	// ── the actual case ─────────────────────────────────────────────────
-	runSnugMain(t, dir, env, "config")
+	// The directory goes away first: with it present the run is ambiguous and
+	// #564 refuses, which is the test above, not this one.
+	if err := os.Remove(configDir); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := runSnugMain(t, dir, env, "config")
 
+	if code != 0 {
+		t.Errorf("`snug config` in a tree with no ./config exited %d, want 0 — the ambiguity "+
+			"refusal has to fire on the collision, not on the word:\nstderr:\n%s", code, stderr)
+	}
 	if _, err := os.Lstat(lockPath); err == nil {
-		t.Errorf("a lock file exists at %s after `snug config` (cwd contains ./config): the "+
-			"word was read as a target rather than dispatched, so the reserved-word switch "+
-			"is not doing what main.go's comment says", lockPath)
+		t.Errorf("a lock file exists at %s after `snug config`: the word was read as a target "+
+			"rather than dispatched, so the reserved-word switch is not doing what main.go's "+
+			"comment says", lockPath)
 	}
 }
 
@@ -199,4 +214,210 @@ func lockPathForTarget(t *testing.T, target string) string {
 		t.Fatalf("targetLockBase: %v", err)
 	}
 	return filepath.Join(base, snugName, targetLockName(real))
+}
+
+// TestAReservedWordThatAlsoNamesADirectoryIsRefused is issue #564: snug shares
+// one namespace between its reserved verbs and its primary positional, and
+// until now the verb won silently — a `fix/` directory in the cwd got a
+// subcommand instead of a sandbox, with nothing said. git is the surveyed
+// prior art that solves this and it solves it by refusing (`fatal: ambiguous
+// argument 'feature': both revision and filename`, then both spellings), so
+// snug refuses too.
+//
+// The witness is threefold, because two of the three can pass for the wrong
+// reason on their own: the exit code is exitUsage, the message names BOTH
+// spellings, and — the structural half inherited from
+// TestALiveSubcommandIsStillAReservedWord — no target lock file exists
+// afterwards, so the refusal is not quietly sandboxing the directory instead.
+func TestAReservedWordThatAlsoNamesADirectoryIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	lockPath := lockPathForTarget(t, configDir)
+	t.Cleanup(func() { os.Remove(lockPath) })
+
+	_, stderr, code := runSnugMain(t, dir, env, "config")
+
+	if code != exitUsage {
+		t.Errorf("`snug config` with ./config present exited %d, want %d (exitUsage):\nstderr:\n%s",
+			code, exitUsage, stderr)
+	}
+	for _, want := range []string{`"config" is both a subcommand and a directory here`, "snug ./config", "snug config"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the refusal does not contain %q — it has to name both spellings, "+
+				"which is the only place the path-prefix rule reaches a user who has not "+
+				"read main.go:\n%s", want, stderr)
+		}
+	}
+	if _, err := os.Lstat(lockPath); err == nil {
+		t.Errorf("a lock file exists at %s after the refusal: snug sandboxed the directory "+
+			"rather than refusing to guess", lockPath)
+	}
+}
+
+// TestEveryReservedWordRefusesWhenADirectoryOfThatNameExists is the reason
+// subcommands() is a map and not a switch: the refusal is defined over exactly
+// the set that dispatches, so the set is enumerable and this test walks all of
+// it. A word added to snug's top level in the future is covered here the day
+// it lands, with no list to update — which is what issue #548 needs, since it
+// moves words in and out of that set.
+func TestEveryReservedWordRefusesWhenADirectoryOfThatNameExists(t *testing.T) {
+	for word := range subcommands() {
+		t.Run(word, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, word), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+			_, stderr, code := runSnugMain(t, dir, env, word)
+
+			if code != exitUsage {
+				t.Fatalf("`snug %s` with ./%s present exited %d, want %d:\nstderr:\n%s",
+					word, word, code, exitUsage, stderr)
+			}
+			if !strings.Contains(stderr, "snug ./"+word) {
+				t.Errorf("the refusal for %q does not name the path spelling `snug ./%s`:\n%s",
+					word, word, stderr)
+			}
+		})
+	}
+}
+
+// TestThePathSpellingSandboxesTheDirectory is the other half of the refusal:
+// the message tells the user to write `snug ./config`, so `snug ./config` has
+// to work. An error naming a fix that does not fix it is worse than no error.
+func TestThePathSpellingSandboxesTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	stdout, stderr, code := runSnugMain(t, dir, env, "--dry-run", "./config")
+
+	if code != 0 {
+		t.Fatalf("`snug --dry-run ./config` exited %d, want 0:\nstderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "TARGET   "+configDir) {
+		t.Errorf("the dry-run screen does not name %s as TARGET, so the spelling the "+
+			"refusal recommends does not do what it says:\n%s", configDir, stdout)
+	}
+}
+
+// TestAFileNamedLikeAReservedWordIsNotAmbiguous pins the narrow trigger. snug's
+// positional is a DIRECTORY to sandbox, so a regular file named `config` is not
+// a second reading of the word and refusing there would break `snug config` for
+// anyone with such a file — a refusal that fires when nothing is ambiguous is
+// the failure mode that gets a check deleted.
+func TestAFileNamedLikeAReservedWordIsNotAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	stdout, stderr, code := runSnugMain(t, dir, env, "config")
+
+	if code != 0 {
+		t.Fatalf("`snug config` with a regular file ./config exited %d, want 0 — the file is "+
+			"not a target snug could have meant:\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "both a subcommand and a directory") {
+		t.Errorf("the ambiguity refusal fired on a regular file:\n%s", stderr)
+	}
+}
+
+// TestASymlinkToADirectoryIsAmbiguousToo: `snug config` would follow such a
+// symlink and sandbox what it points at, so the two readings of the word are
+// exactly as live as for a real directory. os.Lstat alone cannot tell the two
+// apart from a symlink to a FILE, which is why the check stats through.
+func TestASymlinkToADirectoryIsAmbiguousToo(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "somewhere")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(dir, "config")); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	_, stderr, code := runSnugMain(t, dir, env, "config")
+
+	if code != exitUsage {
+		t.Errorf("`snug config` with ./config a symlink to a directory exited %d, want %d:\nstderr:\n%s",
+			code, exitUsage, stderr)
+	}
+}
+
+// TestADanglingSymlinkIsNotAmbiguous is the same question one step further out,
+// and it is here because os.Lstat SUCCEEDS on a dangling symlink — the exact
+// disagreement between Lstat and what a mount actually resolves that put the
+// #186 guard on the wrong side once (internal/cli/claude.go's
+// projectableTargetFile). Nothing is ambiguous here: snug could not sandbox
+// this name if it tried.
+func TestADanglingSymlinkIsNotAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), filepath.Join(dir, "config")); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	_, stderr, code := runSnugMain(t, dir, env, "config")
+
+	if code != 0 {
+		t.Fatalf("`snug config` with ./config a dangling symlink exited %d, want 0:\nstderr:\n%s",
+			code, stderr)
+	}
+}
+
+// TestALeadingFlagStillReadsAReservedWordAsADirectory pins a measured
+// consequence of where the refusal sits rather than an intention: the dispatch
+// switch is guarded by !strings.HasPrefix(argv[0], "-"), so `snug --dry-run
+// fix` never reaches it and `fix` is an ordinary positional there. The refusal
+// is placed at the dispatch it guards, so it inherits that guard exactly. The
+// reading is unambiguous in this form — there is no verb to compete with once a
+// flag has been seen — and the test exists so a future move of the check
+// upwards is a deliberate, visible delta.
+func TestALeadingFlagStillReadsAReservedWordAsADirectory(t *testing.T) {
+	dir := t.TempDir()
+	fixDir := filepath.Join(dir, "fix")
+	if err := os.Mkdir(fixDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	stdout, stderr, code := runSnugMain(t, dir, env, "--dry-run", "fix")
+
+	if code != 0 {
+		t.Fatalf("`snug --dry-run fix` exited %d, want 0:\nstderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "TARGET   "+fixDir) {
+		t.Errorf("the dry-run screen does not name %s as TARGET:\n%s", fixDir, stdout)
+	}
+}
+
+// TestUsageListsEveryReservedWord closes issue #564's stated worst case: the
+// refusal tells a user that `fix` is a subcommand, and before this change
+// `fix`, `engine` and `help` were dispatched by main.go while appearing nowhere
+// in usage(). A message pointing at a verb the help text does not admit to is
+// the one outcome worse than the silent dispatch it replaces.
+func TestUsageListsEveryReservedWord(t *testing.T) {
+	dir := t.TempDir()
+	env := []string{"HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir()}
+
+	_, stderr, _ := runSnugMain(t, dir, env, "help")
+
+	for word := range subcommands() {
+		if !strings.Contains(stderr, "snug "+word) {
+			t.Errorf("usage() never writes `snug %s`, but that word is dispatched and the "+
+				"ambiguity refusal will name it:\n%s", word, stderr)
+		}
+	}
 }
