@@ -2030,24 +2030,34 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
 		fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
 		renderHTTPDoors(out, p)
-		// address is copied from the host (a small accepted disclosure — no
-		// synthetic-address mechanism exists any more), and the host is
-		// unreachable on every address it owns: pasta itself copies the
-		// default-route interface's v4 primary and v6 globals onto snug0, and
-		// the SEAL closes the rest (its own link-local, and any second alias
-		// on another interface) by assigning every host-owned address onto
-		// snug0 as a local /32 or /128 route inside the sandbox's own network
-		// namespace — a connect to one then short-circuits to local delivery
-		// and is refused, nothing listens, and the packet never reaches
-		// pasta or the host beyond it.
-		fmt.Fprintf(out, "         address         copied from the host (a small accepted disclosure)\n")
+		// address is copied from the host (no synthetic-address mechanism
+		// exists any more), and the host is unreachable on every address it
+		// owns: pasta itself copies the default-route interface's v4 primary
+		// and v6 globals onto snug0, and the SEAL closes the rest (its own
+		// link-local, and any address on any other interface) by assigning
+		// every host-owned address onto snug0 as a local /32 or /128 route
+		// inside the sandbox's own network namespace — a connect to one then
+		// short-circuits to local delivery and is refused, nothing listens,
+		// and the packet never reaches pasta or the host beyond it.
+		//
+		// The seal is what makes the disclosure WIDER than the copy: pasta
+		// copies one interface, the seal writes every one, so the screen has
+		// to say so rather than leave "copied from the host" reading as the
+		// LAN address alone. Named by the red team as the gap between this
+		// screen and .claude/design/INDEX.md §4.5a.
+		fmt.Fprintf(out, "         address         copied from the host — and the seal below adds every\n")
+		fmt.Fprintf(out, "                         OTHER address the host owns, on every host interface, so\n")
+		fmt.Fprintf(out, "                         `ip addr` inside inventories the docker/podman/libvirt\n")
+		fmt.Fprintf(out, "                         bridges and a VPN's internal address as well as the LAN\n")
+		fmt.Fprintf(out, "                         one. Accepted disclosure, and it is wider than one address.\n")
 		if p.Net.HostAddressesSealed() {
 			fmt.Fprintf(out, "         host's own IPs  UNREACHABLE, by design — sealed as local routes inside the\n")
 			fmt.Fprintf(out, "                         sandbox's own network namespace (a /32 for IPv4, a /128\n")
-			fmt.Fprintf(out, "                         for IPv6, every address the host owns, both families),\n")
-			fmt.Fprintf(out, "                         so a connect to one short-circuits to local delivery and\n")
-			fmt.Fprintf(out, "                         is refused; this covers the host's own link-local\n")
-			fmt.Fprintf(out, "                         address too, which pasta does not copy onto snug0 itself.\n")
+			fmt.Fprintf(out, "                         for IPv6, every address the host owns on every interface,\n")
+			fmt.Fprintf(out, "                         both families), so a connect to one short-circuits to\n")
+			fmt.Fprintf(out, "                         local delivery and is refused; this covers the host's own\n")
+			fmt.Fprintf(out, "                         link-local address too, which pasta does not copy onto\n")
+			fmt.Fprintf(out, "                         snug0 itself.\n")
 		}
 	}
 }

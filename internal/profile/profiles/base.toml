@@ -294,14 +294,23 @@ git = "extract"
 # ── networking ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can reach the whole internet — exfiltrate anything it can
 # read, fetch and run anything it likes. It copies the host's addresses into
-# the sandbox's own network namespace (a small accepted disclosure) and drives
-# the host's own resolver for DNS. What it CANNOT reach: host loopback
-# (127.0.0.1 / ::1), abstract AF_UNIX sockets (X11, D-Bus — scoped by the
-# network namespace), and every address the HOST itself owns, in both
-# families — snug seals each one as a local route inside the sandbox's own
-# network namespace, so a connect to it short-circuits to local delivery and
-# is refused rather than reaching pasta and the host beyond it. Those closures
-# are the point.
+# the sandbox's own network namespace and drives the host's own resolver for
+# DNS. What it CANNOT reach: host loopback (127.0.0.1 / ::1), abstract AF_UNIX
+# sockets (X11, D-Bus — scoped by the network namespace), and every address the
+# HOST itself owns, in both families — snug seals each one as a local route
+# inside the sandbox's own network namespace, so a connect to it short-circuits
+# to local delivery and is refused rather than reaching pasta and the host
+# beyond it. Those closures are the point.
+#
+# ABUSE (disclosure): the seal is what makes the address disclosure WIDER than
+# pasta's copy, and this is the sentence the screen has to carry. pasta copies
+# the DEFAULT-ROUTE interface only; the seal assigns every address the host owns
+# on EVERY host interface. So `ip addr` inside inventories the docker and podman
+# bridges, virbr0, and a corporate VPN's internal address — the names of every
+# network the host is attached to — not just its LAN address. Reachability is
+# unchanged (a sealed address is refused locally, and whatever pasta's copied
+# routes already reached is pre-existing @net); what is new is that the payload
+# can ENUMERATE them. Accepted, and it is the cost of the closure above.
 #
 # There is deliberately no "offline" profile. Offline is the ABSENCE of this
 # one, which is why it cannot be switched back on by adding something.

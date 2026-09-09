@@ -9,10 +9,15 @@ NETWORK  egress — private netns (one per sandbox) with a pasta helper.
          host -> sandbox CLOSED — nothing is forwarded into this
                          namespace. A door a human can open is declared with
                          listen_names in a profile; see below.
-         address         copied from the host (a small accepted disclosure)
+         address         copied from the host — and the seal below adds every
+                         OTHER address the host owns, on every host interface, so
+                         `ip addr` inside inventories the docker/podman/libvirt
+                         bridges and a VPN's internal address as well as the LAN
+                         one. Accepted disclosure, and it is wider than one address.
          host's own IPs  UNREACHABLE, by design — sealed as local routes inside the
                          sandbox's own network namespace (a /32 for IPv4, a /128
-                         for IPv6, every address the host owns, both families),
-                         so a connect to one short-circuits to local delivery and
-                         is refused; this covers the host's own link-local
-                         address too, which pasta does not copy onto snug0 itself.
+                         for IPv6, every address the host owns on every interface,
+                         both families), so a connect to one short-circuits to
+                         local delivery and is refused; this covers the host's own
+                         link-local address too, which pasta does not copy onto
+                         snug0 itself.
