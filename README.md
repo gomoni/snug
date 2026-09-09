@@ -86,6 +86,22 @@ hello from snug
 curl: (6) Could not resolve host: example.com
 ```
 
+### A verb and a directory share one namespace
+
+`doctor`, `profile`, `config`, `proxy`, `engine`, `fix` and `help` are read as
+subcommands, never as a directory to sandbox. Write the path form for a
+directory named like one — `snug ./config`. If both are here, snug refuses
+rather than guessing:
+
+```
+$ snug config
+snug: "config" is both a subcommand and a directory here, so snug will not guess.
+      snug ./config      sandbox the directory
+      snug config ...    run the subcommand   (snug help lists them)
+$ echo $?
+64
+```
+
 ## Quick install
 
 One needs an up to date Go compiler.

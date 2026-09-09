@@ -7593,6 +7593,91 @@ in the stdout ones only. `TestNewSessionHasTwoIndependentReasons`
 (`internal/policy`) covers the argv and `TestDescribeTTYNamesEveryReasonAndTheResidual`
 (`internal/cli`) the four screens.
 
+## 30. A reserved word that is also a directory here refuses (issue #564)
+
+snug's verbs and the directory it sandboxes share one namespace. The failure
+this closes is silent: a `fix/` directory in the cwd got the SUBCOMMAND, and
+nothing said so. git is the prior art — `fatal: ambiguous argument 'feature':
+both revision and filename` — and it is the only surveyed tool that refuses
+rather than documenting the hazard.
+
+Build a tree where both readings are live:
+
+```
+$ mkdir -p /tmp/v564/fix && cd /tmp/v564
+$ snug fix
+snug: "fix" is both a subcommand and a directory here, so snug will not guess.
+      snug ./fix      sandbox the directory
+      snug fix ...    run the subcommand   (snug help lists them)
+$ echo $?
+64
+```
+
+**The spelling the message recommends does what it says.** An error naming a
+fix that does not fix it is worse than no error:
+
+```
+$ snug --dry-run ./fix | sed -n 3p
+TARGET   /tmp/v564/fix  (writable)
+```
+
+**The trigger is narrow in two directions, and both are deliberate.** A regular
+FILE of that name is not a second reading — snug's positional is a directory —
+so the verb still dispatches. Run this in a tree holding a `config` FILE:
+
+```
+$ snug config
+config file      /home/you/.config/snug/config.toml   (absent)
+defaults         "@sys" "@home" "@cwd-rw"
+                 built-in (internal/profile/defaults.go)
+$ echo $?
+0
+```
+
+A symlink TO a directory is ambiguous, because snug would follow it. `os.Lstat`
+alone cannot tell that from a symlink to a file, which is why the check stats
+through:
+
+```
+$ mkdir d && ln -s d config
+$ snug config
+snug: "config" is both a subcommand and a directory here, so snug will not guess.
+      snug ./config      sandbox the directory
+      snug config ...    run the subcommand   (snug help lists them)
+$ echo $?
+64
+```
+
+**A leading flag reads the word as a directory, and that is not the same
+question.** The dispatch switch is guarded by `!strings.HasPrefix(argv[0], "-")`
+and the refusal sits inside that guard, so once a flag has been seen there is no
+verb left to compete with:
+
+```
+$ snug --dry-run fix | sed -n 3p
+TARGET   /tmp/v564/fix  (writable)
+```
+
+**Every reserved word is listed by `snug help`.** The message tells a user that
+`fix` is a subcommand, so the help text has to admit to it — a message pointing
+at a verb `--help` does not mention is the one outcome worse than the silent
+dispatch:
+
+```
+$ snug help 2>&1 | grep -c 'snug engine gc\|snug fix SUBJECT\|snug help'
+3
+```
+
+The automated equivalents are all in `internal/cli/reservedwords_test.go`:
+`TestAReservedWordThatAlsoNamesADirectoryIsRefused`,
+`TestEveryReservedWordRefusesWhenADirectoryOfThatNameExists` (a subtest per
+word, walking `subcommands()` itself so a new verb is covered the day it lands),
+`TestThePathSpellingSandboxesTheDirectory`,
+`TestAFileNamedLikeAReservedWordIsNotAmbiguous`,
+`TestASymlinkToADirectoryIsAmbiguousToo`, `TestADanglingSymlinkIsNotAmbiguous`,
+`TestALeadingFlagStillReadsAReservedWordAsADirectory` and
+`TestUsageListsEveryReservedWord`.
+
 ## If a check fails
 
 1. Re-run it with `--dry-run` and compare what snug *claimed* against what you

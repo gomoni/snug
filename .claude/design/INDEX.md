@@ -1525,6 +1525,29 @@ There is no flag that grants less. A read-only project means not selecting `@cwd
 | `snug profile tree [NAME…]` / `dot` | Which profiles imply which; the same as a graphviz graph. |
 | `snug config` | The effective configuration and where each part came from. |
 | `snug doctor` | Host capability report and the fallback matrix as it applies here (§4.9). |
+| `snug proxy [dir]` | Serve a declared HTTP door to your own browser (§4.6a). |
+| `snug engine gc` | Reclaim the persistent container-engine image store (§8.2). |
+| `snug fix SUBJECT` | Repair one named host prerequisite under the human's own `sudo` — `subuid`, `sysctl`. |
+| `snug help` | `usage()`, on stderr, exit 0. |
+
+**A reserved word beats a directory of the same name, and where both are live
+snug refuses.** The table above is one namespace with the primary positional:
+every verb permanently costs a caller one bare directory name, and `snug ./NAME`
+is the spelling that gets it back. An `argv[0]` matching a reserved word AND
+naming a directory here exits `64` without dispatching, and the message gives
+both spellings; git is the prior art (`fatal: ambiguous argument 'feature':
+both revision and filename`), and it is the only surveyed tool that solves the
+collision rather than documenting it. The alternative — pick one silently — is
+what makes a `fix/` directory in the cwd get a subcommand with no warning.
+`subcommands()` (`internal/cli/main.go`) is one map so the dispatch and the
+refusal cannot name different sets. Two bounds worth stating because neither is
+an oversight: a regular FILE of that name is not a second reading, since snug's
+positional is a directory; and the check sits inside the dispatch guard
+`!strings.HasPrefix(argv[0], "-")`, so `snug --dry-run fix` reads `fix` as the
+target, there being no verb left to compete with once a flag has been seen.
+There is no `-d`/`--dir` flag and adding one is refused — it reaches the script
+author who already knows the hazard and not the person who typed `snug fix`,
+who is the one who is wrong.
 
 **Designed, not built:** `--config PATH` (§2.7), `--publish PORT`, `--keep-tmp` (§7.3), `--net-strict`, `snug prune` (§8.2), a `--dry-run --json` machine format, and shell completion. Do not cite any of them as existing.
 

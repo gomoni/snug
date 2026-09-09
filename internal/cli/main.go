@@ -119,23 +119,15 @@ func Main() {
 
 	// Subcommands next. They are reserved words; to sandbox a directory that
 	// happens to be named one of them, write it as a path: `snug ./config`.
+	// When both readings are live — the word dispatches AND a directory of
+	// that name is here — snug refuses rather than picking one (issue #564).
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
-		switch argv[0] {
-		case "doctor":
-			os.Exit(doctor(argv[1:]))
-		case "profile":
-			os.Exit(profileCmd(argv[1:]))
-		case "config":
-			os.Exit(configCmd(argv[1:]))
-		case "proxy":
-			os.Exit(proxyCmd(argv[1:]))
-		case "engine":
-			os.Exit(engineCmd(argv[1:]))
-		case "fix":
-			os.Exit(fixCmd(argv[1:]))
-		case "help":
-			usage()
-			os.Exit(0)
+		if cmd, ok := subcommands()[argv[0]]; ok {
+			if namesADirectoryHere(argv[0]) {
+				fmt.Fprint(os.Stderr, ambiguousWordMessage(argv[0]))
+				os.Exit(exitUsage)
+			}
+			os.Exit(cmd(argv[1:]))
 		}
 	}
 
@@ -146,6 +138,59 @@ func Main() {
 		os.Exit(exitUsage)
 	}
 	os.Exit(run(cfg))
+}
+
+// subcommands is snug's entire top-level reserved-word set. It is a map rather
+// than a switch so that ONE list both dispatches the word and defines the
+// ambiguity refusal over it: a second set written beside the dispatch would be
+// a copy of state, and issue #548 exists precisely to move words in and out of
+// this one.
+//
+// Everything here permanently costs a caller one bare directory name, which is
+// #548's whole argument; `snug ./NAME` is the spelling that gets it back.
+// usage() states that rule for somebody who goes looking, and
+// ambiguousWordMessage states it at the moment of the collision, to somebody
+// who did not.
+func subcommands() map[string]func(argv []string) int {
+	return map[string]func(argv []string) int{
+		"doctor":  doctor,
+		"profile": profileCmd,
+		"config":  configCmd,
+		"proxy":   proxyCmd,
+		"engine":  engineCmd,
+		"fix":     fixCmd,
+		"help":    func([]string) int { usage(); return 0 },
+	}
+}
+
+// namesADirectoryHere reports whether name — already known to be a reserved
+// word — also names something in the cwd that snug could have sandboxed.
+//
+// It stats THROUGH a symlink on purpose. os.Lstat alone answers a different
+// question — "is there a NAME here" — and it succeeds on a dangling symlink,
+// which snug cannot sandbox at all, and cannot tell a symlink to a directory
+// from one to a file. projectableTargetFile (claude.go) is the same
+// disagreement one guard over, where it mattered more.
+//
+// Any error is "no directory here" rather than a refusal: this is a check for
+// a SECOND reading of a word, and a name snug cannot reach has no second
+// reading. The cost is one failed stat on the hot path, on a name that has
+// already matched a reserved word.
+func namesADirectoryHere(name string) bool {
+	st, err := os.Stat(name)
+	return err == nil && st.IsDir()
+}
+
+// ambiguousWordMessage is modelled on git's, which is the only surveyed tool
+// that solves this collision and solves it by refusing: say what is ambiguous,
+// then give both spellings explicitly rather than a rule to look up. The two
+// indented lines are what CLAUDE.md's "errors name the fix" asks for — a user
+// who reads this has the answer without reading anything else.
+func ambiguousWordMessage(word string) string {
+	return fmt.Sprintf(`snug: %q is both a subcommand and a directory here, so snug will not guess.
+      snug ./%s      sandbox the directory
+      snug %s ...    run the subcommand   (snug help lists them)
+`, word, word, word)
 }
 
 // exitOnStageError is the hidden verbs' whole error handling: they are not
@@ -166,6 +211,7 @@ func usage() {
 
 usage:
   snug [flags] [dir] [-- command ...]     run a sandbox on dir (default: .)
+  snug ./config                           sandbox a directory named like a subcommand
   snug profile list                       list available profiles
   snug profile show NAME                  show what a profile grants
   snug profile tree [NAME...]             show which profiles imply which
@@ -173,6 +219,14 @@ usage:
   snug config                             show the resolved configuration
   snug doctor                             check whether this host can run snug
   snug proxy [dir]                        serve a declared http door to your browser
+  snug engine gc                          reclaim the persistent container image store
+  snug fix SUBJECT                        repair a host prerequisite (subuid, sysctl)
+  snug help                               this text
+
+"profile", "config", "doctor", "proxy", "engine", "fix" and "help" are reserved:
+they are read as subcommands, never as a directory to sandbox. Write "snug
+./NAME" for a directory named like one — and if both exist here, snug refuses
+rather than guessing.
 
 flags:
   -p, --profile NAME   add a profile (repeatable; order is irrelevant)
