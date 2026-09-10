@@ -47,6 +47,12 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          cgroups disabled, and only crun implements that mode: the run REFUSES
          before starting the engine if crun is absent, rather than serving a
          container API that fails at 'create'.
+         When the PAYLOAD exits normally, snug asks the engine to stop this
+         run's containers first, bounded at 1s: a container that handles its
+         stop signal gets to flush. On any other exit it does not — snug
+         killed by a signal tears the sandbox down without asking, and snug
+         SIGKILLed runs no code at all. In both of those the kernel fells
+         every container with the engine's pid namespace, unsignalled.
 IMAGES   provenance is snug's, not this host's (issue #137)
          search      docker.io and nothing else — no mirror, no rewrite, no
                      insecure registry. A generated registries.conf, pointed

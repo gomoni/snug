@@ -1212,6 +1212,16 @@ func claudeGuidance(pol *policy.Policy) []byte {
 		b.WriteString("a private image cannot be pulled and `podman login` has nothing to persist\n")
 		b.WriteString("to. An auth failure against a private registry is the sandbox working, not a\n")
 		b.WriteString("misconfiguration to repair.\n\n")
+		// The third fact worth an agent's turn, and it is phrased per path
+		// because that is the only honest phrasing (issue #174): a container
+		// gets a signal it can handle on exactly one of the three ways a run
+		// ends. An agent told "containers shut down gracefully" would write a
+		// container that depends on it and be wrong two exits out of three.
+		b.WriteString("A container is stopped gracefully only when the command you are running\n")
+		b.WriteString("exits normally, and only for about a second. If this sandbox is signalled\n")
+		b.WriteString("or killed, its containers are killed with it and get no chance to flush —\n")
+		b.WriteString("so a container doing buffered work should be stopped by you, before you\n")
+		b.WriteString("exit, rather than left to teardown.\n\n")
 	}
 
 	if id := pol.Identity; id != nil && id.SSHMode != policy.SSHNone {

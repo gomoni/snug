@@ -1198,6 +1198,21 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         cgroups disabled, and only crun implements that mode: the run REFUSES\n")
 	fmt.Fprintf(out, "         before starting the engine if crun is absent, rather than serving a\n")
 	fmt.Fprintf(out, "         container API that fails at 'create'.\n")
+	// PER PATH, NEVER AS A CAPABILITY (issue #174, invariant 5). A line saying
+	// "graceful container shutdown: on" would be a guarantee snug keeps on one
+	// of three exits and cannot keep on the other two: on a catchable signal
+	// the teardown sweep SIGKILLs the stage before snug's own post-payload code
+	// runs at all, and on a SIGKILL no Go code runs anywhere. The measurement
+	// this line is worth stating for is that the graceful case is real —
+	// 134ms for a container whose pid 1 handles the signal — and the reason the
+	// other two cannot be fixed is the pid namespace collapsing, which is the
+	// same fact that makes the containment strong.
+	fmt.Fprintf(out, "         When the PAYLOAD exits normally, snug asks the engine to stop this\n")
+	fmt.Fprintf(out, "         run's containers first, bounded at 1s: a container that handles its\n")
+	fmt.Fprintf(out, "         stop signal gets to flush. On any other exit it does not \u2014 snug\n")
+	fmt.Fprintf(out, "         killed by a signal tears the sandbox down without asking, and snug\n")
+	fmt.Fprintf(out, "         SIGKILLed runs no code at all. In both of those the kernel fells\n")
+	fmt.Fprintf(out, "         every container with the engine's pid namespace, unsignalled.\n")
 	describeImageProvenance(out, c)
 }
 

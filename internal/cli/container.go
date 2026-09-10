@@ -362,11 +362,23 @@ func startContainers(env policy.Environ, pol *policy.Policy, n *notes, verbose, 
 	//
 	// Both halves still matter. Wiring Stop here and nothing at payload exit
 	// would leave the keepalive held through snug's own post-payload code.
+	//
+	// AND THE GRACEFUL STOP GOES AT PAYLOAD EXIT FOR EXACTLY THE REASON ABOVE
+	// (issue #174): it is the one moment snug's own Go code runs while the
+	// engine is still alive to be asked, so it is the only place a container
+	// can be sent a signal it can handle. It runs BEFORE Detach, because
+	// Detach drops the keepalive and the keepalive is what is holding the
+	// engine up. Order matters here and nothing else enforces it — the two
+	// calls are one closure, in this file, on purpose.
+	//
+	// It is bounded at one second and every failure inside it proceeds anyway:
+	// see dockerproxy.StopRunContainers, which carries the measurements and
+	// the reason the budget is snug's number rather than the payload's.
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,
 		onEngineReady: eng.DialLifeline,
-		onPayloadExit: eng.Detach,
+		onPayloadExit: func() { p.StopRunContainers(audit); eng.Detach() },
 		// The reaper is the one helper snug starts that is MEANT to outlive
 		// it, so it is the one thing the signalled-teardown sweep must not
 		// SIGKILL (issue #113). Its pid is already fixed: ArmReaper ran above,
