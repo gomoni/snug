@@ -62,10 +62,38 @@ import (
 //     late-arming die-with-parent is issue #13's original defect, and its
 //     appearance (90-131ms across these trials) lines up with the onset
 //     teardown.go's own header measured independently (leaks starting
-//     around a 94-102ms offset). Confirmed both directions, 3 quiet runs and
-//     3 fork-storm-loaded runs each, same session: the reverted build leaks
-//     6/6 on both assertions every single run, and the unmodified fix leaks
-//     0/6 every single run.
+//     around a 94-102ms offset). Confirmed both directions on a QUIET host:
+//     the reverted build leaks 6/6 on both assertions, the unmodified fix
+//     0/6.
+//
+// THE SENTENCE ABOVE USED TO SAY "3 quiet runs and 3 fork-storm-loaded runs
+// each ... 6/6 every single run", AND THE LOADED HALF OF THAT IS FALSE. It is
+// corrected here rather than deleted, because the shape recurs: a control
+// measured once, under one set of conditions, written down as though it held
+// under all of them. Re-measured against the same reverted build (the flat
+// pre-#101 topology — exec.go execs bwrap directly, no CLONE_NEWPID and no
+// __inpidns; dropping CLONE_NEWPID ALONE does not build a working snug, the
+// verb refuses with "this process is pid N, not pid 1"):
+//
+//	quiet, load ~1        reverted build FAILS 6/6, both assertions
+//	loaded, load 8-10     reverted build PASSES 4/4 runs
+//
+// The leak is still reachable under that load — a bash-paced poll of the same
+// predicate, trigger at 0.39s, leaks 5/5 at every extra delay from 0 to 100ms
+// — so what moves is not the defect but WHERE THE POLL LANDS relative to the
+// window. Offset sweep of the reverted build, quiet host, 5 trials a point:
+//
+//	0.04 0.06 0.08 -> 0/5   0.10 0.12 0.15 -> 5/5   0.20 0.25 -> 0/5
+//
+// so the window is ~100-150ms quiet and opens LATER under load, while this
+// test's poll — cheap /proc reads — fires at roughly the same place. What
+// this test guarantees is therefore narrower than "it catches the
+// regression": it never FAILS falsely, which is what the fixed offset could
+// not manage, and it catches issue #13's residual returning on a host that is
+// not busy. A CI runner is such a host; a workstation under a fork storm is
+// not. Do not add a sleep to "fix" that — the whole point of the poll is that
+// no constant lands in this window on every host, and a delay tuned to a
+// loaded run walks straight back out of it on a quiet one.
 //   - FAR edge: the payload sleeps briefly before its own touch (see the
 //     script below), pushing the write assertion 2 depends on well past the
 //     handful of milliseconds bwrap needs to fork, on any host.
