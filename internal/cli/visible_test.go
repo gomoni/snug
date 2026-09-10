@@ -20,8 +20,9 @@ import (
 // sites in describeEnvironment and nowhere else — while `formatArgs` (which had
 // no test at all), the FILESYSTEM loop and `snug profile show` rendered the same
 // text verbatim. The commit that fixed the first one left the argv block four
-// lines below it broken, reachable from a HOST value through @claude's shipped
-// `inherit EDITOR` with no profile file involved:
+// lines below it broken, reachable from a HOST value through a profile's
+// `inherit EDITOR` — @claude's own at the time, withdrawn since by issue #530 —
+// with no profile FILE involved:
 //
 //	EDITOR=$'vim\n  --ro-bind /home/u/.ssh /home/u/.ssh' snug --dry-run -p @claude .
 //	  --setenv EDITOR vim
@@ -56,17 +57,24 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	const forged = "FORGED-BY-A-VALUE"
 
 	// A host value carrying the escape sequence that erases the line above it,
-	// reaching the policy through the same shipped `inherit` the live case used.
+	// reaching the policy through `inherit` exactly as the live case did.
+	//
+	// FOUR PROBES, THREE SHIPPED INHERITS. @claude inherits ANTHROPIC_BASE_URL,
+	// PAGER and NO_COLOR — EDITOR and VISUAL were withdrawn by issue #530 — and
+	// each probe needs a variable of its own for the mixing reason above. So
+	// this one and the bidi one below arrive through `probe`, a profile this
+	// fixture defines (see the registry below), which is the same
+	// policy.Resolve path with the same VerbInherit entries: what the renderer
+	// sees is a host value it did not write, which is the whole question.
 	env := newEnvFakeEnv()
-	env.env["EDITOR"] = "vim\x1b[1A\r  ro     /etc/shadow   " + forged
+	env.env["EDITOR"] = "vim\x1b[1A\r  ro     /etc/shadow   " + forged + "-ESC"
 	// PURE C1, in a second variable, so that no ASCII control in the same value
 	// can make %q escape these on snug's behalf. U+009B is CSI, so "\u009b1A"
 	// is the 8-bit spelling of the cursor-up the value above writes as ESC-[,
 	// and U+0085 (NEL) is a line break a C1-mode terminal acts on.
 	// @claude inherits PAGER, so this arrives by exactly the route EDITOR does.
 	env.env["PAGER"] = "less\u009b1A\u0085  ro     /etc/shadow   " + forged + "-C1"
-	// AND THE BIDI SPELLING, in a third variable @claude inherits (redteam host
-	// round 3, F2). U+202E is category Cf, not Cc, so the widening that closed C1
+	// AND THE BIDI SPELLING, in a third variable (redteam host round 3, F2). U+202E is category Cf, not Cc, so the widening that closed C1
 	// — unicode.IsControl — could not see it: at 8d17f85 this value reached the
 	// ENVIRONMENT block AND the --setenv argv line raw, measured through `cat -v`.
 	// It forges no row and erases none; it reverses the order the rest of the row
@@ -105,8 +113,17 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude", "@net", "@podman-socket")
-	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
+	m := map[policy.ProfileName]*policy.Profile(reg)
+	// The two probes no shipped profile inherits any more (issue #530). Both
+	// names are still legal at `inherit` for any profile and both are
+	// annotated, so this is an ordinary grant, not a fixture-only construction.
+	m["probe"] = &policy.Profile{
+		Name:    "probe",
+		Environ: policy.EnvGrants{Inherit: []string{"EDITOR", "VISUAL"}},
+	}
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...),
+		"@claude", "@net", "@podman-socket", "probe")
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +155,7 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	}
 
 	// dryRunText hardcodes a FRESH, empty envFakeEnv() — every other fixture
-	// above reaches the screen through p itself (inherit bakes EDITOR, PAGER
+	// above reaches the screen through p itself (inherit bakes PAGER, EDITOR
 	// and friends into p.Env at Resolve time), but the CONTAINERS block reads
 	// $SNUG_PODMAN and $SNUG_PODMAN_ROOT off the Environ passed to dryRun
 	// directly, so this capture has to reuse the SAME env the fixture above
@@ -174,7 +191,24 @@ func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 		}
 	}
 
-	// The positive control, and it is load-bearing twice over: without it, a
+	// POSITIVE CONTROLS for the two ENVIRONMENT probes that arrive through
+	// `probe`, and they are named per probe rather than sharing one marker for
+	// a reason MEASURED here: with both fixtures disconnected from any profile
+	// this test still passed, because the ESC assertion below is also satisfied
+	// by $SNUG_PODMAN and the bidi one by the graft fixture. A shared `forged`
+	// substring cannot tell "the ENVIRONMENT probe reached the screen" from
+	// "some other block's probe did".
+	if !strings.Contains(got, forged+"-ESC") {
+		t.Fatalf("the ESC/CR fixture value never reached the screen, so the ENVIRONMENT half "+
+			"of the ESC assertion below is measuring nothing:\n%s", got)
+	}
+	// The bidi marker is written backwards in the fixture, so this is the
+	// literal the screen carries.
+	if !strings.Contains(got, "OLR-EULAV-A-YB-DEGROF") {
+		t.Fatalf("the bidi fixture value never reached the screen, so the ENVIRONMENT half "+
+			"of the U+202E assertion below is measuring nothing:\n%s", got)
+	}
+	// The general positive control, load-bearing twice over: without it, a
 	// dry-run that failed to render the value at all — or a fixture whose value
 	// never reached the policy — would pass every assertion below.
 	if !strings.Contains(got, forged) {

@@ -596,7 +596,7 @@ plugins = []
 #
 # ABUSE: a hostile process inside the sandbox can read every one of these out of
 # /proc/self/environ, and so can every child it spawns. That is the whole cost of
-# `inherit` and the reason the list is five names rather than a prefix: each is
+# `inherit` and the reason the list is four names rather than a prefix: each is
 # an endpoint or a preference, none is a credential.
 #
 # ANTHROPIC_API_KEY is deliberately NOT here, and must not come back.
@@ -620,10 +620,30 @@ plugins = []
 # ANTHROPIC_BASE_URL stays: it names an endpoint, not a credential, and users
 # behind a gateway need it. If you need the key inside, that is a decision to
 # make explicitly and per-run, not a line in a shipped profile.
+#
+# EDITOR and VISUAL are deliberately absent, and PAGER beside them is the
+# reason this is a measurement rather than a preference (issue #530).
+#
+# All three are git's exec class by fallback — GIT_EDITOR -> core.editor ->
+# VISUAL -> EDITOR and GIT_PAGER -> core.pager -> PAGER, both measured — so
+# `inherit` hands the host's own command string to git inside the sandbox.
+# MEASURED inside this profile's sandbox: `command -v vi vim nano` finds
+# nothing, `command -v less more` finds /usr/bin/less and /usr/bin/more. An
+# inherited EDITOR therefore names a program that is not here (the host's vim
+# or code is not bound) and git fails identically with the variable and
+# without it; an inherited PAGER=less names a program that IS here.
+#
+# Their absence closes no escape — profiles are the trusted layer and nothing
+# untrusted ever chose these values. What it stops is one profile weakening
+# what another established, at no ergonomic cost: invariant 2's corollary, a
+# grant wider than the need shrinking rather than acquiring a rule.
+#
+# A profile that wants an editor inside `set`s one to a fixed value and binds
+# it. Both verbs stay legal for all three names and both are ANNOTATED
+# (internal/policy/envtypes.go), so `--dry-run` says "the value is a command;
+# git runs it" wherever one appears.
 [profile.claude.environ.inherit]
 ANTHROPIC_BASE_URL = true
-EDITOR = true
-VISUAL = true
 PAGER = true
 NO_COLOR = true
 
