@@ -55,7 +55,7 @@ var policyKeys = []string{"mounts", "environment", "network", "bwrap", "target"}
 //	@parent-ro binds an ancestor of $HOME       0
 //	unknown profile                             0
 //	target does not exist                       0
-//	@tmp-shared grant missing                   0
+//	a grant naming a missing host path          0
 //	unparseable profile file                    0
 //
 // So `snug --dry-run --json x > policy.json` produced exactly the empty file the
@@ -103,6 +103,21 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	goodCfg := t.TempDir()
+
+	// A config directory carrying a profile whose ro grant names a host path
+	// that is not there — the "grant missing" class below. It used to be
+	// reached through the @tmp-shared profile, whose host directory the CLI
+	// allocated; that profile is gone (issue #399), and a
+	// user-written profile reaches the same refusal with the missing path
+	// spelled out in the fixture instead of computed.
+	missingCfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(missingCfg, "snug", "profiles.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(missingCfg, "snug", "profiles.d", "missing.toml"),
+		[]byte("[profile.missing]\nro = [\"/nonexistent-snug-grant-target\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
@@ -155,9 +170,9 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 			says:    "no such file",
 		},
 		{
-			name:    "tmp-shared grant missing",
-			cfg:     config{dryRun: true, json: true, noDefaults: true, target: proj, profiles: []policy.ProfileName{"@tmp-shared"}},
-			xdg:     goodCfg,
+			name:    "grant names a host path that does not exist",
+			cfg:     config{dryRun: true, json: true, noDefaults: true, target: proj, profiles: []policy.ProfileName{"missing"}},
+			xdg:     missingCfg,
 			code:    77,
 			outcome: "refused",
 			says:    "which does not exist",

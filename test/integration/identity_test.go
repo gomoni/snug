@@ -316,8 +316,8 @@ func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 // A dry run inspects a policy. Refusing to print one because the HOST cannot
 // mint a token makes the policy unreadable on exactly the machines where
 // reading it matters — a CI box, a machine with no gh, someone reviewing a
-// colleague's profile. main.go makes the same call for the @tmp-shared host
-// directory, in as many words.
+// colleague's profile. identity.go's plannedSocket makes the same call for the
+// agent socket, in as many words.
 func TestDryRunStillPrintsThePolicyWhenTheGhAccountHasNoToken(t *testing.T) {
 	pub, sock := sshAgentAndKey(t)
 	proj, _ := target(t)

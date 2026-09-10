@@ -178,12 +178,13 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 // as it was before #553: refused by case 3 (rwBindCovers), because the rw
 // grant is itself a second route to the same directory entry.
 //
-// No shipped builtin reaches this shape — @tmp-shared's rw of {host_tmpdir}
-// looks like it should, and does not, because a target under /tmp then nests
-// @cwd-rw's bind inside @tmp-shared's and rejectMasking refuses the whole
-// selection (measured on this branch: "which is inside /tmp from profile
-// @tmp-shared") — so this test authors its own rw-granting profile, the same
-// shape a user's own profiles.d entry would take.
+// No shipped builtin reaches this shape, and neither does the nearest thing a
+// user can write: a profile binding a host directory at /tmp looks like it
+// should, and does not, because a target under /tmp then nests @cwd-rw's bind
+// inside that grant and rejectMasking refuses the whole selection (measured
+// against the profile that used to ship that shape: "which is inside /tmp from
+// profile @tmp-shared"). So this test authors its own rw-granting profile, the
+// same shape a user's own profiles.d entry would take.
 func TestTheReadWriteBoundAncestorResidualStillRefuses(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {

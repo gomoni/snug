@@ -126,10 +126,13 @@ feature.
 **The LOCAL half is closed, structurally.** Cross-session messaging on one
 machine is unix sockets, not the API — the opposite of the obvious hypothesis,
 which is why it was measured rather than reasoned about. `/tmp` inside is snug's
-private tmpfs, so `/tmp/cc-socks/` holds only this session's own socket, and
-`@tmp-shared` does not open it either: `prepareHostTmpDir` ALLOCATES a
-per-sandbox directory rather than binding the host's `/tmp`. It holds because
-the guiding principle paid out on a surface nobody had looked at.
+private tmpfs, so `/tmp/cc-socks/` holds only this session's own socket. No
+shipped profile puts anything else there, and the one thing that can — a
+profile binding a host directory at `/tmp` — binds the directory it NAMES,
+never the host's `/tmp` itself, so it does not open the channel either
+(`test/integration/hosttmpvisibility_test.go` runs both arms against a decoy in
+the host's real `/tmp`). It holds because the guiding principle paid out on a
+surface nobody had looked at.
 
 **snug SETS two of Claude Code's own controls, and they are not a boundary.**
 The generated user-scope `~/.claude/settings.json` carries

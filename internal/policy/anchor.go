@@ -79,11 +79,13 @@ const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor
 // containing the target (`rw = ["/var/tmp/X/data"]`, target
 // /var/tmp/X/data/proj/sub): `mv proj hidden` succeeded, the payload recreated
 // the target path, and the host tree really was renamed — `ls` showed `hidden`
-// and a fresh `proj`. NO SHIPPED BUILTIN REACHES THIS SHAPE: @tmp-shared looks
-// like it should (rw {host_tmpdir}:/tmp) and does not, because a target under
-// /tmp then makes @cwd-rw's bind nest inside @tmp-shared's and rejectMasking
-// refuses the whole selection — measured, `snug -p @tmp-shared /tmp/X/proj/sub`
-// exits on "which is inside /tmp from profile @tmp-shared".
+// and a fresh `proj`. NO SHIPPED BUILTIN REACHES THIS SHAPE, and the nearest
+// one a user can write does not either: a profile binding a host directory at
+// /tmp is legal (it is the one path snug's own tmpfs yields), but a target
+// under /tmp then makes @cwd-rw's bind nest inside that grant and
+// rejectMasking refuses the whole selection — measured against the profile
+// that used to ship this shape, `snug -p @tmp-shared /tmp/X/proj/sub` exited
+// on "which is inside /tmp from profile @tmp-shared".
 //
 // CheckEngineBindSource already refuses to forward a source under that shape
 // (its case 3, rwBindCovers).

@@ -195,8 +195,8 @@ func runDirName() string { return fmt.Sprintf("run-%d", os.Getpid()) }
 // verifying and locking NOTHING. It is the --dry-run counterpart of
 // openRuntimeDir().Socket, and it exists because a dry run that leaves a
 // directory and a socket behind contradicts its own first line (issue #21).
-// main.go already draws the same distinction one indirection up for the
-// @tmp-shared host directory: name it, do not create it.
+// identity.go's plannedSocket draws the same distinction for the agent
+// socket: name it, do not create it.
 //
 // None of runtimeDir's guarantees come with this string and none is needed:
 // nothing is opened through it, so there is nothing for a planted symlink or

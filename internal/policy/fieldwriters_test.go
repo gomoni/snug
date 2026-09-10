@@ -535,9 +535,9 @@ func TestJoinDoesNotInheritAuthored(t *testing.T) {
 		if !ok {
 			t.Fatal("/tmp is not in the policy, so this test measures nothing")
 		}
-		// /tmp is the one path yieldTo is MEANT to yield (@tmp-shared works
-		// this way), so the profile's grant wins outright and must not be
-		// wearing snug's exemption.
+		// /tmp is the one path yieldTo is MEANT to yield to a profile that
+		// names a host directory there, so the profile's grant wins outright
+		// and must not be wearing snug's exemption.
 		if m.Authored {
 			t.Errorf("/tmp came from the profile %v and is Authored", m.From)
 		}

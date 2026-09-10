@@ -73,7 +73,7 @@ import (
 // read-write bind of the same tree. An anchor's dentry lives in a tmpfs snug
 // created for this run; there is no host filesystem behind it and no other
 // route to it. rwBindCovers still guards the parent, which is the conservative
-// direction and is what keeps a source under @tmp-shared's rw /tmp refused.
+// direction and is what keeps a source under a profile's rw /tmp refused.
 //
 // This rule reads the engine's view as DERIVED from the sandbox's, and an
 // anchor is in it: the engine's mount namespace is built by open_tree on the

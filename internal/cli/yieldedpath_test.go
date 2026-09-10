@@ -10,7 +10,8 @@ import (
 // ── issue #223: a profile can take over /tmp and nothing said so ────────────
 //
 // yieldTo() installs snug's own mount only if nothing already claims that guest
-// path. That is deliberate — it is how @tmp-shared works. What is not deliberate
+// path. That is deliberate — it is how a profile hands a host directory to the
+// sandbox as its /tmp. What is not deliberate
 // is @parent-ro reaching /tmp by accident of where the target sits: `snug
 // /tmp/proj` makes the target's parent /tmp, so the private tmpfs never lands and
 // the sandbox runs with the HOST's /tmp read-only, $TMPDIR pointing into it, no
@@ -63,11 +64,12 @@ func TestDryRunSaysWhenAProfileTookOverSnugsOwnTmp(t *testing.T) {
 	}
 }
 
-// A rw takeover (@tmp-shared's shape) is a deliberate, documented profile doing
-// its job. It still gets the "this is the host's" note, because that is true and
-// worth knowing — but not the read-only warning, which would be false.
+// A rw takeover — a profile binding a host directory at /tmp — is a deliberate
+// profile doing its job. It still gets the "this is the host's" note, because
+// that is true and worth knowing, but not the read-only warning, which would be
+// false.
 func TestAWritableTakeoverIsNotCalledReadOnly(t *testing.T) {
-	got := renderFilesystem(t, "/tmp", policy.KindBind, policy.AccessRW, false, "@tmp-shared")
+	got := renderFilesystem(t, "/tmp", policy.KindBind, policy.AccessRW, false, "sharedtmp")
 	if !strings.Contains(got, "HOST's /tmp") {
 		t.Errorf("a writable takeover still replaces snug's private tmpfs and must say so:\n%s", got)
 	}

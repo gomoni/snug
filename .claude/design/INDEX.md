@@ -289,7 +289,7 @@ func Resolve(sel []*Profile, ctx Context) (*Policy, error)
 The algorithm:
 
 1. **Expand `include` transitively** into a *set* of profiles (depth-first, cycle-detected). Because the result is a set, `include` is idempotent and diamond includes are harmless.
-2. **Expand path variables** (`{target}`, `{target_parent}`, `{home}`, `{host_tmpdir}`, `~`) against `ctx`.
+2. **Expand path variables** (`{target}`, `{target_parent}`, `{home}`, `~`) against `ctx`.
 3. **Canonicalise host paths** with `EvalSymlinks`, and lexically clean guest paths.
 4. **Fold the grant multiset into `map[Guest]Mount`** with this join — **RULE 1, the same-path rule**:
 
@@ -457,7 +457,7 @@ The rule is stated over every mount's ancestor chain rather than the target's, b
 
 Only the third row moved, and its "before" column is not a safe outcome — it is #553 itself: the rename succeeded because it carried the target's mount, so the host was untouched only in the sense that everything reading `$SNUG_TARGET` afterwards read the payload's directory. The first two rows are ordinary Unix and predate anchors: every mount in a snug sandbox is already a boundary. The cost is disclosed on `--dry-run` (`policy.AnchorNote`) and pinned by `TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles`. Found by the `redteam` agent in this change's own round.
 
-An anchor grants nothing — the payload could already read, traverse and write that path through the tmpfs covering it — which is why it is exempt from `rejectMasking` and why it is placed only where the cover is a tmpfs. **The residual is an ancestor covered by a read-WRITE bind**: an empty tmpfs there would hide real host content, so none is placed, and the rename succeeds and reaches the host. No shipped builtin reaches that shape (`@tmp-shared` looks like it should and does not: a target under `/tmp` makes `@cwd-rw`'s bind nest inside it and the whole selection is refused as masking); a user profile granting `rw` over a directory containing the target does, and that is what an `rw` grant of a tree means.
+An anchor grants nothing — the payload could already read, traverse and write that path through the tmpfs covering it — which is why it is exempt from `rejectMasking` and why it is placed only where the cover is a tmpfs. **The residual is an ancestor covered by a read-WRITE bind**: an empty tmpfs there would hide real host content, so none is placed, and the rename succeeds and reaches the host. No shipped builtin reaches that shape, and neither does a user profile binding a host directory at `/tmp`: a target under `/tmp` makes `@cwd-rw`'s bind nest inside it and the whole selection is refused as masking; a user profile granting `rw` over a directory containing the target does, and that is what an `rw` grant of a tree means.
 
 Under that one shape the rename reaches the HOST, so the payload-authored directory outlives the run: a later `snug <dir>` on the same path resolves its realpath to content the previous payload wrote, with no warning, while every screen prints the path the human typed. `test/integration/targetrepoint_test.go` pins the residual, host-side rename included.
 
@@ -477,7 +477,7 @@ rest              [a-zA-Z0-9-]
 
 `checkName` (`internal/profile/file.go`) is an **allowlist**: a character outside that set is a fatal parse error naming the file, the name, the offending byte and its offset. It was a denylist of five individually-broken characters until [#20](https://github.com/gomoni/snug/issues/20), which is the wrong direction — what snug has not been taught about must fail closed — and the sixth character was already reachable: measured, `[profile."a\u001b[1A\rb"]` parsed cleanly and, once selected, that name reached the `PROFILES` line of `--dry-run` verbatim, where `ESC[1A CR` erases the row above it.
 
-The hyphen is in, decided by the owner; six builtins depend on it (`cwd-rw`, `parent-ro`, `tmp-shared`, `git-ro`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
+The hyphen is in, decided by the owner; five builtins depend on it (`cwd-rw`, `parent-ro`, `git-ro`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
 
 Three things follow.
 
@@ -636,7 +636,7 @@ Before emitting anything, `Validate()` checks:
 
 #### RULE 4 — `/proc` and `/dev` are `snug`'s, and a profile may not take them
 
-`snug` authors `/proc`, `/dev` and `/tmp` *after* the profile fold, and yields to whatever is already there. That yield is intended for **`/tmp` only** — `@tmp-shared` replacing the private tmpfs with a host directory is how that profile works. For the other two it was an accident of a single `mustJoin` helper serving two opposite intentions, and it accepted `ro = ["/proc"]`, handing the sandbox the *host's* procfs instead of one bound to its own pid namespace.
+`snug` authors `/proc`, `/dev` and `/tmp` *after* the profile fold, and yields to whatever is already there. That yield is intended for **`/tmp` only** — a profile replacing the private tmpfs with a host directory it names is how handing a file to a host tool works. For the other two it was an accident of a single `mustJoin` helper serving two opposite intentions, and it accepted `ro = ["/proc"]`, handing the sandbox the *host's* procfs instead of one bound to its own pid namespace.
 
 The helper is now `yieldTo`, and a non-authored mount at `/proc` or `/dev` is a **refusal** naming the profile. `/proc` and `/dev` still go through the yield rather than being overwritten, for one reason: it lets the error name the profile that did it instead of silently discarding its grant.
 
@@ -1014,7 +1014,7 @@ A silent downgrade is worse than a failure, because the user believes a guarante
 - `--proc /proc`. A fresh procfs bound to the sandbox's own PID namespace. Without a PID namespace this would leak the host process table; with `--unshare-all` it shows only the sandbox's own processes.
 - `--dev /dev`. `bwrap`'s synthetic minimal `/dev` plus a private `devpts`. No `--dev-bind /dev /dev` — that would hand over every block device, `/dev/kmsg`, `/dev/mem`, and the input devices. It is writable tmpfs and does not persist, which is easy to forget when saying "the target is the only writable thing".
 - **`/sys` is not mounted at all**, and no builtin grants it. `/sys` read-only still exposes a lot of host topology (network interfaces, PCI devices, DMI/serial numbers, thermal data) and is a recurring source of container escapes when combined with anything writable. The compatibility cost is real: some tooling reads `/sys/fs/cgroup` or `/sys/devices/system/cpu` for parallelism hints. A one-line user profile (`ro = ["/sys"]`) is the escape hatch; snug does not ship one.
-- `--tmpfs /tmp` by default (private, ephemeral, dies with the sandbox). The `@tmp-shared` profile replaces it with a bind of a per-project host directory (§7.3).
+- `--tmpfs /tmp` by default (private, ephemeral, dies with the sandbox). A profile may replace it with a bind of a host directory it names; no shipped profile does.
 
 **What each of these actually exposes was audited by execution, and the answer is longer than this list — [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md).** Its headline: no escape (every classic `/proc` write primitive is refused), but a fingerprinting surface larger than any OCI runtime's default, including `boot_id`, `btime`/`uptime` (the time namespace is *not* unshared by `--unshare-all`), `/proc/asound` and `/proc/bus/pci`. Do not restate `/dev`'s or `/proc`'s contents from memory; that document enumerates them.
 
@@ -1128,7 +1128,7 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 
 ## 7. Host integration surfaces
 
-Every surface below is off by default and reached by naming a profile. Each is a *proxy* `snug` owns, never a raw passthrough — except `@tmp-shared`, which is a plain bind by nature.
+Every surface below is off by default and reached by naming a profile. Each is a *proxy* `snug` owns, never a raw passthrough.
 
 ### 7.1 ssh — the filtering agent proxy
 
@@ -1224,11 +1224,11 @@ Every outcome — allow, rewrite, reject — is one audit line. Streaming and hi
 
 ### 7.3 Shared `/tmp`
 
-`@tmp-shared` allocates a per-project directory on the host with mode `0700` and binds it as the sandbox's `/tmp`, replacing the default private tmpfs. Use case: handing a file to a host tool, or a large build cache that should survive a crash. The directory name is derived from a hash of the target, so it is stable across runs of the same project and two projects never share one.
+There is none. `/tmp` is a private tmpfs in every sandbox snug ships a profile for.
 
-It refuses to bind a path that is a symlink, is not owned by the invoking uid, or has group/other write bits — the classic `/tmp` races.
+A profile may still bind a host directory there — `/tmp` is the one path snug's own mount yields (§5) — and that is how a file is handed to a host tool. It is a plain `rw` grant naming a host path, so it reads on `--dry-run` like every other bind, and the abuse sentence is the one every `rw` grant carries: what the sandbox writes there, the host sees.
 
-**The directory persists.** It is not removed at teardown; `base.toml` says so ("Survives the sandbox") and the abuse sentence follows from it: anything the sandbox writes there is visible to the host, and to any other snug run on the same project. Do not select it and then treat `/tmp` as private. (An earlier draft here described teardown removal and a `--keep-tmp` flag. Neither exists.)
+snug allocates nothing for this. A profile naming `{host_tmpdir}` — the variable snug used to resolve to a per-project directory it created under `os.TempDir()` — is REFUSED, and the refusal says the variable is gone and there is no replacement spelling (issue #399).
 
 ### 7.4 D-Bus — don't
 
@@ -1457,8 +1457,7 @@ snug/
 │   ├── identity.go                 pinned identity: generated gitconfig/ssh/gh (§9.1)
 │   ├── claude.go                   @claude staging and the injected CLAUDE.md (§9.3, §9.4)
 │   ├── container.go                container proxy wiring (§7.2)
-│   ├── podmanshim.go               host-escape shim detection + the podman stub
-│   └── tmpdir.go                   @tmp-shared host directory (§7.3)
+│   └── podmanshim.go               host-escape shim detection + the podman stub
 │
 ├── internal/profile/               TOML profiles: parse, merge layers, lookup precedence
 │   ├── file.go                     File/Profile TOML structs; strict decode; checkName
@@ -1592,8 +1591,8 @@ who is the one who is wrong.
 places a process into a running sandbox's namespaces: a second session on a
 directory is a second, independent sandbox, and several may be live on one
 target at once. What two of them share is the host-backed writable surface —
-the target directory, the engine store and runroot under a `@podman*` profile,
-and the shared-tmp directory under `@tmp-shared` — which `--dry-run` enumerates
+the target directory, and the engine store and runroot under a `@podman*`
+profile — which `--dry-run` enumerates
 and `SECRETS.md` §8 costs. The per-target `flock` still exists and is still
 keyed on `sha256(realpath)` in the per-uid runtime directory resolved from the
 uid alone, but a run takes it SHARED and it refuses nothing: it is how `snug
@@ -1637,8 +1636,10 @@ The `NOT GRANTED` block is the only advisory part — it is generated by probing
 - Conflict detection: same `Guest`, different `Kind`/`Host`/`Perms`/`Content` → error naming both provenances. The corpus of refusals is itself a golden (`testdata/refusals.txt`), so a rule that stops firing shows up as a diff.
 - Symlink hazards (§3.3): a grant whose `Guest` resolves inside a read-only bind is rejected at resolve time, not at `bwrap` time. Includes the `podman`-as-symlink regression.
 - Emission order: depth-ascending; a shuffled input produces a byte-identical argv.
-- Path variables: `{target}`, `{target_parent}`, `{home}`, `{host_tmpdir}`, `~` — the
-  four `resolve.go` actually builds, plus the tilde. **`{target_ancestor:N}` was
+- Path variables: `{target}`, `{target_parent}`, `{home}`, `~` — the three
+  `resolve.go` actually builds, plus the tilde. `{host_tmpdir}` went with the
+  `@tmp-shared` profile it existed for and now REFUSES, naming the removal
+  rather than reading as a typo. **`{target_ancestor:N}` was
   designed and never built** (issue #224). It was listed here and in §2 as though
   it were live for the whole life of the project; `grep -rn target_ancestor` over
   the tree returns nothing, and a profile writing `ro = ["{target_ancestor:2}"]`

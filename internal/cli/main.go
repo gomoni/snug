@@ -613,24 +613,6 @@ func run(cfg config) int {
 		command = []string{shell}
 	}
 
-	hostTmp := ""
-	if need, err := needsHostTmpDir(reg, selected); err != nil {
-		return refuse(cfg, exitPolicy, err)
-	} else if need && cfg.startsNothing() {
-		// Name it, do not create it. A dry run that leaves a directory behind
-		// contradicts its own first line, and the path is all --dry-run needs to
-		// show what would be mounted. The ownership and symlink checks below the
-		// MkdirAll are deliberately NOT run here: they inspect host state a dry
-		// run has not touched, and failing on them would make --dry-run refuse a
-		// policy the real run might well accept.
-		hostTmp = hostTmpDirPath(abs)
-	} else if need {
-		hostTmp, err = prepareHostTmpDir(abs)
-		if err != nil {
-			return refuse(cfg, exitPolicy, err)
-		}
-	}
-
 	// Reading the host's git config can fail in ways that must not be silent —
 	// no git installed, a file git refuses to parse — so it happens here, where
 	// the error can still be reported, rather than inside the pure resolver.
@@ -645,7 +627,6 @@ func run(cfg config) int {
 
 	ctx := policy.Context{
 		Target:          abs,
-		HostTmpDir:      hostTmp,
 		Home:            home,
 		Shell:           shell,
 		Term:            os.Getenv("TERM"),

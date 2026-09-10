@@ -157,13 +157,11 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 		Identity: &policy.Identity{GitName: "A", GitEmail: "a@example.com"},
 	}
 
+	// Every builtin, with no exception list — see the same sweep in
+	// envuncheckedsink_test.go for why a skipped name is a gap rather than a
+	// tidy-up.
 	var sel []policy.ProfileName
 	for name := range reg {
-		// @tmp-shared wants a host directory the caller allocates; it adds no
-		// env writer and would make this fixture about something else.
-		if name == "@tmp-shared" {
-			continue
-		}
 		sel = append(sel, name)
 	}
 	slices.Sort(sel)

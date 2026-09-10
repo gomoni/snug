@@ -192,11 +192,6 @@ type Context struct {
 	// every host you have ever connected to.
 	KnownHosts []byte
 
-	// HostTmpDir backs the {host_tmpdir} variable used by the tmp-shared
-	// profile. The caller allocates and safety-checks it, because creating
-	// directories is not something a pure resolver may do.
-	HostTmpDir string
-
 	// LegacyTIOCSTI reports whether this kernel still allows the TIOCSTI ioctl,
 	// read from /proc/sys/dev/tty/legacy_tiocsti. When it does, a process in the
 	// sandbox could push characters into the terminal that launched snug, and we

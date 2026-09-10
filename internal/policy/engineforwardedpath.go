@@ -21,8 +21,8 @@ import (
 // which exist only in its derived view. Every mount whose Host and Guest differ
 // makes those two questions have different answers, and divergent mounts are a
 // first-class feature of the profile language rather than a future hazard:
-// splitSpec (resolve.go) parses "host:guest" for every ro/rw entry, @tmp-shared
-// ships `rw = ["{host_tmpdir}:/tmp"]`, and @claude ships
+// splitSpec (resolve.go) parses "host:guest" for every ro/rw entry, so a
+// profile can bind a host directory at /tmp, and @claude ships
 // `"{home}/.local/bin/claude:/snug/bin/claude"` — divergent BY RULE, because
 // the shadow-slot rule requires it and it can never be normalised away.
 //

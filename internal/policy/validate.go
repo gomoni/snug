@@ -164,7 +164,8 @@ func (p *Policy) Validate(env Environ) error {
 		// at /dev would substitute the host's device tree for bwrap's synthetic
 		// minimal set. Neither is a hole a profile gets to open. The yield is what
 		// lets this refusal name the profile that did it; /tmp yields for real,
-		// because @tmp-shared replacing the private tmpfs is the intended use.
+		// because a profile replacing the private tmpfs with a host directory
+		// it names is the intended use.
 		//
 		// COVERING, not just AT, and that distinction is the whole of issue #22.
 		// The check was an exact map lookup, so a grant AT the staging directory
@@ -702,9 +703,9 @@ type ownedPath struct {
 
 // snugsOwn are the paths only snug may put a node at, with the reason. A grant
 // AT one of them is refused, and so is a grant at any ANCESTOR of one — see
-// snugsOwnCovered. /tmp is deliberately NOT here: @tmp-shared replacing the
-// private tmpfs with a host directory is the intended use of the yield (Resolve
-// step 4).
+// snugsOwnCovered. /tmp is deliberately NOT here: a profile replacing the
+// private tmpfs with a host directory it names is the intended use of the
+// yield (Resolve step 4).
 var snugsOwn = map[string]ownedPath{
 	"/proc": {
 		why: "it must be a fresh procfs bound to the sandbox's OWN pid namespace, " +

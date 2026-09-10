@@ -16,22 +16,25 @@ import (
 // after the uid being decimal digits.
 //
 // IT MATCHES THE SHAPE, NOT A PREFIX, AND THAT IS THE WHOLE OF ISSUE #425's
-// RED-TEAM FINDING F1. A prefix of "snug-<uid>-" also matches
-// internal/cli's hostTmpDirPath (tmpdir.go) — `@tmp-shared`'s per-project host
-// directory, `os.TempDir()/snug-<uid>-sha256_<64hex>` — which is 0700, owned by
-// this uid, and therefore indistinguishable to vdir.OpenForRemoval. Worse, that
-// profile grants the PAYLOAD rw on it ("{host_tmpdir}:/tmp" in base.toml), so a
-// sandbox only had to write a file called `lock` — the single most ordinary
-// name in /tmp, and what `flock /tmp/lock`, python filelock and any build
-// script produce — to have the next container-enabled run on the machine
-// delete another project's persistent shared /tmp, contents and all. MEASURED
-// end to end: a `@podman-socket` run on project B destroyed project A's
-// directory, and a live `@tmp-shared` sandbox had its /tmp unlinked underneath
-// it mid-run (nlink 0, every subsequent write ENOENT).
+// RED-TEAM FINDING F1. A prefix of "snug-<uid>-" also matches a target-derived
+// name, `os.TempDir()/snug-<uid>-sha256_<64hex>`: 0700, owned by this uid, and
+// therefore indistinguishable to vdir.OpenForRemoval. The profile that shipped
+// that shape at the time (@tmp-shared, allocating a per-project host directory
+// and granting the PAYLOAD rw on it; removed by issue #399) made it reachable
+// from inside — a sandbox only had to write a file called `lock`, the single
+// most ordinary name in /tmp and what `flock /tmp/lock`, python filelock and
+// any build script produce — to have the next container-enabled run on the
+// machine delete another project's persistent shared /tmp, contents and all.
+// MEASURED end to end at the time: a `@podman-socket` run on project B
+// destroyed project A's directory, and a live `@tmp-shared` sandbox had its
+// /tmp unlinked underneath it mid-run (nlink 0, every subsequent write
+// ENOENT). The specific collision is gone with the profile; the filter is not,
+// because what it guards against is the NEXT name of that shape.
 //
 // So the filter is derived from the ONE function that authors these names,
 // and a `snug-<uid>-<anything-else>` mechanism added later fails it
-// structurally rather than needing to be remembered here. The trailing dash
+// structurally rather than needing to be remembered here — which is the
+// property that survives the profile that prompted it. The trailing dash
 // still matters — it is what separates "snug-<uid>" and
 // "snug-engines-<uid>-<key>" — but a dash alone was never enough.
 func isEngineRunDirName(name string) bool {

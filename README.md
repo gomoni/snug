@@ -293,7 +293,6 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@cwd-rw` | The target directory, writable and persistent. |
 | `@parent-ro` | The target's parent, read-only. |
 | `@git-ro` | Your git name and email, extracted from the host config and regenerated. Never bound. |
-| `@tmp-shared` | A per-project host directory as `/tmp`. Survives the sandbox. |
 | `@net` | Internet access. Copies your host's address in, and the seal names every address on every host interface inside (disclosure, not reach). Host loopback and every address the host owns are unreachable regardless. |
 | `@claude` | Claude Code: binary and skills read-only, credentials staged as writable copies. |
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
