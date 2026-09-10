@@ -344,7 +344,7 @@ The worked instances, one per adapter:
   **every commit fail** — worse than an unsigned commit. The whitelist
   deliberately omits `user.signingkey`, `gpg.format`, `commit.gpgsign` and
   `tag.gpgsign` for that reason, and grows again only when signing has a design
-  (issue #35).
+  (issue #453).
 - **`apiKeyHelper`** is `credential.helper` one tool over, and it fails in
   *both* directions. A helper that resolves inside substitutes a credential; one
   that does not resolve leaves the sandbox with "Your apiKeyHelper script is

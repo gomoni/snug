@@ -69,8 +69,17 @@ func ParseGitMode(s string) (GitMode, error) {
 // inside the sandbox turns every commit into a hard failure, which is worse
 // than an unsigned commit. Signing needs the key staged AND the agent proxy
 // willing to sign with it, and the proxy pins exactly one key today. See
-// https://github.com/gomoni/snug/issues/35; this list grows when that is built,
-// not before.
+// https://github.com/gomoni/snug/issues/453; this list grows when that is
+// built, not before.
+//
+// Two things #453 has to answer that this comment cannot, both measured:
+// a repo-local `.git/config` with `commit.gpgsign = true` arrives inside
+// regardless of this list — the target is bound and GIT_CONFIG_GLOBAL
+// displaces only the GLOBAL file — so a signed commit from inside fails with
+// the agent proxy's non-pinned-key refusal, `agent refused operation`, which
+// reads as a host keyring fault. And the agent protocol carries no purpose,
+// so pinning a second key for signing means either key can be used for either
+// purpose by anything inside.
 var GitKeyWhitelist = []string{
 	"user.name",
 	"user.email",
