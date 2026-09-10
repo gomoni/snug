@@ -140,7 +140,7 @@ Not on it, and the reasoning is not "we ran out of time":
   unsigned commit. Signing needs the public key staged *and* an agent willing to
   sign with it, and the ssh-agent proxy pins exactly one key today. That is a
   feature with a design of its own; it is
-  https://github.com/gomoni/snug/issues/35, and the whitelist grows when it is
+  https://github.com/gomoni/snug/issues/453, and the whitelist grows when it is
   built.
 - **`url.*.insteadOf`** — rewrites where a fetch goes. An identity pin already
   generates the one rewrite it needs.
