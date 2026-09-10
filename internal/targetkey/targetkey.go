@@ -10,22 +10,20 @@
 //     and runroot directory name.
 //   - internal/cli/targetlock.go's targetKeyPrefix — "target-" + the hash,
 //     the per-target lock file and run-state JSON.
-//   - internal/cli/tmpdir.go's hostTmpDirPath — "snug-<uid>-" + the hash,
-//     @tmp-shared's host directory.
 //
 // targetlock.go's own doc comment already made this argument for its first
 // two consumers before this package existed: "One function so the two can
 // never drift onto different hashes of the same path — a drift that would
 // not fail loudly, it would simply mean [a reader] looked up a [name] no run
-// had written." This package extends that guarantee to all three.
+// had written." This package is where that guarantee lives now, for whatever
+// derives a name from a target.
 //
-// ALL THREE USE THE FULL, UNTRUNCATED DIGEST — maintainer ruling: a truncated
-// hash is an unlabelled lossy transform. A reader holding the target path
-// cannot verify a `[:12]` or `[:16]` name against it without already knowing
-// it was truncated and by how much, and nothing in the name says so. Two of
-// the three consumers used to truncate (engineKey to 16 hex chars,
-// hostTmpDirPath to 12); both now use the same full form targetKeyPrefix
-// already did, rather than inventing a fourth length. Path lengths are
+// EVERY CONSUMER USES THE FULL, UNTRUNCATED DIGEST — maintainer ruling: a
+// truncated hash is an unlabelled lossy transform. A reader holding the target
+// path cannot verify a `[:12]` or `[:16]` name against it without already
+// knowing it was truncated and by how much, and nothing in the name says so.
+// engineKey used to cut it to 16 hex chars and now uses the same full form
+// targetKeyPrefix always did, rather than inventing a second length. Path lengths are
 // comfortable — "target-sha256_<64hex>.lock" is 83 characters and has never
 // been a problem.
 //

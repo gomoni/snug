@@ -15,8 +15,8 @@ import (
 
 // These are the checks every caller inherits, tested where they live — one
 // implementation, one suite. Before #233 they were tested only through
-// internal/cli's runtime directory, so the two other copies of them (the
-// engine's, prepareHostTmpDir's) had no coverage at all, which is how they
+// internal/cli's runtime directory, so the other copies of them (the engine's,
+// and the shared-tmp allocator's) had no coverage at all, which is how they
 // came to be missing one guard each.
 
 func mustRoot(t *testing.T, dir string) *os.Root {

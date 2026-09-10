@@ -15,11 +15,12 @@ import (
 // Claude Code's cross-session messaging on one machine is unix sockets under
 // the host's real /tmp/cc-socks/, not the API. Inside snug /tmp is always
 // snug's own tmpfs (resolve.go yields a private KindTmpfs mount there
-// unconditionally), and @tmp-shared does not reach the host's real /tmp
-// either: prepareHostTmpDir (internal/cli/tmpdir.go) ALLOCATES a per-sandbox
-// directory under os.TempDir() and binds THAT at /tmp — it never binds the
-// host's /tmp itself. This test would catch either arm ever binding the
-// host's real /tmp directly, which is the one change that would let a
+// unconditionally), and the one thing that can displace it — a profile
+// binding a host directory at /tmp, the yield resolve.go allows — binds the
+// directory that profile NAMES, never the host's /tmp itself. No profile snug
+// ships does this at all since @tmp-shared was removed (issue #399), so the
+// second arm below authors one. This test would catch either arm ever
+// reaching the host's real /tmp, which is the one change that would let a
 // sandboxed payload reach another session's socket over the local channel
 // #87 measured.
 //
@@ -33,8 +34,8 @@ func TestHostsRealTmpIsNotVisibleInsideTheSandbox(t *testing.T) {
 	requireSandbox(t)
 
 	// target() roots its project under os.TempDir(), which IS the host's
-	// real /tmp in this suite's normal environment — and @tmp-shared grants
-	// the whole of guest /tmp, so a target nested inside it would be
+	// real /tmp in this suite's normal environment — and the shared-tmp arm
+	// grants the whole of guest /tmp, so a target nested inside it would be
 	// self-masking (rejectMasking refuses it) before this test ever reaches
 	// the sandbox. Rooting outside /tmp sidesteps that and keeps the
 	// assertion about the decoy, not about an unrelated grant conflict.
@@ -65,21 +66,38 @@ ls /tmp | grep -q '^sandbox-marker$' && echo MARKER_VISIBLE
 if [ -e /tmp/%s ]; then echo DECOY_FOUND; else echo DECOY_ABSENT; fi
 echo MARKER_DONE`, decoyName)
 
+	// The shared-tmp arm's host directory: a directory of this test's own,
+	// OUTSIDE the host's /tmp for the self-masking reason above, bound at
+	// guest /tmp by a profile written for this run.
+	shared := filepath.Join(filepath.Dir(proj), "shared-tmp")
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sharedEnv := writeProfile(t, fmt.Sprintf("[profile.sharedtmp]\nrw = [%q]\n", shared+":/tmp"))
+
 	for _, arm := range []struct {
 		name string
+		env  []string
 		args []string
+		// hostSees is whether the marker the payload writes to guest /tmp
+		// must appear in the shared host directory afterwards. It is what
+		// makes the second arm non-vacuous: without it a profile that failed
+		// to bind anything would pass every assertion below, because a
+		// private tmpfs is also writable, also listable, and also has no
+		// decoy in it.
+		hostSees bool
 	}{
-		// The plain-tmpfs case: no @tmp-shared, so /tmp is the base
+		// The plain-tmpfs case: nothing granted at /tmp, so it is the base
 		// topology's private KindTmpfs mount with nothing bound over it.
-		{"no-tmp-shared", nil},
-		// The arm the issue names explicitly: @tmp-shared replaces /tmp with
-		// prepareHostTmpDir's ALLOCATED per-sandbox directory, which is the
-		// one that would be a problem if it ever bound the host's real /tmp
-		// instead.
-		{"tmp-shared", []string{"-p", "@tmp-shared"}},
+		{"private-tmpfs", nil, nil, false},
+		// The arm the issue names explicitly, in the shape that survives
+		// @tmp-shared's removal: a profile binding a host directory at /tmp.
+		// It is the one that would be a problem if a grant there ever
+		// resolved to the host's real /tmp instead of to the named path.
+		{"shared-tmp", sharedEnv, []string{"-p", "sharedtmp"}, true},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
-			r := run(t, arm.args, proj, script).mustRun(t)
+			r := runEnv(t, arm.env, arm.args, proj, script).mustRun(t)
 
 			// POSITIVE CONTROL, inside the sandbox: /tmp is reachable,
 			// listable and writable in THIS SAME run, so "decoy absent"
@@ -104,14 +122,32 @@ echo MARKER_DONE`, decoyName)
 				t.Errorf("neither DECOY_FOUND nor DECOY_ABSENT appeared — the payload's probe "+
 					"did not run as expected:\n%s", r.out)
 			}
+
+			// The arm's own control, host side. The marker the payload wrote
+			// to guest /tmp must land in the directory the profile named —
+			// and must NOT land there when no profile grants anything at
+			// /tmp, which is what tells "the bind happened and reached only
+			// the named directory" from "nothing was bound at all".
+			marker := filepath.Join(shared, "sandbox-marker")
+			_, err := os.Stat(marker)
+			if arm.hostSees && err != nil {
+				t.Fatalf("the payload wrote /tmp/sandbox-marker and the host directory this "+
+					"arm binds there does not have it (%v), so this arm never exercised a "+
+					"bind at /tmp and its decoy check proves nothing", err)
+			}
+			if !arm.hostSees && err == nil {
+				t.Errorf("no profile granted anything at /tmp in this arm, yet the payload's "+
+					"marker reached the host at %s — guest /tmp is not private", marker)
+			}
+			t.Cleanup(func() { _ = os.Remove(marker) })
 		})
 	}
 }
 
 // tmpVisibilityTarget builds target()'s exact root/proj/{sibling,sub} shape,
 // rooted OUTSIDE the host's /tmp (unlike target(), which sits under
-// os.TempDir()). @tmp-shared grants the whole of guest /tmp, so a target
-// nested inside it self-masks; this keeps the two independent.
+// os.TempDir()). The shared-tmp arm grants the whole of guest /tmp, so a
+// target nested inside it self-masks; this keeps the two independent.
 //
 // $HOME rather than "." because "." is this package's directory inside the
 // repository: t.Cleanup covers a failure and a t.Fatal, but not a SIGKILL,
@@ -126,15 +162,16 @@ func tmpVisibilityTarget(t *testing.T) (proj string) {
 	}
 	// $HOME is only usable here if it is OUTSIDE /tmp. A scratch HOME under
 	// /tmp (mktemp's default, and a plausible CI shape) puts the target inside
-	// the very tree @tmp-shared grants, and the run then aborts with exit 77 —
-	// "@tmp-shared binds /tmp, which is an ancestor of your home" — which is
+	// the very tree the shared-tmp arm grants, and the run then aborts with
+	// exit 77 — a bind of /tmp is an ancestor of your home — which is
 	// rejectMasking doing its job on an environment artifact, not this test
 	// finding anything. Skip with the reason rather than fail: a red-team round
 	// hit this by pinning HOME under /tmp and the exit 77 read as a defect.
 	if abs, err := filepath.Abs(base); err == nil {
 		if rel, err := filepath.Rel(os.TempDir(), abs); err == nil && !strings.HasPrefix(rel, "..") {
 			t.Skipf("$HOME (%s) is inside %s, so a target rooted there would sit under "+
-				"@tmp-shared's own /tmp grant; this test needs a HOME outside it", abs, os.TempDir())
+				"the shared-tmp arm's own /tmp grant; this test needs a HOME outside it",
+				abs, os.TempDir())
 		}
 	}
 	root, err := os.MkdirTemp(base, "snug-87-target-")

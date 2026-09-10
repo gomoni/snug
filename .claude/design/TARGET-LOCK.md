@@ -73,8 +73,8 @@ closed).
 directory *is* a second sandbox — snug has no other kind — and the surface the
 two share is enumerated on `--dry-run` rather than forbidden here. The shared
 surface is the host-backed writable one: the target directory itself, the engine
-store and runroot when a `@podman*` profile is selected, and the shared-tmp
-directory when `@tmp-shared` is. `SECRETS.md` §8 carries what that costs, with
+store and runroot when a `@podman*` profile is selected, and any host directory
+a profile binds. `SECRETS.md` §8 carries what that costs, with
 the measurement: a git hook one sandbox writes is a git hook the other's `git
 commit` executes.
 

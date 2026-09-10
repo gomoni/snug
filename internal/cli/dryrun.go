@@ -3214,7 +3214,8 @@ func partialLines(name string, beneath int, generated bool) []string {
 // every other row.
 //
 // WHY (issue #223). yieldTo() installs snug's own mount only if nothing already
-// claims that guest path, and that is deliberate: it is how @tmp-shared works.
+// claims that guest path, and that is deliberate: it is how a profile binding a
+// host directory at /tmp works.
 // What is NOT deliberate is @parent-ro reaching /tmp by accident of where the
 // target sits. `snug /tmp/proj` makes the target's parent /tmp, so the private
 // tmpfs never lands and the sandbox runs with the HOST's /tmp read-only, with

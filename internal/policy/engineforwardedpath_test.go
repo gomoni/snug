@@ -14,8 +14,8 @@ import (
 // share a policy carrying @claude's own shape — `{home}/.local/bin/claude:
 // /snug/bin/claude` — because Host and Guest differ BY RULE there
 // (splitSpec, resolve.go), not by mistake, and the whole point of this
-// predicate is to survive that. A THIRD pair (@tmp-shared's
-// `{host_tmpdir}:/tmp`) is included specifically because it looks identical
+// predicate is to survive that. A THIRD pair (a profile binding a host
+// directory at /tmp) is included specifically because it looks identical
 // in shape to @claude's but behaves differently: /tmp is itself the divergent
 // bind's GUEST, so a path *underneath the host spelling* is, by coincidence,
 // also underneath the bind's own guest root — and the function walks Guest
@@ -29,7 +29,7 @@ func TestCheckEngineForwardedPathIsAskedInGuestSpace(t *testing.T) {
 		"/snug/bin/claude": {Guest: "/snug/bin/claude", Host: "/home/u/.local/bin/claude", Kind: KindBind, Access: AccessRO},
 		"/home/u":          {Guest: "/home/u", Kind: KindTmpfs, Access: AccessRW},
 	}
-	// The @tmp-shared shape: Host and Guest differ, but the host tmpdir
+	// The shared-/tmp shape: Host and Guest differ, but the host directory
 	// happens to live UNDER the bind's own Guest ("/tmp"), so a path under
 	// either spelling is covered, in GUEST space, by the very same bind.
 	tmpShared := map[string]Mount{
@@ -93,20 +93,20 @@ func TestCheckEngineForwardedPathIsAskedInGuestSpace(t *testing.T) {
 			wantInMsg: []string{"/home/u/.local/bin/claude", "/snug/bin/claude", "issue #371"},
 		},
 		{
-			// @tmp-shared shape, HOST spelling. Unlike @claude's, this DOES
+			// Shared-/tmp shape, HOST spelling. Unlike @claude's, this DOES
 			// hit the divergent-bind clause: /tmp/snug-shared-h/x is itself
 			// under the bind's Guest ("/tmp"), so the deepest guest cover is
 			// the bind, and both spellings appear.
-			name:      "tmp-shared, host spelling lands on the bind's own guest root by coincidence, both spellings",
+			name:      "shared /tmp, host spelling lands on the bind's own guest root by coincidence, both spellings",
 			mounts:    tmpShared,
 			path:      "/tmp/snug-shared-h/x",
 			wantErr:   true,
 			wantInMsg: []string{"/tmp/snug-shared-h", "/tmp", "issue #371"},
 		},
 		{
-			// @tmp-shared shape, GUEST spelling. Same clause, same message
+			// Shared-/tmp shape, GUEST spelling. Same clause, same message
 			// shape, reached the "ordinary" way.
-			name:      "tmp-shared, guest spelling, both spellings",
+			name:      "shared /tmp, guest spelling, both spellings",
 			mounts:    tmpShared,
 			path:      "/tmp/x",
 			wantErr:   true,

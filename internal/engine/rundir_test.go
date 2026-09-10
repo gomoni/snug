@@ -54,8 +54,7 @@ func TestRunDirsRemoveGoesThroughTheDescriptorNotThePath(t *testing.T) {
 // already at a pid-carrying name is refused whatever it is. The symlink guard
 // is the one that matters where reuse is legitimate, and it is discriminated
 // there instead: internal/vdir's own TestSecureSubdirRefusesAnInRootSymlink
-// and internal/cli's TestHostTmpDirRefusesAPreplantedSymlink both fail when it
-// is removed. Belt and braces is worth having; claiming a test proves the
+// fails when it is removed. Belt and braces is worth having; claiming a test proves the
 // brace when the belt is holding is not.
 func TestRunDirsRefusesAPreplantedSymlink(t *testing.T) {
 	base := t.TempDir()

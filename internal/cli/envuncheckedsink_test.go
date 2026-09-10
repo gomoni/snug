@@ -42,14 +42,11 @@ func TestEveryBuiltinEnvVarHasARosterRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// EVERY builtin, with no exception list: a name skipped here is a profile
+	// whose environment writes this sweep never sees, and the list is the
+	// place that rots silently.
 	var sel []policy.ProfileName
 	for name := range reg {
-		// @tmp-shared wants a host directory the caller allocates; it touches
-		// no environment and would make Resolve fail for a reason unrelated to
-		// this sweep.
-		if name == "@tmp-shared" {
-			continue
-		}
 		sel = append(sel, name)
 	}
 	slices.Sort(sel)

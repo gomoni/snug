@@ -114,7 +114,6 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		"target":        target,
 		"target_parent": filepath.Dir(target),
 		"home":          home,
-		"host_tmpdir":   ctx.HostTmpDir,
 	}
 
 	p := &Policy{
@@ -278,7 +277,23 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
-			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: s.Target, Access: AccessRO, From: []string{string(name)}}); err != nil {
+			// BOTH fields, and `at` alone was the bug: one key of a
+			// two-key table expanded and the other did not, so
+			// `target = "{home}/x"` wrote the six literal characters
+			// "{home}" into a symlink inode and said nothing. It is also
+			// the one place a RETIRED variable survived — {host_tmpdir}
+			// refuses in every other sink and rendered verbatim here.
+			//
+			// Not Cleaned, unlike `at`: a link target is a string the
+			// kernel resolves relative to the link, and the shipped ones
+			// are relative on purpose ("usr/bin"). filepath.Clean would
+			// not change those, but it is the wrong operation to reach
+			// for on a value whose relativeness is the point.
+			target, err := expandVars(s.Target, vars)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: target, Access: AccessRO, From: []string{string(name)}}); err != nil {
 				return nil, err
 			}
 		}
@@ -518,7 +533,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	//    word, on the same --dry-run screen.
 	//
 	//    /proc and /dev yield to a profile's grant only so Validate can refuse it
-	//    by name (RULE 4); /tmp yields for real, which is how @tmp-shared works.
+	//    by name (RULE 4); /tmp yields for real, which is how a profile binding
+	//    a host directory there works.
 	p.yieldTo(Mount{Guest: "/proc", Kind: KindProc, Access: AccessRW, From: []string{"(snug)"}})
 	p.yieldTo(Mount{Guest: "/dev", Kind: KindDev, Access: AccessRW, From: []string{"(snug)"}})
 	p.yieldTo(Mount{Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW, From: []string{"(snug)"}})
@@ -857,8 +873,8 @@ func (p *Policy) join(m Mount) error {
 
 // yieldTo installs one of snug's base mounts only where no profile already
 // claimed that guest path. It exists for /tmp, and ONLY /tmp is meant to be
-// yielded: `@tmp-shared` replaces the private tmpfs with a host directory, and
-// stepping aside is how that profile works.
+// yielded: a profile may bind a host directory there — the way to hand a file
+// to a host tool — and stepping aside is how such a grant works.
 //
 // /proc and /dev go through it too, and there the yield is a diagnostic device
 // rather than an intention: Validate refuses any non-authored mount at either
@@ -1174,6 +1190,20 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		key := s[i+1 : i+j]
 		val, ok := vars[key]
 		if !ok {
+			// {host_tmpdir} is named on its own, because a profile carrying it
+			// is not a typo: it is a profile written against a variable snug
+			// USED to resolve, and "unknown variable" would send its author
+			// hunting a spelling mistake. It went with the @tmp-shared profile
+			// it existed for, and there is no replacement spelling — a profile
+			// that wants a host directory as the sandbox's /tmp names the
+			// directory itself, `rw = ["/path/on/host:/tmp"]`, which is the
+			// same grant with the path on the screen instead of behind a
+			// variable snug allocated.
+			if key == "host_tmpdir" {
+				return "", fmt.Errorf("{host_tmpdir} in %q was removed with the @tmp-shared "+
+					"profile and has no replacement: name the host directory yourself, "+
+					"rw = [\"/path/on/host:/tmp\"]", s)
+			}
 			return "", fmt.Errorf("unknown variable {%s} in %q", key, s)
 		}
 		// The literal text before the placeholder and the substituted value are

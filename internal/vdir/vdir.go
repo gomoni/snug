@@ -5,7 +5,7 @@
 // (#61, #85, #103); internal/engine hand-rolled an equivalent for its own
 // run directory under /tmp — mkdir-that-refuses-to-reuse, then
 // O_DIRECTORY|O_NOFOLLOW, then fstat on the descriptor — and
-// prepareHostTmpDir had a third, weaker spelling that checked by path and
+// the shared-tmp allocator had a third, weaker spelling that checked by path and
 // held no descriptor at all (#233). Three copies of a security check is the
 // shape CLAUDE.md warns about under a different name: a rule written once
 // and applied to one of its halves. Two of those copies were already

@@ -157,11 +157,11 @@ func TestAnchorHidesNothingAndEvaporatesAtTeardown(t *testing.T) {
 // the rename lands on the real host tree, because a read-write grant of a
 // directory IS a grant of the right to rename inside it.
 //
-// No shipped builtin reaches this shape (@tmp-shared's rw of {host_tmpdir}
-// looks like it should and does not: a target under /tmp nests @cwd-rw's
-// bind inside @tmp-shared's and rejectMasking refuses the whole selection),
-// so this test authors its own rw-granting profile, the shape a user's own
-// profiles.d entry would take.
+// No shipped builtin reaches this shape, and a profile binding a host
+// directory at /tmp does not either: a target under /tmp nests @cwd-rw's bind
+// inside that grant and rejectMasking refuses the whole selection. So this
+// test authors its own rw-granting profile, the shape a user's own profiles.d
+// entry would take.
 //
 // This is the KNOWN residual issue #553's "Detect" half — an st_dev/st_ino
 // check on the target — is meant to cover separately, in the style of the test

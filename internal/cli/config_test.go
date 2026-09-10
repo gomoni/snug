@@ -100,31 +100,6 @@ func TestOnlyAMissingConfigIsANonEvent(t *testing.T) {
 	}
 }
 
-// TestDryRunCreatesNoHostTmpDir — `--dry-run` says "It starts no process and
-// creates no file", and prepareHostTmpDir ran before the dry-run branch, so
-// `--dry-run -p @tmp-shared` left a /tmp/snug-* behind. The name is now computed
-// without the side effect. Asserting on the pure function keeps this test off
-// the real /tmp.
-func TestDryRunCreatesNoHostTmpDir(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "proj")
-	path := hostTmpDirPath(target)
-	if path == "" {
-		t.Fatal("hostTmpDirPath returned nothing; --dry-run would have no path to show")
-	}
-	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		t.Errorf("hostTmpDirPath(%q) created or found %s (err %v); naming a path must have "+
-			"no side effect, or --dry-run contradicts its own first line", target, path, err)
-	}
-	// CONTROL: the name must be stable and target-derived, or --dry-run would be
-	// showing a path the real run will not use.
-	if again := hostTmpDirPath(target); again != path {
-		t.Errorf("hostTmpDirPath is not deterministic: %s then %s", path, again)
-	}
-	if other := hostTmpDirPath(target + "-other"); other == path {
-		t.Error("two different targets produced the same host tmp dir; they would share a cache")
-	}
-}
-
 // `snug profile show` must render ALL FIVE verbs.
 //
 // The line this replaced was `show("env", p.Env)`, which rendered one of the two

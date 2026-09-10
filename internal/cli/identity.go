@@ -99,8 +99,8 @@ func ghToken(host, user string) policy.Secret {
 // listening socket is bound, no proxy goroutine runs. The socket path is
 // NAMED instead — plannedSocket computes the path a real run would use — so
 // --dry-run's MOUNTS section is unchanged and still shows where the agent
-// socket would appear. main.go draws the same distinction one indirection up
-// for the @tmp-shared host directory: name it, do not create it.
+// socket would appear. plannedRuntimeSocket (runtimedir.go) draws the same
+// distinction for the runtime directory: name it, do not create it.
 //
 // Two host-state checks go with the proxy, and that is the intended
 // direction rather than a loss: sshproxy.New refuses when SSH_AUTH_SOCK is
@@ -307,7 +307,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 			// exist, and refusing here would make the policy unreadable on
 			// exactly the hosts where reading it matters most — a CI box, a
 			// machine without gh, someone reviewing a colleague's profile.
-			// main.go:230 makes the same call for the @tmp-shared host dir.
+			// plannedSocket above makes the same call for the agent socket.
 			fmt.Fprintln(os.Stderr, "snug: "+msg)
 			fmt.Fprintln(os.Stderr, "      (dry run: continuing, and the FILESYSTEM block below "+
 				"therefore has no hosts.yml row)")

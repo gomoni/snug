@@ -508,10 +508,10 @@ one link prefixes another. One map, two entry points; the environ one must match
 
 **Drop, never rewrite**, because the host→guest map is not a function: `KindData`
 mounts have no host path at all, and `Mount.Host` is already canonicalised. With
-`@tmp-shared`, `/tmp/x/lib` is kept and `/tmp/snug-1000-xxx/lib` is dropped —
-which is also the intuitive answer from inside, where `/tmp` *is* the shared
-directory. **Without `@tmp-shared` both are dropped**, because `/tmp` is then a
-tmpfs and the kind rule below applies; the two answers differ because the two
+a profile binding a host directory at `/tmp`, `/tmp/x/lib` is kept and
+`/tmp/<that directory>/lib` is dropped — which is also the intuitive answer from
+inside, where `/tmp` *is* the bound directory. **With no such grant both are
+dropped**, because `/tmp` is then a tmpfs and the kind rule below applies; the two answers differ because the two
 sandboxes differ, which is the filter reporting the policy rather than the host. The cost is that genuinely-real elements get dropped; §2.7 prints them
 **named**, and the repair is one visible `merge` line.
 

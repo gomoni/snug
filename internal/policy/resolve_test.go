@@ -760,20 +760,24 @@ func TestNarrowerWriteIsExpressibleWithoutSubtraction(t *testing.T) {
 	}
 }
 
-// tmp-shared replaces the private /tmp with a host directory. The builtin
-// tmpfs must step aside rather than colliding, and the result must be a bind —
-// otherwise the whole point (the host can see it) is lost.
+// A profile granting a host directory at /tmp replaces the private tmpfs. The
+// builtin tmpfs must step aside rather than colliding, and the result must be
+// a bind — otherwise the whole point (the host can see it) is lost.
+//
+// No profile snug ships does this any more: @tmp-shared and the {host_tmpdir}
+// variable it allocated were removed, and what remains is the general rule any
+// profile can reach by naming the directory itself. The rule is what this
+// test is about, so it authors the grant here rather than borrowing one.
 func TestSharedTmpReplacesThePrivateTmpfs(t *testing.T) {
 	env := newFakeEnv()
 	env.dirs["/tmp/snug-1000-abc"] = true
 
 	reg := testRegistry()
-	reg["tmp-shared"] = &Profile{Name: "tmp-shared", RW: []string{"{host_tmpdir}:/tmp"}}
+	reg["shared-tmp"] = &Profile{Name: "shared-tmp", RW: []string{"/tmp/snug-1000-abc:/tmp"}}
 
 	ctx := testCtx()
-	ctx.HostTmpDir = "/tmp/snug-1000-abc"
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tmp-shared"}, ctx, env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "shared-tmp"}, ctx, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,8 +790,8 @@ func TestSharedTmpReplacesThePrivateTmpfs(t *testing.T) {
 	}
 }
 
-// Without tmp-shared, /tmp must stay a private tmpfs — a sandbox whose /tmp
-// leaked to the host by default would be a nasty surprise.
+// With no profile granting anything at /tmp, it must stay a private tmpfs — a
+// sandbox whose /tmp leaked to the host by default would be a nasty surprise.
 func TestTmpIsPrivateByDefault(t *testing.T) {
 	if got := mustResolveDefaults(t).Mounts["/tmp"].Kind; got != KindTmpfs {
 		t.Errorf("/tmp is %s by default, want tmpfs", got)
@@ -1407,5 +1411,98 @@ func TestExpandVarsDoesNotRescanItsOwnOutput(t *testing.T) {
 	}
 	if _, err := expandVars("/a/{unterminated", vars); err == nil {
 		t.Error("an unterminated variable was accepted")
+	}
+}
+
+// TestTheRetiredHostTmpdirVariableNamesItsOwnRemoval is issue #399's
+// regression, and it is about the MESSAGE rather than about the refusal.
+//
+// {host_tmpdir} was a real variable for the life of the @tmp-shared profile,
+// so a profile in somebody's profiles.d still carrying it is not a typo — and
+// "unknown variable {host_tmpdir}" reads as one, sending its author to check
+// the spelling of a name that is spelled correctly and no longer exists.
+// Invariant 5's shape at the level of a message: the refusal has to say what
+// happened and what to write instead.
+//
+// The general arm is asserted beside it deliberately: a special case that
+// swallowed every unknown name would pass an assertion about {host_tmpdir}
+// alone.
+func TestTheRetiredHostTmpdirVariableNamesItsOwnRemoval(t *testing.T) {
+	vars := map[string]string{"target": "/proj"}
+
+	_, err := expandVars("{host_tmpdir}:/tmp", vars)
+	if err == nil {
+		t.Fatal("{host_tmpdir} resolved. It names a directory snug no longer allocates, so a " +
+			"profile carrying it must be refused rather than handed an empty string")
+	}
+	for _, want := range []string{"host_tmpdir", "@tmp-shared", "no replacement", "/path/on/host:/tmp"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not contain %q, so it does not tell the author what "+
+				"happened or what to write instead: %v", want, err)
+		}
+	}
+
+	// CONTROL: an ordinary unknown name still gets the ordinary message, or
+	// the special case above has become the only message anybody sees.
+	other, err := expandVars("{nosuch}/x", vars)
+	if err == nil {
+		t.Fatalf("an unknown variable resolved to %q", other)
+	}
+	if strings.Contains(err.Error(), "@tmp-shared") {
+		t.Errorf("an unrelated unknown variable was reported as the retired one: %v", err)
+	}
+}
+
+// TestASymlinkTargetExpandsVariablesLikeEveryOtherField is the second half of
+// a two-key table behaving like one key, found by the red-team round on issue
+// #399 and fixed with it.
+//
+// `symlink = [{ at = "...", target = "..." }]` expanded `at` and passed
+// `target` through untouched, so a profile writing `target = "{home}/x"` got
+// the six literal characters "{home}" in a symlink inode, with nothing on any
+// screen saying so. The asymmetry is invisible from either key alone, which is
+// why this asserts BOTH in one test rather than adding a target case beside an
+// existing at case.
+//
+// The retired-variable arm is the one that made this a #399 question: every
+// other sink refuses {host_tmpdir}, and this one rendered it verbatim. A
+// refusal with one silent hole in it is worse than no refusal, because the
+// hole is the shape nobody checks.
+func TestASymlinkTargetExpandsVariablesLikeEveryOtherField(t *testing.T) {
+	reg := testRegistry()
+	reg["links"] = &Profile{
+		Name:    "links",
+		Symlink: []Symlink{{At: "{home}/link", Target: "{home}/real"}},
+	}
+
+	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "links"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, ok := p.Mounts["/home/u/link"]
+	if !ok {
+		t.Fatal("the symlink's own guest path did not expand, so this test cannot say " +
+			"anything about its target")
+	}
+	if m.Host != "/home/u/real" {
+		t.Errorf("symlink target = %q, want %q — a link target is written into the sandbox "+
+			"verbatim, so an unexpanded {home} is six literal characters in an inode",
+			m.Host, "/home/u/real")
+	}
+
+	// The retired variable refuses HERE too, or the removal in issue #399 has
+	// exactly one sink it does not cover.
+	reg["retired"] = &Profile{
+		Name:    "retired",
+		Symlink: []Symlink{{At: "/zz/l", Target: "{host_tmpdir}/x"}},
+	}
+	_, err = Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "retired"}, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("{host_tmpdir} in a symlink target resolved. It refuses in every other sink, " +
+			"so this one rendered a variable snug no longer has into the sandbox")
+	}
+	if !strings.Contains(err.Error(), "@tmp-shared") {
+		t.Errorf("the symlink-target refusal does not name the removal: %v", err)
 	}
 }

@@ -129,9 +129,10 @@ mandatory.
   breaks the purity that keeps the security-critical tests runnable in CI.
 - **Anything derived from the target's contents.** `{target}` is fine — the human
   chose the directory. What is *under* it is not.
-- **`{host_tmpdir}` in an argument.** Chicken-and-egg with the pre-flight
-  allocation, and meaningless besides. Allowed in a body, forbidden in an
-  argument.
+- **Anything snug would have to allocate before resolving.** A variable whose
+  value snug creates on the host is chicken-and-egg with the pre-flight, and it
+  is why `{host_tmpdir}` no longer exists at all (issue #399): a profile that
+  wants a host directory names it.
 
 ### The interaction that most worries the architect
 
@@ -274,8 +275,8 @@ change.
   classification. **Prerequisite for M-d.**
 - **M-d** templates, as specified above.
 
-Do not reparameterise `@tmp-shared` or any shipped builtin in the same change, or
-the golden diff stops being readable as a security review artifact. Same reason
+Do not reparameterise a shipped builtin in the same change, or the golden diff
+stops being readable as a security review artifact. Same reason
 to land the `dotdot` → `@parent-ro` rename before or after, never concurrently.
 (That rename has since landed; the profile is `@parent-ro` everywhere now.)
 

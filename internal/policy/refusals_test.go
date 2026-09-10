@@ -163,13 +163,14 @@ func TestGrantAtExactlyDevIsFatal(t *testing.T) {
 }
 
 // POSITIVE CONTROL for both of the above: /tmp is the ONE path that is meant
-// to yield to a profile grant — @tmp-shared replacing the private tmpfs with a
-// host directory is how it works. If this ever starts failing, RULE 4 was
-// applied too broadly and @tmp-shared is broken.
+// to yield to a profile grant — a profile replacing the private tmpfs with a
+// host directory it names. If this ever starts failing, RULE 4 was applied
+// too broadly and no profile can hand a file to a host tool through /tmp at
+// all.
 func TestGrantAtExactlyTmpStillYields(t *testing.T) {
 	if err := refusalGrantAtExactly(t, "/tmp"); err != nil {
-		t.Fatalf("control: a profile grant at exactly /tmp must still be legal — this is how "+
-			"@tmp-shared works: %v", err)
+		t.Fatalf("control: a profile grant at exactly /tmp must still be legal — it is the "+
+			"one path snug's own tmpfs yields: %v", err)
 	}
 }
 

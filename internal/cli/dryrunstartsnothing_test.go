@@ -19,10 +19,9 @@ import (
 // SIGPIPE (`snug --dry-run -p <identity> <dir> | head`) the deferred cleanup
 // never ran, so the directory and the socket were left on the host.
 //
-// The rule was already applied one indirection up: main.go NAMES the
-// @tmp-shared host directory for a dry run instead of creating it, and skips
-// openRuntimeDir entirely. startIdentity and startContainersScreen opened
-// their own.
+// The rule is applied one indirection up too: main.go skips openRuntimeDir
+// entirely on a dry run. startIdentity and startContainersScreen opened their
+// own.
 //
 // THE POSITIVE CONTROL IS THE POINT OF THIS FILE. "No run-* directory
 // appeared" is equally true of a test whose $XDG_RUNTIME_DIR was never

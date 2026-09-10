@@ -174,27 +174,29 @@ func TestStopRemovesTheRunDirectory(t *testing.T) {
 	}
 }
 
-// TestSweepNeverTouchesTheSharedTmpDirectory is red-team finding F1, and it is
-// the reason this sweep matches a name SHAPE rather than a prefix.
+// TestSweepNeverTouchesATargetDerivedDirectory is red-team finding F1, and it
+// is the reason this sweep matches a name SHAPE rather than a prefix.
 //
-// internal/cli's hostTmpDirPath builds `@tmp-shared`'s per-project host
-// directory as os.TempDir()/snug-<uid>-<targetkey.Hash(target)>, which shares
-// the "snug-<uid>-" prefix exactly, is mode 0700, and is owned by this uid — so
-// vdir.OpenForRemoval cannot tell it apart. And `@tmp-shared` grants the
-// PAYLOAD rw on it, so the sandbox itself can create the `lock` file that was
-// the only remaining gate. Measured before the fix: a container run on one
+// A target-derived name is os.TempDir()/snug-<uid>-<targetkey.Hash(target)>,
+// which shares the "snug-<uid>-" prefix exactly, is mode 0700, and is owned by
+// this uid — so vdir.OpenForRemoval cannot tell it apart. The profile that
+// shipped that shape (@tmp-shared, removed by issue #399) also granted the
+// PAYLOAD rw on it, so the sandbox itself could create the `lock` file that
+// was the only remaining gate. Measured before the fix: a container run on one
 // project deleted another project's shared /tmp with its contents, and a live
 // sandbox had its /tmp unlinked underneath it mid-run.
 //
-// The name is built from targetkey.Hash rather than a literal on purpose: if
-// hostTmpDirPath's shape ever changes, this test follows it instead of pinning
-// a spelling that has drifted away from the thing it is protecting.
-func TestSweepNeverTouchesTheSharedTmpDirectory(t *testing.T) {
+// Nothing snug ships builds a name of this shape today, and the test stays
+// anyway: the filter's whole claim is that the NEXT such mechanism is safe
+// without anyone remembering this file. The name is built from targetkey.Hash
+// rather than a literal for the same reason — a mechanism that adopts the
+// standard key is what this is about, whatever it is called.
+func TestSweepNeverTouchesATargetDerivedDirectory(t *testing.T) {
 	uid := os.Getuid()
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 
-	// Exactly hostTmpDirPath's shape, for a target that does not have to exist.
+	// Exactly a target-derived name's shape, for a target that need not exist.
 	shared := plantRunDir(t, tmp, fmt.Sprintf("snug-%d-%s", uid, targetkey.Hash("/home/u/proj")), true)
 	payload := filepath.Join(shared, "precious-build-cache")
 	if err := os.WriteFile(payload, []byte("a whole project's shared /tmp"), 0o600); err != nil {
@@ -207,10 +209,10 @@ func TestSweepNeverTouchesTheSharedTmpDirectory(t *testing.T) {
 	sweepStaleEngineRunDirs()
 
 	if !exists(t, shared) || !exists(t, payload) {
-		t.Errorf("the sweep removed %s — that is @tmp-shared's per-project host directory, and "+
-			"the payload can create the lock file that let this through. Deleting it destroys "+
-			"another project's persistent /tmp, and unlinks a live sandbox's /tmp underneath it",
-			shared)
+		t.Errorf("the sweep removed %s — that is a target-derived per-project directory, the "+
+			"shape finding F1 was measured on, and a payload granted rw on one can create the "+
+			"lock file that let this through. Deleting it destroys whatever the next such "+
+			"mechanism keeps there", shared)
 	}
 	if exists(t, stale) {
 		t.Fatalf("CONTROL FAILED: the sweep also left %s, which it must remove, so this test "+
@@ -238,8 +240,8 @@ func TestEngineRunDirNameShapeIsWhatRunDirNameProduces(t *testing.T) {
 
 	for _, tc := range []struct{ name, why string }{
 		{fmt.Sprintf("snug-%d-%s", uid, targetkey.Hash("/home/u/proj")),
-			"@tmp-shared's per-project host directory (internal/cli's hostTmpDirPath) — " +
-				"payload-writable, and finding F1"},
+			"a target-derived per-project directory (targetkey.Hash) — the shape " +
+				"finding F1 was measured on"},
 		{fmt.Sprintf("snug-%d", uid),
 			"internal/cli's runtime directory when $XDG_RUNTIME_DIR is unset"},
 		{fmt.Sprintf("snug-engines-%d-sha256_deadbeef", uid),

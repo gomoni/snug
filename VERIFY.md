@@ -286,8 +286,9 @@ complete document. The human refusal text is still on stderr.
 **And for a refusal that happens BEFORE a policy exists — the half that wrote
 zero bytes for a milestone (issue #334).** `pol != nil` was the real boundary:
 `policy.Resolve` hands back a policy only for a `Validate` failure, so an
-unknown profile, a target that does not exist, a missing `@tmp-shared` grant
-and an unparseable profile file never entered the JSON path at all. Each produced exactly the empty file the paragraph above says
+unknown profile, a target that does not exist, a grant naming a host path that
+is not there and an unparseable profile file never entered the JSON path at
+all. Each produced exactly the empty file the paragraph above says
 the format prevents:
 
 ```bash
@@ -3270,7 +3271,8 @@ shape this project has a standing complaint about, so
 ## 9a. A profile that takes over snug's own /tmp says so (issue #223)
 
 `yieldTo` installs snug's own `/proc`, `/dev` and `/tmp` **only if nothing else
-claims that path**. That is how `@tmp-shared` works. What is not intended is
+claims that path**. That is how a profile binding a host directory at `/tmp`
+works. What is not intended is
 `@parent-ro` reaching `/tmp` by accident of where the target sits:
 
 `@parent-ro` is named on the command line because since issue #550 it is not in
@@ -3311,8 +3313,9 @@ $ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
 ```
 
    A warning on every run is a warning nobody reads.
-4. `@tmp-shared`'s writable takeover keeps the "this is the host's" note and
-   loses the READ-ONLY clause, because that clause would be false.
+4. A writable takeover — a profile binding a host directory at `/tmp` — keeps
+   the "this is the host's" note and loses the READ-ONLY clause, because that
+   clause would be false.
 5. Every tmpfs snug emits is bounded, not just `/tmp` (issue #281): the default
    selection resolves to `@sys @home @cwd-rw`, and `[profile.home]`
    grants five more tmpfs mounts on top of `/tmp` itself.
@@ -3326,6 +3329,79 @@ $ ./bin/snug --dry-run ~/src/anything | grep -c 'tmpfs .*max '
 refusal would break snug's own test workflow unless it could distinguish "the
 yield was asked for" from "the yield happened by accident" — and this layer
 cannot. `--dry-run` being honest is the mechanism the project already relies on.
+
+## 9a-quater. There is no shared-`/tmp` profile, and the retired variable says so (issue #399)
+
+`/tmp` is a private tmpfs in every sandbox snug ships a profile for. `@tmp-shared`
+— which allocated a per-project host directory under `os.TempDir()` and bound it
+there — and the `{host_tmpdir}` variable behind it are gone.
+
+```bash
+./bin/snug profile list | grep -c tmp-shared          # 0
+
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.old]\nrw = ["{host_tmpdir}:/tmp"]\n' > $X/snug/profiles.d/old.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p old $SC/proj/sub; echo "exit=$?"
+rm -rf $X
+```
+
+```
+0
+snug: profile "old": {host_tmpdir} in "{host_tmpdir}:/tmp" was removed with the @tmp-shared profile and has no replacement: name the host directory yourself, rw = ["/path/on/host:/tmp"]
+exit=77
+```
+
+**Every sink, not most of them.** The refusal fires wherever a profile string is
+expanded — `ro`, `rw`, `tmpfs`, `optional`, `symlink.at` AND `symlink.target`,
+the `environ` verbs, `identity.ssh_key`, and through an `include`. The symlink
+TARGET was the hole a red-team round found: it was the one key that never
+expanded any variable at all, so `{host_tmpdir}` rendered verbatim into a link
+inode there while refusing everywhere else, and so did `{home}`. Both keys of
+that table expand now (`TestASymlinkTargetExpandsVariablesLikeEveryOtherField`).
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.l]\nsymlink = [{ at = "/zz/l", target = "{host_tmpdir}/x" }]\n' \
+  > $X/snug/profiles.d/l.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p l $SC/proj/sub 2>&1 | head -1; rm -rf $X
+```
+
+```
+snug: profile "l": {host_tmpdir} in "{host_tmpdir}/x" was removed with the @tmp-shared profile and has no replacement: name the host directory yourself, rw = ["/path/on/host:/tmp"]
+```
+
+**The message is the point, not the refusal.** A profile still carrying
+`{host_tmpdir}` is not a typo — it is a profile written against a variable that
+resolved for the life of `@tmp-shared` — and "unknown variable" would send its
+author to check a spelling that is correct.
+
+**The capability did not go anywhere; the allocation did.** `/tmp` is the one
+path snug's own mount yields, so a profile that names a host directory still
+takes it over, and `--dry-run` says whose it is. Run this outside `/tmp`: a
+target under `/tmp` nests `@cwd-rw`'s bind inside the `/tmp` grant and
+`rejectMasking` refuses the whole selection.
+
+```bash
+X=$(mktemp -d -p "$HOME" snug-verify-XXXX)
+mkdir -p $X/cfg/snug/profiles.d $X/shared $X/proj
+printf '[profile.sharedtmp]\nrw = ["%s/shared:/tmp"]\n' "$X" > $X/cfg/snug/profiles.d/s.toml
+XDG_CONFIG_HOME=$X/cfg ./bin/snug --dry-run -p sharedtmp $X/proj | grep -A4 'rw     /tmp '
+XDG_CONFIG_HOME=$X/cfg ./bin/snug -p sharedtmp $X/proj -- /bin/sh -c 'touch /tmp/from-inside'
+ls $X/shared
+rm -rf $X
+```
+
+```
+  rw     /tmp (from /home/you/snug-verify-XXXX/shared) sharedtmp
+                     ← this is the HOST's /tmp, not snug's private one — a
+                       profile claimed the path, so the tmpfs snug would have
+                       put here never landed. $TMPDIR points inside it
+from-inside
+```
+
+The file the payload wrote to guest `/tmp` is on the host, in the directory the
+profile named and nowhere else — `test/integration/hosttmpvisibility_test.go`
+asserts both halves of that against a decoy planted in the host's real `/tmp`.
 
 ## 9b. The `@` namespace belongs to snug
 
