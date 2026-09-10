@@ -110,7 +110,15 @@ func mustFindOne(t *testing.T, src, rel, label string, re *regexp.Regexp) int {
 // trusted to be clean by the same sweep.
 func TestContainerRunWiresStopAtCleanupNotAtPayloadExit(t *testing.T) {
 	cleanupCallsStop := regexp.MustCompile(`cleanup:\s*func\(\)\s*\{\s*p\.Close\(\);\s*eng\.Stop\(\)\s*\}`)
-	payloadExitIsDetach := regexp.MustCompile(`onPayloadExit:\s*eng\.Detach`)
+	// onPayloadExit is a CLOSURE since issue #174, and the anchor pins its
+	// whole shape rather than just the Detach: the graceful stop must run
+	// BEFORE the keepalive is dropped, because the keepalive is what holds the
+	// engine up to be asked. Nothing but this ordering enforces that — both
+	// calls compile, run and pass every other test in either order, and the
+	// swapped version fails only against a live engine, in a window measured
+	// in milliseconds. That is exactly the class this file exists for.
+	payloadExitStopsThenDetaches := regexp.MustCompile(
+		`onPayloadExit:\s*func\(\)\s*\{\s*p\.StopRunContainers\([^)]*\);\s*eng\.Detach\(\)\s*\}`)
 	payloadExitCallsStop := regexp.MustCompile(`onPayloadExit:\s*eng\.Stop\b`)
 
 	// Precondition: the sweep must be ABLE to catch the bug it is guarding
@@ -135,7 +143,21 @@ func TestContainerRunWiresStopAtCleanupNotAtPayloadExit(t *testing.T) {
 	// Both anchors must exist in the real source, each exactly once, or the
 	// wiring this test guards has been renamed out from under it.
 	mustFindOne(t, src, "internal/cli/container.go", "cleanup calling eng.Stop()", cleanupCallsStop)
-	mustFindOne(t, src, "internal/cli/container.go", "onPayloadExit set to eng.Detach", payloadExitIsDetach)
+	mustFindOne(t, src, "internal/cli/container.go",
+		"onPayloadExit calling StopRunContainers and THEN eng.Detach", payloadExitStopsThenDetaches)
+
+	// The ordering negative, stated as its own pattern so a failure says which
+	// half broke: a closure that detaches first would still match "contains
+	// both calls", and it is the version that dials an engine whose keepalive
+	// snug just dropped.
+	detachThenStop := regexp.MustCompile(
+		`onPayloadExit:\s*func\(\)\s*\{\s*eng\.Detach\(\);\s*p\.StopRunContainers\(`)
+	if detachThenStop.MatchString(src) {
+		t.Error("internal/cli/container.go drops the keepalive BEFORE asking the engine to " +
+			"stop this run's containers. The keepalive is what holds the engine up, so the " +
+			"stop would race a teardown already in progress — issue #174's graceful stop " +
+			"only exists because that one seam has the engine alive by construction.")
+	}
 
 	// The negative: onPayloadExit must never be wired to eng.Stop, in this
 	// file or anywhere the struct literal could reasonably be built. This is
