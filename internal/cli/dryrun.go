@@ -3063,9 +3063,9 @@ func formatArgs(argv0 string, args []string) string {
 		//
 		//	vim\n  --ro-bind /home/u/.ssh /home/u/.ssh
 		//
-		// rendered, through @claude's shipped `inherit EDITOR`, as a --ro-bind
-		// line in the argv block of a policy that has no such mount — no profile
-		// file required. The ENVIRONMENT block on the SAME screen escaped the
+		// rendered, through a profile's `inherit EDITOR` — @claude's own at the
+		// time, before issue #530 withdrew it — as a --ro-bind line in the argv
+		// block of a policy that has no such mount, from a host value alone. The ENVIRONMENT block on the SAME screen escaped the
 		// same string correctly, which is exactly the failure mode its own
 		// comment warns about: a fix at one site looks identical to a fix at all
 		// of them.

@@ -121,12 +121,12 @@ func TestBuiltinsItselfWritesOnlyRosteredNames(t *testing.T) {
 //
 // WHAT WAS CONSIDERED AND REJECTED: extending the rule to "nor a name snug would
 // annotate". CHECKED against the real profiles before rejecting it, which is why
-// it is rejected — @claude's `[profile.claude.environ.inherit]` carries EDITOR,
-// VISUAL, PAGER and ANTHROPIC_BASE_URL, all four of which ARE annotated now, so
-// a blanket refusal fails at Builtins() and takes every snug command down with
-// it. The annotation on those four is not a defect to close: it is the answer to
-// issues #35 and #45, and withdrawing @claude's inherit is the cost both of them
-// already priced and declined.
+// it is rejected — @claude's `[profile.claude.environ.inherit]` carries PAGER
+// and ANTHROPIC_BASE_URL, both of which ARE annotated, so a blanket refusal
+// fails at Builtins() and takes every snug command down with it. The annotation
+// on those two is not a defect to close: it is what issues #35 and #45 asked
+// for, and it is what makes a grant like PAGER readable at the point it is
+// made rather than refused.
 //
 // WHAT IS DONE INSTEAD: this inventory. The (name, verb) pairs a shipped profile
 // writes that carry an annotation are enumerated here, by hand. Adding one moves
@@ -147,13 +147,13 @@ func TestAnnotatedEnvPairsAShippedProfileWritesArePinned(t *testing.T) {
 		// inside the sandbox. Names no program; what it redirects is where the
 		// agent's own traffic goes.
 		"ANTHROPIC_BASE_URL (inherit)": "@claude",
-		// @claude, all three, so that `git commit` inside opens the editor the
-		// human already chose and `git log` pages the way they expect. These are
-		// the names issues #35 and #45 are about: the annotation is the decision,
-		// and withdrawing the inherit is the cost that was declined.
-		"EDITOR (inherit)": "@claude",
-		"VISUAL (inherit)": "@claude",
-		"PAGER (inherit)":  "@claude",
+		// @claude, so `git log` pages the way the human expects. It is the
+		// only survivor of git's exec class here: EDITOR and VISUAL were
+		// withdrawn by issue #530 because no editor exists inside that
+		// profile's sandbox, while `command -v less` does — base.toml carries
+		// the measurement. A line for either of them belongs in base.toml
+		// only with a reason that survives that measurement.
+		"PAGER (inherit)": "@claude",
 	}
 
 	reg, err := Builtins()
@@ -204,5 +204,60 @@ func TestAnnotatedEnvPairsAShippedProfileWritesArePinned(t *testing.T) {
 			t.Errorf("%s is pinned here (%s) but no builtin writes it any more. Remove the entry: "+
 				"an inventory that lists more than reality pre-approves the next grant", key, why)
 		}
+	}
+}
+
+// TestNoBuiltinInheritsAnEditorVariable is issue #530's regression, and it is
+// deliberately narrower than the inventory above: that one asks whether a
+// shipped grant of an ANNOTATED name has been reviewed, and would go green
+// again the moment somebody added `EDITOR (inherit)` back to `want` with a
+// sentence. This one asks the question the measurement settled.
+//
+// git's exec class reaches a sandbox by fallback — GIT_EDITOR -> core.editor ->
+// VISUAL -> EDITOR — so `inherit EDITOR` hands git whatever command string the
+// host has. MEASURED inside @claude's own sandbox: `command -v vi vim nano`
+// finds nothing, `command -v less more` finds /usr/bin/less and /usr/bin/more.
+// So the editor half of the class names a program that is not in there and git
+// fails identically with the variable and without it, while PAGER names one
+// that is. base.toml carries the same measurement beside the grant.
+//
+// PAGER is asserted PRESENT in the same test rather than in one of its own,
+// because "no builtin inherits an editor" is satisfied by a base.toml that
+// inherits nothing at all, and a profile that stopped inheriting the whole
+// exec class would pass a test that only looked for absence.
+//
+// `set` is untouched here and must stay that way: a profile that wants an
+// editor inside authors a fixed value and binds the program, which is an
+// ordinary grant a human reads on --dry-run. What this pins is the HOST's
+// value arriving unread.
+func TestNoBuiltinInheritsAnEditorVariable(t *testing.T) {
+	reg, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pagerSeen := false
+	for name, p := range reg {
+		for _, n := range p.Environ.Inherit {
+			switch n {
+			case "EDITOR", "VISUAL":
+				t.Errorf("builtin %s inherits %s. That is the host's own command string "+
+					"reaching git inside the sandbox through GIT_EDITOR -> core.editor -> "+
+					"VISUAL -> EDITOR, and issue #530 withdrew it on a measurement: no "+
+					"editor exists inside @claude's sandbox, so the grant buys nothing. If "+
+					"a profile needs an editor, `set` a fixed value and bind the program.",
+					name, n)
+			case "PAGER":
+				pagerSeen = true
+			}
+		}
+	}
+
+	if !pagerSeen {
+		t.Error("no builtin inherits PAGER any more. The absence check above passes " +
+			"vacuously on a profile set that inherits nothing of git's exec class, so " +
+			"this half is what keeps it honest: @claude inherits PAGER because " +
+			"/usr/bin/less IS in that sandbox. If the withdrawal was deliberate, move " +
+			"this assertion rather than deleting it.")
 	}
 }

@@ -463,24 +463,24 @@ disagreed about (issue #333).** `encoding/json` escapes runes BELOW U+0020 plus
 quote and backslash; it does not escape U+007F, and `policy.IsForgingRune` has
 always answered true for it — so the JSON predicate's `r >= 0x80` gate left
 exactly one forging rune raw while the human screen escaped it. It arrives from
-the HOST, through `@claude`'s shipped `inherit EDITOR`, with no profile file
+the HOST, through `@claude`'s shipped `inherit PAGER`, with no profile file
 involved:
 
 ```bash
-EDITOR=$(printf 'vim\177  ro     /etc/shadow    FORGED') \
+PAGER=$(printf 'less\177  ro     /etc/shadow    FORGED') \
   ./bin/snug --dry-run --json -p @claude $SC/proj/sub > /tmp/del.json; echo "exit=$?"
 LC_ALL=C grep -c $'\177' /tmp/del.json          # lines carrying a raw DEL byte
-grep -o 'vim..007f' /tmp/del.json | head -2     # the escaped form, twice
+grep -o 'less..007f' /tmp/del.json | head -2    # the escaped form, twice
 python3 -c "import json;d=json.load(open('/tmp/del.json'));print(d['snug']['lossy'],
-  [e['value'] for x in d['environment'] if x['name']=='EDITOR' for e in x['entries']])"
+  [e['value'] for x in d['environment'] if x['name']=='PAGER' for e in x['entries']])"
 ```
 
 ```
 exit=0
 0
-vim\u007f
-vim\u007f
-False ['vim\x7f  ro     /etc/shadow    FORGED']
+less\u007f
+less\u007f
+False ['less\x7f  ro     /etc/shadow    FORGED']
 ```
 
 Read the four lines together, because each one alone passes on a broken build:
@@ -1233,6 +1233,46 @@ authors it, and inside, that path is an empty tmpfs.
 Caveat worth knowing: `--clearenv` is not the last word. `/etc/profile.d/*`
 runs inside a login shell and can put variables back. That is why `@sys`
 enumerates `/etc` instead of binding it wholesale — see INDEX §5.3.
+
+### 6d-bis. `@claude` inherits `PAGER` and neither editor variable (issue #530)
+
+git's exec class reaches the sandbox by fallback — `GIT_EDITOR → core.editor →
+VISUAL → EDITOR` and `GIT_PAGER → core.pager → PAGER` — so an `inherit` of the
+generic name hands git the host's command string. `@claude` inherits one of the
+three, and the reason is a measurement rather than a preference:
+
+```bash
+EDITOR=vim VISUAL=vi PAGER=less \
+  ./bin/snug --dry-run -p @claude $SC/proj/sub -- true | sed -n '/^ENVIRONMENT/,/^$/p'
+EDITOR=vim VISUAL=vi PAGER=less \
+  ./bin/snug -p @claude $SC/proj/sub -- /bin/sh -c \
+  'echo "EDITOR=${EDITOR-unset} VISUAL=${VISUAL-unset} PAGER=${PAGER-unset}"
+   command -v vi vim nano; command -v less more'
+```
+
+The screen carries one row of the three, and it carries the sentence that says
+what the value IS:
+
+```
+  PAGER            less                            inherit   @claude
+                     ← the value is a command; git runs it over log, diff and
+                       show via GIT_PAGER -> core.pager -> PAGER (measured)
+```
+
+and inside:
+
+```
+EDITOR=unset VISUAL=unset PAGER=less
+/usr/bin/less
+/usr/bin/more
+```
+
+`command -v vi vim nano` printing NOTHING is the whole argument: an inherited
+`EDITOR` would name a program this sandbox does not have — the host's editor is
+not bound — so `git commit` fails identically with the variable and without it,
+while `less` is here and `PAGER` works. Both names stay legal for any profile at
+`set` and at `inherit`, and both stay annotated; what changed is what a profile
+snug SHIPS asks for.
 
 ### 6d. Every variable says where it came from
 
@@ -2002,10 +2042,11 @@ no rule anywhere that says a human may not have something.
 Note what that costs, stated so you can disagree with it: `PAGER='sh -c …' git
 log` runs the command, and so does the `GIT_PAGER` spelling, and nothing stops a
 profile writing either. https://github.com/gomoni/snug/issues/35 and
-https://github.com/gomoni/snug/issues/45 are both about this, and both are
-answered by the annotation rather than by a withdrawal — because withdrawing
-`EDITOR`/`VISUAL`/`PAGER` means taking them off `@claude`, which is a grant a
-human asked for.
+https://github.com/gomoni/snug/issues/45 are both about this and both are
+answered by the annotation, which is a rule about what a screen SAYS rather than
+about what a human may have. What a profile snug SHIPS carries is a separate
+decision, taken per name: `@claude` inherits `PAGER` — `less` exists inside that
+sandbox — and issue #530 withdrew `EDITOR` and `VISUAL`, because no editor does.
 
 ### 6b. …including via PID 1 (regression check)
 

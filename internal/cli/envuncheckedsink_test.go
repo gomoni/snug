@@ -74,9 +74,9 @@ func TestEveryBuiltinEnvVarHasARosterRow(t *testing.T) {
 	}
 
 	// POSITIVE CONTROL: a sweep over zero entries would pass vacuously. This
-	// selection includes @claude, which writes EDITOR/VISUAL/PAGER/NO_COLOR/
-	// ANTHROPIC_BASE_URL through `inherit` — all rows this PR added — so the
-	// sweep is exercising exactly the roster the flip depends on.
+	// selection includes @claude, which writes PAGER/NO_COLOR/
+	// ANTHROPIC_BASE_URL through `inherit`, so the sweep is exercising exactly
+	// the roster the flip depends on.
 	if checked == 0 {
 		t.Fatal("no environment entries were resolved at all; this sweep checked nothing")
 	}
@@ -127,27 +127,27 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 		t.Errorf("an unrostered name was not marked unchecked in --dry-run:\n%s", got)
 	}
 
-	// NEGATIVE CONTROL: EDITOR is a roster row (@claude inherits it, and the
+	// NEGATIVE CONTROL: PAGER is a roster row (@claude inherits it, and the
 	// fake host supplies a value for it), so its row must NOT carry the
 	// mark. A version of the mark that fired for every user-writable name —
 	// rather than only for a genuinely unrostered one — would pass the
 	// positive assertion above too.
 	//
 	// THIS CONTROL WAS ONE COMMIT FROM BEING UNFAILABLE. It used to scan for a
-	// LINE containing both "EDITOR" and "unchecked", which was the right
+	// LINE containing both the name and "unchecked", which was the right
 	// question while every mark was concatenated onto its row. Once each mark
 	// became its own indented line (dryrun.go's markIndent) no line can contain
 	// both, so the loop would have reported "not marked" for every possible
 	// build — including one that marked every name in the table. rowFor is what
 	// keeps the question askable: the row plus everything indented under it.
 	// See rowFor's comment; this is the case it was written for.
-	editor := rowFor(t, got, "EDITOR")
-	if !strings.Contains(editor, "the value is a command") {
-		t.Fatalf("EDITOR's row carries no annotation at all, so the negative control below "+
-			"cannot distinguish a working mark from a missing one:\n%s", editor)
+	pager := rowFor(t, got, "PAGER")
+	if !strings.Contains(pager, "the value is a command") {
+		t.Fatalf("PAGER's row carries no annotation at all, so the negative control below "+
+			"cannot distinguish a working mark from a missing one:\n%s", pager)
 	}
-	if strings.Contains(editor, "unchecked") {
-		t.Errorf("EDITOR, a rostered name, was marked unchecked:\n%s", editor)
+	if strings.Contains(pager, "unchecked") {
+		t.Errorf("PAGER, a rostered name, was marked unchecked:\n%s", pager)
 	}
 }
 
@@ -229,10 +229,11 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 // line (see dryrun.go's markIndent), a line-based helper reads the data line
 // alone, and every assertion of the form "this row carries mark M" would have
 // gone one of two ways: fail, or — far worse — become UNFAILABLE. The negative
-// controls are the unfailable half: `no line contains both "EDITOR" and
+// controls are the unfailable half: `no line contains both the name and
 // "unchecked"` is trivially true once the two are never on one line, so the
-// assertion that EDITOR is NOT marked would have passed on a build that marked
-// every name in the table. A test that cannot fail is worse than no test.
+// assertion that a rostered name is NOT marked would have passed on a build
+// that marked every name in the table. A test that cannot fail is worse than
+// no test.
 //
 // A continuation line is any line indented at least 19 columns (a mark sits at
 // 21, a drop line and a continuation BAND at 19); the next row starts at column

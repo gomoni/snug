@@ -89,15 +89,17 @@ func newEnvFakeEnv() *envFakeEnv {
 		// the two goldens that pin a $SNUG_PODMAN clearance are the ones that
 		// do.
 		files: map[string]bool{},
-		// EDITOR is set because @claude re-admits it past --clearenv. It is the
+		// PAGER is set because @claude re-admits it past --clearenv. It is the
 		// POSITIVE CONTROL for that whole mechanism: without one variable the
 		// host actually has, the @claude golden would be identical to the
 		// defaults one and could not tell "nothing was inherited" from "the
-		// inherit machinery is broken".
+		// inherit machinery is broken". It is also the one name left of git's
+		// exec class that @claude still inherits (issue #530), so the golden
+		// carries the annotation those names render.
 		// NO_COLOR is present and EMPTY, which is its specified spelling — "set
 		// to any value, including empty" — and the case a `v != ""` read of the
 		// host silently turned back into "colour on".
-		env: map[string]string{"USER": "u", "EDITOR": "vim", "NO_COLOR": ""},
+		env: map[string]string{"USER": "u", "PAGER": "less", "NO_COLOR": ""},
 	}
 }
 
@@ -224,7 +226,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		// file change".
 		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false, nil},
 		// The one shipped profile that touches the environment today. What the
-		// golden shows: EDITOR and NO_COLOR arriving through `inherit`, and
+		// golden shows: PAGER and NO_COLOR arriving through `inherit`, and
 		// /snug/bin on PATH because the profile's binary is staged there.
 		// @claude names NO PATH directory of its own — the band is snug's, and
 		// that is the fix for the shadow slot the old `merge {home}/.local/bin`

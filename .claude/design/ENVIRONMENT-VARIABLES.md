@@ -329,14 +329,15 @@ carve-outs are the POINTERS, and both tables now name the same set, asserted by
 sentence at the verbs that AUTHOR it, because authoring one is the mechanism
 "generate, don't bind" asks for.
 
-**`EDITOR`/`VISUAL`/`PAGER` are annotated, and that is the answer to the open
-issue, not a deferral.** `GIT_EDITOR`'s documented fallback chain is `GIT_EDITOR`
-→ `core.editor` → `VISUAL` → `EDITOR`, so refusing the `GIT_*` spellings never
-closed a class — it closed the invisible half of one. All six spellings carry a
-sentence now, which is the only form of "closing" that does not withdraw a grant
-`@claude` uses on every run. §3.2's row and the decision below it stand;
-https://github.com/gomoni/snug/issues/35 and
-https://github.com/gomoni/snug/issues/45 are both answered by the annotation.
+**`EDITOR`/`VISUAL`/`PAGER` are annotated at every verb.** `GIT_EDITOR`'s
+documented fallback chain is `GIT_EDITOR` → `core.editor` → `VISUAL` → `EDITOR`
+and `GIT_PAGER` → `core.pager` → `PAGER`, so a table that refuses the `GIT_*`
+spellings closes the invisible half of a class rather than the class. All six
+spellings carry a sentence, which is what makes either half readable at the
+point a grant is made; https://github.com/gomoni/snug/issues/35 and
+https://github.com/gomoni/snug/issues/45 asked for exactly that. The annotation
+is not the whole answer for a profile snug SHIPS — §3.2 carries that, and
+`@claude` inherits `PAGER` alone.
 
 The git group is where the split earns its keep, and it was not got right first
 time: the red team found `GIT_SSH` passing while `GIT_SSH_COMMAND` sat two
@@ -728,7 +729,7 @@ Provenance per entry = product. Mounts already render this way; environment shou
 
 ```
 ENVIRONMENT  (--clearenv, then:)
-  EDITOR           vim                             inherit   @claude
+  PAGER            less                            inherit   @claude
   HOME             /home/u                    (snug)
   PATH             /opt/bin                        prepend   mytools
                    /home/u/.cargo/bin         merge     @rust
@@ -865,9 +866,9 @@ because that name has no roster ROW — not because anyone decided a builtin may
 not write it. Add a row to an annotated name (to give it a type so a list verb
 works, the plausible reason) and the builtin gate opens silently while the
 annotation stays. Extending the rule to "nor a name snug would annotate" was
-considered and **rejected on measurement**: `@claude` inherits `EDITOR`,
-`VISUAL`, `PAGER` and `ANTHROPIC_BASE_URL`, all four annotated, so a blanket
-refusal fails at `Builtins()` and takes every snug command with it. Instead the
+considered and **rejected on measurement**: `@claude` inherits `PAGER` and
+`ANTHROPIC_BASE_URL`, both annotated, so a blanket refusal fails at
+`Builtins()` and takes every snug command with it. Instead the
 annotated (name, verb) pairs a shipped profile writes are a **pinned inventory**
 (`TestAnnotatedEnvPairsAShippedProfileWritesArePinned`, `internal/profile`), so
 opening the gate moves a list a human reads — the project's stated review
@@ -928,7 +929,7 @@ worse than an absent value.
 | variable | path? | set | inherit | note |
 |---|---|---|---|---|
 | `HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*` | yes/no | **—** | **✗** | snug's (§1.1); no profile may write them |
-| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice — **legal at both verbs, with no identity-conditional refusal, and ANNOTATED at both** (§2.9). See the note below |
+| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice — **legal at both verbs, with no identity-conditional refusal, and ANNOTATED at both** (§2.9). What a profile snug SHIPS does with them is a separate question, answered below |
 | `TERM` | no | ⚠ | ✓ | the standard exception to authoring: the host terminal is a fact snug cannot know |
 | `LANG`, `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
 | `TZ` | **sort of** | ⚠ | ⚠ | **two-branch grammar — see below** |
@@ -939,59 +940,45 @@ worse than an absent value.
 | `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗ → annotated** | "generate, don't bind" — the value is a path, never a credential. No annotation at `set`: authoring a pointer is the mechanism, not the hazard |
 | `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | **—** | **✗** | `ssh://` makes the client exec `ssh`; scalar-shaped, parsed, exec-capable |
 
-**Amended by §2.9: those three rows are ANNOTATED at both verbs now.** The
-sentence below — the residual this section wrote down and carried as issue #35 —
-is the sentence `policy.EnvNote` renders on `--dry-run` and on `snug profile
-show` for `EDITOR`, `VISUAL` and `PAGER`, and for the `GIT_*` spellings beside
-them. That is the closure this section said it could not have without withdrawing
-a grant `@claude` uses: the reader is told, at every spelling, and no verb is
-taken away from anybody. Issue #45 asked for the mirror (`noSet`) and is answered
-the same way. The rest of this subsection is the argument that got there and is
-kept.
+**The three names are legal at both verbs for anybody, and `@claude` — the one
+shipped profile that touches the environment — inherits `PAGER` and neither of
+the other two.** Those are two different decisions and the second one is the
+one with a cost:
 
-**The `EDITOR`/`VISUAL`/`PAGER` row said "refused inside `@git-ro`-style
-identity" for a whole milestone, and nothing ever refused anything.** No env
-check anywhere reads `Policy.Identity`; `grep -rnE 'EDITOR|VISUAL|PAGER'` over
-the non-test Go files returns two `GIT_*` entries in `forbiddenEnv` and one
-comment. It was a documented gate with nothing behind it — the exact defect
-CLAUDE.md records twice ("when you write 'requires X' in a comment, grep for X
-before you believe it"), reproduced in this document rather than in code.
+*Legality.* An identity-conditional refusal (the row read "refused inside
+`@git-ro`-style identity" for a milestone, with nothing behind it in code) is
+a profile's grant changing meaning because of its neighbours, which is the
+shape invariant 1 exists to refuse. An unconditional `forbidBoth` is not that,
+but it is a denylist entry in a table whose job is to carry sentences: profiles
+are the trusted layer, and snug constrains the payload rather than the person
+configuring it. So both verbs stay legal, and what a human gets instead is the
+annotation `policy.EnvNote` renders on `--dry-run` and on `snug profile show`,
+at all six spellings — the answer to
+https://github.com/gomoni/snug/issues/35 and
+https://github.com/gomoni/snug/issues/45.
 
-The clause is **deleted rather than implemented**, and that is a decision, not
-an omission. Implementing it would withdraw a grant from every profile that
-inherits those three — `@claude` inherits all three today — and would do it
-conditionally on another profile being selected, which is a profile's grant
-changing meaning because of its neighbours. That is the shape invariant 1
-exists to refuse. So the three stay legal, and the residual is written down
-where it can be argued with:
+*What `@claude` ships.* The residual annotation leaves standing is real —
 
-> A profile may set `PAGER` or `EDITOR` to a command, and git will run it —
-> `PAGER="sh -c '…'" git log` was measured hijacked, and git's fallback chains
-> are `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER → core.pager
-> → PAGER`. The `GIT_*` spellings are refused (§4.4's list) and the generic
-> ones are not, so **`forbiddenEnv` does not close the exec class for git; it
-> closes the invisible half of it.** Profiles are the trusted layer, so this is
-> a composability defect — one profile weakening what another established —
-> rather than an escape. Carried as https://github.com/gomoni/snug/issues/35.
+> A profile may set `PAGER` or `EDITOR` to a command and git will run it:
+> `PAGER="sh -c '…'" git log` was measured hijacked, and the fallback chains
+> are `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER →
+> core.pager → PAGER`. Nothing untrusted chooses the value, so this is one
+> profile weakening what another established, not an escape.
 
-**Reconsidered, not re-decided, during the pass that closed `GIT_COMMON_DIR`
-and the `RUSTC_*`/`CARGO_*` pair (issue #26 review).** Those two were the same
-sibling-miss shape — a specific spelling refused, a general one it falls back
-to left open — and the reviewer asked, correctly, why `EDITOR`/`VISUAL` were
-not fixed alongside `GIT_EDITOR` in the same change, offering an *unconditional*
-`forbidBoth` rather than the identity-conditional refusal rejected above — which
-sidesteps the invariant-1 objection by not being conditional on a neighbour. It
-is not implemented, and the reason is the other objection in this section, confirmed by measurement rather than argued afresh: `@claude`
-(`internal/profile/profiles/base.toml`, `[profile.claude.environ.inherit]`)
-inherits `EDITOR` and `VISUAL` today, and `forbidBoth` refuses `VerbInherit`
-unconditionally — so this specific fix does not add a table row, it breaks a
-shipped, tested builtin profile's `ValidateEnvGrants` outright. Closing it
-therefore still requires the withdrawal this section already named as the
-real cost, now concretely: either `@claude` stops inheriting `EDITOR`/`VISUAL`
-(a grant taken back from the one profile that uses it) or the gap stays. That
-is a decision about what `@claude` may inherit, not a missing denylist entry,
-and stays out of scope for a change whose remit was closing measured
-prefix/sibling gaps. Still open, still https://github.com/gomoni/snug/issues/35.
+— and issue #530 settled it on a MEASUREMENT rather than on that argument.
+Inside `@claude`'s own sandbox `command -v vi vim nano` finds nothing and
+`command -v less more` finds `/usr/bin/less` and `/usr/bin/more`. An inherited
+`EDITOR` therefore names a program that is not there — the host's `vim` or
+`code` is not bound — so git fails identically with it and without it, while an
+inherited `PAGER=less` names a program that is. `EDITOR` and `VISUAL` are
+withdrawn from `[profile.claude.environ.inherit]` and `PAGER` stays: the grant
+was wider than the need, so it shrank (invariant 2's corollary) at no ergonomic
+cost. A profile that wants an editor inside `set`s one to a fixed value and
+binds it.
+
+`internal/profile`'s `TestAnnotatedEnvPairsAShippedProfileWritesArePinned`
+pins the surviving pair, so re-adding either name moves an inventory a human
+reads.
 
 **`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
 not a plain string: it is either a file reference resolved under `TZDIR`, or an
@@ -1209,8 +1196,7 @@ against `internal/policy/envtypes.go` during the issue #26 review round.**
 covered — `LESSOPEN` and `PYTHONBREAKPOINT` deliberately in the middle bucket
 (§2.1) rather than the "value is code" class, which was always the intended
 treatment for a value the tool merely *reads* rather than unconditionally
-executes. `EDITOR`/`VISUAL` were the one pair from this list still genuinely
-open.
+executes.
 
 **Amended by §2.9, and the amendment reverses what "covered" means in this
 paragraph.** None of these names is refused any more; every one of them is

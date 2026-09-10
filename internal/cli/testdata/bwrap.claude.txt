@@ -64,10 +64,10 @@
 --ro-bind-data 17 /home/u/.claude/plugins/installed_plugins.json
 --remount-ro /
 --clearenv
---setenv EDITOR vim
 --setenv HOME /home/u
 --setenv LOGNAME u
 --setenv NO_COLOR 
+--setenv PAGER less
 --setenv PATH /snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /usr/bin/bash
