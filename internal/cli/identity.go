@@ -37,7 +37,7 @@ func knownHostsFor(host string) []byte {
 		return nil
 	}
 	// hostread.Optional, not os.ReadFile: the same FIFO/symlink primitive
-	// issue #337 measured against identity.ssh_key applies here too — this
+	// issue #337 measured against identity.ssh.key applies here too — this
 	// one is the host user's own file rather than payload-reachable, but a
 	// FIFO at ~/.ssh/known_hosts would still hang every run before the
 	// sandbox exists. "Optional" because an absent or unreadable
@@ -77,9 +77,6 @@ func ghToken(host, user string) policy.Secret {
 	if err != nil {
 		return nil
 	}
-	if host == "" {
-		host = "github.com"
-	}
 	cmd := exec.Command(gh, "auth", "token", "--hostname", host)
 	if user != "" {
 		cmd.Args = append(cmd.Args, "--user", user)
@@ -108,14 +105,14 @@ func ghToken(host, user string) policy.Secret {
 // unset and parses the pinned public key, so before this a dry run on a host
 // with no agent running could not inspect an identity profile at all.
 // failing on host state would make --dry-run refuse a policy the real run
-// might well accept. An UNREADABLE ssh_key is still refused here, by the
+// might well accept. An UNREADABLE identity.ssh.key is still refused here, by the
 // staging read below.
 //
 // dryRun also still decides what a MISSING gh token means: a refusal for a
 // real run, a warning for a dry run, for exactly the same reason.
 func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), err error) {
 	id := pol.Identity
-	if id == nil || id.SSHMode == policy.SSHNone {
+	if id == nil || id.SSH.Agent == policy.SSHNone {
 		return func() {}, nil
 	}
 
@@ -148,14 +145,14 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 	}
 	upstream := os.Getenv("SSH_AUTH_SOCK")
 
-	switch id.SSHMode {
+	switch id.SSH.Agent {
 	case policy.SSHAgentProxy:
-		if id.SSHKey == "" {
+		if id.SSH.Key == "" {
 			cleanup()
-			return nil, fmt.Errorf("ssh_mode = \"agent-proxy\" needs ssh_key: the PUBLIC key " +
-				"file that pins which identity the sandbox may sign with")
+			return nil, fmt.Errorf("identity.ssh.agent = \"proxy\" needs identity.ssh.key: " +
+				"the PUBLIC key file that pins which identity the sandbox may sign with")
 		}
-		// The ssh_key refusal above is a POLICY error — the profile is
+		// The identity.ssh.key refusal above is a POLICY error — the profile is
 		// incomplete however the host is configured — so it is checked
 		// before this branch, not after. Everything below it starts
 		// something, which a dry run may not.
@@ -171,8 +168,8 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		// set into an enumeration, and a positional parameter per field would
 		// make every new field an edit to this call and to sshproxy.New's
 		// signature. sshproxy never learns the field names — it takes labels.
-		keys := []sshproxy.PinnedKey{{Field: "identity.ssh_key", Path: id.SSHKey}}
-		if id.SigningKey != "" {
+		keys := []sshproxy.PinnedKey{{Field: "identity.ssh.key", Path: id.SSH.Key}}
+		if id.Git.SigningKey != "" {
 			// MustSign: GitConfigFrom authors `commit.gpgsign = true` for this
 			// key, so "the agent lists it" is not enough — see
 			// sshproxy.probeSign. The auth key is deliberately NOT MustSign: its
@@ -181,7 +178,7 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 			// probing it would put a confirmation dialog in front of every snug
 			// start including runs that never touch the network.
 			keys = append(keys, sshproxy.PinnedKey{
-				Field: "identity.signing_key", Path: id.SigningKey, MustSign: true})
+				Field: "identity.git.signing_key", Path: id.Git.SigningKey, MustSign: true})
 		}
 		// A confirm-constrained key makes sshproxy.New block on a dialog the
 		// human may not have noticed, on a desktop they may not be looking at.
@@ -218,28 +215,28 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 	//
 	// Read HERE rather than before Resolve, which is the other half of the fix:
 	// the pre-resolve version read the profile's raw text and understood `~/`
-	// alone, so `ssh_key = "{home}/.ssh/id.pub"` — the spelling base.toml's own
+	// alone, so `key = "{home}/.ssh/id.pub"` — the spelling base.toml's own
 	// example uses, and the one every grant in every profile uses — read a file
 	// literally called `{home}/...`, failed, and staged nothing. Silently.
-	// pol.Identity.SSHKey has been through the same expansion and the same
+	// pol.Identity.SSH.Key has been through the same expansion and the same
 	// under-target symlink check as a mount path, so there is one spelling with
 	// one fate.
-	if id.SSHKey != "" {
-		// hostread.Required, not os.ReadFile: ssh_key is a path a payload can
+	if id.SSH.Key != "" {
+		// hostread.Required, not os.ReadFile: the key is a path a payload can
 		// plant a FIFO or a symlink to /dev/zero at (issue #337) — it is
 		// resolved under the target, which a previous run's own @cwd-rw could
 		// have written into. "Required" because an unreadable pinned key must
 		// stay a hard error naming the path, exactly as os.ReadFile's did.
-		data, rerr := hostread.Required(id.SSHKey, hostread.MaxSSHPublicKeyBytes)
+		data, rerr := hostread.Required(id.SSH.Key, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			// Reachable on a DRY RUN, which breaks out of the switch above
 			// before sshproxy.New exists to read the same file and fail
 			// there first. A real agent-proxy run has already refused.
 			cleanup()
-			return nil, fmt.Errorf("ssh_key %q: %w\n\n"+
+			return nil, fmt.Errorf("identity.ssh.key %q: %w\n\n"+
 				"      This is the PUBLIC half of the key the sandbox may sign with. snug\n"+
 				"      stages it inside so ssh can select that one identity; without it ssh\n"+
-				"      offers nothing and every push fails with 'Permission denied'.", id.SSHKey, rerr)
+				"      offers nothing and every push fails with 'Permission denied'.", id.SSH.Key, rerr)
 		}
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.PubKeyGuest, Kind: policy.KindData,
@@ -248,17 +245,17 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		})
 	}
 
-	if id.SigningKey != "" {
-		// Same hostread.Required for the same reason (#337): signing_key is a
+	if id.Git.SigningKey != "" {
+		// Same hostread.Required for the same reason (#337): the signing key is a
 		// path that may resolve under the target, which a previous run's own
 		// @cwd-rw could have replaced with a FIFO.
-		data, rerr := hostread.Required(id.SigningKey, hostread.MaxSSHPublicKeyBytes)
+		data, rerr := hostread.Required(id.Git.SigningKey, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			cleanup()
-			return nil, fmt.Errorf("signing_key %q: %w\n\n"+
+			return nil, fmt.Errorf("identity.git.signing_key %q: %w\n\n"+
 				"      This is the PUBLIC half of the key the sandbox signs commits and tags\n"+
 				"      with. snug stages it inside and points user.signingkey at it; the\n"+
-				"      private half stays in your agent.", id.SigningKey, rerr)
+				"      private half stays in your agent.", id.Git.SigningKey, rerr)
 		}
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.SigningKeyGuest, Kind: policy.KindData,
@@ -306,7 +303,7 @@ func identityProvenance(pol *policy.Policy) string {
 // admin:public_key a sandbox that reads the file can add an SSH key to the
 // account — an effect that OUTLIVES the sandbox. Use a fine-grained token if
 // that matters.
-// AN IDENTITY WITH NO gh_user AND NO gh_host GETS NO TOKEN AT ALL, which is a
+// AN IDENTITY WITH NO [identity.gh] BLOCK GETS NO TOKEN AT ALL, which is a
 // deliberate narrowing rather than an omission. The previous version called
 // `gh auth token` unconditionally, so a profile pinning only an ssh key and a
 // git author had the host's ACTIVE gh account staged inside as
@@ -315,37 +312,38 @@ func identityProvenance(pol *policy.Policy) string {
 // Pinning is the whole point; an unpinned credential is the thing it exists to
 // prevent.
 func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
-	host := id.GhHost
-	if host == "" {
-		host = "github.com"
-	}
-	if id.GhUser == "" && id.GhHost == "" {
+	// THE GATE IS THE USER, AND IT IS FAIL-CLOSED ON PURPOSE. Resolve refuses
+	// gh.host with no gh.user, so this is unreachable for a profile that resolved;
+	// written this way round, deleting that refusal later reverts to "no token"
+	// rather than to "stage whatever account the host happens to be logged in to".
+	if id.Gh.User == "" {
 		return nil
 	}
-	tok := ghToken(host, id.GhUser)
+	host := id.GhHost()
+	tok := ghToken(host, id.Gh.User)
 	if len(tok) == 0 {
-		// Invariant 5: no silent downgrade. gh_user is an explicit request for
+		// Invariant 5: no silent downgrade. identity.gh.user is an explicit request for
 		// a capability, and the previous version of this function returned
 		// quietly — you got a sandbox with no gh credential, no GH_CONFIG_DIR
 		// and no line anywhere saying so, which is indistinguishable from a
 		// working one until `gh` asks you to log in.
 		//
 		// %q, not %s, on every profile-supplied value below. These strings are
-		// profile-authored text reaching a terminal, and a gh_user containing
+		// profile-authored text reaching a terminal, and a gh.user containing
 		// ESC[1A CR overwrites the `snug:` line above it with a forged one —
 		// CLAUDE.md's control-character rule, arriving at a sink that did not
 		// exist when the rule was written.
-		who := "the active account on " + strconv.Quote(host)
-		if id.GhUser != "" {
-			who = strconv.Quote(id.GhUser) + " on " + strconv.Quote(host)
-		}
+		// gh.user is non-empty by the gate at the top of this function, so there is
+		// no "the active account on HOST" arm any more: that wording existed for the
+		// gh.host-alone shape, which Resolve refuses outright.
+		who := strconv.Quote(id.Gh.User) + " on " + strconv.Quote(host)
 		msg := fmt.Sprintf("no gh token for %s.\n\n"+
 			"      The profile pins a GitHub account, so snug will not start a sandbox\n"+
 			"      that silently has no credential for it. Either:\n"+
 			"        - log in on the host:  gh auth login --hostname %s\n"+
 			"        - check the spelling:  gh auth status\n"+
-			"        - or drop gh_user/gh_host from the profile if the sandbox does not\n"+
-			"          need gh (ssh_key alone still pins git-over-ssh).\n"+
+			"        - or drop the [identity.gh] block if the sandbox does not need gh\n"+
+			"          (identity.ssh.* alone still pins git-over-ssh).\n"+
 			"      If gh is not installed on the host there is nothing to mint, and the\n"+
 			"      same applies.", who, strconv.Quote(host))
 		if dryRun {
@@ -361,10 +359,9 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 		}
 		return errors.New(msg)
 	}
-	user := id.GhUser
-	if user == "" {
-		user = "x-access-token"
-	}
+	// No x-access-token fallback: gh.user is non-empty by the gate above, and a
+	// fallback here is what staged an account the profile never named.
+	user := id.Gh.User
 
 	dir := pol.Home + "/.config/gh"
 	// string(tok) is the one explicit escape this document needs: fmt.Sprintf's
@@ -385,26 +382,34 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 	return nil
 }
 
-// identityHost peeks at the selected profiles for a pinned gh_host, so the
-// caller can filter known_hosts before resolution needs it.
+// identitySSHHost peeks at the selected profiles for a pinned identity.ssh.host,
+// so the caller can filter known_hosts before resolution needs it.
+//
+// SSH AND NOT GH, because known_hosts is read by the ssh client connecting to the
+// host you push to — not by gh, which speaks HTTPS to an API. Before #454 one
+// field answered both questions; splitting it made this the ssh one.
+//
+// It runs BEFORE Resolve, so on a selection whose identities conflict it may pick
+// either. Resolve then refuses the whole run, so nothing downstream can act on the
+// wrong answer.
 type profileRegistry = profile.Registry
 
-func identityHost(reg profileRegistry, selected []policy.ProfileName) string {
+func identitySSHHost(reg profileRegistry, selected []policy.ProfileName) string {
 	set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), selected)
 	if err != nil {
-		return "github.com"
+		return policy.DefaultIdentityHost
 	}
 	for _, p := range set {
-		if p.Identity != nil && p.Identity.GhHost != "" {
-			return p.Identity.GhHost
+		if p.Identity != nil && p.Identity.SSH.Host != "" {
+			return p.Identity.SSH.Host
 		}
 	}
-	return "github.com"
+	return policy.DefaultIdentityHost
 }
 
-// pinnedPubKey is gone deliberately. It read the profile's RAW ssh_key text
+// pinnedPubKey is gone deliberately. It read the profile's RAW key text
 // before Resolve ran, so it understood `~/` and nothing else — `{home}/…`, the
 // spelling base.toml's own example uses, silently staged no key at all. The
-// read now happens in startIdentity against pol.Identity.SSHKey, which has been
+// read now happens in startIdentity against pol.Identity.SSH.Key, which has been
 // expanded and symlink-checked exactly like a mount path. One spelling, one
 // fate, and a missing file is an error instead of an absence.

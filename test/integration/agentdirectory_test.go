@@ -14,9 +14,9 @@ import (
 
 // TestDirectoryBindOfALiveAgentSocketEnumeratesAndSignsWithTheDecoy pins
 // issue #292(a): a plain directory GRANT that happens to hold a live
-// ssh-agent socket — no ssh_mode, no [profile.*.identity] block, nothing
-// snug-specific at all — is a complete bypass of everything @ssh-agent
-// (ssh_mode = "agent-proxy") exists to bound. That mode's whole point is a
+// ssh-agent socket — no identity.ssh.agent, no [profile.*.identity] block,
+// nothing snug-specific at all — is a complete bypass of everything @ssh-agent
+// (identity.ssh.agent = "proxy") exists to bound. That mode's whole point is a
 // filtering proxy exposing ONE pinned key with enumeration refused, and it
 // still cannot restrict what gets SIGNED (CLAUDE.md, "Identity and
 // credentials"). This test asserts BOTH halves for a specific reason, not a
@@ -171,8 +171,8 @@ PY
 
 	if !strings.Contains(r.out, "ENUM:") || !strings.Contains(r.out, decoyFingerprint) {
 		t.Fatalf("ssh-add -l through the mounted directory did not enumerate the DECOY key "+
-			"(want fingerprint %s) — enumeration is the half @ssh-agent (agent-proxy) exists to "+
-			"refuse entirely:\n%s", decoyFingerprint, r.out)
+			"(want fingerprint %s) — enumeration is the half @ssh-agent (identity.ssh.agent "+
+			"= \"proxy\") exists to refuse entirely:\n%s", decoyFingerprint, r.out)
 	}
 	if !strings.Contains(r.out, "SIGN-EXIT:0") {
 		t.Fatalf("ssh-keygen -Y sign through the mounted agent socket did not succeed — signing "+

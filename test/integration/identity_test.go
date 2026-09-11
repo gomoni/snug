@@ -261,7 +261,7 @@ func writeProfiles(t *testing.T, tomls map[string]string, extraEnv ...string) []
 // declined to offer an identity to a real server.
 //
 // ONE ROW, and it stays a table for that reason rather than in spite of it:
-// `agent-proxy` is the only mode that stages anything, and the bug this pins is
+// `proxy` is the only mode that stages anything, and the bug this pins is
 // per-branch — it can only reappear when a SECOND mode exists. A row is what
 // the next mode gets added to; an inlined single case is what it gets added
 // beside.
@@ -273,14 +273,14 @@ func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 		mode  string
 		flags []string
 	}{
-		{"agent-proxy", nil},
+		{"proxy", nil},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			env := writeProfile(t, "[profile.pinned]\n"+
 				"description = \"one throwaway key\"\n"+
-				"[profile.pinned.identity]\n"+
-				"ssh_mode = \""+tc.mode+"\"\n"+
-				"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
+				"[profile.pinned.identity.ssh]\n"+
+				"agent = \""+tc.mode+"\"\n"+
+				"key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
 
 			args := append(append([]string{"--dry-run", "-p", "pinned"}, tc.flags...), proj)
 			out, code := cli(t, env, args...)
@@ -288,7 +288,7 @@ func TestThePinnedPublicKeyIsStagedInEverySSHMode(t *testing.T) {
 				t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
 			}
 			if !strings.Contains(out, ".ssh/id_snug.pub") {
-				t.Errorf("ssh_mode = %q stages no public key, while the generated "+
+				t.Errorf("identity.ssh.agent = %q stages no public key, while the generated "+
 					"~/.ssh/config names one under IdentitiesOnly:\n%s", tc.mode, out)
 			}
 			// And it must be attributed to the profile that pinned it, like the
@@ -323,10 +323,11 @@ func TestDryRunStillPrintsThePolicyWhenTheGhAccountHasNoToken(t *testing.T) {
 	proj, _ := target(t)
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"an account gh is not logged in to\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n"+
-		"gh_user = \"snug-no-such-account-here\"\n", "SSH_AUTH_SOCK="+sock)
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n"+
+		"[profile.pinned.identity.gh]\n"+
+		"user = \"snug-no-such-account-here\"\n", "SSH_AUTH_SOCK="+sock)
 
 	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
 	if code != 0 {
@@ -358,10 +359,11 @@ func TestAnIdentityWithNoGhAccountStagesNoToken(t *testing.T) {
 	proj, _ := target(t)
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"ssh only, no gh account named\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n"+
-		"git_email = \"snug@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n"+
+		"[profile.pinned.identity.git]\n"+
+		"email = \"snug@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
 
 	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
 	if code != 0 {
@@ -426,16 +428,17 @@ func TestSSHRunsInsideTheSandboxWhenAnIdentityIsPinned(t *testing.T) {
 	pub, sock := sshAgentAndKey(t)
 	proj, _ := target(t)
 
-	// No gh_user: this is the ssh half, and a gh account would make the test
-	// depend on a token on the machine running it.
+	// No identity.gh.user: this is the ssh half, and a gh account would make the
+	// test depend on a token on the machine running it.
 	env := writeProfiles(t, map[string]string{
 		"pinned": "[profile.pinned]\n" +
 			"description = \"one throwaway key, for the integration suite\"\n" +
-			"[profile.pinned.identity]\n" +
-			"ssh_mode = \"agent-proxy\"\n" +
-			"ssh_key = \"" + pub + "\"\n" +
-			"git_name = \"Snug Integration\"\n" +
-			"git_email = \"snug@example.invalid\"\n",
+			"[profile.pinned.identity.ssh]\n" +
+			"agent = \"proxy\"\n" +
+			"key = \"" + pub + "\"\n" +
+			"[profile.pinned.identity.git]\n" +
+			"name = \"Snug Integration\"\n" +
+			"email = \"snug@example.invalid\"\n",
 		"sshcover": sshCoverageProfile(dir),
 	}, "SSH_AUTH_SOCK="+sock)
 
@@ -614,7 +617,7 @@ func TestDryRunOfADefaultSelectionNamesRequiredRSASize(t *testing.T) {
 //
 // internal/sshproxy has unit tests for the FILTER itself, and
 // TestThePinnedPublicKeyIsStagedInEverySSHMode above covers staging. Neither
-// measures the property the whole ssh_mode = "agent-proxy" decision rests on:
+// measures the property the whole identity.ssh.agent = "proxy" decision rests on:
 // a host agent holding many keys, and the sandbox enumerating exactly one —
 // the pinned one. The filter can stay correct in unit tests while what
 // actually reaches it, end to end through a real proxy and a real sandbox,
@@ -656,9 +659,9 @@ func TestSSHAgentEnumerationIsBoundToOnePinnedKeyAmongMany(t *testing.T) {
 
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one key pinned out of many in the agent, for the enumeration bound\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pin+"\"\n", "SSH_AUTH_SOCK="+sock)
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pin+"\"\n", "SSH_AUTH_SOCK="+sock)
 
 	// -v is required: the two refusals below are audited to snug's own stderr
 	// (internal/cli/identity.go), not to the sandboxed payload's own output, and
@@ -780,16 +783,17 @@ echo "pwned=[$(test -f ` + marker + ` && echo yes || echo no)]"
 		}
 	})
 
-	// ARM B — an identity pinned (ssh_mode = "none": this is the git half, not
-	// the ssh one). The SAME payload as ARM A must be ignored.
+	// ARM B — an identity pinned (identity.ssh.agent = "none": this is the git
+	// half, not the ssh one). The SAME payload as ARM A must be ignored.
 	t.Run("pinned_identity_refuses_it", func(t *testing.T) {
 		projB, _ := target(t)
 		env := writeProfile(t, "[profile.pinned]\n"+
 			"description = \"git identity pin for the XDG_CONFIG_HOME bound (issue #86 item 3)\"\n"+
-			"[profile.pinned.identity]\n"+
-			"ssh_mode = \"none\"\n"+
-			"git_name = \"Pinned Name\"\n"+
-			"git_email = \"pinned@example.invalid\"\n")
+			"[profile.pinned.identity.ssh]\n"+
+			"agent = \"none\"\n"+
+			"[profile.pinned.identity.git]\n"+
+			"name = \"Pinned Name\"\n"+
+			"email = \"pinned@example.invalid\"\n")
 
 		b := runEnv(t, env, []string{"-p", "pinned"}, projB, payload("PWNED_B")).mustRun(t)
 
@@ -892,7 +896,7 @@ func TestTheSandboxSSHResolvesTheHostsAlgorithmPolicy(t *testing.T) {
 }
 
 // TestGeneratedGitconfigSignsACommit is the committed form of a measurement
-// already taken by hand: with [identity].signing_key pinned, the generated
+// already taken by hand: with identity.git.signing_key pinned, the generated
 // ~/.gitconfig carries gpg.format = ssh, commit.gpgsign = true and
 // user.signingkey pointing at the staged .pub, and `git commit` exited 0 on
 // git 2.55.0 (issue #453).
@@ -903,7 +907,7 @@ func TestTheSandboxSSHResolvesTheHostsAlgorithmPolicy(t *testing.T) {
 // cannot be explained by the sandbox somehow reading the private key from
 // disk rather than asking the (unmodified, host-side) agent to sign.
 //
-// One throwaway key serves as both ssh_key and signing_key, which
+// One throwaway key serves as both identity.ssh.key and identity.git.signing_key, which
 // SigningKeyGuest's own doc comment says is harmless — naming the same file
 // twice stages two identical copies rather than one wide grant — and it keeps
 // this test to the one key ssh-add actually loads.
@@ -952,12 +956,13 @@ func TestGeneratedGitconfigSignsACommit(t *testing.T) {
 	proj, _ := target(t)
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one throwaway key, pinned for both auth and signing\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n"+
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n"+
+		"[profile.pinned.identity.git]\n"+
 		"signing_key = \""+pub+"\"\n"+
-		"git_name = \"Snug Integration\"\n"+
-		"git_email = \"snug-signing-integration@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
+		"name = \"Snug Integration\"\n"+
+		"email = \"snug-signing-integration@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
 
 	r := runEnv(t, env, []string{"-p", "pinned"}, proj,
 		`set -e

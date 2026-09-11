@@ -5,7 +5,7 @@
 // "Does not own" covers three different owners, and the package is named for
 // the discipline rather than for any one of them because a fourth is only a
 // matter of time: the host user's own dotfiles (~/.claude.json, known_hosts),
-// a file the user pointed snug at by name (identity.ssh_key), and a file a
+// a file the user pointed snug at by name (identity.ssh.key), and a file a
 // hostile REPO can influence the location or timing of ($XDG_CONFIG_HOME
 // pointed into a checked-out tree, CLAUDE.md invariant 3; a target directory
 // under @cwd-rw). A plain os.ReadFile trusts the node at that path to be an
@@ -38,7 +38,7 @@ import (
 	"syscall"
 )
 
-// MaxSSHPublicKeyBytes bounds identity.ssh_key. An OpenSSH public key line is
+// MaxSSHPublicKeyBytes bounds identity.ssh.key. An OpenSSH public key line is
 // `<type> <base64-blob> [comment]`; even an RSA-4096 key or an OpenSSH
 // certificate (which embeds principals and a CA signature) runs to a few
 // KiB. 64 KiB is two orders of magnitude of headroom without being a
@@ -154,7 +154,7 @@ func itIs(clause string) string {
 }
 
 // Required reads path the way a file the user (or a profile) NAMED must be
-// read: identity.ssh_key, snug's own config.toml, a profiles.d layer. There
+// read: identity.ssh.key, snug's own config.toml, a profiles.d layer. There
 // is no silent-skip state here — absent is itself the failure, because the
 // caller asked for this specific file and has nothing to degrade to.
 //

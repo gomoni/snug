@@ -93,7 +93,7 @@ func TestDryRunRefusesABindOfAnEndpoint(t *testing.T) {
 			// --dry-run to decide whether to trust this run has to see why.
 			for _, want := range []string{
 				tc.noun,
-				`ssh_mode = "agent-proxy"`, // the narrower thing to select instead. Issue #289: an
+				`agent = "proxy"`, // the narrower thing to select instead. Issue #289: an
 				// earlier version of this message named the nonexistent '@ssh-agent', and this
 				// test asserted THAT string — which is why it kept passing after #289 broke the
 				// message it was meant to be verifying end to end.

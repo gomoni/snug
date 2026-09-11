@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -103,7 +104,26 @@ type rawEnviron struct {
 	Sanitise map[string]bool   `toml:"sanitise"`
 }
 
+// rawIdentity is [profile.X.identity]: a container of per-tool blocks with no
+// keys of its own, plus the retired flat spellings kept as fields.
+//
+// The inner blocks are VALUES, not pointers, which is the opposite of
+// rawProfile.Identity above. That pointer is load-bearing — p.Identity != nil is
+// what gates the generated ~/.gitconfig and sets IdentityOwner — and inside it
+// there is no absent-vs-empty distinction left to preserve: an empty
+// [identity.ssh] and an absent one both yield empty strings, so pointers would buy
+// three nil guards and no behaviour. DisallowUnknownFields reaches a nested value
+// struct identically, which is what makes identity.ssh.kee an error one level down
+// for free — the same property rawEnviron relies on for environ.deny.
 type rawIdentity struct {
+	SSH rawIdentitySSH `toml:"ssh"`
+	Git rawIdentityGit `toml:"git"`
+	Gh  rawIdentityGh  `toml:"gh"`
+
+	// THE RETIRED FLAT SPELLINGS, kept as fields rather than deleted, for the
+	// reason the essay above retiredEnvKey gives: a key whose meaning MOVED
+	// deserves an error naming the replacement, and a deleted field gets
+	// DisallowUnknownFields' generic "unknown key" instead — true and useless.
 	SSHKey     string `toml:"ssh_key"`
 	SigningKey string `toml:"signing_key"`
 	SSHMode    string `toml:"ssh_mode"`
@@ -111,6 +131,23 @@ type rawIdentity struct {
 	GitEmail   string `toml:"git_email"`
 	GhUser     string `toml:"gh_user"`
 	GhHost     string `toml:"gh_host"`
+}
+
+type rawIdentitySSH struct {
+	Host  string `toml:"host"`
+	Key   string `toml:"key"`
+	Agent string `toml:"agent"`
+}
+
+type rawIdentityGit struct {
+	Name       string `toml:"name"`
+	Email      string `toml:"email"`
+	SigningKey string `toml:"signing_key"`
+}
+
+type rawIdentityGh struct {
+	Host string `toml:"host"`
+	User string `toml:"user"`
 }
 
 // nameFault and nameByteDesc are policy.NameFault and policy.NameByteDesc, and
@@ -322,6 +359,10 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err := policy.ValidateEnvGrants(environ); err != nil {
 			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 		}
+		identity, err := toIdentity(r.Identity, rawName, source)
+		if err != nil {
+			return nil, err
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
@@ -339,7 +380,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			MTU:         r.MTU,
 			Podman:      r.Podman,
 			Git:         r.Git,
-			Identity:    toIdentity(r.Identity),
+			Identity:    identity,
 			Source:      source,
 			Trusted:     trusted,
 		}
@@ -563,21 +604,170 @@ func sortedBoolKeys(m map[string]bool) []string {
 	return out
 }
 
-func toIdentity(r *rawIdentity) *policy.Identity {
+// toIdentity converts [profile.X.identity] and refuses the three spellings that
+// no longer mean anything: the flat keys, the retired agent VALUE, and a block
+// that sets nothing.
+//
+// All three are properties of the profile TEXT, so they belong here rather than in
+// Resolve (see the ValidateEnvGrants call above for the full reason): the verdict
+// is the same on every host, `snug profile show` reports it, and a refused key then
+// cannot reach a generator by any route.
+//
+// The ACCEPTED SET of agent modes is still checked in policy.Resolve, and that is
+// not an inconsistency. ParseSSHMode is also the door for an Identity built in Go —
+// both identity goldens are struct literals — so the set has to be enforced where
+// every caller passes through. What is checked here is the RETIRED spelling, which
+// only a profile file can contain.
+func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if r == nil {
+		return nil, nil
+	}
+	if err := retiredFlatIdentity(source, name, r); err != nil {
+		return nil, err
+	}
+	if r.SSH.Agent == "agent-proxy" {
+		return nil, retiredAgentProxyValue(source, name)
+	}
+	id := &policy.Identity{
+		SSH: policy.IdentitySSH{
+			Host:  r.SSH.Host,
+			Key:   r.SSH.Key,
+			Agent: policy.SSHMode(r.SSH.Agent),
+		},
+		Git: policy.IdentityGit{
+			Name:       r.Git.Name,
+			Email:      r.Git.Email,
+			SigningKey: r.Git.SigningKey,
+		},
+		Gh: policy.IdentityGh{
+			Host: r.Gh.Host,
+			User: r.Gh.User,
+		},
+	}
+	if *id == (policy.Identity{}) {
+		return nil, emptyIdentityBlock(source, name)
+	}
+	return id, nil
+}
+
+// retiredFlatIdentity refuses every flat key the profile still sets, in ONE error.
+//
+// One error and not seven, following retiredAnonKey's shape: a human migrating a
+// seven-key block must not have to run snug seven times to learn the seven new
+// spellings. The replacement is rendered with this profile's own name and the
+// author's own values, so the fix is pasteable — the rule retiredEnvKey and
+// retiredPathKey already follow.
+//
+// Because it fires on ANY flat key, a profile carrying both spellings is refused
+// here and needs no separate both-spellings check.
+func retiredFlatIdentity(source, name string, r *rawIdentity) error {
+	type flat struct{ key, val, newKey string }
+	set := []flat{
+		{"ssh_key", r.SSHKey, "identity.ssh.key"},
+		{"ssh_mode", r.SSHMode, "identity.ssh.agent"},
+		{"signing_key", r.SigningKey, "identity.git.signing_key"},
+		{"git_name", r.GitName, "identity.git.name"},
+		{"git_email", r.GitEmail, "identity.git.email"},
+		{"gh_user", r.GhUser, "identity.gh.user"},
+		{"gh_host", r.GhHost, "identity.ssh.host AND identity.gh.host"},
+	}
+	var present []flat
+	for _, f := range set {
+		if f.val != "" {
+			present = append(present, f)
+		}
+	}
+	if len(present) == 0 {
 		return nil
 	}
-	// ssh_mode is validated in policy.Resolve, not here: an unknown mode should
-	// name the profile it came from, and only the resolver knows that.
-	return &policy.Identity{
-		SSHKey:     r.SSHKey,
-		SigningKey: r.SigningKey,
-		SSHMode:    policy.SSHMode(r.SSHMode),
-		GitName:    r.GitName,
-		GitEmail:   r.GitEmail,
-		GhUser:     r.GhUser,
-		GhHost:     r.GhHost,
+
+	// The replacement blocks, built from what this profile actually sets. gh_host
+	// appears in BOTH ssh and gh, which is the whole reason this message is longer
+	// than a rename table.
+	ssh := map[string]string{"host": r.GhHost, "key": r.SSHKey}
+	if r.SSHMode == "agent-proxy" {
+		ssh["agent"] = "proxy"
+	} else {
+		ssh["agent"] = r.SSHMode
 	}
+	git := map[string]string{"name": r.GitName, "email": r.GitEmail, "signing_key": r.SigningKey}
+	gh := map[string]string{"host": r.GhHost, "user": r.GhUser}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: profile %q uses the flat identity keys, which snug no longer accepts.\n",
+		source, name)
+	b.WriteString("       [identity] is now a container of per-tool blocks, and NOTHING is " +
+		"inherited\n       between them. This profile becomes:\n")
+	for _, blk := range []struct {
+		tool string
+		keys []string
+		vals map[string]string
+	}{
+		{"ssh", []string{"host", "key", "agent"}, ssh},
+		{"git", []string{"name", "email", "signing_key"}, git},
+		{"gh", []string{"host", "user"}, gh},
+	} {
+		var rows []string
+		for _, k := range blk.keys {
+			if blk.vals[k] != "" {
+				rows = append(rows, fmt.Sprintf("         %-11s = %s", k,
+					policy.VisibleText(strconv.Quote(blk.vals[k]))))
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "         [profile.%s.identity.%s]\n", name, blk.tool)
+		b.WriteString(strings.Join(rows, "\n") + "\n")
+	}
+	b.WriteString("       What moved:\n")
+	for _, f := range present {
+		fmt.Fprintf(&b, "         %-12s ->  %s\n", f.key, f.newKey)
+	}
+	if r.SSHMode == "agent-proxy" {
+		b.WriteString("       The VALUE changed with the key too: ssh_mode = \"agent-proxy\" is now\n" +
+			"       identity.ssh.agent = \"proxy\". The block already says ssh, so the value no\n" +
+			"       longer repeats it. \"none\" is unchanged.\n")
+	}
+	if r.GhHost != "" {
+		b.WriteString("       gh_host WAS ONE FIELD THAT FOUR CONSUMERS READ, AND IT IS NOW TWO.\n" +
+			"       identity.ssh.host is the host the generated ~/.ssh/config, the known_hosts\n" +
+			"       filter and git's insteadOf rule name — the host you PUSH to. identity.gh.host\n" +
+			"       is the host gh mints a token for. Writing only identity.gh.host would move the\n" +
+			"       token and leave ssh pinned to github.com, so both lines are above with your\n" +
+			"       value in each. Repeating it is deliberate: there is no identity.host and no\n" +
+			"       fallback between blocks, because a fallback is a precedence rule and snug has\n" +
+			"       none.")
+	}
+	return fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
+}
+
+func retiredAgentProxyValue(source, name string) error {
+	return fmt.Errorf("%s: profile %q sets identity.ssh.agent = \"agent-proxy\", which snug no "+
+		"longer accepts.\n"+
+		"       The key moved from ssh_mode to identity.ssh.agent and the value changed with it:\n"+
+		"         [profile.%s.identity.ssh]\n"+
+		"         agent = \"proxy\"\n"+
+		"       The block already says ssh, so the value no longer repeats it. Same capability,\n"+
+		"       spelled once: a filtering proxy to the host's already-unlocked agent, offering\n"+
+		"       exactly the one key identity.ssh.key names, enumerating nothing. \"none\" is\n"+
+		"       unchanged", source, name, name)
+}
+
+// emptyIdentityBlock refuses [identity] with no keys under it.
+//
+// An empty block is NOT inert, which is why this is a refusal rather than a
+// tolerated no-op: a non-nil Identity sets IdentityOwner, and that relabels the
+// generated ~/.gitconfig's provenance from git:<name> to identity:<name>. So a
+// block setting nothing makes --dry-run and `snug profile show` claim a pin that
+// does not exist, on the screen a human reads to decide whether to trust the
+// sandbox. Nesting multiplied the shape from one empty block to four.
+func emptyIdentityBlock(source, name string) error {
+	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
+		"       An empty block is not inert: it makes the generated ~/.gitconfig's provenance\n"+
+		"       read \"identity:%s\" on --dry-run and on `snug profile show`, so the screen a\n"+
+		"       human reads to decide whether to trust the sandbox claims a pin that does not\n"+
+		"       exist. Write at least one key, or remove the block", source, name, name)
 }
 
 func asStrict(err error, target **toml.StrictMissingError) bool {

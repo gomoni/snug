@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -8,7 +9,7 @@ import (
 // The identity conflict check compares the incoming profile's identity against
 // the one already accumulated. Both sides have to be NORMALISED for that
 // comparison to mean what it says: p.Identity was normalised before it was
-// stored — ssh_mode "" became SSHNone, ssh_key went through expandVars — so
+// stored — ssh.agent "" became SSHNone, ssh.key went through expandVars — so
 // comparing it against the raw TOML made every spelling that needs normalising
 // refuse itself, base.toml's own template among them (#559).
 //
@@ -34,15 +35,16 @@ func TestIdentityIdenticalBlocksResolveWhateverTheSpelling(t *testing.T) {
 		name string
 		id   Identity
 	}{
-		// base.toml:446-453 verbatim. Two independently sufficient triggers
-		// live in it: an ssh_key holding a {…} variable, and — in the shorter
-		// spellings below — an omitted ssh_mode.
+		// base.toml's own template, verbatim. Two independently sufficient
+		// triggers live in it: an ssh.key holding a {…} variable, and — in the
+		// shorter spellings below — an omitted ssh.agent.
 		{"base.toml template", Identity{
-			GhUser: "you", GitName: "Your Name", GitEmail: "you@example.com",
-			SSHKey: "{home}/.ssh/id_ed25519.pub", SSHMode: SSHAgentProxy}},
-		{"ssh_mode omitted", Identity{GhUser: "you"}},
-		{"ssh_key with a variable, ssh_mode omitted", Identity{
-			GhUser: "you", SSHKey: "{home}/.ssh/id_ed25519.pub"}},
+			Gh:  IdentityGh{User: "you"},
+			Git: IdentityGit{Name: "Your Name", Email: "you@example.com"},
+			SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub", Agent: SSHAgentProxy}}},
+		{"ssh.agent omitted", Identity{Gh: IdentityGh{User: "you"}}},
+		{"ssh.key with a variable, ssh.agent omitted", Identity{
+			Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,12 +57,12 @@ func TestIdentityIdenticalBlocksResolveWhateverTheSpelling(t *testing.T) {
 			if p.Identity == nil {
 				t.Fatal("resolved with no identity")
 			}
-			if p.Identity.SSHKey != "" && strings.Contains(p.Identity.SSHKey, "{") {
-				t.Errorf("ssh_key = %q, want the expanded path: the stored value "+
-					"is the normalised one", p.Identity.SSHKey)
+			if p.Identity.SSH.Key != "" && strings.Contains(p.Identity.SSH.Key, "{") {
+				t.Errorf("ssh.key = %q, want the expanded path: the stored value "+
+					"is the normalised one", p.Identity.SSH.Key)
 			}
-			if p.Identity.SSHMode == "" {
-				t.Error("ssh_mode is empty, want the parsed value: the stored " +
+			if p.Identity.SSH.Agent == "" {
+				t.Error("ssh.agent is empty, want the parsed value: the stored " +
 					"value is the normalised one")
 			}
 		})
@@ -75,16 +77,16 @@ func TestIdentityDifferentBlocksStillRefuseNamingBoth(t *testing.T) {
 		name string
 		a, b Identity
 	}{
-		{"different gh_user",
-			Identity{GhUser: "you"}, Identity{GhUser: "someone-else"}},
-		{"different ssh_key",
-			Identity{GhUser: "you", SSHKey: "{home}/.ssh/id_ed25519.pub", SSHMode: SSHAgentProxy},
-			Identity{GhUser: "you", SSHKey: "{home}/.ssh/other.pub", SSHMode: SSHAgentProxy}},
-		// Normalisation must not erase a real difference: agent-proxy and none
-		// are different grants, not two spellings of one.
-		{"different ssh_mode",
-			Identity{GhUser: "you", SSHMode: SSHAgentProxy},
-			Identity{GhUser: "you", SSHMode: SSHNone}},
+		{"different gh.user",
+			Identity{Gh: IdentityGh{User: "you"}}, Identity{Gh: IdentityGh{User: "someone-else"}}},
+		{"different ssh.key",
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub", Agent: SSHAgentProxy}},
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/other.pub", Agent: SSHAgentProxy}}},
+		// Normalisation must not erase a real difference: proxy and none are
+		// different grants, not two spellings of one.
+		{"different ssh.agent",
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Agent: SSHAgentProxy}},
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Agent: SSHNone}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,42 +106,80 @@ func TestIdentityDifferentBlocksStillRefuseNamingBoth(t *testing.T) {
 	}
 }
 
-// The conflict check is `p.Identity != nil && *p.Identity != id` — bare struct
-// equality over EVERY field of Identity — so signing_key is only actually
-// compared because the struct is compared whole. This is the one test in this
-// file exercising that: two profiles agreeing on ssh_key, ssh_mode and
-// gh_user, differing ONLY in signing_key, must still refuse. A version of the
-// conflict check that compared a hand-picked subset of fields (the shape a
-// future refactor could slip into) would let this one silently pick a side.
-func TestIdentityPinRefusesTwoProfilesDifferingOnlyInSigningKey(t *testing.T) {
-	a := Identity{GhUser: "you", SSHMode: SSHAgentProxy,
-		SSHKey: "{home}/.ssh/id_ed25519.pub", SigningKey: "{home}/.ssh/sign-a.pub"}
-	b := Identity{GhUser: "you", SSHMode: SSHAgentProxy,
-		SSHKey: "{home}/.ssh/id_ed25519.pub", SigningKey: "{home}/.ssh/sign-b.pub"}
-	_, err := Resolve(conflictRegistry(&a, &b), conflictSelection(), testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("two profiles differing only in signing_key resolved; the sandbox then " +
-			"signs with an identity the human did not choose")
+// baseNestedIdentity is a fully self-consistent identity: every cross-field
+// constraint Resolve enforces is already satisfied — ssh.agent = "proxy" so
+// git.signing_key is legal, ssh.host and gh.host are the same non-empty value so
+// neither half-named-host arm fires, and gh.user is set so the unpinned-gh-account
+// refusal does not fire either. TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf
+// mutates exactly one leaf away from this baseline per subtest, so a profile that
+// resolves on its own for every reason OTHER than the one leaf under test.
+func baseNestedIdentity() Identity {
+	return Identity{
+		SSH: IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
+		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
+		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
 	}
-	for _, want := range []string{"ident-a", "ident-b"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not name %q: %v", want, err)
-		}
+}
+
+// TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf generalises the
+// signing_key canary this file used to carry by name: the conflict check is
+// `p.Identity != nil && *p.Identity != id`, bare struct equality over every
+// leaf of Identity including the ones nested a block deep, so a leaf is only
+// actually compared because the struct is compared whole. Driving the table
+// off identityFields — rather than hand-picking ssh.key/git.signing_key/gh.user
+// the way this test used to — means a leaf ADDED to Identity gets a subtest for
+// free, which is the property #454's nesting exists to keep.
+//
+// A version of the conflict check that compared a hand-picked subset of
+// leaves (the shape a future refactor could slip into) would let exactly one
+// of these subtests silently pick a side instead of refusing.
+func TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf(t *testing.T) {
+	for _, f := range identityFields {
+		t.Run(f.Key, func(t *testing.T) {
+			a := baseNestedIdentity()
+			b := baseNestedIdentity()
+			av := reflect.ValueOf(&a).Elem().FieldByIndex(f.Index)
+			bv := reflect.ValueOf(&b).Elem().FieldByIndex(f.Index)
+			if f.Key == "ssh.agent" {
+				// git.signing_key requires ssh.agent = "proxy" (Resolve refuses the
+				// combination otherwise), so this leaf's pair drops the signing key
+				// rather than inheriting the baseline's — testing the agent leaf
+				// itself, not its interaction with that other refusal.
+				a.Git.SigningKey = ""
+				b.Git.SigningKey = ""
+				av.SetString(string(SSHAgentProxy))
+				bv.SetString(string(SSHNone))
+			} else {
+				av.SetString(av.String() + "-a")
+				bv.SetString(bv.String() + "-b")
+			}
+
+			_, err := Resolve(conflictRegistry(&a, &b), conflictSelection(), testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("two profiles differing only in identity.%s resolved; the sandbox "+
+					"then acts as an identity the human did not choose", f.Key)
+			}
+			for _, want := range []string{"ident-a", "ident-b"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not name %q: %v", want, err)
+				}
+			}
+		})
 	}
 }
 
 // Two spellings that normalisation collapses to one value are the SAME
 // identity, and refusing them would be the bug from the other side.
 func TestIdentitySpellingsThatNormaliseAlikeAreOneIdentity(t *testing.T) {
-	a := Identity{GhUser: "you"}                   // ssh_mode omitted
-	b := Identity{GhUser: "you", SSHMode: SSHNone} // written out
+	a := Identity{Gh: IdentityGh{User: "you"}}                                   // ssh.agent omitted
+	b := Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Agent: SSHNone}} // written out
 	p, err := Resolve(conflictRegistry(&a, &b), conflictSelection(), testCtx(), newFakeEnv())
 	if err != nil {
-		t.Fatalf("an omitted ssh_mode and an explicit \"none\" are the same "+
+		t.Fatalf("an omitted ssh.agent and an explicit \"none\" are the same "+
 			"grant; refusing them is the conflict check reading a spelling as "+
 			"an account: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SSHMode != SSHNone {
-		t.Fatalf("identity = %+v, want ssh_mode none", p.Identity)
+	if p.Identity == nil || p.Identity.SSH.Agent != SSHNone {
+		t.Fatalf("identity = %+v, want ssh.agent none", p.Identity)
 	}
 }

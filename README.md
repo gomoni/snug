@@ -323,17 +323,42 @@ blast radius, not secrecy: an agent that can sign with one key pushes as that
 account and no other, and `gh` answers as that account and no other. Without
 pinning, "the agent has ssh" means "the agent is you, everywhere".
 
+One block per tool. `[identity]` itself has no keys; each tool block is
+independently optional and an absent one contributes nothing.
+
 ```toml
 # ~/.config/snug/profiles.d/accounts.toml
 [profile.work]
 include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
-  [profile.work.identity]
-  ssh_mode  = "agent-proxy"
-  ssh_key   = "{home}/.ssh/work.pub"     # the PUBLIC half
-  gh_user   = "work-account"
-  gh_host   = "github.com"               # optional, this is the default
-  git_name  = "Your Name"
-  git_email = "you@work.example"
+  [profile.work.identity.ssh]
+  key   = "{home}/.ssh/work.pub"     # the PUBLIC half
+  agent = "proxy"
+  [profile.work.identity.git]
+  name  = "Your Name"
+  email = "you@work.example"
+  [profile.work.identity.gh]
+  user  = "work-account"
+```
+
+**Two hosts, written twice, and nothing inherited between them.** Both default to
+`github.com`, so the block above names neither. For anything else —
+GitHub Enterprise, a self-hosted forge — `identity.ssh.host` is what the
+generated `~/.ssh/config`, the `known_hosts` filter and git's `insteadOf` rule
+name: the host you **push** to. `identity.gh.host` is what `gh` mints a token
+for. There is no `identity.host` and no fallback between the two, because a
+fallback is a precedence rule and snug has none. Naming one and not the other is
+refused rather than defaulted — otherwise three of the four consumers would name
+a host you never wrote, and every push would fail `Permission denied (publickey)`
+against generated files that misdescribe the cause.
+
+```toml
+  [profile.work.identity.ssh]
+  host  = "ghe.corp"
+  key   = "{home}/.ssh/work.pub"
+  agent = "proxy"
+  [profile.work.identity.gh]
+  host  = "ghe.corp"
+  user  = "work-account"
 ```
 
 `snug -p work ~/src/proj`. What that gets you:
@@ -396,9 +421,12 @@ $ ssh -T git@github.com       # Hi <account>! You've successfully authenticated.
 ```
 
 The middle one is the check that counts — it asks GitHub rather than reading
-what snug wrote. **snug does not verify that `ssh_key` and `gh_user` name the
-same account**; pin one account's key and another's token and both halves work,
-so run all three the first time you write a profile.
+what snug wrote. **snug does not verify that `identity.ssh.key` and
+`identity.gh.user` name the same account**; pin one account's key and another's
+token and both halves work, so run all three the first time you write a profile.
+It does refuse `identity.gh.host` with no `identity.gh.user`, because that staged
+the token of whatever account your host's `gh` was logged in to — a credential
+the profile never named.
 
 ## Two things that will bite
 
@@ -834,7 +862,8 @@ scheduled:
 
 Everything else that was once on this list has landed: the container engine
 runs in the sandbox's own network namespace, environment handling has its five
-`environ` verbs, and an identity is one `[identity]` block per profile.
+`environ` verbs, and an identity is one `[identity]` block per profile, nested by
+tool.
 
 **Known gaps live in the [issue tracker](https://github.com/gomoni/snug/issues),
 never here** — each one carries a severity label and the measurement that

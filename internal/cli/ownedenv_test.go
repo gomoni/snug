@@ -154,7 +154,7 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	reg["ident"] = &policy.Profile{
 		Name:     "ident",
 		Include:  []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
-		Identity: &policy.Identity{GitName: "A", GitEmail: "a@example.com"},
+		Identity: &policy.Identity{Git: policy.IdentityGit{Name: "A", Email: "a@example.com"}},
 	}
 
 	// Every builtin, with no exception list — see the same sweep in

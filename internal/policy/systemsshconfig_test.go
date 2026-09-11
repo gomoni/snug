@@ -145,10 +145,10 @@ func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.
 }
 
 // TestSystemSSHConfigIsProducedRegardlessOfSSHMode is the INVERSE of
-// TestSystemSSHConfigIsNotProducedForSSHModeNone: ssh_mode stopped being part
+// TestSystemSSHConfigIsNotProducedForSSHModeNone: the agent mode is not part
 // of the condition entirely, because the replacement fixes the CONFIG CHAIN
 // (a root-owned file OpenSSH refuses to read), not the credential. An identity
-// with ssh_mode = "none" still configures git; it grants no key and no agent
+// with identity.ssh.agent = "none" still configures git; it grants no key and no agent
 // socket; but the system ssh_config would be exactly as unreadable to a bare
 // `ssh` invocation whether or not this identity — or any identity — is
 // selected, so the replacement fires all the same.
@@ -159,16 +159,16 @@ func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
 		Name:     "pinned",
-		Identity: &Identity{SSHMode: SSHNone, GitName: "u", GitEmail: "u@example.com"},
+		Identity: &Identity{SSH: IdentitySSH{Agent: SSHNone}, Git: IdentityGit{Name: "u", Email: "u@example.com"}},
 	}
 	p, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := systemSSHConfigMounts(p); len(got) != 1 {
-		t.Fatalf("ssh_mode = none dropped the system ssh_config replacement (got %q); "+
+		t.Fatalf("identity.ssh.agent = none dropped the system ssh_config replacement (got %q); "+
 			"the replacement fixes the config chain, not the credential, so it must not "+
-			"depend on ssh_mode at all", got)
+			"depend on the agent mode at all", got)
 	}
 }
 

@@ -78,7 +78,7 @@ func TestBindOfAnEndpointSourceIsRefused(t *testing.T) {
 //
 // An earlier version of this message named '@ssh-agent' — a profile snug does
 // not ship, since the ssh-agent proxy is an [identity] block
-// (`ssh_mode = "agent-proxy"`) selected by naming the profile that carries it,
+// (`identity.ssh.agent = "proxy"`) selected by naming the profile that carries it,
 // never a builtin of its own. `snug -p @ssh-agent` fails with
 // `snug: unknown profile "@ssh-agent"`, so the refusal was pointing a human at
 // a fix that did not exist, for a full milestone before anyone noticed. This
@@ -98,8 +98,8 @@ func TestEndpointRefusalNamesTheRealRemediation(t *testing.T) {
 
 			for _, want := range []string{
 				// sandbox-tester: #289's real assertion goes here
-				`ssh_mode = "agent-proxy"`,
-				"ssh_key",
+				`agent = "proxy"`,
+				"key   =",
 				"@podman-socket",
 				"NOTE THE LIMIT",
 				"DIRECTORY",
@@ -144,7 +144,7 @@ func TestSnugsOwnSocketsAreNotRefused(t *testing.T) {
 	p := mustResolve(t, "@sys", "@cwd-rw")
 	p.BindSocket(sock, AgentSocketGuest, "(identity)")
 	if err := p.Validate(env); err != nil {
-		t.Fatalf("snug's own proxy socket was refused: %v\n\nEvery ssh_mode=\"agent-proxy\" "+
+		t.Fatalf("snug's own proxy socket was refused: %v\n\nEvery identity.ssh.agent=\"proxy\" "+
 			"and @podman-socket run would fail at internal/cli's second Validate", err)
 	}
 

@@ -925,8 +925,8 @@ snug: profile binder binds /home/<you>/mounted, whose source is a FIFO (a named 
        If you want the sandbox to sign with ONE key, do not mount an agent socket.
        Put an identity block in your own profile and select it with -p:
            [profile.work.identity]
-           ssh_key  = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
-           ssh_mode = "agent-proxy"
+           key   = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
+           agent = "proxy"
        snug then runs a proxy that offers that one key, enumerates nothing, and needs
        no mount. If you want a container engine, select '@podman-socket', whose
        socket is a filtering proxy rather than the engine itself.
@@ -1000,7 +1000,7 @@ there is no mount flag that closes this the way `nodev` closes the device
 case — this is a kernel-level residual, not laziness.
 
 snug's OWN sockets are exempt and must be: the ssh-agent proxy (an `identity`
-block with `ssh_mode = "agent-proxy"`) and the container proxy are sockets,
+block with `identity.ssh.agent = "proxy"`) and the container proxy are sockets,
 and they are the narrower alternatives this refusal exists to stop a mount
 from replacing. The exemption is keyed on `Mount.Authored`, which only
 `Policy.Replace` sets and nothing a profile can write reaches.
@@ -2765,7 +2765,7 @@ exit=77
 ```
 
 The message quotes the offending value and names the accepted set — the two
-things a reader needs to fix their own file. `ssh_mode` behaves identically:
+things a reader needs to fix their own file. `identity.ssh.agent` behaves identically:
 `agent-proxy` and `none`, anything else refused with the same shape.
 
 **And the forwarder's destination is named.** On a systemd-resolved host the
@@ -3353,7 +3353,7 @@ exit=77
 
 **Every sink, not most of them.** The refusal fires wherever a profile string is
 expanded — `ro`, `rw`, `tmpfs`, `optional`, `symlink.at` AND `symlink.target`,
-the `environ` verbs, `identity.ssh_key`, and through an `include`. The symlink
+the `environ` verbs, `identity.ssh.key`, and through an `include`. The symlink
 TARGET was the hole a red-team round found: it was the one key that never
 expanded any variable at all, so `{host_tmpdir}` rendered verbatim into a link
 inode there while refusing everywhere else, and so did `{home}`. Both keys of
@@ -5417,28 +5417,33 @@ The claim: a sandbox pinned to one GitHub account acts as that account through
 sandboxes side by side, two accounts, no crossing.
 
 Nothing new is needed to express it. One `[identity]` block per profile pins the
-ssh key, the gh account and the git author together; two profiles are two
-accounts. Write them somewhere that is not the repository being sandboxed
-(invariant 3) — `~/.config/snug/profiles.d/accounts.toml`:
+ssh key, the gh account and the git author together — one sub-block per tool, and
+nothing inherited between them. Two profiles are two accounts. Write them
+somewhere that is not the repository being sandboxed (invariant 3) —
+`~/.config/snug/profiles.d/accounts.toml`:
 
 ```toml
 [profile.acct-a]
 include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
-  [profile.acct-a.identity]
-  ssh_mode  = "agent-proxy"
-  ssh_key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
-  gh_user   = "ACCOUNT-A"
-  git_name  = "Your Name"
-  git_email = "a@example.com"
+  [profile.acct-a.identity.ssh]
+  key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
+  agent = "proxy"
+  [profile.acct-a.identity.git]
+  name  = "Your Name"
+  email = "a@example.com"
+  [profile.acct-a.identity.gh]
+  user  = "ACCOUNT-A"
 
 [profile.acct-b]
 include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
-  [profile.acct-b.identity]
-  ssh_mode  = "agent-proxy"
-  ssh_key   = "{home}/.ssh/ACCOUNT-B.pub"
-  gh_user   = "ACCOUNT-B"
-  git_name  = "Your Name"
-  git_email = "b@example.com"
+  [profile.acct-b.identity.ssh]
+  key   = "{home}/.ssh/ACCOUNT-B.pub"
+  agent = "proxy"
+  [profile.acct-b.identity.git]
+  name  = "Your Name"
+  email = "b@example.com"
+  [profile.acct-b.identity.gh]
+  user  = "ACCOUNT-B"
 ```
 
 `gh` must be inside for the staged token to be usable, and on a host where it is
@@ -5474,10 +5479,10 @@ The negative is the half that matters, and it is three separate refusals:
 ./bin/snug --dry-run -p acct-a -p acct-b $SC/proj/sub
 # snug: profiles "acct-a" and "acct-b" pin different identities; select only one
 
-./bin/snug --dry-run -p acct-badkey $SC/proj/sub     # ssh_key names a missing file
+./bin/snug --dry-run -p acct-badkey $SC/proj/sub     # identity.ssh.key names a missing file
 # snug: pinned ssh key: open /home/u/.ssh/does-not-exist.pub: no such file or directory
 
-./bin/snug --dry-run -p acct-baduser $SC/proj/sub    # gh_user gh is not logged in to
+./bin/snug --dry-run -p acct-baduser $SC/proj/sub    # identity.gh.user gh is not logged in to
 # snug: no gh token for no-such-account-here on github.com.
 ```
 
@@ -5498,13 +5503,16 @@ the agent.
 
 ### 13a-2. A signing key is a SECOND pin, and the run refuses without it (issue #453)
 
-`signing_key` names the key `gpg.format = ssh` signs commits with. On a normal
-setup it is not the key you push with, so it is a second field and a second pin.
+`identity.git.signing_key` names the key `gpg.format = ssh` signs commits with. On
+a normal setup it is not the key you push with, so it is a second field and a
+second pin. It sits under `git` because git is what signs with it, even though the
+ssh proxy is what holds the pin.
 
-Add it to `acct-a`'s identity block, with a key your agent holds:
+Add it to `acct-a`'s git block, with a key your agent holds:
 
 ```toml
-    signing_key = "{home}/.ssh/id_ed25519_sign.pub"
+  [profile.acct-a.identity.git]
+  signing_key = "{home}/.ssh/id_ed25519_sign.pub"
 ```
 
 The screen names it before the run, next to the authentication key — a key that
@@ -5554,14 +5562,14 @@ What IS refused: a third key. Pick any other key your host agent holds and ask
 the proxy to sign with it — `ssh-add -l` inside will not list it, and a sign
 request naming it gets `SSH_AGENT_FAILURE` without your agent being contacted.
 
-`signing_key` with no agent is refused at parse time, not generated:
+`identity.git.signing_key` with no agent is refused at parse time, not generated:
 
 ```bash
 ./bin/snug -p acct-sign-no-agent --dry-run $SC/proj/sub; echo "exit=$?"
 ```
 
-with `ssh_mode = "none"` and a `signing_key` set. Expect a non-zero exit and a
-message naming `signing_key` and `agent-proxy`.
+with `identity.ssh.agent = "none"` and a `signing_key` set. Expect a non-zero exit
+and a message naming `identity.git.signing_key` and `identity.ssh.agent`.
 
 And the one that costs a behaviour change: **a key the host agent does not hold
 refuses the run.** Remove it on the host and try again:
@@ -5571,11 +5579,11 @@ ssh-add -d ~/.ssh/id_ed25519_sign
 ./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
 ```
 
-Expect a non-zero exit, before any sandbox exists, naming `identity.signing_key`,
+Expect a non-zero exit, before any sandbox exists, naming `identity.git.signing_key`,
 the path, and the key's `SHA256:` fingerprint so you can match it against
 `ssh-add -l` by eye. This is invariant 5: snug generates `commit.gpgsign = true`,
 so a key the agent does not hold would fail EVERY commit inside with an error
-that names no cause. It applies to `ssh_key` too — a pinned authentication key
+that names no cause. It applies to `identity.ssh.key` too — a pinned authentication key
 the agent has dropped now refuses at startup rather than at the first push.
 
 **And the sharper one: HOLDING the key is not enough.** A key added with
@@ -5982,9 +5990,9 @@ EOF
 $ cat > "$cfg/snug/profiles.d/pinned.toml" <<'EOF'
 [profile.pinned]
 description = "an identity, so the ssh files are generated"
-[profile.pinned.identity]
-ssh_mode = "agent-proxy"
-ssh_key = "/path/to/some/id_ed25519.pub"
+[profile.pinned.identity.ssh]
+agent = "proxy"
+key = "/path/to/some/id_ed25519.pub"
 EOF
 $ HOME=$h XDG_CONFIG_HOME=$cfg snug -p pinned -p sshrw /tmp/some-target -- true
 snug: profile sshrw grants rw on .../.ssh (the host's .../.ssh), and snug generates

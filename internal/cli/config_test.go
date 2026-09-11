@@ -163,7 +163,7 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 	}
 }
 
-// showIdentity renders TWO rows once signing_key is pinned — the ssh_key row
+// showIdentity renders TWO rows once a signing key is pinned — the auth-key row
 // this screen already had, and a new "signing key" row — because the two are
 // separate grants (CLAUDE.md's abuse-sentence rule: signing does not imply
 // push and push does not imply signing) and a screen that folded them into
@@ -171,9 +171,8 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 // this profile.
 func TestShowIdentityRendersTheSigningKey(t *testing.T) {
 	id := &policy.Identity{
-		SSHMode:    policy.SSHAgentProxy,
-		SSHKey:     "{home}/.ssh/id_ed25519.pub",
-		SigningKey: "{home}/.ssh/id_ed25519_signing.pub",
+		SSH: policy.IdentitySSH{Agent: policy.SSHAgentProxy, Key: "{home}/.ssh/id_ed25519.pub"},
+		Git: policy.IdentityGit{SigningKey: "{home}/.ssh/id_ed25519_signing.pub"},
 	}
 	var rows []string
 	showIdentity(id, func(label string, vals []string) {
@@ -182,7 +181,7 @@ func TestShowIdentityRendersTheSigningKey(t *testing.T) {
 	joined := strings.Join(rows, "\n")
 
 	if !strings.Contains(joined, "{home}/.ssh/id_ed25519.pub") {
-		t.Errorf("the ssh_key row is missing:\n%s", joined)
+		t.Errorf("the ssh.key row is missing:\n%s", joined)
 	}
 	if !strings.Contains(joined, "{home}/.ssh/id_ed25519_signing.pub") {
 		t.Errorf("the signing key row is missing:\n%s", joined)
@@ -197,7 +196,7 @@ func TestShowIdentityRendersTheSigningKey(t *testing.T) {
 			"capability row on this screen:\n%s", joined)
 	}
 	if !strings.Contains(joined, "THE SANDBOX CAN ACT AS THIS ACCOUNT") {
-		t.Errorf("the ssh_key row lost its consequence sentence:\n%s", joined)
+		t.Errorf("the ssh.key row lost its consequence sentence:\n%s", joined)
 	}
 }
 

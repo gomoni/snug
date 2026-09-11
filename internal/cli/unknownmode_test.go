@@ -10,7 +10,7 @@ import (
 )
 
 // TestAnUnknownModeInAProfileIsRefusedNotNarrowed drives `network` and
-// `ssh_mode` through the REAL $XDG_CONFIG_HOME profile-load path and asserts
+// `identity.ssh.agent` through the REAL $XDG_CONFIG_HOME profile-load path and asserts
 // that a value snug does not implement stops the run.
 //
 // The parsers have their own tests (policy.TestParseNetModeAcceptsTwoModesAndNothingElse,
@@ -80,10 +80,10 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 			says: []string{"bridge", "isolated", "egress"},
 		},
 		{
-			name: "ssh_mode",
-			body: "[profile.p]\n[profile.p.identity]\nssh_mode = \"forward-everything\"\n" +
-				"ssh_key = \"" + pub + "\"\n",
-			says: []string{"forward-everything", "agent-proxy", "none"},
+			name: "identity.ssh.agent",
+			body: "[profile.p]\n[profile.p.identity.ssh]\nagent = \"forward-everything\"\n" +
+				"key = \"" + pub + "\"\n",
+			says: []string{"forward-everything", "proxy", "none"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,13 +109,13 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 	}
 
 	// POSITIVE CONTROL, and it is load-bearing: every other way these fixtures
-	// can fail (a profile that does not parse, an unreadable ssh_key, a target
+	// can fail (a profile that does not parse, an unreadable pinned key, a target
 	// that does not exist) also exits 77 with a message, so without an arm that
 	// RESOLVES the assertions above would pass on a profile that never reached
 	// either parser.
 	t.Run("the accepted spellings resolve", func(t *testing.T) {
 		write(t, "[profile.p]\nnetwork = \"egress\"\n"+
-			"[profile.p.identity]\nssh_mode = \"agent-proxy\"\nssh_key = \""+pub+"\"\n")
+			"[profile.p.identity.ssh]\nagent = \"proxy\"\nkey = \""+pub+"\"\n")
 		stdout, stderr, code := run(t)
 		if code != 0 {
 			t.Fatalf("the accepted spellings should resolve (exit %d):\n%s", code, stderr)

@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-// identity.ssh_key names the PUBLIC key file that pins which of the host
+// identity.ssh.key names the PUBLIC key file that pins which of the host
 // agent's keys the sandbox may sign with — sshproxy.New reads it for the blob
 // the proxy answers REQUEST_IDENTITIES with. It went through expandVars against
 // the same vars map as every grant, `{target}` included, and then, unlike a
 // ro/rw grant, skipped BOTH EvalSymlinks and underTargetIsLiteral. So a profile
-// writing ssh_key = "{target}/deploy.pub" followed a symlink that a previous
+// writing key = "{target}/deploy.pub" followed a symlink that a previous
 // run of the sandbox had planted, and the proxy pinned whatever key that link
 // pointed at.
 //
@@ -28,7 +28,7 @@ func identityRegistry(key string) map[ProfileName]*Profile {
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
 		Name:     "pinned",
-		Identity: &Identity{SSHMode: SSHAgentProxy, SSHKey: key},
+		Identity: &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy, Key: key}},
 	}
 	return reg
 }
@@ -42,10 +42,10 @@ func TestIdentitySSHKeyUnderTargetCannotBeRedirectedBySymlink(t *testing.T) {
 	_, err := Resolve(identityRegistry("{target}/deploy.pub"),
 		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err == nil {
-		t.Fatal("ssh_key under the target resolved through a symlink out of it; " +
+		t.Fatal("the pinned key under the target resolved through a symlink out of it; " +
 			"the pinned identity is then whatever the sandbox last linked to")
 	}
-	if !strings.Contains(err.Error(), "ssh_key") {
+	if !strings.Contains(err.Error(), "ssh.key") {
 		t.Errorf("error does not name the key that caused it: %v", err)
 	}
 	if !strings.Contains(err.Error(), "/home/u/.ssh/id_ed25519.pub") {
@@ -56,17 +56,17 @@ func TestIdentitySSHKeyUnderTargetCannotBeRedirectedBySymlink(t *testing.T) {
 
 func TestIdentitySSHKeyUnderTargetIsAcceptedWhenItIsLiteral(t *testing.T) {
 	// The positive control. Without it the test above passes on a fix that
-	// refuses every ssh_key under the target, which would be a different bug.
+	// refuses every pinned key under the target, which would be a different bug.
 	env := newFakeEnv()
 	env.links["/home/u/proj/sub/deploy.pub"] = "/home/u/proj/sub/deploy.pub"
 
 	p, err := Resolve(identityRegistry("{target}/deploy.pub"),
 		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
-		t.Fatalf("a real file under the target is a legitimate ssh_key: %v", err)
+		t.Fatalf("a real file under the target is a legitimate pinned key: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SSHKey != "/home/u/proj/sub/deploy.pub" {
-		t.Fatalf("ssh_key = %+v, want the literal path under the target", p.Identity)
+	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/proj/sub/deploy.pub" {
+		t.Fatalf("identity = %+v, want the literal path under the target", p.Identity)
 	}
 }
 
@@ -85,23 +85,23 @@ func TestIdentitySSHKeyOutsideTargetIsNotCanonicalised(t *testing.T) {
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
 		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
 	if err != nil {
-		t.Fatalf("an ssh_key outside the target must not be canonicalised: %v", err)
+		t.Fatalf("a pinned key outside the target must not be canonicalised: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SSHKey != "/home/u/.ssh/id_ed25519.pub" {
-		t.Fatalf("ssh_key = %+v, want the expanded path, uncanonicalised", p.Identity)
+	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/.ssh/id_ed25519.pub" {
+		t.Fatalf("identity = %+v, want the expanded path, uncanonicalised", p.Identity)
 	}
 }
 
-// ── signing_key (#453): the same treatment as ssh_key, since resolve.go's loop
+// ── git.signing_key (#453): the same treatment as ssh.key, since resolve.go's loop
 // runs both fields through expandVars and the under-target symlink check
-// identically. These three mirror the ssh_key tests above rather than
+// identically. These three mirror the ssh.key tests above rather than
 // reimplementing coverage of expandVars or underTargetIsLiteral themselves.
 
 func identitySigningRegistry(sshKey, signingKey string, mode SSHMode) map[ProfileName]*Profile {
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
 		Name:     "pinned",
-		Identity: &Identity{SSHMode: mode, SSHKey: sshKey, SigningKey: signingKey},
+		Identity: &Identity{SSH: IdentitySSH{Agent: mode, Key: sshKey}, Git: IdentityGit{SigningKey: signingKey}},
 	}
 	return reg
 }
@@ -112,7 +112,7 @@ func TestResolveExpandsSigningKeyVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing_key carrying a {home} variable was refused: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SigningKey != "/home/u/x.pub" {
+	if p.Identity == nil || p.Identity.Git.SigningKey != "/home/u/x.pub" {
 		t.Fatalf("signing_key = %+v, want the expanded path /home/u/x.pub", p.Identity)
 	}
 }
@@ -142,7 +142,7 @@ func TestResolveRefusesASigningKeySymlinkedOutOfTheTarget(t *testing.T) {
 
 // The private half of a signing key never enters the sandbox by construction
 // — it stays in the host agent — so signing_key with no agent proxy (either
-// spelling: an explicit "none" or an omitted ssh_mode, which normalises to
+// spelling: an explicit "none" or an omitted agent, which normalises to
 // the same thing) is a config that can never work. Resolve refuses it rather
 // than generating a ~/.gitconfig that fails every commit.
 func TestSigningKeyRequiresTheAgentProxy(t *testing.T) {
@@ -150,8 +150,8 @@ func TestSigningKeyRequiresTheAgentProxy(t *testing.T) {
 		name string
 		mode SSHMode
 	}{
-		{`ssh_mode = "none"`, SSHNone},
-		{"ssh_mode omitted", ""},
+		{`agent = "none"`, SSHNone},
+		{"agent omitted", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Resolve(identitySigningRegistry("", "~/.ssh/id_signing.pub", tc.mode),
@@ -163,8 +163,8 @@ func TestSigningKeyRequiresTheAgentProxy(t *testing.T) {
 			if !strings.Contains(err.Error(), "signing_key") {
 				t.Errorf("error does not name signing_key: %v", err)
 			}
-			if !strings.Contains(err.Error(), "agent-proxy") {
-				t.Errorf("error does not name the fix (ssh_mode = \"agent-proxy\"): %v", err)
+			if !strings.Contains(err.Error(), "proxy") {
+				t.Errorf("error does not name the fix (identity.ssh.agent = \"proxy\"): %v", err)
 			}
 		})
 	}
@@ -175,12 +175,11 @@ func TestSigningKeyRequiresTheAgentProxy(t *testing.T) {
 // with a key that is typically authorized nowhere. This is the assertion
 // that keeps that comment honest: with both keys pinned, the generated
 // ~/.ssh/config still names exactly one IdentityFile, and it is PubKeyGuest
-// (ssh_key's staged path), never SigningKeyGuest.
+// (ssh.key's staged path), never SigningKeyGuest.
 func TestSSHConfigDoesNotOfferTheSigningKeyForAuthentication(t *testing.T) {
 	id := &Identity{
-		SSHMode:    SSHAgentProxy,
-		SSHKey:     "/home/u/.ssh/id_ed25519.pub",
-		SigningKey: "/home/u/.ssh/id_ed25519_signing.pub",
+		SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "/home/u/.ssh/id_ed25519.pub"},
+		Git: IdentityGit{SigningKey: "/home/u/.ssh/id_ed25519_signing.pub"},
 	}
 	cfg := string(id.SSHConfig("/home/u"))
 
@@ -189,7 +188,7 @@ func TestSSHConfigDoesNotOfferTheSigningKeyForAuthentication(t *testing.T) {
 		t.Fatalf("generated ~/.ssh/config has %d IdentityFile lines, want exactly 1:\n%s", n, cfg)
 	}
 	if !strings.Contains(cfg, "IdentityFile /home/u/"+PubKeyGuest) {
-		t.Errorf("the one IdentityFile is not the staged ssh_key path:\n%s", cfg)
+		t.Errorf("the one IdentityFile is not the staged ssh.key path:\n%s", cfg)
 	}
 	if strings.Contains(cfg, SigningKeyGuest) {
 		t.Errorf("the signing key's staged path appears in ~/.ssh/config; ssh would then "+
