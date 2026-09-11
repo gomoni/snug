@@ -378,8 +378,22 @@ dns = true
 # This profile is a TEMPLATE: copy it into ~/.config/snug/profiles.d/ and fill in
 # your own account. It grants nothing on its own.
 #
+# THE INCLUDES CARRY THE @ AND THE BUILTIN PROFILES IN THIS SAME FILE DO NOT, and
+# the asymmetry is real rather than sloppy: mark (internal/profile/builtin.go)
+# rewrites a builtin's includes into the @-namespace unconditionally, and
+# checkName refuses a leading @ in any file, so `include = ["sys", "home"]` is
+# correct INSIDE base.toml and the same spelling in a user file exits 77 with
+# `unknown profile "net"`. This block is text a human copies OUT, so it is
+# written the way it has to be once it lands there.
+#
+# internal/profile/identitytemplate_test.go extracts everything between the
+# fence lines below, strips the leading '#', and loads the result as a user
+# profile file — the same path ~/.config/snug/profiles.d takes. Keep each
+# fence on its own line with nothing else on it, and keep the block between
+# them exactly what a human should paste.
+# TEMPLATE-BEGIN
 #   [profile.work]
-#   include = ["net", "git-ro"]     # the `defaults` are selected as well; -p adds
+#   include = ["@net", "@git-ro"]   # the `defaults` are selected as well; -p adds
 #     [profile.work.identity]
 #     gh_user   = "you"
 #     git_name  = "Your Name"
@@ -387,6 +401,7 @@ dns = true
 #     ssh_key     = "{home}/.ssh/id_ed25519.pub"        # the PUBLIC half
 #     ssh_mode    = "agent-proxy"
 #     signing_key = "{home}/.ssh/id_ed25519_sign.pub"   # optional; the PUBLIC half
+# TEMPLATE-END
 #
 # signing_key is the key `gpg.format = ssh` commit signing uses, and on a normal
 # setup it is NOT the key you push with — which is why it is a second field: a
