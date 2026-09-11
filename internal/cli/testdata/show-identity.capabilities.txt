@@ -1,0 +1,4 @@
+  identity         ssh key {home}/.ssh/id_ed25519.pub (agent-proxy)
+                   signing key {home}/.ssh/id_ed25519_signing.pub (agent-proxy, signs commits and tags)
+                   git Some One <some.one@example.com>
+                   gh some-one @ github.com

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -35,8 +36,8 @@ func TestDryRunStartsNoSSHAgentProxy(t *testing.T) {
 	// for "did a dry run create anything", and a pinned key or a stand-in
 	// agent socket sitting in it would answer that question for it.
 	fixtures := shortTempDir(t)
-	key := writePinnedPubKey(t, fixtures)
-	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures))
+	key, blob := writePinnedPubKey(t, fixtures)
+	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures, blob))
 
 	dry := identityPolicy(key)
 	cleanup, err := startIdentity(dry, false, true)
@@ -217,22 +218,24 @@ func shortTempDir(t *testing.T) string {
 
 // writePinnedPubKey writes a real ed25519 public key in OpenSSH wire format:
 // sshproxy.New parses it, so a placeholder string would make the control fail
-// for the wrong reason.
-func writePinnedPubKey(t *testing.T, dir string) string {
+// for the wrong reason. It returns the wire-format blob alongside the path so
+// fakeUpstreamAgent can hold exactly this key — sshproxy.New now probes the
+// upstream for it before binding its own socket (issue #453), and the
+// control below needs that probe to succeed.
+func writePinnedPubKey(t *testing.T, dir string) (path string, blob []byte) {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blob []byte
 	blob = appendSSHString(blob, []byte("ssh-ed25519"))
 	blob = appendSSHString(blob, pub)
-	path := filepath.Join(dir, "id.pub")
+	path = filepath.Join(dir, "id.pub")
 	line := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " pinned@test\n"
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, blob
 }
 
 func appendSSHString(dst, s []byte) []byte {
@@ -245,7 +248,15 @@ func appendSSHString(dst, s []byte) []byte {
 // ssh-agent. sshproxy.New refuses outright when SSH_AUTH_SOCK is unset, so
 // without one the real-run control could not start at all — and a control that
 // cannot run is not a control.
-func fakeUpstreamAgent(t *testing.T, dir string) string {
+//
+// It answers REQUEST_IDENTITIES with held, because sshproxy.New (issue #453)
+// now probes the upstream for the pinned key before it will bind its own
+// socket. Before this it only accepted and never replied, which is exactly
+// the shape TestProbeNoAnswer (internal/sshproxy) exists to refuse: this
+// file's own real-run control would have blocked for probeTimeout and then
+// failed to start, which is the fixture breaking rather than the code under
+// test.
+func fakeUpstreamAgent(t *testing.T, dir string, held ...[]byte) string {
 	t.Helper()
 	path := filepath.Join(dir, "agent.sock")
 	ln, err := net.Listen("unix", path)
@@ -253,5 +264,67 @@ func fakeUpstreamAgent(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				for {
+					msg, err := readAgentFrame(c)
+					if err != nil {
+						return
+					}
+					if len(msg) > 0 && msg[0] == agentRequestIdentities {
+						writeAgentFrame(c, identitiesAnswerFrame(held))
+					} else {
+						writeAgentFrame(c, []byte{agentMsgFailure})
+					}
+				}
+			}()
+		}
+	}()
 	return path
+}
+
+// The three constants and two frame helpers below are a MINIMAL, local copy
+// of the ssh-agent wire format sshproxy already implements — duplicated
+// rather than imported so this fixture is not reaching into another
+// package's unexported wire code for a handful of bytes. See
+// internal/sshproxy/proxy.go for the real (and only security-relevant)
+// implementation.
+const (
+	agentMsgFailure        = 5
+	agentRequestIdentities = 11
+	agentIdentitiesAnswer  = 12
+)
+
+func identitiesAnswerFrame(held [][]byte) []byte {
+	out := []byte{agentIdentitiesAnswer}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(held)))
+	for _, b := range held {
+		out = appendSSHString(out, b)
+		out = appendSSHString(out, []byte("pinned@test"))
+	}
+	return out
+}
+
+func readAgentFrame(r io.Reader) ([]byte, error) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, binary.BigEndian.Uint32(hdr[:]))
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func writeAgentFrame(w io.Writer, payload []byte) error {
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(payload)))
+	_, err := w.Write(append(out, payload...))
+	return err
 }

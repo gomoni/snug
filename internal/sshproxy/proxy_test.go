@@ -4,9 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -17,10 +20,19 @@ import (
 // contacted at all. "The proxy refused" and "the proxy asked upstream and
 // relayed a refusal" look identical to the client — only this distinguishes
 // them, and the difference is the whole point of answering locally.
+//
+// holds/holdComments are the SET of keys this fake agent has loaded, which is
+// deliberately allowed to be WIDER than what the proxy pins — that is what
+// makes the leak assertions in this file real assertions rather than ones that
+// would pass against an agent with nothing to leak in the first place.
 type fakeAgent struct {
 	path     string
 	contacts atomic.Int32
 	ln       net.Listener
+
+	mu           sync.Mutex
+	holds        [][]byte
+	holdComments []string
 }
 
 func newFakeAgent(t *testing.T) *fakeAgent {
@@ -45,9 +57,17 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 					if err != nil {
 						return
 					}
-					if msg[0] == signRequest {
-						writeMessage(c, []byte{signResponse, 0, 0, 0, 0})
-					} else {
+					switch {
+					case len(msg) > 0 && msg[0] == requestIdentities:
+						writeMessage(c, a.identitiesAnswerBytes())
+					case len(msg) > 0 && msg[0] == signRequest:
+						blob, _, ok := takeString(msg[1:])
+						if ok && a.holdsBlob(blob) {
+							writeMessage(c, []byte{signResponse, 0, 0, 0, 0})
+						} else {
+							writeMessage(c, []byte{agentFailure})
+						}
+					default:
 						writeMessage(c, []byte{agentFailure})
 					}
 				}
@@ -58,29 +78,133 @@ func newFakeAgent(t *testing.T) *fakeAgent {
 	return a
 }
 
-// startProxy wires a proxy over a fake agent with one pinned key.
-func startProxy(t *testing.T) (client string, up *fakeAgent, pinned []byte) {
+// setHolds replaces the whole held set. Callers use it before the proxy under
+// test has dialled in (construction has not happened yet, or has already
+// finished and no client is connected), which is why a lock around the whole
+// file is not needed here — removeHold is the one mutation made concurrently
+// with a live connection, and it takes the same lock heldBlobs and
+// holdsBlob do.
+func (a *fakeAgent) setHolds(blobs [][]byte, comments []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.holds = blobs
+	a.holdComments = comments
+}
+
+// removeHold drops one key from the held set, guarded by the same lock the
+// connection handler uses — it is called WHILE a proxy built against this
+// fixture may already be serving requests (TestSignPathConsultsTheLiveAgentNotTheProbe).
+func (a *fakeAgent) removeHold(blob []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, b := range a.holds {
+		if string(b) == string(blob) {
+			a.holds = append(a.holds[:i], a.holds[i+1:]...)
+			if i < len(a.holdComments) {
+				a.holdComments = append(a.holdComments[:i], a.holdComments[i+1:]...)
+			}
+			return
+		}
+	}
+}
+
+func (a *fakeAgent) heldBlobs() ([][]byte, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([][]byte(nil), a.holds...), append([]string(nil), a.holdComments...)
+}
+
+func (a *fakeAgent) holdsBlob(b []byte) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, k := range a.holds {
+		if string(k) == string(b) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *fakeAgent) identitiesAnswerBytes() []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := []byte{identitiesAnswer}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(a.holds)))
+	for i, b := range a.holds {
+		out = appendString(out, b)
+		c := ""
+		if i < len(a.holdComments) {
+			c = a.holdComments[i]
+		}
+		out = appendString(out, []byte(c))
+	}
+	return out
+}
+
+// ed25519Blob returns a syntactically valid, deterministically DISTINCT
+// ed25519 wire-format blob: the marker byte repeated 32 times. Deterministic
+// rather than crypto/rand so a failing assertion's diff is reproducible, and
+// distinct markers so three keys in one test are never accidentally equal.
+func ed25519Blob(marker byte) []byte {
+	b := appendString(nil, []byte("ssh-ed25519"))
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = marker
+	}
+	return appendString(b, key)
+}
+
+func writePubKeyBlob(t *testing.T, dir, name string, blob []byte, comment string) string {
+	t.Helper()
+	line := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " " + comment + "\n"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// startProxy wires a proxy pinned to TWO keys — ssh_key and signing_key,
+// which is #453's whole point — over a fake agent that ALSO holds a third,
+// unpinned key with a distinctive comment. The third key is what makes
+// "absent from the reply" a real assertion in the tests below rather than one
+// that would pass against an agent with nothing to leak in the first place.
+func startProxy(t *testing.T) (sock string, up *fakeAgent, authBlob, signBlob []byte) {
 	t.Helper()
 	dir := t.TempDir()
 
-	// A real ed25519 public key blob: "ssh-ed25519" + 32 bytes.
-	blob := appendString(nil, []byte("ssh-ed25519"))
-	blob = appendString(blob, make([]byte, 32))
-	pub := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " pinned@test\n"
-	keyPath := filepath.Join(dir, "pinned.pub")
-	if err := os.WriteFile(keyPath, []byte(pub), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	authBlob = ed25519Blob(0xA1)
+	signBlob = ed25519Blob(0xB2)
+	other := ed25519Blob(0xC3)
+	authPath := writePubKeyBlob(t, dir, "auth.pub", authBlob, "auth@test")
+	signPath := writePubKeyBlob(t, dir, "signing.pub", signBlob, "signing@test")
 
 	up = newFakeAgent(t)
-	sock := filepath.Join(dir, "proxy.sock")
-	p, err := New(keyPath, up.path, sock, nil)
+	up.setHolds([][]byte{authBlob, signBlob, other},
+		[]string{"auth@test", "signing@test", "the-third-key-nobody-pinned"})
+
+	sockPath := filepath.Join(dir, "proxy.sock")
+	p, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: authPath},
+		{Field: "identity.signing_key", Path: signPath},
+	}, up.path, sockPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// BASELINE, and the reason every `contacts != 0` assertion in this file
+	// means "contacted AFTER New returned" rather than "contacted at all": New
+	// itself now probes the upstream once at startup (see probeUpstream), so a
+	// bare `contacts == 0` check right after construction would fail against a
+	// CORRECT proxy. Confirmed once, here, then reset — the tests below keep
+	// the meaning they had before the probe existed.
+	if n := up.contacts.Load(); n != 1 {
+		t.Fatalf("New's own startup probe contacted the upstream %d times, want exactly 1", n)
+	}
+	up.contacts.Store(0)
+
 	go p.Serve()
 	t.Cleanup(p.Close)
-	return sock, up, blob
+	return sockPath, up, authBlob, signBlob
 }
 
 func ask(t *testing.T, sock string, payload []byte) []byte {
@@ -100,65 +224,477 @@ func ask(t *testing.T, sock string, payload []byte) []byte {
 	return reply
 }
 
-// The sandbox must see exactly one key — and the host agent must not even be
-// asked, so its other keys are never enumerated.
+func signRequestFor(blob []byte) []byte {
+	req := append([]byte{signRequest}, appendString(nil, blob)...)
+	req = appendString(req, []byte("data to sign"))
+	req = binary.BigEndian.AppendUint32(req, 0)
+	return req
+}
+
+// The sandbox must see exactly the pinned SET, in the declared order, and the
+// host agent must not even be asked — its other keys are never enumerated.
 func TestIdentitiesAnswerIsLocalAndPinned(t *testing.T) {
-	sock, up, pinned := startProxy(t)
+	sock, up, authBlob, signBlob := startProxy(t)
 
 	reply := ask(t, sock, []byte{requestIdentities})
 	if reply[0] != identitiesAnswer {
 		t.Fatalf("reply type %d, want IDENTITIES_ANSWER", reply[0])
 	}
-	if n := binary.BigEndian.Uint32(reply[1:5]); n != 1 {
-		t.Fatalf("advertised %d keys, want exactly 1", n)
+	if n := binary.BigEndian.Uint32(reply[1:5]); n != 2 {
+		t.Fatalf("advertised %d keys, want exactly 2", n)
 	}
-	blob, _, ok := takeString(reply[5:])
-	if !ok || string(blob) != string(pinned) {
-		t.Error("the advertised key is not the pinned one")
+	rest := reply[5:]
+	b1, rest, ok := takeString(rest)
+	if !ok {
+		t.Fatal("could not parse the first advertised identity")
+	}
+	_, rest, ok = takeString(rest) // its comment
+	if !ok {
+		t.Fatal("could not parse the first identity's comment")
+	}
+	b2, _, ok := takeString(rest)
+	if !ok {
+		t.Fatal("could not parse the second advertised identity")
+	}
+	if string(b1) != string(authBlob) {
+		t.Error("the first advertised key is not ssh_key's blob — declared order is ssh_key then signing_key")
+	}
+	if string(b2) != string(signBlob) {
+		t.Error("the second advertised key is not signing_key's blob")
 	}
 	if up.contacts.Load() != 0 {
 		t.Error("the host agent was contacted; its other keys should never be enumerated")
 	}
 }
 
-// Signing with the pinned key is the one thing that reaches the host agent.
-func TestSignWithPinnedKeyIsForwarded(t *testing.T) {
-	sock, up, pinned := startProxy(t)
-
-	req := append([]byte{signRequest}, appendString(nil, pinned)...)
-	req = appendString(req, []byte("data to sign"))
-	req = binary.BigEndian.AppendUint32(req, 0)
-
-	if reply := ask(t, sock, req); reply[0] != signResponse {
-		t.Fatalf("reply type %d, want SIGN_RESPONSE", reply[0])
-	}
-	if up.contacts.Load() != 1 {
-		t.Error("a pinned-key signature should reach the host agent")
+// Both pinned keys sign — the proxy pins a SET, not a single blob, and either
+// member of the set must reach the host agent.
+func TestBothPinnedKeysCanSign(t *testing.T) {
+	sock, up, authBlob, signBlob := startProxy(t)
+	for _, tc := range []struct {
+		name string
+		blob []byte
+	}{
+		{"ssh_key", authBlob},
+		{"signing_key", signBlob},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up.contacts.Store(0)
+			if reply := ask(t, sock, signRequestFor(tc.blob)); reply[0] != signResponse {
+				t.Fatalf("reply type %d, want SIGN_RESPONSE", reply[0])
+			}
+			if up.contacts.Load() != 1 {
+				t.Error("a pinned-key signature should reach the host agent")
+			}
+		})
 	}
 }
 
-// THE test: any other key is refused, and the host agent is never asked. If the
-// request were forwarded, a key the human has loaded would be usable by the
-// sandbox purely because the agent holds it.
+// THE test: any key outside the pinned SET is refused, and the host agent is
+// never asked. The refused key is the THIRD one — genuinely held upstream —
+// so the refusal proves membership in the pinned set is the filter, not
+// merely "a key the agent does not have either".
 func TestSignWithOtherKeyIsRefusedWithoutAskingUpstream(t *testing.T) {
-	sock, up, _ := startProxy(t)
+	sock, up, _, _ := startProxy(t)
+	blobs, _ := up.heldBlobs()
+	other := blobs[2]
 
-	other := appendString(nil, []byte("ssh-ed25519"))
-	other = appendString(other, []byte("ANOTHER KEY 32 bytes long .. xxx"))
-
-	req := append([]byte{signRequest}, appendString(nil, other)...)
-	req = appendString(req, []byte("data"))
-	req = binary.BigEndian.AppendUint32(req, 0)
-
-	if reply := ask(t, sock, req); reply[0] != agentFailure {
-		t.Fatalf("reply type %d, want FAILURE for a non-pinned key", reply[0])
+	if reply := ask(t, sock, signRequestFor(other)); reply[0] != agentFailure {
+		t.Fatalf("reply type %d, want FAILURE for a key that is not in the pinned set", reply[0])
 	}
 	if up.contacts.Load() != 0 {
 		t.Error("the host agent was asked to sign with a key the sandbox may not use")
 	}
 }
 
-// Everything that mutates the human's agent is refused, and never forwarded.
+// The leak negative: the upstream's third, unpinned key must appear NOWHERE
+// in the IDENTITIES_ANSWER — neither its blob nor its comment — because the
+// reply is built locally from the pin set and never from what the agent
+// actually holds.
+func TestIdentitiesAnswerNeverMentionsTheUnpinnedThirdKey(t *testing.T) {
+	sock, up, _, _ := startProxy(t)
+	blobs, comments := up.heldBlobs()
+	other, otherComment := blobs[2], comments[2]
+
+	reply := ask(t, sock, []byte{requestIdentities})
+	if reply[0] != identitiesAnswer {
+		t.Fatalf("reply type %d, want IDENTITIES_ANSWER", reply[0])
+	}
+	if strings.Contains(string(reply), string(other)) {
+		t.Error("the reply carries the blob of a key nobody pinned")
+	}
+	if strings.Contains(string(reply), otherComment) {
+		t.Error("the reply carries the comment of a key nobody pinned")
+	}
+}
+
+// Naming the same file twice — ssh_key and signing_key both pointing at one
+// key — advertises ONE entry, and signing with it still works.
+func TestDuplicatePinAdvertisesOnce(t *testing.T) {
+	dir := t.TempDir()
+	blob := ed25519Blob(0xD4)
+	path := writePubKeyBlob(t, dir, "dup.pub", blob, "dup@test")
+
+	up := newFakeAgent(t)
+	up.setHolds([][]byte{blob}, []string{"dup@test"})
+
+	sock := filepath.Join(dir, "proxy.sock")
+	p, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: path},
+		{Field: "identity.signing_key", Path: path},
+	}, up.path, sock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.contacts.Store(0)
+	go p.Serve()
+	t.Cleanup(p.Close)
+
+	reply := ask(t, sock, []byte{requestIdentities})
+	if n := binary.BigEndian.Uint32(reply[1:5]); n != 1 {
+		t.Fatalf("naming one file twice advertised %d identities, want 1", n)
+	}
+	if r := ask(t, sock, signRequestFor(blob)); r[0] != signResponse {
+		t.Fatalf("signing with the duplicated key failed: reply type %d", r[0])
+	}
+}
+
+// An empty pin set advertises nothing and refuses everything — a proxy that
+// looks configured and is not — so New refuses to start one at all.
+func TestNewRefusesAnEmptyPinSet(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := New(nil, "/does/not/matter", filepath.Join(dir, "s.sock"), nil); err == nil {
+		t.Fatal("New accepted an empty pin set")
+	}
+}
+
+// subtle.ConstantTimeCompare(nil, nil) reports a match, so an unguarded empty
+// key blob on the wire would authenticate against nothing. This is the one
+// reachable half of that trap: a SIGN_REQUEST whose key blob is zero-length
+// must still be refused.
+//
+// The OTHER half — a .pub FILE that decodes to an empty blob — is not
+// exercised here: parsePublicKey's own comment states strings.Fields never
+// yields an empty field and a non-empty base64 string either decodes to at
+// least one byte or errors, so there is no well-formed .pub content this test
+// could write that reaches New's `len(blob) == 0` guard. That guard is
+// defence in depth for a path this suite could not construct, and this
+// comment says so rather than shipping a file-based test that would pass
+// without ever exercising it.
+func TestSignRequestWithAnEmptyKeyBlobIsRefused(t *testing.T) {
+	sock, up, _, _ := startProxy(t)
+	req := append([]byte{signRequest}, appendString(nil, nil)...) // zero-length key blob
+	req = appendString(req, []byte("data"))
+	req = binary.BigEndian.AppendUint32(req, 0)
+
+	if reply := ask(t, sock, req); reply[0] != agentFailure {
+		t.Fatalf("reply type %d, want FAILURE for an empty key blob", reply[0])
+	}
+	if up.contacts.Load() != 0 {
+		t.Error("an empty key blob reached the host agent")
+	}
+}
+
+// The startup probe, on a healthy host, contacts the upstream EXACTLY ONCE
+// before New returns — never zero (a proxy with no idea whether it can sign
+// is the failure invariant 5 exists to prevent) and never more than one
+// (nothing here should retry or double-check).
+func TestProbeContactsUpstreamExactlyOnceWhenBothKeysAreHeld(t *testing.T) {
+	dir := t.TempDir()
+	authBlob := ed25519Blob(0xA1)
+	signBlob := ed25519Blob(0xB2)
+	authPath := writePubKeyBlob(t, dir, "auth.pub", authBlob, "auth@test")
+	signPath := writePubKeyBlob(t, dir, "signing.pub", signBlob, "signing@test")
+
+	up := newFakeAgent(t)
+	up.setHolds([][]byte{authBlob, signBlob}, []string{"auth@test", "signing@test"})
+
+	p, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: authPath},
+		{Field: "identity.signing_key", Path: signPath},
+	}, up.path, filepath.Join(dir, "proxy.sock"), nil)
+	if err != nil {
+		t.Fatalf("New refused a run whose upstream holds both pinned keys: %v", err)
+	}
+	t.Cleanup(p.Close)
+	if n := up.contacts.Load(); n != 1 {
+		t.Fatalf("upstream contacted %d times during New, want exactly 1", n)
+	}
+}
+
+// The signing key is missing from the upstream: New must refuse, naming the
+// field, the path and a fingerprint the human can match against `ssh-add -l`
+// — and it must refuse BEFORE the listener is bound, or a refused run leaves
+// a socket behind for the caller's cleanup to race.
+func TestProbeRefusesWhenUpstreamLacksTheSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	authBlob := ed25519Blob(0xA1)
+	signBlob := ed25519Blob(0xB2) // never added to the agent's held set
+	authPath := writePubKeyBlob(t, dir, "auth.pub", authBlob, "auth@test")
+	signPath := writePubKeyBlob(t, dir, "signing.pub", signBlob, "signing@test")
+
+	up := newFakeAgent(t)
+	up.setHolds([][]byte{authBlob}, []string{"auth@test"})
+
+	sock := filepath.Join(dir, "proxy.sock")
+	_, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: authPath},
+		{Field: "identity.signing_key", Path: signPath},
+	}, up.path, sock, nil)
+	if err == nil {
+		t.Fatal("New started a proxy for a signing key the upstream does not hold")
+	}
+	if !strings.Contains(err.Error(), "identity.signing_key") {
+		t.Errorf("error does not name identity.signing_key: %v", err)
+	}
+	if !strings.Contains(err.Error(), signPath) {
+		t.Errorf("error does not name the path: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SHA256:") {
+		t.Errorf("error carries no fingerprint to match against `ssh-add -l`: %v", err)
+	}
+	// THE ORDERING CLAIM, MADE OBSERVABLE FROM OUTSIDE rather than trusted from
+	// New's own doc comment: a probe failure that happened AFTER net.Listen
+	// would leave a socket file on disk for nothing to ever clean up.
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Errorf("a refused probe left a socket at %s (stat err=%v)", sock, statErr)
+	}
+}
+
+// Same refusal, the other key: even with the signing key present and held,
+// a missing AUTH key must still refuse, naming identity.ssh_key.
+func TestProbeRefusesWhenUpstreamLacksTheAuthKeyEvenWithSigningKeyPresent(t *testing.T) {
+	dir := t.TempDir()
+	authBlob := ed25519Blob(0xA1) // never added to the agent's held set
+	signBlob := ed25519Blob(0xB2)
+	authPath := writePubKeyBlob(t, dir, "auth.pub", authBlob, "auth@test")
+	signPath := writePubKeyBlob(t, dir, "signing.pub", signBlob, "signing@test")
+
+	up := newFakeAgent(t)
+	up.setHolds([][]byte{signBlob}, []string{"signing@test"})
+
+	_, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: authPath},
+		{Field: "identity.signing_key", Path: signPath},
+	}, up.path, filepath.Join(dir, "proxy.sock"), nil)
+	if err == nil {
+		t.Fatal("New started a proxy for an auth key the upstream does not hold")
+	}
+	if !strings.Contains(err.Error(), "identity.ssh_key") {
+		t.Errorf("error does not name identity.ssh_key even though the signing key IS held: %v", err)
+	}
+}
+
+// The upstream never answers: a socket nothing is listening on, and a
+// listener that accepts and then says nothing at all.
+func TestProbeNoAnswer(t *testing.T) {
+	dir := t.TempDir()
+	blob := ed25519Blob(0xA1)
+	path := writePubKeyBlob(t, dir, "k.pub", blob, "k@test")
+
+	t.Run("nothing listening", func(t *testing.T) {
+		_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: path}},
+			filepath.Join(dir, "no-such.sock"), filepath.Join(dir, "s1.sock"), nil)
+		if err == nil {
+			t.Fatal("New succeeded dialling a socket nothing is listening on")
+		}
+	})
+
+	// The deadline is the point, in the same shape TestOversizedMessageIsRejected
+	// documents at length: without probeTimeout enforced, a silent upstream
+	// blocks New forever, and that failure surfaces as go test's own package
+	// timeout, far from here and naming nothing. Here it is a named, immediate
+	// failure instead.
+	t.Run("listener accepts and never replies", func(t *testing.T) {
+		sockPath := filepath.Join(dir, "silent.sock")
+		ln, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = c // accepted, then never read from and never written to
+			}
+		}()
+
+		start := time.Now()
+		_, err = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}},
+			sockPath, filepath.Join(dir, "s2.sock"), nil)
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("New succeeded against an upstream that never answers")
+		}
+		if elapsed > probeTimeout+2*time.Second {
+			t.Fatalf("New took %s against a silent upstream; probeTimeout (%s) is not being "+
+				"enforced — a removed deadline would hang instead of failing here", elapsed, probeTimeout)
+		}
+	})
+}
+
+// The upstream answers, but not with an identities list: New cannot tell
+// from that whether it holds the pinned key, and must refuse rather than
+// assume. The message must name both the type it got and the type it wanted.
+func TestProbeRefusesWhenUpstreamAnswersTheWrongMessageType(t *testing.T) {
+	dir := t.TempDir()
+	blob := ed25519Blob(0xA1)
+	path := writePubKeyBlob(t, dir, "k.pub", blob, "k@test")
+
+	sockPath := filepath.Join(dir, "wrong.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		readMessage(c)
+		// 5 bytes so it clears the length floor probeUnparsable guards and is
+		// read as a real, wrongly-typed reply rather than a truncated one.
+		writeMessage(c, []byte{agentFailure, 0, 0, 0, 0}) // type 5, not IDENTITIES_ANSWER (12)
+	}()
+
+	_, err = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}}, sockPath,
+		filepath.Join(dir, "s.sock"), nil)
+	if err == nil {
+		t.Fatal("New accepted a probe reply that was not an identities list")
+	}
+	if !strings.Contains(err.Error(), "5") || !strings.Contains(err.Error(), "12") {
+		t.Errorf("error does not name both message types (got 5, wanted 12): %v", err)
+	}
+}
+
+// A malformed list — claiming 3 identities while carrying the bytes of only
+// one — must be refused, and must not panic or allocate against the claimed
+// count: the count is upstream-supplied, and maxMessage only bounds the
+// bytes actually read.
+func TestProbeRefusesAMalformedIdentitiesList(t *testing.T) {
+	dir := t.TempDir()
+	blob := ed25519Blob(0xA1)
+	path := writePubKeyBlob(t, dir, "k.pub", blob, "k@test")
+
+	sockPath := filepath.Join(dir, "malformed.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		readMessage(c)
+		out := []byte{identitiesAnswer}
+		out = binary.BigEndian.AppendUint32(out, 3) // claims three...
+		out = appendString(out, []byte("only one entry"))
+		out = appendString(out, []byte("comment"))
+		writeMessage(c, out) // ...carries one
+	}()
+
+	done := make(chan struct{})
+	var perr error
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				perr = fmt.Errorf("New panicked on a malformed identities list: %v", r)
+			}
+		}()
+		_, perr = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}}, sockPath,
+			filepath.Join(dir, "s.sock"), nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("New did not return for a malformed identities list")
+	}
+	if perr == nil {
+		t.Fatal("New accepted a malformed identities list")
+	}
+}
+
+// A probe that fails for a MISSING key must not describe what the agent DOES
+// hold: neither another key's comment nor its base64 blob may appear in the
+// refusal, because those belong to an identity the profile never named.
+func TestProbeFailureDoesNotLeakTheUpstreamsOtherKeys(t *testing.T) {
+	dir := t.TempDir()
+	authBlob := ed25519Blob(0xA1)
+	signBlob := ed25519Blob(0xB2) // never held
+	authPath := writePubKeyBlob(t, dir, "auth.pub", authBlob, "auth@test")
+	signPath := writePubKeyBlob(t, dir, "signing.pub", signBlob, "signing@test")
+
+	other1, other2 := ed25519Blob(0xC3), ed25519Blob(0xD4)
+	up := newFakeAgent(t)
+	up.setHolds([][]byte{authBlob, other1, other2},
+		[]string{"auth@test", "unrelated-work-key", "unrelated-personal-key"})
+
+	_, err := New([]PinnedKey{
+		{Field: "identity.ssh_key", Path: authPath},
+		{Field: "identity.signing_key", Path: signPath},
+	}, up.path, filepath.Join(dir, "s.sock"), nil)
+	if err == nil {
+		t.Fatal("New accepted a signing key the upstream does not hold")
+	}
+	msg := err.Error()
+	for _, leaked := range []string{
+		"unrelated-work-key", "unrelated-personal-key",
+		base64.StdEncoding.EncodeToString(other1), base64.StdEncoding.EncodeToString(other2),
+	} {
+		if strings.Contains(msg, leaked) {
+			t.Errorf("the refusal for a missing key leaks another key the agent holds: %q in %q", leaked, msg)
+		}
+	}
+}
+
+// The probe is a STARTUP check, not a cache: a key removed from the agent
+// AFTER New succeeds must still be forwarded to the (now-refusing) live
+// agent on a sign request, not answered from whatever the probe once saw.
+func TestSignPathConsultsTheLiveAgentNotTheProbe(t *testing.T) {
+	sock, up, _, signBlob := startProxy(t)
+
+	up.removeHold(signBlob)
+
+	reply := ask(t, sock, signRequestFor(signBlob))
+	if reply[0] != agentFailure {
+		t.Fatalf("reply type %d, want FAILURE relayed from the live agent", reply[0])
+	}
+	if up.contacts.Load() == 0 {
+		t.Error("the sign request never reached the upstream; handleSign must consult the " +
+			"live agent, not a cached probe result")
+	}
+}
+
+// A broken profile is reported before a broken host: a garbage key path with
+// NO upstream configured at all must still name the key, not the missing
+// agent — the key is the thing the human wrote and can fix first.
+func TestProfileErrorBeatsHostError(t *testing.T) {
+	dir := t.TempDir()
+	garbage := filepath.Join(dir, "does-not-exist.pub")
+	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: garbage}}, "",
+		filepath.Join(dir, "s.sock"), nil)
+	if err == nil {
+		t.Fatal("New accepted a nonexistent key path with no upstream at all")
+	}
+	if !strings.Contains(err.Error(), "identity.ssh_key") {
+		t.Errorf("error does not name the key field: %v", err)
+	}
+	if strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		t.Errorf("error names the missing agent instead of the unreadable key: %v", err)
+	}
+}
+
+// Everything that mutates the human's agent is refused, and never forwarded —
+// unchanged by pinning a second key: two pins must not widen the verb set.
 func TestMutatingRequestsAreRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -176,7 +712,7 @@ func TestMutatingRequestsAreRefused(t *testing.T) {
 		{"an unknown message type", 99},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sock, up, _ := startProxy(t)
+			sock, up, _, _ := startProxy(t)
 			if reply := ask(t, sock, []byte{tc.typ}); reply[0] != agentFailure {
 				t.Errorf("reply type %d, want FAILURE", reply[0])
 			}
@@ -198,7 +734,7 @@ func TestMutatingRequestsAreRefused(t *testing.T) {
 // bound therefore "passed" for ten minutes and then failed anonymously. Here a
 // hang is its own named failure, in two seconds.
 func TestOversizedMessageIsRejected(t *testing.T) {
-	sock, _, pinned := startProxy(t)
+	sock, _, authBlob, _ := startProxy(t)
 
 	// Two sizes, both refused for the same reason. maxMessage+1 is the boundary;
 	// 4 GiB is the memory-exhaustion case, and a proxy that only bounded the
@@ -247,8 +783,8 @@ func TestOversizedMessageIsRejected(t *testing.T) {
 			t.Fatalf("control: reply type %d, want IDENTITIES_ANSWER — the proxy is not "+
 				"answering anything, so the refusals above prove nothing", reply[0])
 		}
-		if blob, _, ok := takeString(reply[5:]); !ok || string(blob) != string(pinned) {
-			t.Error("control: the proxy answered, but not with the pinned key")
+		if blob, _, ok := takeString(reply[5:]); !ok || string(blob) != string(authBlob) {
+			t.Error("control: the proxy answered, but not with the first pinned key")
 		}
 	})
 }
@@ -285,7 +821,7 @@ func TestSocketIsPrivate(t *testing.T) {
 			"socket below would prove nothing", fi.Mode().Perm())
 	}
 
-	sock, _, _ := startProxy(t)
+	sock, _, _, _ := startProxy(t)
 	si, err := os.Stat(sock)
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +832,8 @@ func TestSocketIsPrivate(t *testing.T) {
 }
 
 // No agent to proxy is an error, not a silent no-op that leaves the sandbox
-// wondering why signing fails.
+// wondering why signing fails — and it must fail with NO dial attempted:
+// New refuses an empty upstream before probeUpstream is ever reached.
 func TestMissingUpstreamIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "k.pub")
@@ -304,7 +841,21 @@ func TestMissingUpstreamIsAnError(t *testing.T) {
 	blob = appendString(blob, make([]byte, 32))
 	os.WriteFile(key, []byte("ssh-ed25519 "+base64.StdEncoding.EncodeToString(blob)+" c\n"), 0o600)
 
-	if _, err := New(key, "", filepath.Join(dir, "s.sock"), nil); err == nil {
+	start := time.Now()
+	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: key}}, "",
+		filepath.Join(dir, "s.sock"), nil)
+	elapsed := time.Since(start)
+	if err == nil {
 		t.Error("expected an error when the host has no ssh-agent")
+	}
+	if !strings.Contains(err.Error(), "no ssh-agent is running") {
+		t.Errorf("error is not the missing-agent message: %v", err)
+	}
+	// NO DIAL ATTEMPTED: a version that tried to dial the empty path before
+	// checking it would still fail, but slowly (or not at all, and hang) — this
+	// bound is what tells "refused immediately" from "attempted and failed".
+	if elapsed > time.Second {
+		t.Errorf("New took %s to refuse an empty upstream, which is long enough to have "+
+			"attempted a dial first", elapsed)
 	}
 }

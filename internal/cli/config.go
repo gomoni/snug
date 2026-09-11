@@ -1002,6 +1002,12 @@ func networkConsequence(mode string) string {
 // No key MATERIAL is rendered and none is available to render: Identity.SSHKey
 // selects one key from the already-unlocked host agent, and ssh_mode =
 // "agent-proxy" means no private key ever enters the sandbox.
+//
+// TWO keys is the normal case once signing is pinned, and they are two rows
+// because they are two grants: a signing key is usually authorized nowhere, and
+// an authentication key usually signs nothing a forge will show as verified.
+// The pin bounds which keys; the agent protocol carries no purpose, so anything
+// inside can ask the proxy to use either for either.
 func showIdentity(id *policy.Identity, show func(string, []string)) {
 	if id == nil {
 		return
@@ -1011,6 +1017,13 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 		row := "ssh key " + id.SSHKey
 		if id.SSHMode != "" {
 			row += " (" + string(id.SSHMode) + ")"
+		}
+		rows = append(rows, row)
+	}
+	if id.SigningKey != "" {
+		row := "signing key " + id.SigningKey
+		if id.SSHMode != "" {
+			row += " (" + string(id.SSHMode) + ", signs commits and tags)"
 		}
 		rows = append(rows, row)
 	}

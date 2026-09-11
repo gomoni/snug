@@ -163,6 +163,36 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 	}
 }
 
+// showIdentity renders TWO rows once signing_key is pinned — the ssh_key row
+// this screen already had, and a new "signing key" row — because the two are
+// separate grants (CLAUDE.md's abuse-sentence rule: signing does not imply
+// push and push does not imply signing) and a screen that folded them into
+// one row would read as one grant to the human deciding whether to select
+// this profile.
+func TestShowIdentityRendersTheSigningKey(t *testing.T) {
+	id := &policy.Identity{
+		SSHMode:    policy.SSHAgentProxy,
+		SSHKey:     "{home}/.ssh/id_ed25519.pub",
+		SigningKey: "{home}/.ssh/id_ed25519_signing.pub",
+	}
+	var rows []string
+	showIdentity(id, func(label string, vals []string) {
+		rows = append(rows, label+" "+strings.Join(vals, " "))
+	})
+	joined := strings.Join(rows, "\n")
+
+	if !strings.Contains(joined, "{home}/.ssh/id_ed25519.pub") {
+		t.Errorf("the ssh_key row is missing:\n%s", joined)
+	}
+	if !strings.Contains(joined, "{home}/.ssh/id_ed25519_signing.pub") {
+		t.Errorf("the signing key row is missing:\n%s", joined)
+	}
+	if !strings.Contains(joined, "signs commits and tags") {
+		t.Errorf("the signing key row does not say what it is FOR, unlike the ssh_key row's "+
+			"own consequence text:\n%s", joined)
+	}
+}
+
 // A config.toml that will not decode used to print go-toml's bare
 // *StrictMissingError.Error() — "strict mode: fields in the document are
 // missing in the target struct" — and nothing else: no line, no key, no

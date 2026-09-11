@@ -63,22 +63,24 @@ func ParseGitMode(s string) (GitMode, error) {
 // GitKeyWhitelist is every key snug will carry from the host's git config into
 // the sandbox's. Nothing on this list names a program, a file, or a credential.
 //
-// It is a WHITELIST and must stay one. The tempting additions are the signing
-// keys — `user.signingkey`, `gpg.format`, `commit.gpgsign` — and they are
-// deliberately absent: `commit.gpgsign = true` with a signing key that is not
-// inside the sandbox turns every commit into a hard failure, which is worse
-// than an unsigned commit. Signing needs the key staged AND the agent proxy
-// willing to sign with it, and the proxy pins exactly one key today. See
-// https://github.com/gomoni/snug/issues/453; this list grows when that is
-// built, not before.
+// It is a WHITELIST and must stay one, and the signing keys — `user.signingkey`,
+// `gpg.format`, `commit.gpgsign` — stay off it even though snug now GENERATES
+// all three from [identity].signing_key. Authoring beats carrying, and not by
+// style: a carried user.signingkey names a path on the HOST that does not exist
+// inside, and a carried `commit.gpgsign = true` then turns every commit into
+// `error: No private key found for public key "…"` followed by `fatal: failed
+// to write commit object` (measured, git 2.55.0) — worse than an unsigned
+// commit. What snug authors, it authors only for a key it has staged, whose
+// ssh_mode = "agent-proxy" the resolver has already required and whose presence
+// in the host agent sshproxy.New has already probed. See GitConfigFrom.
 //
-// Two things #453 has to answer that this comment cannot, both measured:
-// a repo-local `.git/config` with `commit.gpgsign = true` arrives inside
-// regardless of this list — the target is bound and GIT_CONFIG_GLOBAL
-// displaces only the GLOBAL file — so a signed commit from inside fails with
-// the agent proxy's non-pinned-key refusal, `agent refused operation`, which
-// reads as a host keyring fault. And the agent protocol carries no purpose,
-// so pinning a second key for signing means either key can be used for either
+// Two residuals this comment cannot close, both measured. A repo-local
+// `.git/config` with `commit.gpgsign = true` arrives inside regardless of this
+// list — the target is bound and GIT_CONFIG_GLOBAL displaces only the GLOBAL
+// file — so a signed commit from inside a repo that asks for a key snug did not
+// stage fails with the agent proxy's refusal, `agent refused operation`, which
+// reads as a host keyring fault. And the agent protocol carries no purpose, so
+// pinning a second key for signing means either key can be used for either
 // purpose by anything inside.
 var GitKeyWhitelist = []string{
 	"user.name",
@@ -95,10 +97,17 @@ type GitValues map[string]string
 //
 // An [identity] block always wins: identity is a PIN, and a value extracted
 // from the host silently overriding a pinned one would make the pin advisory.
-func GitConfigFrom(v GitValues, id *Identity) []byte {
+// home is the sandbox's HOME, needed because user.signingkey must be an
+// absolute guest path: git does not expand `~` there, and a relative value would
+// resolve against whatever directory the payload happens to be in.
+func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 	if len(v) == 0 && id == nil {
 		return nil
 	}
+	// Belt and braces, the same shape as withoutControlCharacters: Resolve has
+	// already refused signing_key with ssh_mode = none, and this is the backstop
+	// for whatever calls the renderer next.
+	signing := id != nil && id.SigningKey != "" && id.SSHMode != SSHNone
 	// Second guard, deliberately not the only one. The extractor already drops a
 	// value carrying a control character (internal/cli/gitconfig.go), and this is the
 	// backstop for whatever calls the renderer next — because the failure it
@@ -123,7 +132,7 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 	b.WriteString("# mounted: it names programs to run (credential.helper, alias = !cmd,\n")
 	b.WriteString("# core.pager, textconv), and a read-only bind supplies those rather than\n")
 	b.WriteString("# stopping them. Only keys that carry no execution are carried over.\n")
-	if name != "" || email != "" {
+	if name != "" || email != "" || signing {
 		b.WriteString("[user]\n")
 		if name != "" {
 			fmt.Fprintf(&b, "\tname = %s\n", gitQuote(name))
@@ -131,6 +140,19 @@ func GitConfigFrom(v GitValues, id *Identity) []byte {
 		if email != "" {
 			fmt.Fprintf(&b, "\temail = %s\n", gitQuote(email))
 		}
+		if signing {
+			fmt.Fprintf(&b, "\tsigningkey = %s\n", gitQuote(home+"/"+SigningKeyGuest))
+		}
+	}
+	if signing {
+		b.WriteString("# AUTHORED from [identity].signing_key, never carried from the host: the\n")
+		b.WriteString("# private half stays in the host agent and only the .pub is inside, so a\n")
+		b.WriteString("# carried value naming a host path would fail every commit.\n")
+		b.WriteString("# gpgsign is true because sshproxy.New has already refused the run when the\n")
+		b.WriteString("# host agent does not hold this key — without that probe an unheld key\n")
+		b.WriteString("# would fail EVERY commit, not only the ones that asked to be signed.\n")
+		b.WriteString("[gpg]\n\tformat = ssh\n")
+		b.WriteString("[commit]\n\tgpgsign = true\n")
 	}
 	if br := v["init.defaultbranch"]; br != "" {
 		fmt.Fprintf(&b, "[init]\n\tdefaultBranch = %s\n", gitQuote(br))

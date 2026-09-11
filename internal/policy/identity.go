@@ -41,7 +41,27 @@ func ParseSSHMode(s string) (SSHMode, error) {
 type Identity struct {
 	// SSHKey is the PUBLIC key file that pins the identity. Only the public
 	// half is read; the private key never leaves the host agent.
-	SSHKey  string
+	SSHKey string
+
+	// SigningKey is the PUBLIC key file for `gpg.format = ssh` commit and tag
+	// signing. Only the public half is read; the private key never leaves the
+	// host agent, which is why this field requires ssh_mode = "agent-proxy".
+	//
+	// SEPARATE FROM SSHKey ON PURPOSE, and the asymmetry is the reason there are
+	// two fields rather than one wide one: a signing key is usually NOT an
+	// authorized key, so granting signing does not grant push and granting push
+	// does not grant signing. One field cannot say that.
+	//
+	// RESIDUAL, and it is not closable here: the ssh-agent protocol carries no
+	// statement of PURPOSE, so once both keys are pinned, anything inside the
+	// sandbox can ask the proxy to sign with either one for either use. The pin
+	// bounds WHICH keys, never what they are used for.
+	//
+	// It is deliberately absent from SSHConfig: adding it as a second
+	// IdentityFile would make ssh OFFER a key that is typically authorized
+	// nowhere, spending an authentication attempt for nothing.
+	SigningKey string
+
 	SSHMode SSHMode
 
 	GitName  string
@@ -90,6 +110,7 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 	}
 	for _, f := range []struct{ key, val string }{
 		{"ssh_key", i.SSHKey},
+		{"signing_key", i.SigningKey},
 		{"ssh_mode", string(i.SSHMode)},
 		{"git_name", i.GitName},
 		{"git_email", i.GitEmail},
@@ -124,6 +145,12 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 
 // PubKeyGuest is where the pinned PUBLIC key is staged inside the sandbox.
 const PubKeyGuest = ".ssh/id_snug.pub"
+
+// SigningKeyGuest is where the pinned SIGNING public key is staged. A SECOND
+// path, not a reuse of PubKeyGuest: the two are usually different keys, and when
+// a profile names the same file twice the two staged copies are identical and
+// harmless — cheaper than a branch a reader has to simulate.
+const SigningKeyGuest = ".ssh/id_snug_signing.pub"
 
 // SSHConfig is the generated ~/.ssh/config.
 //
