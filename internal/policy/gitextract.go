@@ -71,8 +71,13 @@ func ParseGitMode(s string) (GitMode, error) {
 // `error: No private key found for public key "…"` followed by `fatal: failed
 // to write commit object` (measured, git 2.55.0) — worse than an unsigned
 // commit. What snug authors, it authors only for a key it has staged, whose
-// ssh_mode = "agent-proxy" the resolver has already required and whose presence
-// in the host agent sshproxy.New has already probed. See GitConfigFrom.
+// ssh_mode = "agent-proxy" the resolver has already required, and which
+// sshproxy.New has already asked the host agent to SIGN with once. Presence was
+// not enough: a key added with `ssh-add -c` and no askpass, or with
+// `ssh-add -h <destination>`, is LISTED by the agent and refused at every
+// signature — measured, and it is the setup a careful person has, since a
+// signing key is frequently the one key in the agent that is authorised to push
+// nowhere. See GitConfigFrom.
 //
 // Two residuals this comment cannot close, both measured. A repo-local
 // `.git/config` with `commit.gpgsign = true` arrives inside regardless of this
@@ -148,9 +153,10 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 		b.WriteString("# AUTHORED from [identity].signing_key, never carried from the host: the\n")
 		b.WriteString("# private half stays in the host agent and only the .pub is inside, so a\n")
 		b.WriteString("# carried value naming a host path would fail every commit.\n")
-		b.WriteString("# gpgsign is true because sshproxy.New has already refused the run when the\n")
-		b.WriteString("# host agent does not hold this key — without that probe an unheld key\n")
-		b.WriteString("# would fail EVERY commit, not only the ones that asked to be signed.\n")
+		b.WriteString("# gpgsign is true because snug asked your host agent for one signature with\n")
+		b.WriteString("# this key at startup and got one. A key the agent merely LISTS can still\n")
+		b.WriteString("# refuse every signature (ssh-add -c with no askpass, ssh-add -h), which\n")
+		b.WriteString("# would fail every commit here with an error naming no cause.\n")
 		b.WriteString("[gpg]\n\tformat = ssh\n")
 		b.WriteString("[commit]\n\tgpgsign = true\n")
 	}

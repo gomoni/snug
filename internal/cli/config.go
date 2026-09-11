@@ -1018,14 +1018,23 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 		if id.SSHMode != "" {
 			row += " (" + string(id.SSHMode) + ")"
 		}
-		rows = append(rows, row)
+		rows = append(rows, capRows(row,
+			"THE SANDBOX CAN ACT AS THIS ACCOUNT. It can push to any repository this "+
+				"key reaches and authenticate to any host that trusts it, for as long as "+
+				"the run lasts. No private key enters the sandbox and your other keys "+
+				"cannot be enumerated or used.")...)
 	}
 	if id.SigningKey != "" {
 		row := "signing key " + id.SigningKey
 		if id.SSHMode != "" {
-			row += " (" + string(id.SSHMode) + ", signs commits and tags)"
+			row += " (" + string(id.SSHMode) + ")"
 		}
-		rows = append(rows, row)
+		rows = append(rows, capRows(row,
+			"THE SANDBOX CAN SIGN COMMITS AND TAGS AS YOU — vouching as a human, for "+
+				"code it wrote itself, on any repository. snug generates "+
+				"commit.gpgsign = true, so commits inside are signed by default. The "+
+				"agent protocol carries no purpose, so either pinned key can be used "+
+				"for either job.")...)
 	}
 	if id.GitName != "" || id.GitEmail != "" {
 		rows = append(rows, strings.TrimSpace("git "+id.GitName+" <"+id.GitEmail+">"))

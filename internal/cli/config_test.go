@@ -187,9 +187,17 @@ func TestShowIdentityRendersTheSigningKey(t *testing.T) {
 	if !strings.Contains(joined, "{home}/.ssh/id_ed25519_signing.pub") {
 		t.Errorf("the signing key row is missing:\n%s", joined)
 	}
-	if !strings.Contains(joined, "signs commits and tags") {
-		t.Errorf("the signing key row does not say what it is FOR, unlike the ssh_key row's "+
-			"own consequence text:\n%s", joined)
+	// The consequence sentence, not a parenthetical. showIdentity was the only
+	// member of showCapabilities that did not use capRows, so the grant whose
+	// base.toml ABUSE line reads "SIGN COMMITS AND TAGS AS YOU" got four words
+	// in brackets while `listen_names` got "THIS IS A SANDBOX ESCAPE" — a hole
+	// that did not look like one. Found by the red team.
+	if !strings.Contains(joined, "SIGN COMMITS AND TAGS AS YOU") {
+		t.Errorf("the signing key row does not say what it is FOR, unlike every other "+
+			"capability row on this screen:\n%s", joined)
+	}
+	if !strings.Contains(joined, "THE SANDBOX CAN ACT AS THIS ACCOUNT") {
+		t.Errorf("the ssh_key row lost its consequence sentence:\n%s", joined)
 	}
 }
 

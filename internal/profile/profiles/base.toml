@@ -395,8 +395,10 @@ dns = true
 # gpg.format and commit.gpgsign pointing at its own staged copy; nothing is read
 # from your ~/.gitconfig. It requires ssh_mode = "agent-proxy", because the
 # private half stays in your agent and with no proxy there is nothing inside to
-# sign with. snug refuses to start when the host agent does not hold the key,
-# rather than let every commit inside fail with a message that names no cause.
+# sign with. snug refuses to start unless the host agent will actually SIGN with
+# the key — holding it is not enough, because a key added with `ssh-add -c` and
+# no askpass, or with `ssh-add -h`, is listed and then refuses every signature.
+# The alternative is every commit inside failing with a message naming no cause.
 # signing_key absent = today's behaviour exactly: no signing config is generated
 # and only one key is pinned.
 #

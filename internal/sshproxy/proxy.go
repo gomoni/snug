@@ -1,5 +1,6 @@
-// Package sshproxy is a filtering ssh-agent proxy: the sandbox sees exactly one
-// key, and cannot enumerate, add, remove or lock anything else in your agent.
+// Package sshproxy is a filtering ssh-agent proxy: the sandbox sees only the
+// key or keys the profile pins, and cannot enumerate, add, remove or lock
+// anything else in your agent.
 //
 // Why a proxy rather than binding $SSH_AUTH_SOCK straight through: the agent
 // protocol has verbs beyond "sign". A raw passthrough hands the sandbox every
@@ -30,6 +31,7 @@
 package sshproxy
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -66,6 +68,14 @@ const (
 	extension            = 27
 )
 
+// Signature flags (draft-miller-ssh-agent). Both are listed although only
+// agentRSASHA2512 is ever sent, because a reader checking what snug asks for
+// needs the other name to see that SHA-1 is what 0 means.
+const (
+	agentRSASHA2256 = 2
+	agentRSASHA2512 = 4
+)
+
 // maxMessage bounds a single agent message. The real protocol has no useful
 // upper bound, and an unbounded length prefix read from the sandbox is a memory
 // exhaustion primitive pointed at snug itself.
@@ -79,14 +89,25 @@ const maxMessage = 256 * 1024
 type PinnedKey struct {
 	Field string // "identity.ssh_key", "identity.signing_key"
 	Path  string // the PUBLIC key file on the host
+
+	// MustSign asks the startup probe to prove the agent will SIGN with this
+	// key, not merely that it lists it. Set it for a key snug's OWN generated
+	// configuration makes mandatory — today identity.signing_key, because
+	// GitConfigFrom authors `commit.gpgsign = true` and a key that is listed
+	// and unusable then fails EVERY commit inside. It is a statement about what
+	// the CALLER authored, not about which field this is: a future field whose
+	// failure is equally unattributable sets it here, and this package still
+	// holds nothing but blobs.
+	MustSign bool
 }
 
 // pin is a PinnedKey with the public half read and decoded.
 type pin struct {
-	field   string
-	path    string
-	blob    []byte
-	comment string
+	field    string
+	path     string
+	blob     []byte
+	comment  string
+	mustSign bool
 }
 
 type Proxy struct {
@@ -109,10 +130,11 @@ type Proxy struct {
 // Only the public halves are ever read: the private keys stay wherever they
 // are, and the sandbox never sees key material of any kind.
 //
-// The host agent is asked ONCE here whether it holds each pinned key, and New
-// refuses when it does not. See probeUpstream for why that check is not
-// optional and what it does not promise. The purpose residual is in the
-// package comment.
+// The host agent is asked, on ONE connection before the listener is bound,
+// whether it holds each pinned key — and for a key marked MustSign, whether it
+// will actually sign with it. New refuses when either answer is no. See
+// probeUpstream and probeSign for why neither check is optional and what they
+// do not promise. The purpose residual is in the package comment.
 //
 // Order is load-bearing: the keys are read before the upstream is checked, so
 // a profile error beats a host-state error; and the probe runs before the
@@ -142,7 +164,25 @@ func New(keys []PinnedKey, upstream, socketPath string, audit func(string)) (*Pr
 		if containsBlob(blobsOf(pins), blob) {
 			continue // the same key named twice advertises once
 		}
-		pins = append(pins, pin{field: k.Field, path: k.Path, blob: blob, comment: comment})
+		pins = append(pins, pin{
+			field: k.Field, path: k.Path, blob: blob, comment: comment, mustSign: k.MustSign,
+		})
+	}
+	// #454 turns the identity key fields into an enumeration, and a third pinned
+	// key is foreseeable. identitiesAnswer is written in ONE agent message, and a
+	// message over maxMessage is written here and then rejected by whatever reads
+	// it — `ssh-add -l` inside failing with no explanation. Computed from the
+	// actual blobs and comments rather than asserted against a bound, so no
+	// comment here can go stale when hostread.MaxSSHPublicKeyBytes or the field
+	// set moves.
+	if sz := identitiesAnswerSize(pins); sz > maxMessage {
+		return nil, fmt.Errorf("the pinned keys and their .pub comments come to %d bytes, and "+
+			"the identities list the sandbox reads must fit one %d-byte agent message.\n\n"+
+			"      Shorten the comment in the .pub files, or pin fewer keys: an oversized "+
+			"answer is\n"+
+			"      written and then rejected by the client reading it, so `ssh-add -l` inside "+
+			"would\n"+
+			"      fail with no explanation.", sz, maxMessage)
 	}
 	if upstream == "" {
 		return nil, fmt.Errorf("no ssh-agent is running on the host (SSH_AUTH_SOCK is unset), " +
@@ -348,6 +388,18 @@ func (p *Proxy) handleSign(c net.Conn, msg []byte) {
 		// Names the KEY, never a purpose: the request carries none. See the
 		// package comment.
 		p.audit("signed with " + field)
+	} else {
+		// The host agent HOLDS this key — the startup probe proved that — and
+		// would not use it. Relaying the failure silently is how a
+		// destination-constrained key (ssh-add -h) reads as `Permission denied
+		// (publickey)` inside, with the cause on the other side of a boundary
+		// the sandbox cannot see; for a signing key git says `agent refused
+		// operation?`, which gitextract.go's own comment describes as reading
+		// like a host keyring fault. snug had the answer in reply[0] and did
+		// not say it. Only MustSign keys are proven signable at startup; this
+		// is the line for the others.
+		p.audit("upstream agent refused to sign with " + field +
+			" (added with `ssh-add -c` and no askpass, `ssh-add -h`, or the agent was locked)")
 	}
 	writeMessage(c, reply)
 }
@@ -373,10 +425,15 @@ const probeTimeout = 5 * time.Second
 // form, and it is why this lives in New rather than behind a method a caller
 // can skip.
 //
-// WHAT IT DOES NOT PROMISE. It is liveness at startup, not a guarantee: a key
-// removed from the agent, or an agent locked, after this returns will fail at
-// sign time exactly as before. handleSign consults the live agent and nothing
-// cached here.
+// WHAT IT DOES NOT PROMISE. It is startup state, not a guarantee: a key removed
+// from the agent, an agent locked, or a confirmation declined after this returns
+// fails at sign time exactly as before — handleSign consults the live agent and
+// nothing cached here. The signature the sign phase gets back is not verified
+// cryptographically; the probe proves the agent ANSWERS for that key, which is
+// the failure measured. And a key with MustSign unset is checked for membership
+// only: identity.ssh_key's failure mode is `Permission denied (publickey)` at
+// push, which names a key, where a signing key's is every commit failing with an
+// error that names nothing.
 //
 // It contacts the upstream agent, which the sandbox-initiated REQUEST_IDENTITIES
 // path deliberately never does. The distinction survives: that path answers
@@ -452,7 +509,217 @@ func probeUpstream(upstream string, pins []pin) error {
 	// pin may appear in any message above: the count is the only thing said
 	// about the agent's contents, and the only fingerprint rendered belongs to a
 	// key the human named in their own profile.
+
+	// Phase 2, on the SAME connection: membership was not enough. Measured on
+	// OpenSSH 10.5p1 — a key added with `ssh-add -c` and no askpass, and a key
+	// added with `ssh-add -h <destination>`, are both LISTED by REQUEST_IDENTITIES
+	// and refuse every SIGN_REQUEST. One connection, so a caller counting
+	// accepted connections still counts one.
+	for _, k := range pins {
+		if !k.mustSign {
+			continue
+		}
+		if err := probeSign(conn, k); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// signProbePrefix domain-separates the probe payload so the signature snug gets
+// back cannot be replayed as anything. The payload is this 17-byte prefix
+// followed by 32 bytes from crypto/rand: 49 bytes, fresh per key, per run, and
+// not influenced by anything outside this function.
+//
+// A verifier does not PARSE a signed blob, it RECONSTRUCTS the one it expects
+// and checks the signature over that — so the property needed is that no blob
+// any verifier constructs can EQUAL these bytes.
+//
+//   - SSHSIG (ssh-keygen -Y sign/verify, and therefore every git commit and tag
+//     signature under gpg.format = ssh) begins with the literal six bytes
+//     "SSHSIG", no length prefix — measured: the blob git asked the agent to
+//     sign was 95 bytes starting 53 53 48 53 49 47. This payload's first byte is
+//     's' (0x73), so no SSHSIG verifier can accept it whatever the namespace.
+//   - An SSH userauth signature (RFC 4252 §7, and hostbased §9 identically)
+//     signs `string session_id || byte 50 (SSH_MSG_USERAUTH_REQUEST) || …`, so
+//     its first four bytes ARE the length of the session identifier and the blob
+//     is at least 4+that+1 bytes long. Here those four bytes read 1936618855
+//     ("snug") against a 49-byte payload, so a server would have to have a
+//     ~1.8 GiB session identifier — session ids are exchange-hash outputs. No
+//     constructible auth blob is equal to this.
+//   - An OpenSSH certificate signature covers a body beginning `string keytype`
+//     ("ssh-ed25519-cert-v01@openssh.com" and friends), so its first four bytes
+//     are a small length. Same argument.
+//   - session-bind@openssh.com signs a raw session identifier: a bare hash, 32
+//     or 64 bytes. This is 49 bytes and begins with ASCII.
+//
+// And the property that does not depend on enumerating protocols: no party
+// outside this process chooses any of these bytes, so this is not an oracle
+// anyone can present a challenge to.
+const signProbePrefix = "snug-agent-probe\x00"
+
+const signProbeNonceBytes = 32
+
+// signProbeTimeout bounds the SIGN phase, and it is deliberately not
+// probeTimeout. Measured: an agent with no askpass refuses a confirm-constrained
+// key in 57 ms, and an agent whose askpass took 8 s blocked the client 8.059 s
+// and then returned a signature. probeTimeout (5 s) would abort exactly the case
+// the sign probe exists to serve — a human being asked, on the host, to confirm
+// — and turn a working setup into a refusal. Two minutes bounds a hung agent; it
+// does not pace a human, and nothing waits on it when the answer is no.
+const signProbeTimeout = 2 * time.Minute
+
+// signProbePromptFloor separates "your agent answered instantly" from "your
+// agent asked somebody". SSH_AGENT_FAILURE carries no reason, so the elapsed
+// time is the only discriminator on the wire between an agent with no askpass
+// (57 ms, measured) and a confirmation that was declined. The refusal reports
+// what was observed rather than concluding.
+const signProbePromptFloor = time.Second
+
+// probeSign asks the agent for one signature with a key snug's own generated
+// config makes mandatory.
+//
+// The reply is INSPECTED AND DROPPED. Nothing derived from it is stored on the
+// Proxy, audited, written to any file, or sent to any client: the signature is
+// over bytes that mean nothing to anyone, and the only thing snug wants from it
+// is that it exists. The slice is unreferenced when this function returns, the
+// same rule `held` obeys one phase earlier — and the sandbox does not exist yet,
+// since New runs before the bwrap exec.
+//
+// NOT verified cryptographically, and that is deliberate: the failure measured
+// is an agent that REFUSES, and an agent that lies to its own user with a
+// well-formed non-signature is not in the threat model. Verifying would mean an
+// algorithm table in the one file that is meant to read as bytes in, bytes out.
+func probeSign(conn net.Conn, k pin) error {
+	nonce := make([]byte, signProbeNonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("generating the startup signature probe for %s: %w", k.field, err)
+	}
+	data := append([]byte(signProbePrefix), nonce...)
+
+	req := []byte{signRequest}
+	req = appendString(req, k.blob)
+	req = appendString(req, data)
+	req = binary.BigEndian.AppendUint32(req, signFlagsFor(k.blob))
+
+	if err := conn.SetDeadline(time.Now().Add(signProbeTimeout)); err != nil {
+		return probeSignNoAnswer(k, err)
+	}
+	start := time.Now()
+	if err := writeMessage(conn, req); err != nil {
+		return probeSignNoAnswer(k, err)
+	}
+	reply, err := readMessage(conn)
+	elapsed := time.Since(start)
+	if err != nil {
+		return probeSignNoAnswer(k, err)
+	}
+
+	if len(reply) > 0 && reply[0] == signResponse {
+		if sig, _, ok := takeString(reply[1:]); ok && len(sig) > 0 {
+			return nil
+		}
+	}
+	if len(reply) > 0 && reply[0] == agentFailure {
+		return fmt.Errorf("the host ssh-agent holds %s %q (%s) but refused to sign with it.\n\n"+
+			"      snug asks for ONE signature at startup, over a %d-byte probe string of its "+
+			"own,\n"+
+			"      because it authors `commit.gpgsign = true` in the sandbox's ~/.gitconfig: a "+
+			"key\n"+
+			"      the agent LISTS but will not USE fails every commit inside with `Couldn't "+
+			"sign\n"+
+			"      message (signer): agent refused operation?` and `fatal: failed to write "+
+			"commit\n"+
+			"      object`, naming no cause. SSH_AGENT_FAILURE does not say why. %s\n"+
+			"      The two host-side causes that look identical on the wire:\n"+
+			"        - the key was added with `ssh-add -c` (confirm each use). Re-add it "+
+			"without -c,\n"+
+			"          or start the AGENT with SSH_ASKPASS set and SSH_ASKPASS_REQUIRE=force, "+
+			"so it\n"+
+			"          has something to ask you with.\n"+
+			"        - the key was added with `ssh-add -h <destination>`. A "+
+			"destination-constrained\n"+
+			"          key can NEVER sign through snug: the constraint is lifted "+
+			"per-connection by\n"+
+			"          the session-bind@openssh.com agent extension, and snug's proxy refuses "+
+			"agent\n"+
+			"          extensions wholesale so that `ssh -A` from inside cannot chain your "+
+			"agent\n"+
+			"          onward. Re-add this key without -h, or pin a key that is not "+
+			"constrained.\n"+
+			"      Reproduce by hand:  ssh-keygen -Y sign -n snug-probe -f %s < /dev/null\n"+
+			"      Or remove %s from the profile.",
+			k.field, k.path, fingerprint(k.blob), len(data), elapsedClause(elapsed),
+			k.path, k.field)
+	}
+	return fmt.Errorf("the host ssh-agent answered a signature request for %s %q with message "+
+		"type %d and %d bytes, which is not a signature (%d).\n\n"+
+		"      snug cannot tell from that whether the key can sign, and it will not start a\n"+
+		"      sandbox that claims an identity it could not verify.\n"+
+		"      Check it answers:  ssh-keygen -Y sign -n snug-probe -f %s < /dev/null\n"+
+		"      Or remove %s from the profile",
+		k.field, k.path, replyType(reply), len(reply), signResponse, k.path, k.field)
+}
+
+func replyType(reply []byte) int {
+	if len(reply) == 0 {
+		return -1
+	}
+	return int(reply[0])
+}
+
+// elapsedClause is the one observation that tells a refused confirmation from an
+// agent that had nothing to ask with. The wire carries no reason.
+func elapsedClause(d time.Duration) string {
+	if d >= signProbePromptFloor {
+		return fmt.Sprintf("The agent took %s to answer, so something did ask, and the "+
+			"answer was no.", d.Round(time.Millisecond))
+	}
+	return fmt.Sprintf("The agent answered in %s, so nothing asked you.",
+		d.Round(time.Millisecond))
+}
+
+func probeSignNoAnswer(k pin, err error) error {
+	return fmt.Errorf("the host ssh-agent did not answer a signature request for %s %q (%s) "+
+		"within %s: %w.\n\n"+
+		"      snug asks for one signature at startup because it authors "+
+		"`commit.gpgsign = true`\n"+
+		"      inside, and a key that cannot sign fails every commit with an error naming no\n"+
+		"      cause. If a confirm dialog is open on the host, answer it and re-run.\n"+
+		"      Check by hand:  ssh-keygen -Y sign -n snug-probe -f %s < /dev/null\n"+
+		"      Or remove %s from the profile.",
+		k.field, k.path, fingerprint(k.blob), signProbeTimeout, err, k.path, k.field)
+}
+
+// signFlagsFor sends what git measurably sends, read from the BLOB's own
+// algorithm name rather than the .pub file's first field. Measured through a
+// logging agent proxy (OpenSSH 10.5p1, git 2.55.0): `ssh-keygen -Y sign -n git`
+// sends flags 0x00000000 for an ed25519 key and 0x00000004
+// (SSH_AGENT_RSA_SHA2_512) for an RSA key. A probe that succeeded with flags git
+// will not use would prove the wrong thing in both directions — an agent that
+// refuses SHA-1 would fail a key that works, and an agent that allows SHA-1 but
+// not SHA-2 would pass a key that does not.
+func signFlagsFor(blob []byte) uint32 {
+	alg, _, ok := takeString(blob)
+	if !ok {
+		return 0
+	}
+	switch string(alg) {
+	case "ssh-rsa", "ssh-rsa-cert-v01@openssh.com":
+		return agentRSASHA2512
+	}
+	return 0
+}
+
+// identitiesAnswerSize is the exact byte length identitiesAnswer will produce:
+// the type byte, the count, and per key a length-prefixed blob and comment.
+// TestIdentitiesAnswerSizeMatchesTheBytesWritten keeps the two from drifting.
+func identitiesAnswerSize(pins []pin) int {
+	n := 5
+	for _, k := range pins {
+		n += 8 + len(k.blob) + len(k.comment)
+	}
+	return n
 }
 
 func probeNoAnswer(upstream string, err error) error {

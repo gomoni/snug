@@ -5578,6 +5578,43 @@ so a key the agent does not hold would fail EVERY commit inside with an error
 that names no cause. It applies to `ssh_key` too — a pinned authentication key
 the agent has dropped now refuses at startup rather than at the first push.
 
+**And the sharper one: HOLDING the key is not enough.** A key added with
+`ssh-add -c` (confirm each use) or `ssh-add -h <destination>` is *listed* by the
+agent and refuses *every* signature. Membership alone passed both, which is why
+snug asks for one real signature at startup. Re-add the signing key
+confirm-constrained, from a shell with no askpass:
+
+```bash
+ssh-add -d ~/.ssh/id_ed25519_sign
+SSH_ASKPASS_REQUIRE=never ssh-add -c ~/.ssh/id_ed25519_sign
+ssh-add -l                       # BOTH keys still listed
+./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
+```
+
+Expect a non-zero exit naming `ssh-add -c`, `ssh-add -h` and
+`session-bind@openssh.com`, and reporting how long the agent took to answer —
+that elapsed time is the only thing on the wire that separates "nothing asked
+you" from "something asked and the answer was no", because `SSH_AGENT_FAILURE`
+carries no reason. Then re-add it without `-c` and expect the run to start:
+
+```bash
+ssh-add -d ~/.ssh/id_ed25519_sign && ssh-add ~/.ssh/id_ed25519_sign
+./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
+```
+
+A destination-constrained key (`ssh-add -h`) can never be pinned, and the
+refusal says so rather than suggesting a retry: lifting the constraint needs the
+`session-bind@openssh.com` agent extension, which snug's proxy refuses wholesale
+so `ssh -A` from inside cannot chain your agent onward.
+
+A dry run never probes and so can never raise a confirmation dialog:
+
+```bash
+./bin/snug -p acct-a --dry-run $SC/proj/sub >/dev/null; echo "exit=$?"
+```
+
+Expect exit 0 with the confirm-constrained key still loaded.
+
 ### 13b. ssh runs at all — the check that was missing
 
 `ssh` inside the sandbox is not a given, and on this host it was broken for

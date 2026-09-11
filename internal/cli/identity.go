@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
@@ -172,9 +173,27 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		// signature. sshproxy never learns the field names — it takes labels.
 		keys := []sshproxy.PinnedKey{{Field: "identity.ssh_key", Path: id.SSHKey}}
 		if id.SigningKey != "" {
-			keys = append(keys, sshproxy.PinnedKey{Field: "identity.signing_key", Path: id.SigningKey})
+			// MustSign: GitConfigFrom authors `commit.gpgsign = true` for this
+			// key, so "the agent lists it" is not enough — see
+			// sshproxy.probeSign. The auth key is deliberately NOT MustSign: its
+			// failure is `Permission denied (publickey)` against a generated
+			// ~/.ssh/config naming exactly one key, which is attributable, and
+			// probing it would put a confirmation dialog in front of every snug
+			// start including runs that never touch the network.
+			keys = append(keys, sshproxy.PinnedKey{
+				Field: "identity.signing_key", Path: id.SigningKey, MustSign: true})
 		}
+		// A confirm-constrained key makes sshproxy.New block on a dialog the
+		// human may not have noticed, on a desktop they may not be looking at.
+		// Nothing is printed on the fast path (measured: 57 ms for a refusal,
+		// sub-millisecond for a plain signature); this speaks only once the wait
+		// is long enough to look like a hang.
+		slow := time.AfterFunc(2*time.Second, func() {
+			fmt.Fprintln(os.Stderr, "snug: waiting for the host ssh-agent to sign a startup probe.\n"+
+				"      If a pinned key was added with `ssh-add -c`, your agent is asking you to confirm.")
+		})
 		p, perr := sshproxy.New(keys, upstream, sock, audit)
+		slow.Stop()
 		if perr != nil {
 			cleanup()
 			return nil, perr
