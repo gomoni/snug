@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -32,11 +33,27 @@ import (
 // report legitimately differs by host — pasta may be absent, podman may be a
 // shim, TIOCSTI may be enabled. What must not differ is that a host which CAN
 // run snug is told so.
+//
+// XDG_CONFIG_HOME IS AN EMPTY DIRECTORY, AND WITHOUT THAT THIS TEST GRADES THE
+// DEVELOPER'S DOTFILES. doctor reads the real profile store and reports `❌ 1
+// profile file(s) did not load` for anything in it that does not parse — which is
+// doctor working, and is the right thing for a human to be told. But it made the
+// verdict of a repository test depend on state no reader of the repository can
+// see: anyone whose ~/.config/snug/profiles.d predates a schema change fails here,
+// with nothing in the tree to fix. Measured during #454's rename: a personal
+// accounts.toml still carrying the flat identity keys turned this green tick into
+// a FAIL on the maintainer's machine while `make gate` stayed clean.
+//
+// Nothing is lost by isolating it. This test exists for the stage probe and for
+// host capability; whether a profile file parses is covered by every test that
+// WRITES one, and there are dozens.
 func TestDoctorRunsCleanOnAHostThatCanRunSnug(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
 
-	out, err := exec.Command(snugBin, "doctor").CombinedOutput()
+	cmd := exec.Command(snugBin, "doctor")
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir())
+	out, err := cmd.CombinedOutput()
 	report := string(out)
 	if err != nil {
 		t.Fatalf("snug doctor failed on a host the rest of this suite runs on: %v\n%s", err, report)
@@ -94,5 +111,58 @@ func TestDoctorRunsCleanOnAHostThatCanRunSnug(t *testing.T) {
 	if prof := strings.Index(report, "profiles load"); prof < host {
 		t.Errorf("the profile-set row is not in the host-configuration section (at %d, section "+
 			"starts %d):\n%s", prof, host, report)
+	}
+}
+
+// TestDoctorReportsAProfileFileThatDidNotLoad is the counterpart to the empty
+// XDG_CONFIG_HOME above, and it exists because that isolation removed the only
+// thing in the suite that exercised this row.
+//
+// Before the isolation, doctor's profile-set check was graded by accident: it
+// passed on a developer whose store was clean and failed on one whose store was
+// stale, and in neither case was the row ASSERTED. So the check could have been
+// deleted outright and the suite would have gone greener rather than red. This is
+// the same shape as a sweep that skips every field and passes — the thing that
+// makes a guard worth having is a test that fails when it stops guarding.
+//
+// The fixture is a profile that parses as TOML and is refused by snug, rather than
+// malformed TOML: a broken parse would also fire this row, but it would not tell
+// us the row survives a refusal that comes from snug's own rules.
+func TestDoctorReportsAProfileFileThatDidNotLoad(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+
+	cfg := t.TempDir()
+	if err := os.MkdirAll(cfg+"/snug/profiles.d", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// An [identity] block that sets nothing: legal TOML, refused by toIdentity.
+	if err := os.WriteFile(cfg+"/snug/profiles.d/stale.toml",
+		[]byte("[profile.stale]\n[profile.stale.identity]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(snugBin, "doctor")
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+cfg)
+	out, err := cmd.CombinedOutput()
+	report := string(out)
+
+	// The EXIT CODE, because that is what CI keys on and what the row above this
+	// one in the suite (the clean-host test) asserts the absence of. A doctor that
+	// printed the ❌ and exited 0 would pass every string check below.
+	if err == nil {
+		t.Errorf("snug doctor exited 0 on a profile store it refuses:\n%s", report)
+	}
+	if !strings.Contains(report, "did not load") {
+		t.Errorf("doctor says nothing about a profile file it could not load, so the "+
+			"profile-set row is not reporting refusals:\n%s", report)
+	}
+	if !strings.Contains(report, "stale.toml") {
+		t.Errorf("doctor's report does not NAME the file that did not load, which is the "+
+			"only part a human can act on:\n%s", report)
+	}
+	if !strings.Contains(report, "❌") {
+		t.Errorf("a profile store snug refuses is a hard failure, not a warning, because "+
+			"snug will not start a sandbox: no ❌ in:\n%s", report)
 	}
 }
