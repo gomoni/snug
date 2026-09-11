@@ -13,6 +13,18 @@ conflict at /bin: symlink to usr/sbin (from 0shadow) and to usr/bin (from @sys).
        A symlink has one target; profiles may only ever grant, so neither may
        silently repoint the other's. Select one of the two.
 
+== grant_symlinked_through_a_forging_destination ==
+profile "rt": grant /home/u/proj/sub/vendor resolves to /home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe: a symlink inside the sandbox's own writable area redirects it, and snug will not follow that
+
+== grant_evalsymlinks_error_carries_a_forging_rune ==
+profile "rt": /home/u/proj/sub/vendor: lstat /home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe: too many levels of symbolic links
+
+== identity_key_symlinked_through_a_forging_destination ==
+profile "pinned": identity.ssh.key: grant /home/u/proj/sub/deploy.pub resolves to /home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe: a symlink inside the sandbox's own writable area redirects it, and snug will not follow that
+
+== identity_key_dangling_symlink_carries_a_forging_rune ==
+profile "pinned": identity.ssh.key /home/u/proj/sub/id.pub: lstat /home/u/proj/sub/gone\x1b[2K\x1b[1Asnug: verified safe: file does not exist
+
 == join_conflict_different_content ==
 conflict at /generated: two different generated contents (from gen-a and from gen-b)
 

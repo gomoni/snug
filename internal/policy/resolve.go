@@ -244,7 +244,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 					if errors.Is(err, fs.ErrNotExist) {
 						return fmt.Errorf("profile %q grants %q which does not exist (mark it optional if that is expected)", name, host)
 					}
-					return fmt.Errorf("profile %q: %s: %w", name, host, err)
+					return fmt.Errorf("profile %q: %s: %s", name, VisibleText(host), visibleErr(err))
 				}
 				if err := underTargetIsLiteral(target, host, real); err != nil {
 					return fmt.Errorf("profile %q: %w", name, err)
@@ -369,8 +369,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if _, ok := under(target, expanded); ok {
 					real, err := env.EvalSymlinks(expanded)
 					if err != nil {
-						return nil, fmt.Errorf("profile %q: identity.%s %s: %w",
-							name, f.Key, expanded, err)
+						return nil, fmt.Errorf("profile %q: identity.%s %s: %s",
+							name, f.Key, VisibleText(expanded), visibleErr(err))
 					}
 					if err := underTargetIsLiteral(target, expanded, real); err != nil {
 						return nil, fmt.Errorf("profile %q: identity.%s: %w", name, f.Key, err)
@@ -781,8 +781,18 @@ func underTargetIsLiteral(canonTarget, requested, real string) error {
 		return nil
 	}
 	if want := filepath.Join(canonTarget, rel); real != want {
+		// BOTH PATHS GO THROUGH VisibleText, AND `real` IS THE REASON. It is the
+		// symlink's DESTINATION, chosen by whatever planted the link — and the
+		// comment above this function's only caller says who that is: a previous
+		// run, writing inside the target. So the destination is payload bytes
+		// reaching the sink VisibleText's own doc calls the one a human reads most
+		// carefully. Measured before the fix: a destination spelled
+		// `…/real<ESC>[2K<ESC>[1Asnug: policy verified, sandbox is safe` erased
+		// this line on a vt100 and printed that sentence over it, so the word
+		// "safe" in snug's voice was the attacker's.
 		return fmt.Errorf("grant %s resolves to %s: a symlink inside the sandbox's own "+
-			"writable area redirects it, and snug will not follow that", requested, real)
+			"writable area redirects it, and snug will not follow that",
+			VisibleText(requested), VisibleText(real))
 	}
 	return nil
 }
@@ -1358,4 +1368,23 @@ func refuseUnpinnedGhAccount(name ProfileName, id Identity) error {
 		"       or remove identity.gh.host — identity.ssh.* alone still pins git-over-ssh, and\n"+
 		"       gh then gets no token and no GH_CONFIG_DIR.\n",
 		name, VisibleText(strconv.Quote(id.Gh.Host)), name)
+}
+
+// visibleErr renders an error whose text carries a path snug did not author.
+//
+// fs.PathError interpolates the path it failed on, and for a dangling symlink
+// under the target that path is the symlink's DESTINATION — bytes a previous
+// sandbox run chose. Escaping only the path snug printed itself and then wrapping
+// the raw error with %w puts those bytes on the screen anyway, which is how this
+// was missed: the visible half looked handled.
+//
+// THE CHAIN IS DROPPED ON PURPOSE. %w would preserve errors.Is at the cost of
+// printing the raw text, and no caller needs it here: the ErrNotExist branch is
+// taken above this call on the same error, and Resolve's own sentinel
+// (ErrTargetUnusable) is wrapped elsewhere. A refusal is a screen first.
+func visibleErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return VisibleText(err.Error())
 }
