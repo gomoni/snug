@@ -1,0 +1,82 @@
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--unshare-net
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--perms 0755
+--dir /etc
+--perms 0755
+--dir /home
+--perms 0755
+--dir /snug
+--symlink usr/bin /bin
+--dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
+--symlink usr/lib /lib
+--symlink usr/lib64 /lib64
+--proc /proc
+--symlink usr/sbin /sbin
+--size 1073741824
+--tmpfs /tmp
+--ro-bind /usr /usr
+--ro-bind /etc/group /etc/group
+--ro-bind /etc/ld.so.cache /etc/ld.so.cache
+--ro-bind /etc/ld.so.conf /etc/ld.so.conf
+--ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+--ro-bind /etc/passwd /etc/passwd
+--ro-bind-data 10 /etc/resolv.conf
+--size 1073741824
+--tmpfs /home/u
+--ro-bind-data 11 /proc/config.gz
+--ro-bind-data 12 /proc/key-users
+--ro-bind-data 13 /proc/keys
+--ro-bind /proc/sys /proc/sys
+--bind /run/user/1000/snug/run-N/ssh-agent.sock /snug/ssh-agent.sock
+--size 1073741824
+--tmpfs /home/u/.cache
+--size 1073741824
+--tmpfs /home/u/.config
+--ro-bind-data 14 /home/u/.gitconfig
+--size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/.ssh
+--size 1073741824
+--tmpfs /home/u/proj
+--size 1073741824
+--tmpfs /home/u/.local/share
+--size 1073741824
+--tmpfs /home/u/.local/state
+--ro-bind-data 15 /home/u/.ssh/config
+--ro-bind-data 16 /home/u/.ssh/id_snug.pub
+--ro-bind-data 17 /home/u/.ssh/id_snug_signing.pub
+--ro-bind-data 18 /home/u/.ssh/known_hosts
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv GIT_CONFIG_GLOBAL /home/u/.gitconfig
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /usr/bin/bash
+--setenv SNUG 1
+--setenv SNUG_PROFILES @cwd-rw,@home,@sys,signed
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv SSH_AUTH_SOCK /snug/ssh-agent.sock
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

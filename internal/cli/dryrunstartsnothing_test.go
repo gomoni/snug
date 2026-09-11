@@ -4,10 +4,12 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -35,8 +37,8 @@ func TestDryRunStartsNoSSHAgentProxy(t *testing.T) {
 	// for "did a dry run create anything", and a pinned key or a stand-in
 	// agent socket sitting in it would answer that question for it.
 	fixtures := shortTempDir(t)
-	key := writePinnedPubKey(t, fixtures)
-	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures))
+	key, blob := writePinnedPubKey(t, fixtures)
+	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures, nil, blob))
 
 	dry := identityPolicy(key)
 	cleanup, err := startIdentity(dry, false, true)
@@ -93,6 +95,52 @@ func TestDryRunStartsNoSSHAgentProxy(t *testing.T) {
 			"was started from one that was not: %v", realSock, err)
 	}
 	c.Close()
+}
+
+// TestDryRunNeverAsksTheAgentToSign is the same "started nothing" rule
+// applied to the sign probe specifically: a dry run must not send a
+// SIGN_REQUEST to the host agent even when the profile pins a signing_key,
+// because startIdentity returns before sshproxy.New (and therefore before
+// probeUpstream's phase 2) on a dry run. TestDryRunStartsNoSSHAgentProxy above
+// cannot tell this apart from a dry run that never even reaches the
+// signing_key branch — REQUEST_IDENTITIES is the only message its fixture
+// answers — so this one counts SIGN_REQUESTs specifically.
+func TestDryRunNeverAsksTheAgentToSign(t *testing.T) {
+	fixtures := shortTempDir(t)
+	key, keyBlob := writePinnedPubKey(t, fixtures)
+	signFixtures := shortTempDir(t) // a second directory: writePinnedPubKey always names its file id.pub
+	signKey, signBlob := writePinnedPubKey(t, signFixtures)
+
+	var signRequests atomic.Int32
+	t.Setenv("SSH_AUTH_SOCK", fakeUpstreamAgent(t, fixtures, &signRequests, keyBlob, signBlob))
+
+	dry := identityPolicyWithSigningKey(key, signKey)
+	cleanup, err := startIdentity(dry, false, true)
+	if err != nil {
+		t.Fatalf("a dry run refused an identity profile with a signing key: %v", err)
+	}
+	defer cleanup()
+	if n := signRequests.Load(); n != 0 {
+		t.Errorf("a dry run sent %d SIGN_REQUESTs to the host agent; a dry run must start "+
+			"nothing, including the startup sign probe", n)
+	}
+
+	// POSITIVE CONTROL, and it is the point of this test: without it, the zero
+	// above passes equally on a startIdentity that silently does nothing at
+	// all for identity.signing_key. The identical policy WITHOUT dryRun must
+	// send exactly one SIGN_REQUEST — sshproxy.New's startup probe for the
+	// one MustSign pin, identity.signing_key — over the one connection
+	// probeUpstream already holds open for the identities list.
+	real := identityPolicyWithSigningKey(key, signKey)
+	realCleanup, err := startIdentity(real, false, false)
+	if err != nil {
+		t.Fatalf("control: a real run with a signing key could not start: %v", err)
+	}
+	defer realCleanup()
+	if n := signRequests.Load(); n != 1 {
+		t.Errorf("control: a real run sent %d SIGN_REQUESTs, want exactly 1 (the MustSign "+
+			"startup probe for identity.signing_key)", n)
+	}
 }
 
 // The container proxy's dry-run path is the same shape and was the same bug:
@@ -162,6 +210,16 @@ func identityPolicy(key string) *policy.Policy {
 	}
 }
 
+// identityPolicyWithSigningKey is identityPolicy plus a pinned signing_key,
+// which is what makes sshproxy.New run the MustSign sign probe
+// TestDryRunNeverAsksTheAgentToSign exists to check — identityPolicy alone
+// never reaches it, since MustSign is set only for identity.signing_key.
+func identityPolicyWithSigningKey(key, signKey string) *policy.Policy {
+	p := identityPolicy(key)
+	p.Identity.SigningKey = signKey
+	return p
+}
+
 // boundSocketPath is the HOST path of the mount at guest, which is where both
 // proxies publish the socket they did — or did not — bind.
 func boundSocketPath(t *testing.T, p *policy.Policy, guest string) string {
@@ -217,22 +275,24 @@ func shortTempDir(t *testing.T) string {
 
 // writePinnedPubKey writes a real ed25519 public key in OpenSSH wire format:
 // sshproxy.New parses it, so a placeholder string would make the control fail
-// for the wrong reason.
-func writePinnedPubKey(t *testing.T, dir string) string {
+// for the wrong reason. It returns the wire-format blob alongside the path so
+// fakeUpstreamAgent can hold exactly this key — sshproxy.New now probes the
+// upstream for it before binding its own socket (issue #453), and the
+// control below needs that probe to succeed.
+func writePinnedPubKey(t *testing.T, dir string) (path string, blob []byte) {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blob []byte
 	blob = appendSSHString(blob, []byte("ssh-ed25519"))
 	blob = appendSSHString(blob, pub)
-	path := filepath.Join(dir, "id.pub")
+	path = filepath.Join(dir, "id.pub")
 	line := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " pinned@test\n"
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, blob
 }
 
 func appendSSHString(dst, s []byte) []byte {
@@ -245,7 +305,25 @@ func appendSSHString(dst, s []byte) []byte {
 // ssh-agent. sshproxy.New refuses outright when SSH_AUTH_SOCK is unset, so
 // without one the real-run control could not start at all — and a control that
 // cannot run is not a control.
-func fakeUpstreamAgent(t *testing.T, dir string) string {
+//
+// It answers REQUEST_IDENTITIES with held, because sshproxy.New (issue #453)
+// now probes the upstream for the pinned key before it will bind its own
+// socket. Before this it only accepted and never replied, which is exactly
+// the shape TestProbeNoAnswer (internal/sshproxy) exists to refuse: this
+// file's own real-run control would have blocked for probeTimeout and then
+// failed to start, which is the fixture breaking rather than the code under
+// test.
+//
+// signRequests, if non-nil, is incremented on every SIGN_REQUEST this agent
+// answers — TestDryRunNeverAsksTheAgentToSign is the one caller that needs to
+// tell "a dry run started nothing" from "a dry run started something that
+// never got asked to sign", which a REQUEST_IDENTITIES-only fixture cannot
+// distinguish. Every SIGN_REQUEST for a held key gets a non-empty stub
+// signature back: sshproxy's own probeSign treats a zero-length signature
+// string as "not signed" (see internal/sshproxy/proxy_test.go's fakeAgent),
+// and a fixture that failed the MustSign probe would make the positive
+// control below fail for the wrong reason.
+func fakeUpstreamAgent(t *testing.T, dir string, signRequests *atomic.Int32, held ...[]byte) string {
 	t.Helper()
 	path := filepath.Join(dir, "agent.sock")
 	ln, err := net.Listen("unix", path)
@@ -253,5 +331,80 @@ func fakeUpstreamAgent(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				for {
+					msg, err := readAgentFrame(c)
+					if err != nil {
+						return
+					}
+					switch {
+					case len(msg) > 0 && msg[0] == agentRequestIdentities:
+						writeAgentFrame(c, identitiesAnswerFrame(held))
+					case len(msg) > 0 && msg[0] == agentSignRequest:
+						if signRequests != nil {
+							signRequests.Add(1)
+						}
+						writeAgentFrame(c, signResponseFrame())
+					default:
+						writeAgentFrame(c, []byte{agentMsgFailure})
+					}
+				}
+			}()
+		}
+	}()
 	return path
+}
+
+// The constants and frame helpers below are a MINIMAL, local copy of the
+// ssh-agent wire format sshproxy already implements — duplicated rather than
+// imported so this fixture is not reaching into another package's unexported
+// wire code for a handful of bytes. See internal/sshproxy/proxy.go for the
+// real (and only security-relevant) implementation.
+const (
+	agentMsgFailure        = 5
+	agentRequestIdentities = 11
+	agentIdentitiesAnswer  = 12
+	agentSignRequest       = 13
+	agentSignResponse      = 14
+)
+
+// signResponseFrame is a SIGN_RESPONSE carrying a non-empty stub signature —
+// only its presence is checked anywhere in this file, never its content.
+func signResponseFrame() []byte {
+	return appendSSHString([]byte{agentSignResponse}, []byte{0x01})
+}
+
+func identitiesAnswerFrame(held [][]byte) []byte {
+	out := []byte{agentIdentitiesAnswer}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(held)))
+	for _, b := range held {
+		out = appendSSHString(out, b)
+		out = appendSSHString(out, []byte("pinned@test"))
+	}
+	return out
+}
+
+func readAgentFrame(r io.Reader) ([]byte, error) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, binary.BigEndian.Uint32(hdr[:]))
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func writeAgentFrame(w io.Writer, payload []byte) error {
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(payload)))
+	_, err := w.Write(append(out, payload...))
+	return err
 }

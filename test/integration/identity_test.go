@@ -890,3 +890,90 @@ func TestTheSandboxSSHResolvesTheHostsAlgorithmPolicy(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedGitconfigSignsACommit is the committed form of a measurement
+// already taken by hand: with [identity].signing_key pinned, the generated
+// ~/.gitconfig carries gpg.format = ssh, commit.gpgsign = true and
+// user.signingkey pointing at the staged .pub, and `git commit` exited 0 on
+// git 2.55.0 (issue #453).
+//
+// The agent holding the key never has the private half on disk at the time
+// the sandbox exists: ssh-add loads it, then this test deletes the private
+// key file from the host filesystem before snug even runs, so a pass here
+// cannot be explained by the sandbox somehow reading the private key from
+// disk rather than asking the (unmodified, host-side) agent to sign.
+//
+// One throwaway key serves as both ssh_key and signing_key, which
+// SigningKeyGuest's own doc comment says is harmless — naming the same file
+// twice stages two identical copies rather than one wide grant — and it keeps
+// this test to the one key ssh-add actually loads.
+func TestGeneratedGitconfigSignsACommit(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	for _, bin := range []string{"git", "ssh", "ssh-keygen", "ssh-agent", "ssh-add"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s is not installed; nothing to measure", bin)
+		}
+	}
+
+	dir := t.TempDir()
+	key := filepath.Join(dir, "id_ed25519")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+		"snug-signing-integration@example.invalid", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	sock := filepath.Join(dir, "agent.sock")
+	agent := exec.Command("ssh-agent", "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Fatalf("ssh-agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_, _ = agent.Process.Wait()
+	})
+	waitForSocket(t, sock)
+	add := exec.Command("ssh-add", key)
+	add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-add: %v\n%s", err, out)
+	}
+	pub := key + ".pub"
+
+	// THE PRIVATE HALF, GONE FROM DISK. Everything below this line signs
+	// using only the agent this test already loaded and the .pub file.
+	if err := os.Remove(key); err != nil {
+		t.Fatalf("could not remove the private key after ssh-add: %v", err)
+	}
+	if _, err := os.Stat(key); !os.IsNotExist(err) {
+		t.Fatalf("the private key is still on disk after os.Remove (stat err=%v); a pass "+
+			"below would prove nothing about signing via the agent", err)
+	}
+
+	proj, _ := target(t)
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"one throwaway key, pinned for both auth and signing\"\n"+
+		"[profile.pinned.identity]\n"+
+		"ssh_mode = \"agent-proxy\"\n"+
+		"ssh_key = \""+pub+"\"\n"+
+		"signing_key = \""+pub+"\"\n"+
+		"git_name = \"Snug Integration\"\n"+
+		"git_email = \"snug-signing-integration@example.invalid\"\n", "SSH_AUTH_SOCK="+sock)
+
+	r := runEnv(t, env, []string{"-p", "pinned"}, proj,
+		`set -e
+git init -q
+git commit -S --allow-empty -m "signed by the sandbox"
+echo "commit-exit=[$?]"
+git log -1 --show-signature 2>&1 | head -5
+`).mustRun(t)
+
+	if r.code != 0 {
+		t.Fatalf("git commit -S exited %d inside the sandbox:\n%s", r.code, r.out)
+	}
+	if !strings.Contains(r.out, "commit-exit=[0]") {
+		t.Errorf("the payload's own exit-code echo did not report 0:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "No private key found") || strings.Contains(r.out, "gpgsm") {
+		t.Errorf("git fell back to a failure shape gpgsign is supposed to prevent:\n%s", r.out)
+	}
+}

@@ -5496,6 +5496,125 @@ Expect one line. Every other key in your host agent is not merely unusable — i
 is not enumerable, which is the difference between `agent-proxy` and forwarding
 the agent.
 
+### 13a-2. A signing key is a SECOND pin, and the run refuses without it (issue #453)
+
+`signing_key` names the key `gpg.format = ssh` signs commits with. On a normal
+setup it is not the key you push with, so it is a second field and a second pin.
+
+Add it to `acct-a`'s identity block, with a key your agent holds:
+
+```toml
+    signing_key = "{home}/.ssh/id_ed25519_sign.pub"
+```
+
+The screen names it before the run, next to the authentication key — a key that
+can vouch for code as a human is exactly what has to be visible first:
+
+```bash
+./bin/snug -p acct-a --dry-run $SC/proj/sub | grep -A1 'ssh key'
+```
+
+Expect two rows, the second reading `signing key … (agent-proxy, signs commits
+and tags)`.
+
+Inside, `ssh-add -l` now lists exactly TWO keys, and the generated git config
+names the staged copy of the signing one:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- ssh-add -l
+./bin/snug -p acct-a $SC/proj/sub -- git config --global --get user.signingkey
+./bin/snug -p acct-a $SC/proj/sub -- git config --global --get commit.gpgsign
+```
+
+Expect two lines; then `/home/<you>/.ssh/id_snug_signing.pub`; then `true`. The
+path is snug's own staged copy — the host's `~/.ssh` is not mounted, and nothing
+was read from your `~/.gitconfig`.
+
+A commit signs, and the signature names the signing key rather than the
+authentication one:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- sh -c 'git commit --allow-empty -m signed && git log -1 --format=%GK'
+```
+
+Expect exit 0 and the signing key's fingerprint. `git log --show-signature`
+reports `gpg.ssh.allowedSignersFile needs to be configured` — that is
+VERIFICATION, a different grant with a different abuse sentence, deliberately
+not built (#453 point 5). The commit is signed regardless.
+
+**The negatives, and they are the point.**
+
+The authentication key alone cannot be used to sign as the signing identity and
+the reverse — is NOT one of them, and stating that is the honest half: the
+ssh-agent protocol carries no purpose field, so with both keys pinned anything
+inside can ask the proxy to use either for either job. The pin bounds which
+keys, never what they are used for.
+
+What IS refused: a third key. Pick any other key your host agent holds and ask
+the proxy to sign with it — `ssh-add -l` inside will not list it, and a sign
+request naming it gets `SSH_AGENT_FAILURE` without your agent being contacted.
+
+`signing_key` with no agent is refused at parse time, not generated:
+
+```bash
+./bin/snug -p acct-sign-no-agent --dry-run $SC/proj/sub; echo "exit=$?"
+```
+
+with `ssh_mode = "none"` and a `signing_key` set. Expect a non-zero exit and a
+message naming `signing_key` and `agent-proxy`.
+
+And the one that costs a behaviour change: **a key the host agent does not hold
+refuses the run.** Remove it on the host and try again:
+
+```bash
+ssh-add -d ~/.ssh/id_ed25519_sign
+./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
+```
+
+Expect a non-zero exit, before any sandbox exists, naming `identity.signing_key`,
+the path, and the key's `SHA256:` fingerprint so you can match it against
+`ssh-add -l` by eye. This is invariant 5: snug generates `commit.gpgsign = true`,
+so a key the agent does not hold would fail EVERY commit inside with an error
+that names no cause. It applies to `ssh_key` too — a pinned authentication key
+the agent has dropped now refuses at startup rather than at the first push.
+
+**And the sharper one: HOLDING the key is not enough.** A key added with
+`ssh-add -c` (confirm each use) or `ssh-add -h <destination>` is *listed* by the
+agent and refuses *every* signature. Membership alone passed both, which is why
+snug asks for one real signature at startup. Re-add the signing key
+confirm-constrained, from a shell with no askpass:
+
+```bash
+ssh-add -d ~/.ssh/id_ed25519_sign
+SSH_ASKPASS_REQUIRE=never ssh-add -c ~/.ssh/id_ed25519_sign
+ssh-add -l                       # BOTH keys still listed
+./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
+```
+
+Expect a non-zero exit naming `ssh-add -c`, `ssh-add -h` and
+`session-bind@openssh.com`, and reporting how long the agent took to answer —
+that elapsed time is the only thing on the wire that separates "nothing asked
+you" from "something asked and the answer was no", because `SSH_AGENT_FAILURE`
+carries no reason. Then re-add it without `-c` and expect the run to start:
+
+```bash
+ssh-add -d ~/.ssh/id_ed25519_sign && ssh-add ~/.ssh/id_ed25519_sign
+./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
+```
+
+A destination-constrained key (`ssh-add -h`) can never be pinned, and the
+refusal says so rather than suggesting a retry: lifting the constraint needs the
+`session-bind@openssh.com` agent extension, which snug's proxy refuses wholesale
+so `ssh -A` from inside cannot chain your agent onward.
+
+A dry run never probes and so can never raise a confirmation dialog:
+
+```bash
+./bin/snug -p acct-a --dry-run $SC/proj/sub >/dev/null; echo "exit=$?"
+```
+
+Expect exit 0 with the confirm-constrained key still loaded.
+
 ### 13b. ssh runs at all — the check that was missing
 
 `ssh` inside the sandbox is not a given, and on this host it was broken for

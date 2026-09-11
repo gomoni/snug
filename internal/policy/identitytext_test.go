@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,7 @@ func TestIdentityFieldsRefuseControlCharacters(t *testing.T) {
 		{"gh_host", Identity{SSHMode: SSHNone, GhHost: "a\nb: {oauth_token: stolen}"}},
 		{"gh_user", Identity{SSHMode: SSHNone, GhUser: "nobody\x1b[1A\r  snug: FORGED"}},
 		{"ssh_key", Identity{SSHMode: SSHAgentProxy, SSHKey: "~/.ssh/id.pub\x00--ro-bind"}},
+		{"signing_key", Identity{SSHMode: SSHAgentProxy, SigningKey: "~/.ssh/id.pub\x00--ro-bind"}},
 		{"ssh_mode", Identity{SSHMode: SSHMode("none\n")}},
 		// C1 AND BIDI, AND THIS LOOP COULD NOT SEE EITHER UNTIL NOW. CheckText was
 		// a BYTE loop over `c < 0x20 || c == 0x7f`, so it missed U+009B and — one
@@ -97,5 +99,62 @@ func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
 		if m.Guest == "/home/u/.gitconfig" && m.From[0] != "identity:pinned" {
 			t.Errorf("generated .gitconfig provenance = %q, want identity:pinned", m.From[0])
 		}
+	}
+}
+
+// fieldTOMLKey maps every string-kinded Identity field to its TOML spelling —
+// a SECOND, independent copy of CheckText's own table, deliberately. The test
+// below walks reflect.TypeOf(Identity{}) rather than that table, so a future
+// field present in the struct but missing FROM the table is exactly what
+// TestCheckTextCoversEveryIdentityField exists to catch; if this map also had
+// no entry for it, the loop still requires CheckText to refuse the forged
+// value (a nil error is the failure either way) and additionally names the
+// field so whoever adds it updates both places together instead of one
+// silently trailing the other.
+var fieldTOMLKey = map[string]string{
+	"SSHKey":     "ssh_key",
+	"SigningKey": "signing_key",
+	"SSHMode":    "ssh_mode",
+	"GitName":    "git_name",
+	"GitEmail":   "git_email",
+	"GhUser":     "gh_user",
+	"GhHost":     "gh_host",
+}
+
+// TestCheckTextCoversEveryIdentityField is what makes #454's later refactor
+// (replacing CheckText's hand-written field list with an enumeration) a
+// mechanical change rather than a security one: it fails today, before that
+// refactor exists, for any field CheckText's table does not check — the same
+// class of gap the hand-written ssh_key/signing_key loop in resolve.go
+// carries a comment about (#454). It must land WITH signing_key, not after,
+// or the field that motivated it would itself have gone unchecked for one
+// commit.
+func TestCheckTextCoversEveryIdentityField(t *testing.T) {
+	typ := reflect.TypeOf(Identity{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if f.Type.Kind() != reflect.String {
+			continue // every field today IS string-kinded (SSHMode included); a
+			// non-string field would need its own sink review, not this test
+		}
+		t.Run(f.Name, func(t *testing.T) {
+			tomlKey, known := fieldTOMLKey[f.Name]
+			if !known {
+				t.Fatalf("Identity gained a string field %q with no entry in this test's "+
+					"fieldTOMLKey map — add one here AND a matching row in CheckText's table", f.Name)
+			}
+
+			id := Identity{SSHMode: SSHAgentProxy}
+			reflect.ValueOf(&id).Elem().FieldByIndex(f.Index).SetString("x\u202eforged")
+
+			err := id.CheckText("pinned")
+			if err == nil {
+				t.Fatalf("Identity.%s carrying a forging rune (U+202E) resolved with no "+
+					"error — CheckText's table does not check this field", f.Name)
+			}
+			if !strings.Contains(err.Error(), tomlKey) {
+				t.Errorf("error does not name %q: %v", tomlKey, err)
+			}
+		})
 	}
 }

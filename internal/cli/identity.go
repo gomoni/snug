@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/policy"
@@ -166,7 +167,33 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		if verbose {
 			audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: ssh-agent: "+msg) }
 		}
-		p, perr := sshproxy.New(id.SSHKey, upstream, sock, audit)
+		// A SLICE, not one parameter per identity field: #454 turns the field
+		// set into an enumeration, and a positional parameter per field would
+		// make every new field an edit to this call and to sshproxy.New's
+		// signature. sshproxy never learns the field names — it takes labels.
+		keys := []sshproxy.PinnedKey{{Field: "identity.ssh_key", Path: id.SSHKey}}
+		if id.SigningKey != "" {
+			// MustSign: GitConfigFrom authors `commit.gpgsign = true` for this
+			// key, so "the agent lists it" is not enough — see
+			// sshproxy.probeSign. The auth key is deliberately NOT MustSign: its
+			// failure is `Permission denied (publickey)` against a generated
+			// ~/.ssh/config naming exactly one key, which is attributable, and
+			// probing it would put a confirmation dialog in front of every snug
+			// start including runs that never touch the network.
+			keys = append(keys, sshproxy.PinnedKey{
+				Field: "identity.signing_key", Path: id.SigningKey, MustSign: true})
+		}
+		// A confirm-constrained key makes sshproxy.New block on a dialog the
+		// human may not have noticed, on a desktop they may not be looking at.
+		// Nothing is printed on the fast path (measured: 57 ms for a refusal,
+		// sub-millisecond for a plain signature); this speaks only once the wait
+		// is long enough to look like a hang.
+		slow := time.AfterFunc(2*time.Second, func() {
+			fmt.Fprintln(os.Stderr, "snug: waiting for the host ssh-agent to sign a startup probe.\n"+
+				"      If a pinned key was added with `ssh-add -c`, your agent is asking you to confirm.")
+		})
+		p, perr := sshproxy.New(keys, upstream, sock, audit)
+		slow.Stop()
 		if perr != nil {
 			cleanup()
 			return nil, perr
@@ -216,6 +243,25 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		}
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.PubKeyGuest, Kind: policy.KindData,
+			Access: policy.AccessRO, Content: data,
+			From: []string{identityProvenance(pol)},
+		})
+	}
+
+	if id.SigningKey != "" {
+		// Same hostread.Required for the same reason (#337): signing_key is a
+		// path that may resolve under the target, which a previous run's own
+		// @cwd-rw could have replaced with a FIFO.
+		data, rerr := hostread.Required(id.SigningKey, hostread.MaxSSHPublicKeyBytes)
+		if rerr != nil {
+			cleanup()
+			return nil, fmt.Errorf("signing_key %q: %w\n\n"+
+				"      This is the PUBLIC half of the key the sandbox signs commits and tags\n"+
+				"      with. snug stages it inside and points user.signingkey at it; the\n"+
+				"      private half stays in your agent.", id.SigningKey, rerr)
+		}
+		pol.Replace(policy.Mount{
+			Guest: pol.Home + "/" + policy.SigningKeyGuest, Kind: policy.KindData,
 			Access: policy.AccessRO, Content: data,
 			From: []string{identityProvenance(pol)},
 		})

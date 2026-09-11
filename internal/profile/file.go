@@ -104,12 +104,13 @@ type rawEnviron struct {
 }
 
 type rawIdentity struct {
-	SSHKey   string `toml:"ssh_key"`
-	SSHMode  string `toml:"ssh_mode"`
-	GitName  string `toml:"git_name"`
-	GitEmail string `toml:"git_email"`
-	GhUser   string `toml:"gh_user"`
-	GhHost   string `toml:"gh_host"`
+	SSHKey     string `toml:"ssh_key"`
+	SigningKey string `toml:"signing_key"`
+	SSHMode    string `toml:"ssh_mode"`
+	GitName    string `toml:"git_name"`
+	GitEmail   string `toml:"git_email"`
+	GhUser     string `toml:"gh_user"`
+	GhHost     string `toml:"gh_host"`
 }
 
 // nameFault and nameByteDesc are policy.NameFault and policy.NameByteDesc, and
@@ -569,12 +570,13 @@ func toIdentity(r *rawIdentity) *policy.Identity {
 	// ssh_mode is validated in policy.Resolve, not here: an unknown mode should
 	// name the profile it came from, and only the resolver knows that.
 	return &policy.Identity{
-		SSHKey:   r.SSHKey,
-		SSHMode:  policy.SSHMode(r.SSHMode),
-		GitName:  r.GitName,
-		GitEmail: r.GitEmail,
-		GhUser:   r.GhUser,
-		GhHost:   r.GhHost,
+		SSHKey:     r.SSHKey,
+		SigningKey: r.SigningKey,
+		SSHMode:    policy.SSHMode(r.SSHMode),
+		GitName:    r.GitName,
+		GitEmail:   r.GitEmail,
+		GhUser:     r.GhUser,
+		GhHost:     r.GhHost,
 	}
 }
 

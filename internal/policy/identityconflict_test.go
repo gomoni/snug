@@ -104,6 +104,30 @@ func TestIdentityDifferentBlocksStillRefuseNamingBoth(t *testing.T) {
 	}
 }
 
+// The conflict check is `p.Identity != nil && *p.Identity != id` — bare struct
+// equality over EVERY field of Identity — so signing_key is only actually
+// compared because the struct is compared whole. This is the one test in this
+// file exercising that: two profiles agreeing on ssh_key, ssh_mode and
+// gh_user, differing ONLY in signing_key, must still refuse. A version of the
+// conflict check that compared a hand-picked subset of fields (the shape a
+// future refactor could slip into) would let this one silently pick a side.
+func TestIdentityPinRefusesTwoProfilesDifferingOnlyInSigningKey(t *testing.T) {
+	a := Identity{GhUser: "you", SSHMode: SSHAgentProxy,
+		SSHKey: "{home}/.ssh/id_ed25519.pub", SigningKey: "{home}/.ssh/sign-a.pub"}
+	b := Identity{GhUser: "you", SSHMode: SSHAgentProxy,
+		SSHKey: "{home}/.ssh/id_ed25519.pub", SigningKey: "{home}/.ssh/sign-b.pub"}
+	_, err := Resolve(conflictRegistry(&a, &b), conflictSelection(), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("two profiles differing only in signing_key resolved; the sandbox then " +
+			"signs with an identity the human did not choose")
+	}
+	for _, want := range []string{"ident-a", "ident-b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %v", want, err)
+		}
+	}
+}
+
 // Two spellings that normalisation collapses to one value are the SAME
 // identity, and refusing them would be the bug from the other side.
 func TestIdentitySpellingsThatNormaliseAlikeAreOneIdentity(t *testing.T) {

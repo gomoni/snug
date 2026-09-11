@@ -47,7 +47,8 @@ func TestNewRefusesFIFOKeyByName(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		p, err := New(keyPath, "/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
+		p, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}},
+			"/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
 		done <- result{p, err}
 	}()
 
@@ -91,7 +92,8 @@ func TestNewRefusesOversizedKey(t *testing.T) {
 	}
 	writeKeyFile(t, keyPath, oversized)
 
-	_, err := New(keyPath, "/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
+	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}},
+		"/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a key file over the cap with no error")
 	}
@@ -113,8 +115,12 @@ func TestNewPositiveControlNormalKeyStagesSocket(t *testing.T) {
 	writeKeyFile(t, keyPath, pub)
 
 	up := newFakeAgent(t)
+	// New now probes the upstream for the pinned key before it will start
+	// (issue #453); without this the control would fail on the probe rather
+	// than proving what it exists to prove.
+	up.setHolds([][]byte{blob}, []string{"control@test"})
 	sock := filepath.Join(dir, "proxy.sock")
-	p, err := New(keyPath, up.path, sock, nil)
+	p, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}}, up.path, sock, nil)
 	if err != nil {
 		t.Fatalf("control: an ordinary .pub was refused: %v", err)
 	}
