@@ -63,6 +63,20 @@ func knownHostsFor(host string) []byte {
 	return out.Bytes()
 }
 
+// tokenMinter is stageGhConfig's one host touch, as a parameter.
+//
+// It exists because the gh half of #454's host split was assertable by nothing
+// that runs without a forge account. identity.ssh.host feeds three GENERATED
+// files, which testdata/identity-generated.txt pins byte for byte; identity.gh.host
+// feeds `gh auth token --hostname`, the hosts.yml top key and GH_HOST, and all
+// three of those sit behind an exec. So the half that MOVES A CREDENTIAL was the
+// half with no pure test — the asymmetry is worth a parameter to remove.
+//
+// A parameter and not a package-level var a test swaps: a mutable global here
+// would be reachable from every other test in this package, and the value it
+// carries decides which account's token is staged.
+type tokenMinter func(host, user string) policy.Secret
+
 // ghToken asks the gh CLI for the token of one account. Shelling out rather
 // than parsing ~/.config/gh/hosts.yml: gh owns that format, it changes, and a
 // wrong parse here would either break auth or hand over the wrong account's
@@ -266,7 +280,7 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 
 	pol.AuthorEnv("SSH_AUTH_SOCK", policy.AgentSocketGuest)
 
-	if err := stageGhConfig(pol, id, dryRun); err != nil {
+	if err := stageGhConfig(pol, id, dryRun, ghToken); err != nil {
 		cleanup()
 		return nil, err
 	}
@@ -311,7 +325,7 @@ func identityProvenance(pol *policy.Policy) string {
 // does not mention, and the one the human is most likely to be logged into.
 // Pinning is the whole point; an unpinned credential is the thing it exists to
 // prevent.
-func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
+func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool, mint tokenMinter) error {
 	// THE GATE IS THE USER, AND IT IS FAIL-CLOSED ON PURPOSE. Resolve refuses
 	// gh.host with no gh.user, so this is unreachable for a profile that resolved;
 	// written this way round, deleting that refusal later reverts to "no token"
@@ -320,7 +334,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool) error {
 		return nil
 	}
 	host := id.GhHost()
-	tok := ghToken(host, id.Gh.User)
+	tok := mint(host, id.Gh.User)
 	if len(tok) == 0 {
 		// Invariant 5: no silent downgrade. identity.gh.user is an explicit request for
 		// a capability, and the previous version of this function returned

@@ -15,7 +15,15 @@ import (
 // set to DIFFERENT values: the *.bwrap.txt argv goldens carry a --ro-bind-data
 // row naming the guest path and an fd, never the content behind it, so a bug
 // that swapped which host feeds which artifact would produce zero argv diff.
-// This is the only place that can see the split at all.
+//
+// WHAT THIS GOLDEN CANNOT SEE, stated rather than left to be discovered: the gh
+// half. identity.gh.host does not reach a file Resolve generates — it reaches
+// `gh auth token --hostname`, the hosts.yml top key and GH_HOST, all produced in
+// internal/cli AFTER resolution and behind an exec, so nothing in this package
+// renders them. That is the half that MOVES A CREDENTIAL, and it is covered by
+// internal/cli's ghhostsplit_test.go through the tokenMinter seam, plus the
+// end-to-end runs in test/integration/identity_test.go. Neither half is
+// assertable from the other.
 //
 // ctx.KnownHosts is INJECTED by the caller (internal/cli's knownHostsFor) and
 // Resolve carries it through to the mount UNMODIFIED — it does not read a host
