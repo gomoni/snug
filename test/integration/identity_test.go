@@ -349,6 +349,46 @@ func TestDryRunStillPrintsThePolicyWhenTheGhAccountHasNoToken(t *testing.T) {
 	}
 }
 
+// TestAGhOnlyIdentityIsNotSilentlyInert is the regression for a redteam finding
+// on #454's branch, and the bug it pins had exit code 0.
+//
+// startIdentity opened with one early return on `id.SSH.Agent == SSHNone`, and
+// stageGhConfig sat at the BOTTOM of the function it guarded. So an [identity]
+// naming only a gh account — the natural spelling once #454 made [identity] a
+// container of per-tool blocks, and the maintainer decision on that ticket keeps
+// a one-tool identity legal — got no token, no GH_CONFIG_DIR, no GH_HOST and no
+// line anywhere saying so, while `snug profile show` printed THE SANDBOX HOLDS A
+// FORGE TOKEN FOR THIS ACCOUNT in capitals. Invariant 5, reached by the gate
+// ABOVE stageGhConfig rather than by the gate inside it.
+//
+// The assertion is that stageGhConfig RUNS, and it is written without needing a
+// real token: the pinned account cannot exist, so the reachable outcomes are the
+// dry run's warning and the real run's refusal. Before the fix there was neither
+// — the dry run said nothing about gh and the REAL RUN EXITED 0, which is the
+// line that makes this a regression test and not a cosmetic one.
+func TestAGhOnlyIdentityIsNotSilentlyInert(t *testing.T) {
+	proj, _ := target(t)
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"a gh account and no ssh at all\"\n"+
+		"[profile.pinned.identity.gh]\n"+
+		"user = \"snug-no-such-account-here\"\n")
+
+	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
+	if code != 0 {
+		t.Fatalf("--dry-run exited %d on a gh-only identity:\n%s", code, out)
+	}
+	if !strings.Contains(out, "no gh token") {
+		t.Errorf("--dry-run said nothing about the pinned gh account, so stageGhConfig "+
+			"never ran for an identity that names one:\n%s", out)
+	}
+
+	out2, code2 := cli(t, env, "-p", "pinned", proj, "--", "/bin/true")
+	if code2 == 0 {
+		t.Errorf("a real run of a gh-only identity exited 0 with no credential for the "+
+			"account it pins, and nothing on the screen said so:\n%s", out2)
+	}
+}
+
 // An identity that names no gh account gets NO token — not the host's active
 // one. The previous version called `gh auth token` unconditionally, so a profile
 // pinning only an ssh key had whatever account the human last logged into staged

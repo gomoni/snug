@@ -1083,19 +1083,31 @@ snug: 1 profile file(s) in the search path did not load:
 The same shape covers every other spelling snug has dropped — `env = [...]`
 (now `environ.inherit`), `path = [...]` (now `environ.merge` on `PATH`), and the
 flat identity keys `ssh_key`/`ssh_mode`/`signing_key`/`git_name`/`git_email`/
-`gh_user`/`gh_host` (now the per-tool blocks of §13). A retired VALUE is
-different, because the key still parses and the refusal is the accepted set:
+`gh_user`/`gh_host` (now the per-tool blocks of §13). A dropped VALUE is
+different — the key parses and the decoder has nothing to say about it — so the
+refusal comes from the accepted set instead, and it must arrive at the same
+place: parse time, so the profile is unusable on every screen and not only on a
+run.
 
 ```bash
 printf '[profile.x]\n[profile.x.identity.ssh]\nagent = "agent-proxy"\nkey = "/home/u/.ssh/id.pub"\n' \
   > $X/snug/profiles.d/p.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p x $SC/proj/sub; echo "exit=$?"
+XDG_CONFIG_HOME=$X ./bin/snug profile show x; echo "exit=$?"
 ```
 
+Both report the file, not a policy, and both `exit=77`:
+
 ```
-snug: profile "x": unknown identity.ssh.agent "agent-proxy" (want proxy or none)
-exit=77
+snug: 1 profile file(s) in the search path did not load:
+         .../snug/profiles.d/p.toml
+           .../snug/profiles.d/p.toml: profile "x": unknown identity.ssh.agent "agent-proxy" (want proxy or none)
 ```
+
+`profile show` matters as much as the run here. It answers "is this profile any
+good", so a value no run can use must not render a capability row there — it did,
+with the mode printed verbatim and the blast-radius paragraph beside it, until
+`toIdentity` began calling `ParseSSHMode` at parse time as well as `Resolve`.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 

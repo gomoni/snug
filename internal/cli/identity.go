@@ -126,9 +126,50 @@ func ghToken(host, user string) policy.Secret {
 // real run, a warning for a dry run, for exactly the same reason.
 func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), err error) {
 	id := pol.Identity
-	if id == nil || id.SSH.Agent == policy.SSHNone {
+	if id == nil {
 		return func() {}, nil
 	}
+	cleanup = func() {}
+
+	// THE TWO HALVES ARE INDEPENDENT, AND THIS FUNCTION IS WHERE THAT STOPPED
+	// BEING TRUE. The whole of the ssh half sat behind one early return on
+	// `id.SSH.Agent == SSHNone`, and stageGhConfig sat at the bottom of it — so a
+	// profile whose [identity] names only a gh account got no token, no
+	// GH_CONFIG_DIR, no GH_HOST and no line saying so, and exited 0. That is the
+	// exact sentence stageGhConfig's own refusal exists to prevent, reached by
+	// the gate ABOVE it rather than by the gate it guards, and `snug profile
+	// show` meanwhile printed THE SANDBOX HOLDS A FORGE TOKEN FOR THIS ACCOUNT.
+	// Found by redteam on #454's branch.
+	//
+	// #454 is what made the shape easy to write: once [identity] is a container
+	// of per-tool blocks, `[identity.gh] user = "you"` alone is the natural
+	// spelling for "I want gh in the sandbox, not ssh", and the maintainer
+	// decision on this ticket is that a one-tool identity stays legal. Legal has
+	// to mean it WORKS, not merely that it resolves.
+	if id.SSH.Agent != policy.SSHNone {
+		cleanup, err = startSSHIdentity(pol, id, verbose, dryRun)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := stageGhConfig(pol, id, dryRun, ghToken); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return cleanup, nil
+}
+
+// startSSHIdentity is everything identity.ssh.agent = "proxy" needs: the agent
+// proxy itself, the staged public halves of the pinned keys, and SSH_AUTH_SOCK.
+//
+// Its caller gates it on the agent mode, and every line in here answers to that
+// gate rather than to a second check of its own. The staged key exists so the
+// generated ~/.ssh/config's IdentityFile resolves, and resolve.go generates that
+// file for every mode except none; identity.git.signing_key is refused in Resolve
+// without an agent. So there is nothing here a profile with no agent wants.
+func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun bool) (cleanup func(), err error) {
+	cleanup = func() {}
 
 	// No os.RemoveAll here: the run directory now has one owner for its
 	// whole lifetime — run() in main.go, which creates it on every REAL run
@@ -280,10 +321,6 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 
 	pol.AuthorEnv("SSH_AUTH_SOCK", policy.AgentSocketGuest)
 
-	if err := stageGhConfig(pol, id, dryRun, ghToken); err != nil {
-		cleanup()
-		return nil, err
-	}
 	return cleanup, nil
 }
 

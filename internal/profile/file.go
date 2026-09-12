@@ -468,22 +468,31 @@ func sortedBoolKeys(m map[string]bool) []string {
 	return out
 }
 
-// toIdentity converts [profile.X.identity], and refuses a block that sets
-// nothing.
+// toIdentity converts [profile.X.identity], and refuses two things: an agent
+// mode snug does not accept, and a block that sets nothing.
 //
-// That refusal is a property of the profile TEXT, so it belongs here rather than
+// Both are properties of the profile TEXT, so they belong here rather than only
 // in Resolve (see the ValidateEnvGrants call above for the full reason): the
-// verdict is the same on every host and `snug profile show` reports it.
+// verdict is the same on every host, and `snug profile show` — which renders a
+// *policy.Profile straight from the registry and never resolves — reports it.
 //
-// The ACCEPTED SET of agent modes is checked in policy.Resolve instead, and that
-// is not an inconsistency: ParseSSHMode is the door for an Identity built in Go
-// too — both identity goldens are struct literals — so the set has to be enforced
-// where every caller passes through. A spelling snug no longer accepts, `agent =
-// "agent-proxy"` among them, is refused there by naming the whole accepted set,
-// with no per-spelling arm to keep the accepted set readable as the whole set.
+// The ACCEPTED SET of agent modes is checked HERE TOO, by calling ParseSSHMode
+// rather than by re-listing what it accepts. Two doors, one author: Resolve keeps
+// its call because ParseSSHMode is also the door for an Identity built in Go —
+// both identity goldens are struct literals — so the set has to be enforced where
+// every caller passes through; and this call exists because the value is a
+// property of the profile TEXT, so `snug profile show` must report it like every
+// other bad key. It did not: a profile carrying the retired `agent = "agent-proxy"`
+// rendered its ssh row, its capability paragraph and exit 0 on the screen a human
+// reads to decide whether to select it, while every run of it exited 77 (redteam,
+// #454's branch). Adding a second LIST of accepted spellings here would be the
+// copy-of-state this repository keeps deleting; calling the one function is not.
 func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if r == nil {
 		return nil, nil
+	}
+	if _, err := policy.ParseSSHMode(r.SSH.Agent); err != nil {
+		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 	}
 	id := &policy.Identity{
 		SSH: policy.IdentitySSH{
