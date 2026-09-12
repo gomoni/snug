@@ -18,7 +18,7 @@
 // matters the moment a second key is pinned. SSH_AGENTC_SIGN_REQUEST carries a
 // key blob, a byte string and a flags word — no purpose, no audience, no
 // caller. `ssh` proving an identity to a host and `git` signing a commit send
-// the same message shape. So with identity.ssh_key and identity.signing_key
+// the same message shape. So with identity.ssh.key and identity.git.signing_key
 // both pinned, EITHER key can be used for EITHER purpose by anything inside:
 // the sandbox can authenticate with the signing key and sign with the auth key.
 // The split between them is enforced by the host's authorized_keys and
@@ -87,12 +87,12 @@ const maxMessage = 256 * 1024
 // keeps "a new identity field" from being a change in here: the caller names
 // the field, the proxy holds blobs.
 type PinnedKey struct {
-	Field string // "identity.ssh_key", "identity.signing_key"
+	Field string // "identity.ssh.key", "identity.git.signing_key"
 	Path  string // the PUBLIC key file on the host
 
 	// MustSign asks the startup probe to prove the agent will SIGN with this
 	// key, not merely that it lists it. Set it for a key snug's OWN generated
-	// configuration makes mandatory — today identity.signing_key, because
+	// configuration makes mandatory — today identity.git.signing_key, because
 	// GitConfigFrom authors `commit.gpgsign = true` and a key that is listed
 	// and unusable then fails EVERY commit inside. It is a statement about what
 	// the CALLER authored, not about which field this is: a future field whose
@@ -112,7 +112,7 @@ type pin struct {
 
 type Proxy struct {
 	// pinned is the SET of SSH wire-format public key blobs the sandbox may
-	// use: identity.ssh_key, plus identity.signing_key when the profile sets
+	// use: identity.ssh.key, plus identity.git.signing_key when the profile sets
 	// it. A request naming anything else is answered SSH_AGENT_FAILURE without
 	// the host agent being contacted. Membership is the WHOLE filter; see the
 	// package comment for why it cannot also be a filter on purpose.
@@ -187,7 +187,7 @@ func New(keys []PinnedKey, upstream, socketPath string, audit func(string)) (*Pr
 	if upstream == "" {
 		return nil, fmt.Errorf("no ssh-agent is running on the host (SSH_AUTH_SOCK is unset), " +
 			"so there is nothing to proxy.\n" +
-			"      Start one and load your key, or set ssh_mode = \"none\" in the profile")
+			"      Start one and load your key, or set identity.ssh.agent = \"none\" in the profile")
 	}
 	if err := probeUpstream(upstream, pins); err != nil {
 		return nil, err
@@ -290,7 +290,7 @@ func (p *Proxy) handle(c net.Conn) {
 }
 
 // identitiesAnswer advertises the whole pin set, in the order the caller
-// declared it (ssh_key, then signing_key). The order is for determinism in the
+// declared it (ssh.key, then git.signing_key). The order is for determinism in the
 // tests and for a human reading `ssh-add -l` inside; it does NOT drive
 // selection. ssh selects by file, because the generated ~/.ssh/config sets
 // IdentitiesOnly with one IdentityFile, and git's ssh signing selects by the
@@ -416,7 +416,7 @@ const probeTimeout = 5 * time.Second
 // holds every pinned key, and refuses the run when it does not.
 //
 // WHY THIS IS NOT OPTIONAL. snug authors the thing that makes the failure
-// fatal: with signing_key set it writes `commit.gpgsign = true` into the
+// fatal: with git.signing_key set it writes `commit.gpgsign = true` into the
 // generated ~/.gitconfig, so a key the agent does not hold turns EVERY commit
 // inside into a hard failure, and the error git prints at that point names
 // libcrypto or a failed write — not a missing pin. The sandbox cannot see the
@@ -431,7 +431,7 @@ const probeTimeout = 5 * time.Second
 // nothing cached here. The signature the sign phase gets back is not verified
 // cryptographically; the probe proves the agent ANSWERS for that key, which is
 // the failure measured. And a key with MustSign unset is checked for membership
-// only: identity.ssh_key's failure mode is `Permission denied (publickey)` at
+// only: identity.ssh.key's failure mode is `Permission denied (publickey)` at
 // push, which names a key, where a signing key's is every commit failing with an
 // error that names nothing.
 //
@@ -470,7 +470,7 @@ func probeUpstream(upstream string, pins []pin) error {
 			"      will not start a sandbox that claims an identity it could not verify.\n"+
 			"      Check it answers:  ssh-add -l\n"+
 			"      If the agent is locked, unlock it:  ssh-add -X\n"+
-			"      Or set ssh_mode = \"none\" in the profile", upstream, reply[0], identitiesAnswer)
+			"      Or set identity.ssh.agent = \"none\" in the profile", upstream, reply[0], identitiesAnswer)
 	}
 	n := binary.BigEndian.Uint32(reply[1:5])
 	// NOT preallocated against n: the count is upstream-supplied and maxMessage
@@ -728,7 +728,7 @@ func probeNoAnswer(upstream string, err error) error {
 		"      pins. A sandbox that believes it can sign and cannot fails later, INSIDE,\n"+
 		"      as an error from git or ssh that names no cause.\n"+
 		"      Check the agent is alive:  ssh-add -l\n"+
-		"      Then re-run, or set ssh_mode = \"none\" in the profile", upstream, err)
+		"      Then re-run, or set identity.ssh.agent = \"none\" in the profile", upstream, err)
 }
 
 func probeUnparsable(upstream string, got int, n uint32) error {
@@ -737,7 +737,7 @@ func probeUnparsable(upstream string, got int, n uint32) error {
 		"      snug cannot tell from that whether the agent holds the pinned key, and it\n"+
 		"      will not start a sandbox that claims an identity it could not verify.\n"+
 		"      Check it answers:  ssh-add -l\n"+
-		"      Or set ssh_mode = \"none\" in the profile", upstream, got, n)
+		"      Or set identity.ssh.agent = \"none\" in the profile", upstream, got, n)
 }
 
 // fingerprint is OpenSSH's own `ssh-add -l` format, so the refusal above names a
@@ -801,7 +801,7 @@ func takeString(b []byte) (val, rest []byte, ok bool) {
 // parsePublicKey reads an OpenSSH .pub file: "<type> <base64 blob> [comment]".
 //
 // hostread.Required, not os.ReadFile: this path is payload-reachable in the
-// most direct sense a profile allows — ssh_key names a file under the
+// most direct sense a profile allows — identity.ssh.key names a file under the
 // target, which @cwd-rw makes rw, and `rm key.pub && mkfifo key.pub` from a
 // PREVIOUS run turned a plain ReadFile into an open(2) that never returns,
 // before the sandbox even exists (issue #337). "Required" because an

@@ -12,10 +12,10 @@ import (
 	"github.com/gomoni/snug/internal/hostread"
 )
 
-// ── regression tests for issue #337: identity.ssh_key read with hostread ────
+// ── regression tests for issue #337: identity.ssh.key read with hostread ────
 //
 // New (via parsePublicKey) used to read id.SSHKey with a bare os.ReadFile.
-// ssh_key is resolved under the target, which @cwd-rw makes writable, so a
+// the pinned key is resolved under the target, which @cwd-rw makes writable, so a
 // PREVIOUS run's own payload can leave `rm key.pub && mkfifo key.pub` behind
 // for the next one: os.ReadFile then blocks in open(2) forever, before the
 // sandbox exists, with no output and no exit code (exit=124 measured on
@@ -47,7 +47,7 @@ func TestNewRefusesFIFOKeyByName(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		p, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}},
+		p, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: keyPath}},
 			"/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
 		done <- result{p, err}
 	}()
@@ -59,7 +59,7 @@ func TestNewRefusesFIFOKeyByName(t *testing.T) {
 			t.Fatal("New started a proxy pinned to a FIFO instead of refusing it")
 		}
 		if r.err == nil {
-			t.Fatal("New accepted a FIFO at the ssh_key path with no error")
+			t.Fatal("New accepted a FIFO at the pinned key path with no error")
 		}
 		if !strings.Contains(r.err.Error(), keyPath) {
 			t.Errorf("refusal does not name the path %q: %v", keyPath, r.err)
@@ -68,7 +68,7 @@ func TestNewRefusesFIFOKeyByName(t *testing.T) {
 			t.Errorf("refusal does not name the node type (FIFO): %v", r.err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("New did not return within 5s for a FIFO at the ssh_key path — this is the " +
+		t.Fatal("New did not return within 5s for a FIFO at the pinned key path — this is the " +
 			"exact hang issue #337 measured (exit=124, blocked in open(2), no sandbox created); " +
 			"the O_NONBLOCK discipline in internal/hostread exists to prevent it")
 	}
@@ -92,7 +92,7 @@ func TestNewRefusesOversizedKey(t *testing.T) {
 	}
 	writeKeyFile(t, keyPath, oversized)
 
-	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}},
+	_, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: keyPath}},
 		"/does/not/matter", filepath.Join(dir, "proxy.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a key file over the cap with no error")
@@ -120,7 +120,7 @@ func TestNewPositiveControlNormalKeyStagesSocket(t *testing.T) {
 	// than proving what it exists to prove.
 	up.setHolds([][]byte{blob}, []string{"control@test"})
 	sock := filepath.Join(dir, "proxy.sock")
-	p, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: keyPath}}, up.path, sock, nil)
+	p, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: keyPath}}, up.path, sock, nil)
 	if err != nil {
 		t.Fatalf("control: an ordinary .pub was refused: %v", err)
 	}

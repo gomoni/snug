@@ -98,7 +98,8 @@ type Profile struct {
 	// It replaces two earlier keys that said less. `env = [...]` named host
 	// variables to re-admit past --clearenv, which is exactly `environ.inherit`;
 	// `path = [...]` named directories for the sandbox's PATH, which is exactly
-	// `environ.merge` on PATH. Both are rewritten into this at parse time.
+	// `environ.merge` on PATH. Neither is a key any more, so a profile still
+	// writing one is refused by the strict decoder as an unknown key.
 	//
 	// PATH deserves the note the old `path` key carried, because it is what
 	// makes the whole key safe rather than an exception: a directory on PATH

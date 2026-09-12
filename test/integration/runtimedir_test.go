@@ -23,13 +23,13 @@ import (
 //
 // Both tests need a runtimeDir() call site to actually fire, which a plain
 // default sandbox never reaches: only a pinned identity (the ssh-agent
-// proxy) or containers (the podman proxy) call it. ssh_mode = "agent-proxy"
+// proxy) or containers (the podman proxy) call it. identity.ssh.agent = "proxy"
 // is the cheaper of the two to stand up — no engine required — so both
 // tests use it, and neither needs the sandboxed payload to actually run ssh.
 
 // shortRuntimeDir is a fresh $XDG_RUNTIME_DIR rooted at os.MkdirTemp("", …)
 // rather than t.TempDir(): both tests here actually bind a socket under it
-// (the ssh-agent proxy, via ssh_mode = "agent-proxy"), and t.TempDir() names
+// (the ssh-agent proxy, via identity.ssh.agent = "proxy"), and t.TempDir() names
 // its directory after the calling test, which on this file's longer test
 // name leaves little headroom before AF_UNIX's ~108-byte sun_path — the same
 // margin dryrunleak_test.go's runtimeDir spends its own comment on.
@@ -76,9 +76,9 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	snugDir := filepath.Join(runtimeScratch, "snug")
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one throwaway key, for the integration suite\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n",
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n",
 		"SSH_AUTH_SOCK="+sock, "XDG_RUNTIME_DIR="+runtimeScratch)
 
 	start := func(tgt string) *exec.Cmd {
@@ -169,9 +169,9 @@ func TestSymlinkAtTheSharedRuntimeDirectoryIsRefusedEndToEnd(t *testing.T) {
 
 	profile := "[profile.pinned]\n" +
 		"description = \"one throwaway key, for the integration suite\"\n" +
-		"[profile.pinned.identity]\n" +
-		"ssh_mode = \"agent-proxy\"\n" +
-		"ssh_key = \"" + pub + "\"\n"
+		"[profile.pinned.identity.ssh]\n" +
+		"agent = \"proxy\"\n" +
+		"key = \"" + pub + "\"\n"
 
 	trapBase := shortRuntimeDir(t)
 	trapTarget := filepath.Join(trapBase, "attacker-owned")

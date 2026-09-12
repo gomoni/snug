@@ -84,12 +84,16 @@ mtu      = 1428
 podman   = "socket"
 git      = "extract"
 
-[profile.probe.identity]
-ssh_key   = "probe-key"
-ssh_mode  = "agent-proxy"
-git_name  = "Probe Person"
-git_email = "probe@example.invalid"
-gh_user   = "probeuser"
+[profile.probe.identity.ssh]
+key   = "probe-key"
+agent = "proxy"
+
+[profile.probe.identity.git]
+name  = "Probe Person"
+email = "probe@example.invalid"
+
+[profile.probe.identity.gh]
+user = "probeuser"
 
 [profile.probe.environ.set]
 PROBE_ENV = "probe-value"

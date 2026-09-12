@@ -271,7 +271,7 @@ func writePubKeyBlob(t *testing.T, dir, name string, blob []byte, comment string
 	return path
 }
 
-// startProxy wires a proxy pinned to TWO keys — ssh_key and signing_key,
+// startProxy wires a proxy pinned to TWO keys — the auth key and the signing key,
 // which is #453's whole point — over a fake agent that ALSO holds a third,
 // unpinned key with a distinctive comment. The third key is what makes
 // "absent from the reply" a real assertion in the tests below rather than one
@@ -292,8 +292,8 @@ func startProxy(t *testing.T) (sock string, up *fakeAgent, authBlob, signBlob []
 
 	sockPath := filepath.Join(dir, "proxy.sock")
 	p, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath},
 	}, up.path, sockPath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -314,8 +314,8 @@ func startProxy(t *testing.T) (sock string, up *fakeAgent, authBlob, signBlob []
 	return sockPath, up, authBlob, signBlob
 }
 
-// mustSignFixture builds the standard two-key pin set — identity.ssh_key and
-// identity.signing_key — with signing_key marked MustSign, and a fake agent
+// mustSignFixture builds the standard two-key pin set — identity.ssh.key and
+// identity.git.signing_key — with the signing key marked MustSign, and a fake agent
 // that holds and, by default, will sign for both. It does not call New: every
 // test using it needs to inspect either New's error or its effect on the fake
 // agent's own call log, so the call belongs at the call site and not hidden
@@ -336,8 +336,8 @@ func mustSignFixture(t *testing.T) (keys []PinnedKey, sockPath string, up *fakeA
 	up.setHolds([][]byte{authBlob, signBlob}, []string{"auth@test", "signing@test"})
 
 	keys = []PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath, MustSign: true},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath, MustSign: true},
 	}
 	sockPath = filepath.Join(dir, "proxy.sock")
 	return keys, sockPath, up, authBlob, signBlob
@@ -434,7 +434,7 @@ func TestIdentitiesAnswerIsLocalAndPinned(t *testing.T) {
 		t.Fatal("could not parse the second advertised identity")
 	}
 	if string(b1) != string(authBlob) {
-		t.Error("the first advertised key is not ssh_key's blob — declared order is ssh_key then signing_key")
+		t.Error("the first advertised key is not the auth key's blob — declared order is ssh.key then git.signing_key")
 	}
 	if string(b2) != string(signBlob) {
 		t.Error("the second advertised key is not signing_key's blob")
@@ -452,7 +452,7 @@ func TestBothPinnedKeysCanSign(t *testing.T) {
 		name string
 		blob []byte
 	}{
-		{"ssh_key", authBlob},
+		{"ssh.key", authBlob},
 		{"signing_key", signBlob},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -505,7 +505,7 @@ func TestIdentitiesAnswerNeverMentionsTheUnpinnedThirdKey(t *testing.T) {
 	}
 }
 
-// Naming the same file twice — ssh_key and signing_key both pointing at one
+// Naming the same file twice — ssh.key and git.signing_key both pointing at one
 // key — advertises ONE entry, and signing with it still works.
 func TestDuplicatePinAdvertisesOnce(t *testing.T) {
 	dir := t.TempDir()
@@ -517,8 +517,8 @@ func TestDuplicatePinAdvertisesOnce(t *testing.T) {
 
 	sock := filepath.Join(dir, "proxy.sock")
 	p, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: path},
-		{Field: "identity.signing_key", Path: path},
+		{Field: "identity.ssh.key", Path: path},
+		{Field: "identity.git.signing_key", Path: path},
 	}, up.path, sock, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -594,8 +594,8 @@ func TestProbeContactsUpstreamExactlyOnceForListAndSign(t *testing.T) {
 	up.setHolds([][]byte{authBlob, signBlob}, []string{"auth@test", "signing@test"})
 
 	p, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath, MustSign: true},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath, MustSign: true},
 	}, up.path, filepath.Join(dir, "proxy.sock"), nil)
 	if err != nil {
 		t.Fatalf("New refused a run whose upstream holds and will sign with both pinned keys: %v", err)
@@ -622,14 +622,14 @@ func TestProbeRefusesWhenUpstreamLacksTheSigningKey(t *testing.T) {
 
 	sock := filepath.Join(dir, "proxy.sock")
 	_, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath},
 	}, up.path, sock, nil)
 	if err == nil {
 		t.Fatal("New started a proxy for a signing key the upstream does not hold")
 	}
-	if !strings.Contains(err.Error(), "identity.signing_key") {
-		t.Errorf("error does not name identity.signing_key: %v", err)
+	if !strings.Contains(err.Error(), "identity.git.signing_key") {
+		t.Errorf("error does not name identity.git.signing_key: %v", err)
 	}
 	if !strings.Contains(err.Error(), signPath) {
 		t.Errorf("error does not name the path: %v", err)
@@ -646,7 +646,7 @@ func TestProbeRefusesWhenUpstreamLacksTheSigningKey(t *testing.T) {
 }
 
 // Same refusal, the other key: even with the signing key present and held,
-// a missing AUTH key must still refuse, naming identity.ssh_key.
+// a missing AUTH key must still refuse, naming identity.ssh.key.
 func TestProbeRefusesWhenUpstreamLacksTheAuthKeyEvenWithSigningKeyPresent(t *testing.T) {
 	dir := t.TempDir()
 	authBlob := ed25519Blob(0xA1) // never added to the agent's held set
@@ -658,14 +658,14 @@ func TestProbeRefusesWhenUpstreamLacksTheAuthKeyEvenWithSigningKeyPresent(t *tes
 	up.setHolds([][]byte{signBlob}, []string{"signing@test"})
 
 	_, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath},
 	}, up.path, filepath.Join(dir, "proxy.sock"), nil)
 	if err == nil {
 		t.Fatal("New started a proxy for an auth key the upstream does not hold")
 	}
-	if !strings.Contains(err.Error(), "identity.ssh_key") {
-		t.Errorf("error does not name identity.ssh_key even though the signing key IS held: %v", err)
+	if !strings.Contains(err.Error(), "identity.ssh.key") {
+		t.Errorf("error does not name identity.ssh.key even though the signing key IS held: %v", err)
 	}
 }
 
@@ -677,7 +677,7 @@ func TestProbeNoAnswer(t *testing.T) {
 	path := writePubKeyBlob(t, dir, "k.pub", blob, "k@test")
 
 	t.Run("nothing listening", func(t *testing.T) {
-		_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: path}},
+		_, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: path}},
 			filepath.Join(dir, "no-such.sock"), filepath.Join(dir, "s1.sock"), nil)
 		if err == nil {
 			t.Fatal("New succeeded dialling a socket nothing is listening on")
@@ -707,7 +707,7 @@ func TestProbeNoAnswer(t *testing.T) {
 		}()
 
 		start := time.Now()
-		_, err = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}},
+		_, err = New([]PinnedKey{{Field: "identity.ssh.key", Path: path}},
 			sockPath, filepath.Join(dir, "s2.sock"), nil)
 		elapsed := time.Since(start)
 		if err == nil {
@@ -746,7 +746,7 @@ func TestProbeRefusesWhenUpstreamAnswersTheWrongMessageType(t *testing.T) {
 		writeMessage(c, []byte{agentFailure, 0, 0, 0, 0}) // type 5, not IDENTITIES_ANSWER (12)
 	}()
 
-	_, err = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}}, sockPath,
+	_, err = New([]PinnedKey{{Field: "identity.ssh.key", Path: path}}, sockPath,
 		filepath.Join(dir, "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a probe reply that was not an identities list")
@@ -794,7 +794,7 @@ func TestProbeRefusesAMalformedIdentitiesList(t *testing.T) {
 				perr = fmt.Errorf("New panicked on a malformed identities list: %v", r)
 			}
 		}()
-		_, perr = New([]PinnedKey{{Field: "identity.ssh_key", Path: path}}, sockPath,
+		_, perr = New([]PinnedKey{{Field: "identity.ssh.key", Path: path}}, sockPath,
 			filepath.Join(dir, "s.sock"), nil)
 	}()
 	select {
@@ -823,8 +823,8 @@ func TestProbeFailureDoesNotLeakTheUpstreamsOtherKeys(t *testing.T) {
 		[]string{"auth@test", "unrelated-work-key", "unrelated-personal-key"})
 
 	_, err := New([]PinnedKey{
-		{Field: "identity.ssh_key", Path: authPath},
-		{Field: "identity.signing_key", Path: signPath},
+		{Field: "identity.ssh.key", Path: authPath},
+		{Field: "identity.git.signing_key", Path: signPath},
 	}, up.path, filepath.Join(dir, "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a signing key the upstream does not hold")
@@ -864,12 +864,12 @@ func TestSignPathConsultsTheLiveAgentNotTheProbe(t *testing.T) {
 func TestProfileErrorBeatsHostError(t *testing.T) {
 	dir := t.TempDir()
 	garbage := filepath.Join(dir, "does-not-exist.pub")
-	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: garbage}}, "",
+	_, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: garbage}}, "",
 		filepath.Join(dir, "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a nonexistent key path with no upstream at all")
 	}
-	if !strings.Contains(err.Error(), "identity.ssh_key") {
+	if !strings.Contains(err.Error(), "identity.ssh.key") {
 		t.Errorf("error does not name the key field: %v", err)
 	}
 	if strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
@@ -1026,7 +1026,7 @@ func TestMissingUpstreamIsAnError(t *testing.T) {
 	os.WriteFile(key, []byte("ssh-ed25519 "+base64.StdEncoding.EncodeToString(blob)+" c\n"), 0o600)
 
 	start := time.Now()
-	_, err := New([]PinnedKey{{Field: "identity.ssh_key", Path: key}}, "",
+	_, err := New([]PinnedKey{{Field: "identity.ssh.key", Path: key}}, "",
 		filepath.Join(dir, "s.sock"), nil)
 	elapsed := time.Since(start)
 	if err == nil {
@@ -1076,7 +1076,7 @@ func TestListedButUnsignableKeyRefusesTheRun(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"identity.signing_key", "SHA256:", "ssh-add -c", "ssh-add -h", "session-bind@openssh.com",
+		"identity.git.signing_key", "SHA256:", "ssh-add -c", "ssh-add -h", "session-bind@openssh.com",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error does not contain %q: %v", want, msg)
@@ -1113,7 +1113,7 @@ func TestSignProbeCoversOnlyMustSignKeys(t *testing.T) {
 		t.Fatalf("upstream saw %d SIGN_REQUESTs during New, want exactly 1 (the MustSign key only)", len(seen))
 	}
 	if string(seen[0].blob) != string(signBlob) {
-		t.Error("the one sign probe was not for identity.signing_key's blob")
+		t.Error("the one sign probe was not for identity.git.signing_key's blob")
 	}
 }
 
@@ -1207,8 +1207,8 @@ func TestSignProbeSendsTheFlagsGitSends(t *testing.T) {
 		up.setHolds([][]byte{authBlob, signBlob}, []string{"auth@test", "signing@test"})
 
 		p, err := New([]PinnedKey{
-			{Field: "identity.ssh_key", Path: authPath},
-			{Field: "identity.signing_key", Path: signPath, MustSign: true},
+			{Field: "identity.ssh.key", Path: authPath},
+			{Field: "identity.git.signing_key", Path: signPath, MustSign: true},
 		}, up.path, filepath.Join(dir, "proxy.sock"), nil)
 		if err != nil {
 			t.Fatalf("New refused a healthy RSA fixture: %v", err)

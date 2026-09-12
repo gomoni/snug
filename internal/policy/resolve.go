@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -243,7 +244,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 					if errors.Is(err, fs.ErrNotExist) {
 						return fmt.Errorf("profile %q grants %q which does not exist (mark it optional if that is expected)", name, host)
 					}
-					return fmt.Errorf("profile %q: %s: %w", name, host, err)
+					return fmt.Errorf("profile %q: %s: %s", name, VisibleText(host), visibleErr(err))
 				}
 				if err := underTargetIsLiteral(target, host, real); err != nil {
 					return fmt.Errorf("profile %q: %w", name, err)
@@ -305,40 +306,46 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			if err := prof.Identity.CheckText(name); err != nil {
 				return nil, err
 			}
-			mode, err := ParseSSHMode(string(prof.Identity.SSHMode))
+			mode, err := ParseSSHMode(string(prof.Identity.SSH.Agent))
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			id := *prof.Identity
-			id.SSHMode = mode
+			id.SSH.Agent = mode
 			// A signing key with no agent is a config that cannot work. The
 			// private half stays in the host agent by construction, so
-			// ssh_mode = "none" leaves nothing inside to sign with — measured on
+			// agent = "none" leaves nothing inside to sign with — measured on
 			// git 2.55.0, that is `error: No private key found for public key
 			// "…"` followed by `fatal: failed to write commit object`, on every
 			// commit. Refuse the combination rather than generate it.
-			if id.SigningKey != "" && id.SSHMode == SSHNone {
-				return nil, fmt.Errorf("profile %q: identity.signing_key needs "+
-					"ssh_mode = \"agent-proxy\": the private half of a signing key never enters "+
+			if id.Git.SigningKey != "" && id.SSH.Agent == SSHNone {
+				return nil, fmt.Errorf("profile %q: identity.git.signing_key needs "+
+					"identity.ssh.agent = \"proxy\": the private half of a signing key never enters "+
 					"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
-					"every `git commit -S` would fail. Set ssh_mode, or remove signing_key", name)
+					"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
+					"identity.git.signing_key", name)
 			}
-			// Both key paths get the same treatment: expand, and refuse a
-			// symlink redirect when the path lies under the target. The pair is
-			// written out rather than reflected over because two is not a list
-			// yet — #454 replaces this literal with an enumeration of the tagged
-			// fields and keeps the body unchanged.
-			for _, f := range []struct {
-				key string
-				p   *string
-			}{
-				{"ssh_key", &id.SSHKey},
-				{"signing_key", &id.SigningKey},
-			} {
-				if *f.p == "" {
+			if err := refuseHalfNamedHost(name, id); err != nil {
+				return nil, err
+			}
+			if err := refuseUnpinnedGhAccount(name, id); err != nil {
+				return nil, err
+			}
+			// Every key path gets the same treatment: expand, and refuse a
+			// symlink redirect when the path lies under the target. The set comes
+			// from identityFields — the `path` option on the struct tag — so a
+			// third pinned key is covered by declaring it, not by editing here.
+			// This is the enumeration the hand-written pair below used to promise.
+			idv := reflect.ValueOf(&id).Elem()
+			for _, f := range identityFields {
+				if !f.Path {
 					continue
 				}
-				expanded, err := expandVars(*f.p, vars)
+				fv := idv.FieldByIndex(f.Index)
+				if fv.String() == "" {
+					continue
+				}
+				expanded, err := expandVars(fv.String(), vars)
 				if err != nil {
 					return nil, fmt.Errorf("profile %q: %w", name, err)
 				}
@@ -362,14 +369,15 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if _, ok := under(target, expanded); ok {
 					real, err := env.EvalSymlinks(expanded)
 					if err != nil {
-						return nil, fmt.Errorf("profile %q: %s %s: %w", name, f.key, expanded, err)
+						return nil, fmt.Errorf("profile %q: identity.%s %s: %s",
+							name, f.Key, VisibleText(expanded), visibleErr(err))
 					}
 					if err := underTargetIsLiteral(target, expanded, real); err != nil {
-						return nil, fmt.Errorf("profile %q: %s: %w", name, f.key, err)
+						return nil, fmt.Errorf("profile %q: identity.%s: %w", name, f.Key, err)
 					}
 					expanded = real
 				}
-				*f.p = expanded
+				fv.SetString(expanded)
 			}
 			// Identity does NOT join. Two profiles pinning different accounts
 			// is a question with no safe answer — silently picking one would
@@ -381,12 +389,14 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			// p.Identity is what a previous iteration stored, and it was
 			// normalised before it was stored; comparing it against the raw
 			// TOML made every spelling that needs normalising — an omitted
-			// ssh_mode, an ssh_key holding a {…} variable, which is base.toml's
+			// agent, an ssh.key holding a {…} variable, which is base.toml's
 			// own template — refuse itself (#559).
-			// Every field is a string, so a field ADDED to Identity is compared
-			// here for free — signing_key arrived that way, with no edit. What
-			// replaces the hand-written field lists elsewhere must not replace
-			// THIS with a field-by-field walk that can forget one.
+			// Every leaf is a string inside a VALUE struct, so a field ADDED to
+			// Identity is compared here for free — signing_key arrived that way,
+			// with no edit, and the nested blocks kept the property. This must not
+			// become a field-by-field walk that can forget one; identityFields
+			// drives the hand-written lists that USED to sit elsewhere, and
+			// deliberately not this line.
 			if p.Identity != nil && *p.Identity != id {
 				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
 					"select only one", identityOwner, name)
@@ -771,8 +781,18 @@ func underTargetIsLiteral(canonTarget, requested, real string) error {
 		return nil
 	}
 	if want := filepath.Join(canonTarget, rel); real != want {
+		// BOTH PATHS GO THROUGH VisibleText, AND `real` IS THE REASON. It is the
+		// symlink's DESTINATION, chosen by whatever planted the link — and the
+		// comment above this function's only caller says who that is: a previous
+		// run, writing inside the target. So the destination is payload bytes
+		// reaching the sink VisibleText's own doc calls the one a human reads most
+		// carefully. Measured before the fix: a destination spelled
+		// `…/real<ESC>[2K<ESC>[1Asnug: policy verified, sandbox is safe` erased
+		// this line on a vt100 and printed that sentence over it, so the word
+		// "safe" in snug's voice was the attacker's.
 		return fmt.Errorf("grant %s resolves to %s: a symlink inside the sandbox's own "+
-			"writable area redirects it, and snug will not follow that", requested, real)
+			"writable area redirects it, and snug will not follow that",
+			VisibleText(requested), VisibleText(real))
 	}
 	return nil
 }
@@ -1277,4 +1297,103 @@ func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileN
 		}
 	}
 	return nil
+}
+
+// refuseHalfNamedHost refuses a profile that names a host in one identity block
+// and not the other, in either direction.
+//
+// WHY THIS IS A REFUSAL AND NOT A FALLBACK. ssh.host feeds three artifacts — the
+// generated ~/.ssh/config's Host line, the known_hosts filter, and git's insteadOf
+// rewrite — while gh.host feeds one, the token. Nothing is inherited
+// between blocks, because a fallback is a precedence rule and invariant 1 has
+// none. So a profile naming only gh.host would silently get three artifacts
+// pointing at the DEFAULT host: every push fails `Permission denied (publickey)`
+// against generated files that name a host the author never wrote, which is a
+// failure whose cause the sandbox actively misdescribes.
+//
+// THIS IS NOT THE CROSS-FIELD CONSTRAINT #454 DECLINED. That one would refuse two
+// hosts that DIFFER; they may differ, and this says nothing about their values. It
+// refuses a profile that is INCOMPLETE, which is the shape of the two refusals
+// already in this block: agent = "proxy" needs a key, and signing_key needs an
+// agent. Naming neither host stays legal and both default to github.com, which is
+// what the common case writes.
+//
+// THE ALTERNATIVE, REJECTED. Rather than refuse, render the provenance of every
+// host on the capability screen — `host github.com — DEFAULTED, not named by this
+// profile` — and let the reader spot the mismatch. It was rejected for two
+// reasons. A run without --dry-run prints no capability screen at all, so a screen
+// protects only somebody who looks; and a marker on every row is noise on the one
+// screen a human reads to decide whether to trust the sandbox, which is the last
+// place to spend attention on the common case. A refusal costs nothing when the
+// profile is coherent and stops the run when it is not.
+func refuseHalfNamedHost(name ProfileName, id Identity) error {
+	sshActive := id.SSH.Key != "" || id.SSH.Agent != SSHNone
+	ghActive := id.Gh.User != "" || id.Gh.Host != ""
+	switch {
+	case id.Gh.Host != "" && id.SSH.Host == "" && sshActive:
+		return halfNamedHost(name, "gh", id.Gh.Host, "ssh",
+			"~/.ssh/config, ~/.ssh/known_hosts and git's insteadOf rule")
+	case id.SSH.Host != "" && id.Gh.Host == "" && ghActive:
+		return halfNamedHost(name, "ssh", id.SSH.Host, "gh",
+			"the gh token and GH_HOST")
+	}
+	return nil
+}
+
+func halfNamedHost(name ProfileName, named, host, missing, artifacts string) error {
+	return fmt.Errorf("profile %q: identity.%s.host = %s names a host and identity.%s.host "+
+		"does not, so snug would generate %s for %q — the default — while the only host this "+
+		"profile names is %s.\n"+
+		"       The two hosts are independent ON PURPOSE and they may differ, but nothing is\n"+
+		"       inherited between blocks: a fallback is a precedence rule and snug has none.\n"+
+		"       Name it in both, with the same value if it is the same host:\n"+
+		"         [profile.%s.identity.%s]\n"+
+		"         host = %s\n",
+		name, named, VisibleText(strconv.Quote(host)), missing, artifacts, DefaultIdentityHost,
+		VisibleText(strconv.Quote(host)), name, missing, VisibleText(strconv.Quote(host)))
+}
+
+// refuseUnpinnedGhAccount refuses identity.gh.host with no identity.gh.user.
+//
+// gh.host has exactly one job: selecting which token to stage. So gh.host with no
+// gh.user asks snug to stage the token of whatever account the host's gh is
+// CURRENTLY logged in to on that host — a credential the profile does not name,
+// from the account the human is most likely to be signed into, and one the gh row
+// of `snug profile show` cannot render because it has no user to key on. That is
+// precisely what the narrowing in stageGhConfig exists to prevent, and this is the
+// case it did not reach.
+func refuseUnpinnedGhAccount(name ProfileName, id Identity) error {
+	if id.Gh.Host == "" || id.Gh.User != "" {
+		return nil
+	}
+	return fmt.Errorf("profile %q: identity.gh.host = %s with no identity.gh.user. snug would "+
+		"stage the token of whatever account your host's gh is CURRENTLY logged in to on that "+
+		"host — a credential this profile does not name, from the account you are most likely "+
+		"to be signed into.\n"+
+		"       An identity is a PIN; an unpinned credential is what it exists to prevent.\n"+
+		"       Either name the account:\n"+
+		"         [profile.%s.identity.gh]\n"+
+		"         user = \"you\"\n"+
+		"       or remove identity.gh.host — identity.ssh.* alone still pins git-over-ssh, and\n"+
+		"       gh then gets no token and no GH_CONFIG_DIR.\n",
+		name, VisibleText(strconv.Quote(id.Gh.Host)), name)
+}
+
+// visibleErr renders an error whose text carries a path snug did not author.
+//
+// fs.PathError interpolates the path it failed on, and for a dangling symlink
+// under the target that path is the symlink's DESTINATION — bytes a previous
+// sandbox run chose. Escaping only the path snug printed itself and then wrapping
+// the raw error with %w puts those bytes on the screen anyway, which is how this
+// was missed: the visible half looked handled.
+//
+// THE CHAIN IS DROPPED ON PURPOSE. %w would preserve errors.Is at the cost of
+// printing the raw text, and no caller needs it here: the ErrNotExist branch is
+// taken above this call on the same error, and Resolve's own sentinel
+// (ErrTargetUnusable) is wrapped elsewhere. A refusal is a screen first.
+func visibleErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return VisibleText(err.Error())
 }

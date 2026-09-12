@@ -128,7 +128,7 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 		t.Fatal("resolved policy has no Identity; want the template's " +
 			"[profile.work.identity] block to have pinned one")
 	}
-	if p.Identity.GhUser != "you" {
-		t.Errorf("Identity.GhUser = %q, want \"you\" (the template's placeholder)", p.Identity.GhUser)
+	if p.Identity.Gh.User != "you" {
+		t.Errorf("Identity.Gh.User = %q, want \"you\" (the template's placeholder)", p.Identity.Gh.User)
 	}
 }

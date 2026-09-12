@@ -27,13 +27,13 @@ func TestGoldenShowIdentityCapabilities(t *testing.T) {
 	p := &policy.Profile{
 		Name: "signed",
 		Identity: &policy.Identity{
-			SSHMode:    policy.SSHAgentProxy,
-			SSHKey:     "{home}/.ssh/id_ed25519.pub",
-			SigningKey: "{home}/.ssh/id_ed25519_signing.pub",
-			GitName:    "Some One",
-			GitEmail:   "some.one@example.com",
-			GhUser:     "some-one",
-			GhHost:     "github.com",
+			SSH: policy.IdentitySSH{Agent: policy.SSHAgentProxy, Key: "{home}/.ssh/id_ed25519.pub"},
+			Git: policy.IdentityGit{
+				SigningKey: "{home}/.ssh/id_ed25519_signing.pub",
+				Name:       "Some One",
+				Email:      "some.one@example.com",
+			},
+			Gh: policy.IdentityGh{User: "some-one", Host: "github.com"},
 		},
 	}
 
