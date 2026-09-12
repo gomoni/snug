@@ -1317,6 +1317,15 @@ func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileN
 // already in this block: agent = "proxy" needs a key, and signing_key needs an
 // agent. Naming neither host stays legal and both default to github.com, which is
 // what the common case writes.
+//
+// THE ALTERNATIVE, REJECTED. Rather than refuse, render the provenance of every
+// host on the capability screen — `host github.com — DEFAULTED, not named by this
+// profile` — and let the reader spot the mismatch. It was rejected for two
+// reasons. A run without --dry-run prints no capability screen at all, so a screen
+// protects only somebody who looks; and a marker on every row is noise on the one
+// screen a human reads to decide whether to trust the sandbox, which is the last
+// place to spend attention on the common case. A refusal costs nothing when the
+// profile is coherent and stops the run when it is not.
 func refuseHalfNamedHost(name ProfileName, id Identity) error {
 	sshActive := id.SSH.Key != "" || id.SSH.Agent != SSHNone
 	ghActive := id.Gh.User != "" || id.Gh.Host != ""
