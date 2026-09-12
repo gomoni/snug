@@ -247,8 +247,8 @@ func (m NetMode) Join(o NetMode) NetMode { if o > m { return o }; return m }
 type SSHMode string
 
 const (
-    SSHAgentProxy SSHMode = "agent-proxy" // filter the host agent to one pinned key
-    SSHNone       SSHMode = "none"        // the default
+    SSHAgentProxy SSHMode = "proxy" // filter the host agent to one pinned key
+    SSHNone       SSHMode = "none"  // the default
 )
 
 // ── Podman ───────────────────────────────────────────────────────────────────
@@ -1140,10 +1140,10 @@ Every surface below is off by default and reached by naming a profile. Each is a
 
 | Mode | What it does |
 |---|---|
-| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
+| **`proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
 | `none` | No ssh. The default. |
 
-**Those are the whole set.** `ParseSSHMode` accepts nothing else, and a profile naming anything else is refused rather than resolved as something narrower — an unrecognised mode quietly read as `none`, or as `agent-proxy` with no pinned key, would hand the author a sandbox their profile does not describe. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `agent-proxy` lacks, and the second puts key bytes in the blast radius.
+**Those are the whole set.** `ParseSSHMode` accepts nothing else, and a profile naming anything else is refused rather than resolved as something narrower — an unrecognised mode quietly read as `none`, or as `proxy` with no pinned key, would hand the author a sandbox their profile does not describe. There is no per-spelling arm for a value snug has dropped either — it is refused by naming the accepted set, which is what lets the accepted set be read as the whole set. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `proxy` lacks, and the second puts key bytes in the blast radius.
 
 **The proxy's rules.** It speaks the agent protocol (`golang.org/x/crypto/ssh/agent`), fresh upstream dial per connection (the protocol is not safe to interleave), and is fail-closed on anything it does not understand:
 

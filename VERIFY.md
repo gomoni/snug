@@ -1050,29 +1050,51 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
-### 4b-ter. A retired network-anonymisation key is refused, not ignored
+### 4b-ter. A key snug no longer has is refused, not ignored
 
 `address`/`gateway`/`address6`/`gateway6` configured a synthetic address in
-place of the sandbox's real one. The feature is gone — `@net` copies the
-host's addresses unconditionally now — and the fix is "remove the key", not
-"write it a different way", so a profile still carrying one must be refused
-by name rather than silently accepted with no effect.
+place of the sandbox's real one. The feature is gone — `@net` copies the host's
+addresses unconditionally now — and the key is gone with it. snug commits to no
+configuration compatibility, so there is no migration arm: the strict decoder
+refuses the field and points at the line, which is what a profile written
+against an older snug must get rather than a silently ignored grant.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
-printf '[profile.pfx]\ndescription = "a retired anonymisation key"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
+printf '[profile.pfx]\ndescription = "a key snug no longer has"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
   > $X/snug/profiles.d/p.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect a refusal naming both keys and the fix, `exit=77`:
+Expect the file to be reported as not loaded, with the offending key underlined,
+and `exit=77`:
 
 ```
-snug: profile "pfx" sets address, gateway, which snug no longer accepts.
-       snug no longer supports network anonymisation: `@net` copies the host's
-       addresses into the sandbox's network namespace (a small accepted disclosure)
-       rather than handing the sandbox a synthetic one. There is no replacement key —
-       remove address, gateway from this profile
+snug: 1 profile file(s) in the search path did not load:
+         .../snug/profiles.d/p.toml
+           .../snug/profiles.d/p.toml: unknown key (snug decodes profiles strictly, so a key it does not understand is an error rather than a silently ignored grant):
+           1| [profile.pfx]
+           2| description = "a key snug no longer has"
+           3| network = "egress"
+           4| address = "10.13.13.2/24"
+            | ~~~~~~~ unknown field
+```
+
+The same shape covers every other spelling snug has dropped — `env = [...]`
+(now `environ.inherit`), `path = [...]` (now `environ.merge` on `PATH`), and the
+flat identity keys `ssh_key`/`ssh_mode`/`signing_key`/`git_name`/`git_email`/
+`gh_user`/`gh_host` (now the per-tool blocks of §13). A retired VALUE is
+different, because the key still parses and the refusal is the accepted set:
+
+```bash
+printf '[profile.x]\n[profile.x.identity.ssh]\nagent = "agent-proxy"\nkey = "/home/u/.ssh/id.pub"\n' \
+  > $X/snug/profiles.d/p.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p x $SC/proj/sub; echo "exit=$?"
+```
+
+```
+snug: profile "x": unknown identity.ssh.agent "agent-proxy" (want proxy or none)
+exit=77
 ```
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
@@ -2766,7 +2788,7 @@ exit=77
 
 The message quotes the offending value and names the accepted set — the two
 things a reader needs to fix their own file. `identity.ssh.agent` behaves identically:
-`agent-proxy` and `none`, anything else refused with the same shape.
+`proxy` and `none`, anything else refused with the same shape.
 
 **And the forwarder's destination is named.** On a systemd-resolved host the
 dns line reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's
@@ -5498,8 +5520,8 @@ that account's:
 ```
 
 Expect one line. Every other key in your host agent is not merely unusable — it
-is not enumerable, which is the difference between `agent-proxy` and forwarding
-the agent.
+is not enumerable, which is the difference between `agent = "proxy"` and
+forwarding the agent.
 
 ### 13a-2. A signing key is a SECOND pin, and the run refuses without it (issue #453)
 
@@ -5522,8 +5544,8 @@ can vouch for code as a human is exactly what has to be visible first:
 ./bin/snug -p acct-a --dry-run $SC/proj/sub | grep -A1 'ssh key'
 ```
 
-Expect two rows, the second reading `signing key … (agent-proxy, signs commits
-and tags)`.
+Expect two rows, the second reading `signing key … (proxy)` followed by the
+block naming what signing as you costs.
 
 Inside, `ssh-add -l` now lists exactly TWO keys, and the generated git config
 names the staged copy of the signing one:

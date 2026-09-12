@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -56,27 +55,9 @@ type rawProfile struct {
 	// neither needs a special case below.
 	Environ *rawEnviron `toml:"environ"`
 
-	// Env and Path are the retired spellings, kept as FIELDS rather than
-	// deleted. Deleting them would let DisallowUnknownFields produce the generic
-	// "unknown key" message, and a key whose meaning MOVED deserves a named
-	// error pointing at the replacement — see retiredEnvKey and retiredPathKey,
-	// which is the whole reason these two lines are still here.
-	Env  []string `toml:"env"`
-	Path []string `toml:"path"`
-
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
-	// Address/Gateway/Address6/Gateway6 are the retired network-anonymisation
-	// spellings, kept as FIELDS for the same reason Env and Path are above —
-	// so toEnvGrants can name them in retiredAnonKey rather than let
-	// DisallowUnknownFields produce the generic "unknown key" message. The
-	// feature they configured (a synthetic address in place of the sandbox's
-	// real one) is retired, not moved: there is no replacement spelling.
-	Address  string `toml:"address"`
-	Gateway  string `toml:"gateway"`
-	Address6 string `toml:"address6"`
-	Gateway6 string `toml:"gateway6"`
-	MTU      int    `toml:"mtu"`
+	MTU     int    `toml:"mtu"`
 
 	Podman   string       `toml:"podman"`
 	Git      string       `toml:"git"`
@@ -105,7 +86,7 @@ type rawEnviron struct {
 }
 
 // rawIdentity is [profile.X.identity]: a container of per-tool blocks with no
-// keys of its own, plus the retired flat spellings kept as fields.
+// keys of its own.
 //
 // The inner blocks are VALUES, not pointers, which is the opposite of
 // rawProfile.Identity above. That pointer is load-bearing — p.Identity != nil is
@@ -119,18 +100,6 @@ type rawIdentity struct {
 	SSH rawIdentitySSH `toml:"ssh"`
 	Git rawIdentityGit `toml:"git"`
 	Gh  rawIdentityGh  `toml:"gh"`
-
-	// THE RETIRED FLAT SPELLINGS, kept as fields rather than deleted, for the
-	// reason the essay above retiredEnvKey gives: a key whose meaning MOVED
-	// deserves an error naming the replacement, and a deleted field gets
-	// DisallowUnknownFields' generic "unknown key" instead — true and useless.
-	SSHKey     string `toml:"ssh_key"`
-	SigningKey string `toml:"signing_key"`
-	SSHMode    string `toml:"ssh_mode"`
-	GitName    string `toml:"git_name"`
-	GitEmail   string `toml:"git_email"`
-	GhUser     string `toml:"gh_user"`
-	GhHost     string `toml:"gh_host"`
 }
 
 type rawIdentitySSH struct {
@@ -389,9 +358,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 }
 
 // toEnvGrants turns one profile's raw `environ` block into the value the
-// resolver folds, and refuses the retired keys: the two `environ` replaced,
-// and the four network-anonymisation scalars snug no longer supports at all
-// (retiredAnonKey).
+// resolver folds.
 func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	g := policy.EnvGrants{}
 	if e := r.Environ; e != nil {
@@ -410,110 +377,7 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 			return g, err
 		}
 	}
-
-	if len(r.Env) > 0 {
-		return g, retiredEnvKey(source, name, r.Env)
-	}
-	if len(r.Path) > 0 {
-		return g, retiredPathKey(source, name, r.Path)
-	}
-	if r.Address != "" || r.Gateway != "" || r.Address6 != "" || r.Gateway6 != "" {
-		return g, retiredAnonKey(source, name, r.Address, r.Gateway, r.Address6, r.Gateway6)
-	}
 	return g, nil
-}
-
-// The retired keys, and why they are FIELDS on rawProfile rather than
-// deletions.
-//
-// A key that never should have existed is retired by deleting its struct field
-// and letting DisallowUnknownFields fire, which yields the generic "unknown key"
-// message. That is right for such a key and wrong for two other classes, which
-// is why all of the fields below stay.
-//
-// The first class is a key whose MEANING MOVED: `env = [...]` is still a thing
-// a profile wants to say, and the reader needs to be told the new spelling
-// rather than told the key does not exist. Both errors name the replacement —
-// spelled out with this profile's own variables, so the fix can be pasted. The
-// prefix changed deliberately. `env` became `environ.inherit` and not
-// `environ.env`, because a silently CHANGED meaning is worse than a removed
-// key: anyone whose muscle memory reaches for the old word gets an error
-// naming the new one, rather than a subtly different grant that parses.
-//
-// The second class is a key whose FEATURE was removed after shipping:
-// `address`/`gateway`/`address6`/`gateway6` named a synthetic address that
-// hid the sandbox's real one, and network anonymisation is not a capability
-// snug offers any more (retiredAnonKey). There is no replacement spelling to
-// point at, so this refusal's fix is "remove it" rather than "write it this
-// other way" — a generic "unknown key" would read as a typo and send the
-// author looking for the field that moved, when the field is simply gone.
-
-func retiredEnvKey(source, name string, names []string) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: profile %q uses `env = [...]`, which snug no longer accepts.\n", source, name)
-	fmt.Fprintf(&b, "       It is now [profile.%s.environ.inherit], one NAME = true per variable:\n", name)
-	fmt.Fprintf(&b, "         [profile.%s.environ.inherit]\n", name)
-	for _, n := range sortedCopy(names) {
-		fmt.Fprintf(&b, "         %s = true\n", n)
-	}
-	b.WriteString("       One name per line because `inherit` is a hole punched in --clearenv, and a\n")
-	b.WriteString("       list is easy to extend without reading. Each name is now checked: snug\n")
-	b.WriteString("       refuses the ones whose value is code, and refuses a list variable outright\n")
-	b.WriteString("       (use environ.sanitise, which keeps only the elements policy grants).")
-	return fmt.Errorf("%s", b.String())
-}
-
-func retiredPathKey(source, name string, dirs []string) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: profile %q uses `path = [...]`, which snug no longer accepts.\n", source, name)
-	fmt.Fprintf(&b, "       It is now [profile.%s.environ.merge] on PATH:\n", name)
-	fmt.Fprintf(&b, "         [profile.%s.environ.merge]\n", name)
-	fmt.Fprintf(&b, "         PATH = [%s]\n", quotedList(dirs))
-	b.WriteString("       Use environ.prepend instead if you need to be ahead of every other\n")
-	b.WriteString("       profile's entry — at most one profile may hold the front of a variable, and\n")
-	b.WriteString("       two claiming it is a refusal rather than whichever sorted first.\n")
-	b.WriteString("       Note that the profile must now GRANT the directories it names: a variable\n")
-	b.WriteString("       pointing at a path that is not inside the sandbox is worse than an absent one.")
-	return fmt.Errorf("%s", b.String())
-}
-
-// retiredAnonKey refuses whichever of `address`/`gateway`/`address6`/`gateway6`
-// name is non-empty, and names exactly which — the FEATURE they configured
-// (a synthetic address standing in for the sandbox's real one) is gone, not
-// moved, so there is no replacement spelling to point at.
-func retiredAnonKey(source, name, address, gateway, address6, gateway6 string) error {
-	var present []string
-	for _, kv := range []struct {
-		key, val string
-	}{
-		{"address", address}, {"gateway", gateway},
-		{"address6", address6}, {"gateway6", gateway6},
-	} {
-		if kv.val != "" {
-			present = append(present, kv.key)
-		}
-	}
-	return fmt.Errorf("%s: profile %q sets %s, which snug no longer accepts.\n"+
-		"       snug no longer supports network anonymisation: `@net` copies the host's\n"+
-		"       addresses into the sandbox's network namespace (a small accepted disclosure)\n"+
-		"       rather than handing the sandbox a synthetic one. There is no replacement key —\n"+
-		"       remove %s from this profile",
-		source, name, strings.Join(present, ", "), strings.Join(present, ", "))
-}
-
-func quotedList(in []string) string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		out = append(out, fmt.Sprintf("%q", s))
-	}
-	return strings.Join(out, ", ")
-}
-
-// sortedCopy mirrors policy's, for a message that does not depend on map order.
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
 }
 
 // toElementLists accepts a bare string as ONE element and an array as its
@@ -604,29 +468,22 @@ func sortedBoolKeys(m map[string]bool) []string {
 	return out
 }
 
-// toIdentity converts [profile.X.identity] and refuses the three spellings that
-// no longer mean anything: the flat keys, the retired agent VALUE, and a block
-// that sets nothing.
+// toIdentity converts [profile.X.identity], and refuses a block that sets
+// nothing.
 //
-// All three are properties of the profile TEXT, so they belong here rather than in
-// Resolve (see the ValidateEnvGrants call above for the full reason): the verdict
-// is the same on every host, `snug profile show` reports it, and a refused key then
-// cannot reach a generator by any route.
+// That refusal is a property of the profile TEXT, so it belongs here rather than
+// in Resolve (see the ValidateEnvGrants call above for the full reason): the
+// verdict is the same on every host and `snug profile show` reports it.
 //
-// The ACCEPTED SET of agent modes is still checked in policy.Resolve, and that is
-// not an inconsistency. ParseSSHMode is also the door for an Identity built in Go —
-// both identity goldens are struct literals — so the set has to be enforced where
-// every caller passes through. What is checked here is the RETIRED spelling, which
-// only a profile file can contain.
+// The ACCEPTED SET of agent modes is checked in policy.Resolve instead, and that
+// is not an inconsistency: ParseSSHMode is the door for an Identity built in Go
+// too — both identity goldens are struct literals — so the set has to be enforced
+// where every caller passes through. A spelling snug no longer accepts, `agent =
+// "agent-proxy"` among them, is refused there by naming the whole accepted set,
+// with no per-spelling arm to keep the accepted set readable as the whole set.
 func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if r == nil {
 		return nil, nil
-	}
-	if err := retiredFlatIdentity(source, name, r); err != nil {
-		return nil, err
-	}
-	if r.SSH.Agent == "agent-proxy" {
-		return nil, retiredAgentProxyValue(source, name)
 	}
 	id := &policy.Identity{
 		SSH: policy.IdentitySSH{
@@ -648,110 +505,6 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 		return nil, emptyIdentityBlock(source, name)
 	}
 	return id, nil
-}
-
-// retiredFlatIdentity refuses every flat key the profile still sets, in ONE error.
-//
-// One error and not seven, following retiredAnonKey's shape: a human migrating a
-// seven-key block must not have to run snug seven times to learn the seven new
-// spellings. The replacement is rendered with this profile's own name and the
-// author's own values, so the fix is pasteable — the rule retiredEnvKey and
-// retiredPathKey already follow.
-//
-// Because it fires on ANY flat key, a profile carrying both spellings is refused
-// here and needs no separate both-spellings check.
-func retiredFlatIdentity(source, name string, r *rawIdentity) error {
-	type flat struct{ key, val, newKey string }
-	set := []flat{
-		{"ssh_key", r.SSHKey, "identity.ssh.key"},
-		{"ssh_mode", r.SSHMode, "identity.ssh.agent"},
-		{"signing_key", r.SigningKey, "identity.git.signing_key"},
-		{"git_name", r.GitName, "identity.git.name"},
-		{"git_email", r.GitEmail, "identity.git.email"},
-		{"gh_user", r.GhUser, "identity.gh.user"},
-		{"gh_host", r.GhHost, "identity.ssh.host AND identity.gh.host"},
-	}
-	var present []flat
-	for _, f := range set {
-		if f.val != "" {
-			present = append(present, f)
-		}
-	}
-	if len(present) == 0 {
-		return nil
-	}
-
-	// The replacement blocks, built from what this profile actually sets. gh_host
-	// appears in BOTH ssh and gh, which is the whole reason this message is longer
-	// than a rename table.
-	ssh := map[string]string{"host": r.GhHost, "key": r.SSHKey}
-	if r.SSHMode == "agent-proxy" {
-		ssh["agent"] = "proxy"
-	} else {
-		ssh["agent"] = r.SSHMode
-	}
-	git := map[string]string{"name": r.GitName, "email": r.GitEmail, "signing_key": r.SigningKey}
-	gh := map[string]string{"host": r.GhHost, "user": r.GhUser}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: profile %q uses the flat identity keys, which snug no longer accepts.\n",
-		source, name)
-	b.WriteString("       [identity] is now a container of per-tool blocks, and NOTHING is " +
-		"inherited\n       between them. This profile becomes:\n")
-	for _, blk := range []struct {
-		tool string
-		keys []string
-		vals map[string]string
-	}{
-		{"ssh", []string{"host", "key", "agent"}, ssh},
-		{"git", []string{"name", "email", "signing_key"}, git},
-		{"gh", []string{"host", "user"}, gh},
-	} {
-		var rows []string
-		for _, k := range blk.keys {
-			if blk.vals[k] != "" {
-				rows = append(rows, fmt.Sprintf("         %-11s = %s", k,
-					policy.VisibleText(strconv.Quote(blk.vals[k]))))
-			}
-		}
-		if len(rows) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "         [profile.%s.identity.%s]\n", name, blk.tool)
-		b.WriteString(strings.Join(rows, "\n") + "\n")
-	}
-	b.WriteString("       What moved:\n")
-	for _, f := range present {
-		fmt.Fprintf(&b, "         %-12s ->  %s\n", f.key, f.newKey)
-	}
-	if r.SSHMode == "agent-proxy" {
-		b.WriteString("       The VALUE changed with the key too: ssh_mode = \"agent-proxy\" is now\n" +
-			"       identity.ssh.agent = \"proxy\". The block already says ssh, so the value no\n" +
-			"       longer repeats it. \"none\" is unchanged.\n")
-	}
-	if r.GhHost != "" {
-		b.WriteString("       gh_host WAS ONE FIELD THAT FOUR CONSUMERS READ, AND IT IS NOW TWO.\n" +
-			"       identity.ssh.host is the host the generated ~/.ssh/config, the known_hosts\n" +
-			"       filter and git's insteadOf rule name — the host you PUSH to. identity.gh.host\n" +
-			"       is the host gh mints a token for. Writing only identity.gh.host would move the\n" +
-			"       token and leave ssh pinned to github.com, so both lines are above with your\n" +
-			"       value in each. Repeating it is deliberate: there is no identity.host and no\n" +
-			"       fallback between blocks, because a fallback is a precedence rule and snug has\n" +
-			"       none.")
-	}
-	return fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
-}
-
-func retiredAgentProxyValue(source, name string) error {
-	return fmt.Errorf("%s: profile %q sets identity.ssh.agent = \"agent-proxy\", which snug no "+
-		"longer accepts.\n"+
-		"       The key moved from ssh_mode to identity.ssh.agent and the value changed with it:\n"+
-		"         [profile.%s.identity.ssh]\n"+
-		"         agent = \"proxy\"\n"+
-		"       The block already says ssh, so the value no longer repeats it. Same capability,\n"+
-		"       spelled once: a filtering proxy to the host's already-unlocked agent, offering\n"+
-		"       exactly the one key identity.ssh.key names, enumerating nothing. \"none\" is\n"+
-		"       unchanged", source, name, name)
 }
 
 // emptyIdentityBlock refuses [identity] with no keys under it.

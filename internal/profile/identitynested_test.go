@@ -3,101 +3,23 @@ package profile
 import (
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// ── the three retirals #454's nesting introduced (internal/profile/file.go) ──
+// ── the one refusal #454's nesting introduced (internal/profile/file.go) ──
 //
-// [identity] moved from seven flat keys to three per-tool blocks, and three
-// spellings that used to mean something no longer do: the flat keys, the
-// retired agent value "agent-proxy", and a block that sets nothing. Each
-// carries its own POSITIVE CONTROL — the house style this file already follows
-// for TestRetiredEnvKeyNamesTheFix and TestRetiredPathKeyNamesTheFix — because
-// a refusal with no positive control could just as easily be banning the
-// CAPABILITY as the retired spelling.
-
-func TestRetiredFlatIdentityKeysAreRefusedNamingTheNewSpelling(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		flatKey     string
-		val         string
-		wantIn      []string
-		replacement string
-	}{
-		{"ssh_key", "ssh_key", "/home/u/.ssh/id.pub",
-			[]string{"identity.ssh.key"},
-			"[profile.x.identity.ssh]\nkey = \"/home/u/.ssh/id.pub\"\n"},
-		{"ssh_mode", "ssh_mode", "none",
-			[]string{"identity.ssh.agent"},
-			"[profile.x.identity.ssh]\nagent = \"none\"\n"},
-		{"signing_key", "signing_key", "/home/u/.ssh/sign.pub",
-			[]string{"identity.git.signing_key"},
-			"[profile.x.identity.git]\nsigning_key = \"/home/u/.ssh/sign.pub\"\n"},
-		{"git_name", "git_name", "Some One",
-			[]string{"identity.git.name"},
-			"[profile.x.identity.git]\nname = \"Some One\"\n"},
-		{"git_email", "git_email", "some@example.com",
-			[]string{"identity.git.email"},
-			"[profile.x.identity.git]\nemail = \"some@example.com\"\n"},
-		{"gh_user", "gh_user", "someone",
-			[]string{"identity.gh.user"},
-			"[profile.x.identity.gh]\nuser = \"someone\"\n"},
-		// gh_host is the one key that maps to TWO new spellings, and the
-		// message has to say so or a human fixes half the profile and gets a
-		// silent host split (ssh pinned to the default, gh pinned to the value
-		// they wrote) rather than a second refusal pointing at the other block.
-		{"gh_host", "gh_host", "example.com",
-			[]string{"identity.ssh.host", "identity.gh.host", "FOUR CONSUMERS"},
-			"[profile.x.identity.ssh]\nhost = \"example.com\"\n[profile.x.identity.gh]\nhost = \"example.com\"\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			src := "[profile.x]\n[profile.x.identity]\n" + tc.flatKey + " = " + strconv.Quote(tc.val) + "\n"
-			_, err := parse([]byte(src), "mine.toml", true)
-			if err == nil {
-				t.Fatalf("%s = %q is retired and must be refused", tc.flatKey, tc.val)
-			}
-			for _, want := range tc.wantIn {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not contain %q", err, want)
-				}
-			}
-
-			// POSITIVE CONTROL. Without it the refusal could just as well be a
-			// ban on the capability rather than on the retired spelling.
-			if _, err := parse([]byte("[profile.x]\n"+tc.replacement), "mine.toml", true); err != nil {
-				t.Fatalf("the replacement spelling must parse: %v", err)
-			}
-		})
-	}
-}
-
-func TestRetiredAgentProxyValueIsRefusedNamingProxy(t *testing.T) {
-	_, err := parse([]byte("[profile.x]\n[profile.x.identity.ssh]\nagent = \"agent-proxy\"\n"),
-		"mine.toml", true)
-	if err == nil {
-		t.Fatal("identity.ssh.agent = \"agent-proxy\" is retired and must be refused")
-	}
-	for _, want := range []string{"agent-proxy", "identity.ssh.agent", "proxy"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-
-	// POSITIVE CONTROL: the replacement value parses and decodes to
-	// policy.SSHAgentProxy.
-	reg, err := parse([]byte("[profile.x]\n[profile.x.identity.ssh]\nagent = \"proxy\"\n"+
-		"key = \"/home/u/.ssh/id.pub\"\n"), "mine.toml", true)
-	if err != nil {
-		t.Fatalf("the replacement value must parse: %v", err)
-	}
-	if reg["x"].Identity == nil || reg["x"].Identity.SSH.Agent != policy.SSHAgentProxy {
-		t.Fatalf("identity.ssh.agent = %+v, want %q", reg["x"].Identity, policy.SSHAgentProxy)
-	}
-}
+// [identity] moved from seven flat keys to three per-tool blocks. The flat
+// spellings and the retired agent value "agent-proxy" are simply gone — snug is
+// pre-alpha and commits to no configuration compatibility, so a stale key gets
+// DisallowUnknownFields' "unknown key" and a stale VALUE gets ParseSSHMode's
+// refusal naming the whole accepted set. What survives as a refusal of its own
+// is the one shape that PARSES and would otherwise be silently wrong: a block
+// that sets nothing. It carries a POSITIVE CONTROL, the house style this file
+// follows, because a refusal with no positive control could just as easily be
+// banning the CAPABILITY as the spelling.
 
 func TestEmptyIdentityBlockIsRefused(t *testing.T) {
 	_, err := parse([]byte("[profile.x]\n[profile.x.identity]\n"), "mine.toml", true)
@@ -139,10 +61,10 @@ func TestIdentityFieldKeysMatchTheProfileTOMLTags(t *testing.T) {
 				got = append(got, prefix+nested.Field(j).Tag.Get("toml"))
 			}
 		default:
-			// The retired flat fields (SSHKey, SigningKey, SSHMode, GitName,
-			// GitEmail, GhUser, GhHost) are excluded BY NAME: their `toml:` tags
-			// are exactly the spellings policy.IdentityFieldKeys() must not
-			// produce, since those are the ones retiredFlatIdentity refuses.
+			t.Fatalf("rawIdentity.%s is neither ssh, git nor gh: [identity] is a container "+
+				"of per-tool blocks with no keys of its own, and a field here that is not "+
+				"one of the three decodes a key policy.IdentityFieldKeys() cannot name",
+				f.Name)
 		}
 	}
 	sort.Strings(got)

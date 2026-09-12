@@ -581,113 +581,6 @@ func TestEnvironValueTypeErrorsNameTheProfile(t *testing.T) {
 	}
 }
 
-// ── the retired keys ─────────────────────────────────────────────────────────
-//
-// `env` and `path` are gone, and the error names the replacement rather than
-// letting DisallowUnknownFields say "unknown key". That is the difference
-// between a key that should never have existed (deleted outright, so it hits
-// the generic unknown-key error)
-// and a key whose MEANING MOVED: `env = [...]` is still a thing a profile wants
-// to say, and the reader needs the new spelling, not the news that a word does
-// not exist.
-//
-// The prefix changed on purpose. A silently CHANGED meaning is worse than a
-// removed key, so anyone whose muscle memory reaches for `env` gets an error
-// naming `environ.inherit` instead of a subtly different grant that parses.
-
-func TestRetiredEnvKeyNamesTheFix(t *testing.T) {
-	_, err := parse([]byte("[profile.x]\nenv = [\"EDITOR\", \"PAGER\"]\n"), "mine.toml", true)
-	if err == nil {
-		t.Fatal("`env = [...]` is retired and must be refused")
-	}
-	for _, want := range []string{"mine.toml", `"x"`, "environ.inherit", "EDITOR = true", "PAGER = true"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q — the message has to be pasteable, or the\n"+
-				"author has to go and read the design to find out what replaced the key", err, want)
-		}
-	}
-
-	// POSITIVE CONTROL. Without it the refusal reads as a ban on the CAPABILITY
-	// rather than on the retired spelling, which is the exact control
-	// the retired-key path already carries.
-	reg, err := parse([]byte("[profile.x.environ.inherit]\nEDITOR = true\nPAGER = true\n"), "mine.toml", true)
-	if err != nil {
-		t.Fatalf("the replacement spelling must parse: %v", err)
-	}
-	if got := strings.Join(reg["x"].Environ.Inherit, " "); got != "EDITOR PAGER" {
-		t.Errorf("environ.inherit = %q, want both names", got)
-	}
-}
-
-func TestRetiredPathKeyNamesTheFix(t *testing.T) {
-	_, err := parse([]byte("[profile.x]\npath = [\"{home}/.local/bin\"]\n"), "mine.toml", true)
-	if err == nil {
-		t.Fatal("`path = [...]` is retired and must be refused")
-	}
-	for _, want := range []string{"mine.toml", `"x"`, "environ.merge", `PATH = ["{home}/.local/bin"]`,
-		"environ.prepend", "GRANT"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-
-	// POSITIVE CONTROL, and one that says more than the env one: the replacement
-	// spelling parses AND the message told the author about the new obligation
-	// (the profile must grant what it names), which is the part that would
-	// otherwise surface later as a refusal from a different file.
-	reg, err := parse([]byte("[profile.x]\nro = [\"{home}/.local/bin\"]\n"+
-		"[profile.x.environ.merge]\nPATH = [\"{home}/.local/bin\"]\n"), "mine.toml", true)
-	if err != nil {
-		t.Fatalf("the replacement spelling must parse: %v", err)
-	}
-	if got := strings.Join(reg["x"].Environ.Merge["PATH"], " "); got != "{home}/.local/bin" {
-		t.Errorf("environ.merge PATH = %q", got)
-	}
-}
-
-// TestRetiredAnonKeyNamesTheFix is the unit-level regression for
-// retiredAnonKey: network anonymisation (a synthetic address/gateway in
-// place of the sandbox's real one) is retired with no replacement spelling,
-// so a profile still carrying one of the four keys must be refused rather
-// than silently accepted as an ordinary (and now meaningless) grant.
-func TestRetiredAnonKeyNamesTheFix(t *testing.T) {
-	_, err := parse([]byte("[profile.x]\nnetwork = \"egress\"\naddress = \"10.13.13.2/24\"\n"+
-		"gateway = \"10.13.13.1\"\n"), "mine.toml", true)
-	if err == nil {
-		t.Fatal("`address`/`gateway` are retired and must be refused")
-	}
-	for _, want := range []string{"mine.toml", `"x"`, "address", "gateway", "no longer accepts",
-		"no longer supports network anonymisation", "no replacement key", "remove"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q — the message has to name the retired keys "+
-				"and say there is nothing to migrate to", err, want)
-		}
-	}
-	// POSITIVE CONTROL. Without it the refusal would read as a ban on `network
-	// = "egress"` itself rather than on the two retired keys — a plain egress
-	// profile naming neither must still parse.
-	reg, err := parse([]byte("[profile.x]\nnetwork = \"egress\"\n"), "mine.toml", true)
-	if err != nil {
-		t.Fatalf("a profile naming no retired key must parse: %v", err)
-	}
-	if reg["x"].Network != "egress" {
-		t.Errorf("network = %q, want %q", reg["x"].Network, "egress")
-	}
-
-	// address6/gateway6 alone are refused too — the check is OR across all
-	// four keys, not just the v4 pair.
-	_, err = parse([]byte("[profile.y]\nnetwork = \"egress\"\naddress6 = \"fd00::2/64\"\n"+
-		"gateway6 = \"fd00::1\"\n"), "mine.toml", true)
-	if err == nil {
-		t.Fatal("`address6`/`gateway6` are retired and must be refused")
-	}
-	for _, want := range []string{"address6", "gateway6"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-}
-
 // The parse-time checks run in parse, beside checkName — so `snug profile show`
 // reports them and the verdict on a profile never depends on the host reading
 // it (§2.3).
@@ -819,14 +712,8 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // Plugins
 		nil, // ListenNames
 		nil, // Environ
-		nil, // Env (retired spelling)
-		nil, // Path (retired spelling)
 		"",  // Network
 		false,
-		"",  // Address
-		"",  // Gateway
-		"",  // Address6
-		"",  // Gateway6
 		0,   // MTU
 		"",  // Podman
 		"",  // Git

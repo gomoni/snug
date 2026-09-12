@@ -17,8 +17,8 @@ const (
 	// THE VALUE IS "proxy" AND THE IDENTIFIER IS STILL SSHAgentProxy. The key is
 	// `identity.ssh.agent`, so the block already says ssh and the value no longer
 	// repeats it; the Go name keeps saying both because it is read without the
-	// block around it. The retired spelling "agent-proxy" is refused by name in
-	// internal/profile, not accepted here as a synonym — see ParseSSHMode.
+	// block around it. The older spelling "agent-proxy" is not a synonym — it is
+	// unknown, and ParseSSHMode says so.
 	SSHAgentProxy SSHMode = "proxy"
 
 	SSHNone SSHMode = "none"
@@ -32,12 +32,13 @@ const (
 // The empty string is `none`, so a profile with an identity block and no
 // `agent` key gets no agent rather than a refusal.
 //
-// IT GROWS NO ARM FOR THE RETIRED "agent-proxy", deliberately: a catalogue of
-// spellings judged individually is exactly what the paragraph above says this
-// function must not become, and a synonym accepted here would be a silent
-// narrowing of nothing — it would be a silent WIDENING of the accepted set past
-// what the refusal in internal/profile tells the author to write. One spelling,
-// one fate.
+// IT GROWS NO ARM FOR THE OLDER "agent-proxy", deliberately, and that is the
+// whole treatment a spelling snug has dropped gets: snug commits to no
+// configuration compatibility, so there is no second refusal naming the
+// replacement. A catalogue of spellings judged individually is exactly what the
+// paragraph above says this function must not become, and an arm for a dropped
+// value costs the same readability as an arm that accepted it. The message
+// names the accepted set, which is the fix either way. One spelling, one fate.
 func ParseSSHMode(s string) (SSHMode, error) {
 	switch SSHMode(s) {
 	case SSHAgentProxy, SSHNone:
