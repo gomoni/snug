@@ -41,11 +41,11 @@ func TestTopologyProcessesMatchRunStagedsPredicates(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
-		{"podman-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}},
-		{"podman-egress", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}},
-		{"podman-build-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-build"}},
+		{"isolated", []policy.ProfileName{"@sys", "@target-rw"}},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}},
+		{"podman-offline", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}},
+		{"podman-egress", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket", "@net"}},
+		{"podman-build-offline", []policy.ProfileName{"@sys", "@target-rw", "@podman-build"}},
 	}
 
 	for _, tc := range cases {
@@ -103,7 +103,7 @@ func TestTopologyProcessCountMatchesTheListItPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}
+	sel := []policy.ProfileName{"@sys", "@target-rw", "@podman-socket", "@net"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatal(err)

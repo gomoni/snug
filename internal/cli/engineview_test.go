@@ -142,7 +142,7 @@ func engineViewPolicy(t *testing.T) *policy.Policy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}
+	sel := []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatal(err)

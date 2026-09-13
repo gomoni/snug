@@ -36,8 +36,8 @@ func TestGoldenContainers(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"podman-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}},
-		{"podman-egress", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}},
+		{"podman-offline", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}},
+		{"podman-egress", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket", "@net"}},
 	}
 
 	for _, tc := range cases {
@@ -90,7 +90,7 @@ func TestDescribeContainersIsSilentWhenPodmanIsOff(t *testing.T) {
 	}
 	env := newEnvFakeEnv()
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw"}, envGoldenCtx(), env)
+		[]policy.ProfileName{"@sys", "@target-rw"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 	env.files["/opt/snug-podman/bin/podman"] = true
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
+		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestGoldenContainersEnginePinned(t *testing.T) {
 // trust never named. A screen that stays silent here is the defect, so the
 // golden carries the sentence rather than a test asserting "non-empty".
 //
-// The fixture needs nothing new: @cwd-rw grants the target
+// The fixture needs nothing new: @target-rw grants the target
 // /home/u/proj/sub writable, so $SNUG_PODMAN under it is the real spelling of
 // the finding ($SNUG_PODMAN=./bin/podman inside a sandboxed source tree).
 func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
@@ -170,7 +170,7 @@ func TestGoldenContainersEngineInsideAWritableGrant(t *testing.T) {
 	env.files[engineBin] = true
 
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
+		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestGoldenSignatureLine(t *testing.T) {
 	}
 	env := newEnvFakeEnv()
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
+		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}

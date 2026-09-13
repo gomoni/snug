@@ -22,7 +22,7 @@ func dnsPolicy(t *testing.T, profiles ...policy.ProfileName) *policy.Policy {
 		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostNameservers: testHostNameservers,
 	}
-	sel := append([]policy.ProfileName{"@sys", "@home", "@cwd-rw"}, profiles...)
+	sel := append([]policy.ProfileName{"@sys", "@home", "@target-rw"}, profiles...)
 	p, err := policy.Resolve(reg, sel, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve %v: %v", sel, err)
@@ -78,7 +78,7 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 			Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 			HostNameservers: []string{"127.0.0.53"},
 		}
-		p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net"}, ctx, policy.OSEnviron{})
+		p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@net"}, ctx, policy.OSEnviron{})
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestTheDNSLineRendersTheResolvedPolicy(t *testing.T) {
 		reg["egressnodns"] = &policy.Profile{Name: "egressnodns", Network: "egress"}
 		home, target := testTree(t)
 		p, err := policy.Resolve(reg,
-			[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "egressnodns"},
+			[]policy.ProfileName{"@sys", "@home", "@target-rw", "egressnodns"},
 			policy.Context{
 				Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 				HostNameservers: testHostNameservers,

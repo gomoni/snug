@@ -55,7 +55,7 @@ func TestDryRunEnvironmentBlockAccountsForEveryNameInside(t *testing.T) {
 		args []string
 	}{
 		{"defaults", nil},
-		{"minimal", []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@cwd-rw"}},
+		{"minimal", []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@target-rw"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			screen, code := cli(t, nil, append(append([]string{"--dry-run"}, tc.args...), proj)...)

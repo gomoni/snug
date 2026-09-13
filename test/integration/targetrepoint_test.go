@@ -158,7 +158,7 @@ func TestAnchorHidesNothingAndEvaporatesAtTeardown(t *testing.T) {
 // directory IS a grant of the right to rename inside it.
 //
 // No shipped builtin reaches this shape, and a profile binding a host
-// directory at /tmp does not either: a target under /tmp nests @cwd-rw's bind
+// directory at /tmp does not either: a target under /tmp nests @target-rw's bind
 // inside that grant and rejectMasking refuses the whole selection. So this
 // test authors its own rw-granting profile, the shape a user's own profiles.d
 // entry would take.

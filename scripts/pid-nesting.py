@@ -26,7 +26,7 @@ its mem is reachable by a payload that learns its host pid some other way.
 
 The two sides meet through a file, because they cannot see each other's process
 tree: `host` writes bwrap's host pid where `inside` polls for it. That is the
-sandbox's own working directory by default (writable under @cwd-rw), overridden
+sandbox's own working directory by default (writable under @target-rw), overridden
 with PID_FILE, or skipped entirely by passing HOST_BWRAP_PID in the environment.
 
 Nothing here needs privileges. Nothing here writes anything but that one file.

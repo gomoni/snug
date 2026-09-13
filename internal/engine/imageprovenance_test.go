@@ -241,7 +241,7 @@ func TestTheGeneratedStorageConfIsSnugsOwn(t *testing.T) {
 // whether snug WRITES it, and snug did: helperBesideEngine derives from
 // filepath.Dir(podman) and e.guestPath maps that through EngineGuestPath's
 // bind arm, which has no Access test. MEASURED with fuse-overlayfs beside an
-// engine inside an @cwd-rw target: mount_program = "/proj/bin/fuse-overlayfs",
+// engine inside an @target-rw target: mount_program = "/proj/bin/fuse-overlayfs",
 // a payload-writable path in the engine's storage configuration.
 //
 // So this asserts the SET rather than the site: no line of the generated

@@ -18,7 +18,7 @@ import (
 func TestCheckEngineBinary(t *testing.T) {
 	// A1: a READ-ONLY ancestor. /home/u/proj is granted ro by @parent-ro, which
 	// this row SELECTS (issue #550 took it out of the defaults), and
-	// /home/u/proj/other/podman sits under it but nowhere near @cwd-rw's rw
+	// /home/u/proj/other/podman sits under it but nowhere near @target-rw's rw
 	// grant at /home/u/proj/sub — so the only mount that covers it at all is
 	// read-only, and CheckEngineBinary must not refuse on visibility alone.
 	t.Run("A1: read-only ancestor is accepted", func(t *testing.T) {
@@ -70,7 +70,7 @@ func TestCheckEngineBinary(t *testing.T) {
 	})
 
 	// A4: the strings.HasPrefix sibling off-by-one. /home/u/proj/sub is
-	// @cwd-rw's rw grant; /home/u/proj/sub-other/podman merely shares a
+	// @target-rw's rw grant; /home/u/proj/sub-other/podman merely shares a
 	// string prefix with it and is a completely different, ungranted
 	// directory. A bare strings.HasPrefix(path, grant) would match this; the
 	// slash-boundary check HostPathVisible actually uses must not.
@@ -98,7 +98,7 @@ func TestCheckEngineBinary(t *testing.T) {
 		}
 		err := p.CheckEngineBinary(path)
 		if err == nil {
-			t.Fatal("a binary strictly inside @cwd-rw's rw grant was accepted")
+			t.Fatal("a binary strictly inside @target-rw's rw grant was accepted")
 		}
 		for _, want := range []string{path, "WRITABLE", "uid 0", "CAP_SYS_ADMIN"} {
 			if !strings.Contains(err.Error(), want) {
@@ -152,7 +152,7 @@ func viaGraft(t testing.TB, root string) error {
 }
 
 func TestCheckEngineToolchainTree(t *testing.T) {
-	// B1: the ANCESTOR arm — root itself is the target, which @cwd-rw grants
+	// B1: the ANCESTOR arm — root itself is the target, which @target-rw grants
 	// rw. Exercised through BOTH entry points.
 	t.Run("B1: root itself writable is refused via EngineToolchain", func(t *testing.T) {
 		const root = "/home/u/proj/sub"
@@ -187,7 +187,7 @@ func TestCheckEngineToolchainTree(t *testing.T) {
 
 	// B2: the TREE arm — the finding. Root is /home/u/proj, granted RO by
 	// @parent-ro; /home/u/proj/sub sits strictly below it and IS granted rw
-	// by @cwd-rw. The ancestor arm must NOT fire here — asserted explicitly,
+	// by @target-rw. The ancestor arm must NOT fire here — asserted explicitly,
 	// per the instruction that without this assertion the row can pass on
 	// unfixed code by silently falling through the OLD ancestor-only check.
 	t.Run("B2: a writable grant inside the tree is refused via EngineToolchain", func(t *testing.T) {
@@ -292,7 +292,7 @@ func TestCheckEngineToolchainTree(t *testing.T) {
 
 	// B6: REFUSE — depth independence. /home/u is granted only as a TMPFS by
 	// @home (no KindBind, so the ancestor arm cannot see it at all), and
-	// /home/u/proj/sub — three levels down — is @cwd-rw's rw grant. The tree
+	// /home/u/proj/sub — three levels down — is @target-rw's rw grant. The tree
 	// arm must catch a writable grant at ANY depth below root, not just an
 	// immediate child.
 	t.Run("B6: a writable grant several levels below root is refused", func(t *testing.T) {

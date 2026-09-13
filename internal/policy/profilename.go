@@ -111,8 +111,8 @@ func NewProfileName(s string) (ProfileName, error) {
 // rule applied to one of its two halves is the failure this project keeps
 // meeting (CLAUDE.md: checkEnvName vs checkEnvValue).
 //
-// The underscore hint is the one that earns its keep: eight of snug's own
-// profiles are hyphenated (@cwd-rw, @parent-ro, …), so "why not underscore" is
+// The underscore hint is the one that earns its keep: five of snug's own
+// profiles are hyphenated (@target-rw, @parent-ro, …), so "why not underscore" is
 // the question the grammar actually provokes, and the answer is a name the
 // reader can paste.
 func NameHint(bare string, i int) string {
@@ -123,7 +123,7 @@ func NameHint(bare string, i int) string {
 	case c == '_':
 		if alt := strings.ReplaceAll(bare, "_", "-"); NameFault(alt) < 0 {
 			return fmt.Sprintf(" Underscore is not in the set and the hyphen is, which is "+
-				"the spelling snug's own names use (@cwd-rw, @parent-ro): %q", alt)
+				"the spelling snug's own names use (@target-rw, @parent-ro): %q", alt)
 		}
 	case c >= 0x80:
 		return " A profile name is ASCII; a non-ASCII character is several bytes in the " +

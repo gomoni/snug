@@ -64,7 +64,7 @@ import (
 // file is root-owned on every distro that ships one, and the sandbox never
 // maps the caller to root, so the ownership refusal under test reproduces
 // identically whether @sys already covers the path (a legal same-underlying-
-// tree re-grant — the same shape as cwd-rw layering over parent-ro) or not
+// tree re-grant — the same shape as target-rw layering over parent-ro) or not
 // (a brand new mount @sys never had, which is Ubuntu's shape). Verified by
 // hand against this tree: binding a directory at /etc/ssh, a path @sys does
 // not grant on this box either, produces a FILESYSTEM row "data
@@ -614,7 +614,7 @@ func TestSSHReachParityBetweenAPlainRunAndNet(t *testing.T) {
 // mechanised negative. internal/cli/dryrun_test.go's
 // TestDescribeSSHNamesTheReplacedPathAndItsCost already asserts describeSSH
 // names RequiredRSASize, but against a SYNTHETIC profile selection built to
-// avoid host dependence ([]string{"@sys", "@home", "@cwd-rw", "sshhost"}) —
+// avoid host dependence ([]string{"@sys", "@home", "@target-rw", "sshhost"}) —
 // not the actual `defaults` setting a bare `snug <dir>` resolves to. That is
 // not a duplicate of what is being asked here: the downgrade this feature
 // accepts (issue #40) has to stay on screen for the EXACT command

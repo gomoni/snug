@@ -33,7 +33,7 @@ FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)
   tmpfs  /home/u/proj (max 1 GiB)                       (snug anchor)
   tmpfs  /home/u/.local/share (max 1 GiB)               @home
   tmpfs  /home/u/.local/state (max 1 GiB)               @home
-  rw     /home/u/proj/sub                               @cwd-rw
+  rw     /home/u/proj/sub                               @target-rw
   ro-/   everything else is a read-only skeleton (--remount-ro /)
                      ← (snug anchor) rows are snug's own empty tmpfs at an
                        ancestor of a grant. They hold nothing and grant nothing

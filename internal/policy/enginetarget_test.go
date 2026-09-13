@@ -28,13 +28,13 @@ func TestTargetGraftIsInstalledOnEveryEngineRun(t *testing.T) {
 	guest, access, ok := p.EngineTargetGraft()
 	if !ok {
 		t.Fatalf("EngineTargetGraft() ok=false for the default fixture, whose target %s is granted "+
-			"read-write by @cwd-rw — this is the ordinary case a container run always gets", p.Target)
+			"read-write by @target-rw — this is the ordinary case a container run always gets", p.Target)
 	}
 	if want := EngineBindsDir + "/" + filepath.Base(p.Target); guest != want {
 		t.Errorf("EngineTargetGraft() guest = %q, want %q", guest, want)
 	}
 	if access != AccessRW {
-		t.Errorf("EngineTargetGraft() access = %v, want AccessRW — the fixture's target is @cwd-rw, "+
+		t.Errorf("EngineTargetGraft() access = %v, want AccessRW — the fixture's target is @target-rw, "+
 			"read-write", access)
 	}
 
@@ -74,8 +74,8 @@ func TestTargetGraftAccessFollowsTheSandbox(t *testing.T) {
 		want   Access
 	}{
 		{
-			// @cwd-rw's own shape: the target is bound read-write at itself.
-			name: "@cwd-rw -> AccessRW",
+			// @target-rw's own shape: the target is bound read-write at itself.
+			name: "@target-rw -> AccessRW",
 			mounts: map[string]Mount{
 				"/home/u/proj/sub": {Guest: "/home/u/proj/sub", Kind: KindBind,
 					Host: "/home/u/proj/sub", Access: AccessRW},
@@ -84,7 +84,7 @@ func TestTargetGraftAccessFollowsTheSandbox(t *testing.T) {
 			want:   AccessRW,
 		},
 		{
-			// @sys @parent-ro alone, no @cwd-rw: nothing binds the target
+			// @sys @parent-ro alone, no @target-rw: nothing binds the target
 			// directly, and the only coverage is the parent's read-only bind
 			// reaching it by prefix.
 			name: "@sys @parent-ro -> AccessRO",

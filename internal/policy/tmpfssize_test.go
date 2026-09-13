@@ -9,16 +9,16 @@ import (
 // tmpfsSelections is the set of selections these tests scan for a size on
 // every emitted tmpfs. It reuses TestGoldenBwrapArgs's own table (bwrap_test.go)
 // rather than re-typing a parallel list of profile names: every one of those
-// selections already resolves through @cwd-rw's Include of @home, so each
+// selections already resolves through @target-rw's Include of @home, so each
 // carries the full five-tmpfs @home block plus /tmp.
 func tmpfsSelections(t *testing.T) map[string]*Policy {
 	t.Helper()
 	cases := map[string][]ProfileName{
-		"sys":                  {"@sys", "@cwd-rw"},
+		"sys":                  {"@sys", "@target-rw"},
 		"defaults":             testDefaults,
-		"parent-ro":            {"@sys", "@cwd-rw", "@parent-ro"},
-		"podman-socket":        {"@sys", "@cwd-rw", "@podman-socket"},
-		"system-ssh-uncovered": {"@home", "@cwd-rw", "@parent-ro", "runtime-bin"},
+		"parent-ro":            {"@sys", "@target-rw", "@parent-ro"},
+		"podman-socket":        {"@sys", "@target-rw", "@podman-socket"},
+		"system-ssh-uncovered": {"@home", "@target-rw", "@parent-ro", "runtime-bin"},
 	}
 	out := make(map[string]*Policy, len(cases))
 	for name, sel := range cases {
@@ -231,8 +231,8 @@ func TestPolicyWithATmpfsAndNoBoundIsRefused(t *testing.T) {
 // restriction operation invariant 1 forbids — the order-dependence such a join
 // would introduce fails loudly here rather than shipping unnoticed.
 func TestTmpfsBoundIsOrderIndependent(t *testing.T) {
-	a := mustResolve(t, "@sys", "@home", "@cwd-rw", "@parent-ro")
-	b := mustResolve(t, "@parent-ro", "@cwd-rw", "@home", "@sys")
+	a := mustResolve(t, "@sys", "@home", "@target-rw", "@parent-ro")
+	b := mustResolve(t, "@parent-ro", "@target-rw", "@home", "@sys")
 	if a.TmpfsSizeBytes != b.TmpfsSizeBytes {
 		t.Errorf("resolve([a,b]).TmpfsSizeBytes = %d, resolve([b,a]).TmpfsSizeBytes = %d; "+
 			"the bound depends on profile order", a.TmpfsSizeBytes, b.TmpfsSizeBytes)

@@ -11,7 +11,7 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// engineJudgeFixture resolves @sys, @cwd-rw, @podman-socket against
+// engineJudgeFixture resolves @sys, @target-rw, @podman-socket against
 // envGoldenCtx (Target /home/u/proj/sub) over env — the same selection every
 // other CONTAINERS-block golden in this package uses.
 func engineJudgeFixture(t *testing.T, env *envFakeEnv) *policy.Policy {
@@ -21,7 +21,7 @@ func engineJudgeFixture(t *testing.T, env *envFakeEnv) *policy.Policy {
 		t.Fatal(err)
 	}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), env)
+		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestScreenRefusalAgreesWithTheRunForEverySpelling(t *testing.T) {
 
 // TestContainersScreenAgreesWithTheRunOnASymlinkedToolchainRoot is issue
 // #422's own reproduction: $SNUG_PODMAN_ROOT names a path outside every
-// grant, spelled through a symlink that resolves into the @cwd-rw target.
+// grant, spelled through a symlink that resolves into the @target-rw target.
 // The old screen called CheckEngineToolchainTree on the raw spelling, which
 // is not covered by any grant lexically, so it printed the clearance
 // sentence while the run — which resolves first — refused. Both sides are
@@ -250,7 +250,7 @@ func TestContainersScreenDoesNotOverclaimAcrossAWritableMiddleHop(t *testing.T) 
 		t.Fatal(err)
 	}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		[]policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"},
+		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"},
 		policy.Context{Target: "/base/proj", Home: "/home/u", Shell: "/usr/bin/bash", Command: []string{"/bin/sh"}},
 		env)
 	if err != nil {

@@ -78,7 +78,7 @@ func renderedEnvBlocks(t *testing.T) map[string]string {
 	drop := map[policy.ProfileName]*policy.Profile(mustBuiltins(t))
 	drop["dropper"] = &policy.Profile{
 		Name:    "dropper",
-		Include: []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Include: []policy.ProfileName{"@sys", "@home", "@target-rw"},
 		Environ: policy.EnvGrants{Sanitise: []string{"PATH"}},
 	}
 	host := newEnvFakeEnv()
@@ -270,7 +270,7 @@ func TestAValueCannotForgeAMarkLine(t *testing.T) {
 	m := map[policy.ProfileName]*policy.Profile(mustBuiltins(t))
 	m["forge"] = &policy.Profile{
 		Name:    "forge",
-		Include: []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Include: []policy.ProfileName{"@sys", "@home", "@target-rw"},
 		// Absolute (a relative element is refused outright), GRANTED (the
 		// coupling rule refuses a path the profile does not bring — which is why
 		// the forgery has to live under the fixture $HOME rather than anywhere

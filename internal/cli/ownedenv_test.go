@@ -153,7 +153,7 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	// only a policy carrying an Identity ever produces.
 	reg["ident"] = &policy.Profile{
 		Name:     "ident",
-		Include:  []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Include:  []policy.ProfileName{"@sys", "@home", "@target-rw"},
 		Identity: &policy.Identity{Git: policy.IdentityGit{Name: "A", Email: "a@example.com"}},
 	}
 

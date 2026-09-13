@@ -22,10 +22,10 @@ import (
 // that needs a base sitting above the floor.
 func TestAddingAProfileNeverLowersATopologyField(t *testing.T) {
 	bases := map[string][]ProfileName{
-		"isolated": {"@sys", "@cwd-rw"},
+		"isolated": {"@sys", "@target-rw"},
 		// Starts at NetnsStage, so adding an isolated profile must not walk
 		// back down to NetnsSandbox.
-		"egress": {"@sys", "@cwd-rw", "netty"},
+		"egress": {"@sys", "@target-rw", "netty"},
 	}
 
 	// Coverage, asserted rather than assumed: a base that stopped resolving to
@@ -114,7 +114,7 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 }
 
 func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
-	p := mustResolve(t, "@sys", "@cwd-rw")
+	p := mustResolve(t, "@sys", "@target-rw")
 	// NetnsStage against a selection with no net profile: deriveTopology maps
 	// NetIsolated to NetnsSandbox, so this is a Topology no Resolve produces.
 	p.Topology.Netns = NetnsStage

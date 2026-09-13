@@ -30,7 +30,7 @@ import (
 // *policy.Policy", and execResolution takes a name. Giving it a parameter it
 // does not read, purely to be swept, would be a lie told to a test.
 func TestBothRenderersStateTheSameArgv0Resolution(t *testing.T) {
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@net"}
 
 	human := squashSpace(jsonGoldenHumanScreen(t, sel))
 	doc := jsonGoldenReport(t, sel, false)

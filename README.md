@@ -52,7 +52,7 @@ will be constructed. Both page through `$PAGER` on a terminal.
 
  * `@sys`: read-only `/usr`, `/bin`, and 14 enumerated `/etc` entries.
  * `@home`: tmpfs `$HOME` plus `.cache`, `.config`, `.local/state`, `.local/share` and `XDG` env variables.
- * `@cwd-rw`: the target directory is read-write.
+ * `@target-rw`: the target directory is read-write.
 
 Not a default, and it has to be typed: `@parent-ro` grants the target's PARENT
 read-only, for tools that read next to the project — a monorepo root, a sibling
@@ -74,7 +74,7 @@ ls: cannot access '/home/you/.ssh': No such file or directory
 myproject
 🔒 snug:~/src/myproject$ echo "hello" > ../hello   # succeeds; the host never sees it
 
-# cwd is read write because of @cwd-rw
+# the target directory is read-write because of @target-rw
 🔒 snug:~/src/myproject$ cat hello
 hello from host
 🔒 snug:~/src/myproject$ echo "hello from snug" > hello
@@ -128,7 +128,7 @@ better sandbox by combining those. This is an example
 ```toml
 [profile.dev]
 description = "Development profile, allows network, claude and podman for vyskocilm@github"
-include = ["@net", "@claude", "@sys", "@home", "@cwd-rw", "@podman-socket", "@podman-build", "vyskocilm"]
+include = ["@net", "@claude", "@sys", "@home", "@target-rw", "@podman-socket", "@podman-build", "vyskocilm"]
 
 [profile.vyskocilm]
 description = "Allow proper ssh keys and gh account"
@@ -290,7 +290,7 @@ $ snug profile dot | dot -Tpng -o profiles.png
 |---|---|
 | `@sys` | `/usr` plus the dozen `/etc` entries things actually need. |
 | `@home` | `$HOME` as an empty tmpfs at the host path. Ephemeral. |
-| `@cwd-rw` | The target directory, writable and persistent. |
+| `@target-rw` | The target directory, writable and persistent. |
 | `@parent-ro` | The target's parent, read-only. |
 | `@git-ro` | Your git name and email, extracted from the host config and regenerated. Never bound. |
 | `@net` | Internet access. Copies your host's address in, and the seal names every address on every host interface inside (disclosure, not reach). Host loopback and every address the host owns are unreachable regardless. |
@@ -329,7 +329,7 @@ independently optional and an absent one contributes nothing.
 ```toml
 # ~/.config/snug/profiles.d/accounts.toml
 [profile.work]
-include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+include = ["@sys", "@home", "@target-rw", "@parent-ro", "@net"]
   [profile.work.identity.ssh]
   key   = "{home}/.ssh/work.pub"     # the PUBLIC half
   agent = "proxy"
@@ -466,7 +466,7 @@ ENVIRONMENT  (--clearenv, then:)
   HOME             /home/u                         (snug)
   PATH             /usr/bin /bin /usr/sbin /sbin   (snug)    base
   PS1              🔒 snug:\w\$                     (snug)
-  SNUG_PROFILES    @cwd-rw,@home,@sys              (snug)
+  SNUG_PROFILES    @target-rw,@home,@sys              (snug)
   XDG_CONFIG_HOME  /home/u/.config                 set       @home
 ```
 

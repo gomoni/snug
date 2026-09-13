@@ -18,10 +18,10 @@ func sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) 
 // snug's own registry is made of.
 func TestNewProfileNameAppliesTheGrammar(t *testing.T) {
 	accepted := []string{
-		"a", "Z", "0", "sys", "cwd-rw", "a-b-c", "x9", "ABC-123", "a--b",
+		"a", "Z", "0", "sys", "target-rw", "a-b-c", "x9", "ABC-123", "a--b",
 		strings.Repeat("a", 64),
 		// The mark, on every shape a bare name can take.
-		"@sys", "@cwd-rw", "@a", "@0",
+		"@sys", "@target-rw", "@a", "@0",
 	}
 	for _, s := range accepted {
 		t.Run("accept/"+s, func(t *testing.T) {
@@ -178,7 +178,7 @@ func TestNewProfileNamesNamesTheOffendingEntry(t *testing.T) {
 // instead of being a conversion at each call site. If that stops holding, the
 // sigil helpers become a second door.
 func TestSigilHelpersStayInsideTheGrammar(t *testing.T) {
-	for _, s := range []string{"sys", "@sys", "cwd-rw", "@cwd-rw", "a", "@a"} {
+	for _, s := range []string{"sys", "@sys", "target-rw", "@target-rw", "a", "@a"} {
 		n, err := NewProfileName(s)
 		if err != nil {
 			t.Fatalf("fixture %q is not a legal name: %v", s, err)
@@ -227,7 +227,7 @@ func TestZeroProfileNameIsInvalid(t *testing.T) {
 // method added later would move every golden — which is precisely the cost the
 // decision was made to avoid. Failing here means someone added one.
 func TestProfileNameRendersAsItsUnderlyingString(t *testing.T) {
-	const raw = "@cwd-rw"
+	const raw = "@target-rw"
 	n, err := NewProfileName(raw)
 	if err != nil {
 		t.Fatal(err)

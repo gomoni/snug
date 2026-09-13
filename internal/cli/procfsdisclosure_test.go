@@ -44,9 +44,9 @@ func TestDryRunDisclosesTheProcfsClosureExemption(t *testing.T) {
 		sel      []policy.ProfileName
 		disclose bool
 	}{
-		{"ordinary run", []policy.ProfileName{"@sys", "@home", "@cwd-rw"}, false},
-		{"engine named", []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, true},
-		{"engine via include", []policy.ProfileName{"@sys", "@home", "@cwd-rw", "viaInclude"}, true},
+		{"ordinary run", []policy.ProfileName{"@sys", "@home", "@target-rw"}, false},
+		{"engine named", []policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, true},
+		{"engine via include", []policy.ProfileName{"@sys", "@home", "@target-rw", "viaInclude"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := policy.Resolve(m, tc.sel, envGoldenCtx(), newEnvFakeEnv())

@@ -879,9 +879,9 @@ func TestEveryMergeableListIsPathValued(t *testing.T) {
 			continue
 		}
 		reg := testRegistry()
-		reg["band"] = &Profile{Name: "band", Include: []ProfileName{"@cwd-rw"},
+		reg["band"] = &Profile{Name: "band", Include: []ProfileName{"@target-rw"},
 			Environ: EnvGrants{Merge: map[string][]string{name: {" ← not granted"}}}}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "band"}, testCtx(), newFakeEnv())
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "band"}, testCtx(), newFakeEnv())
 		if err == nil {
 			t.Errorf("environ.merge %s accepted an element beginning with an em space and an "+
 				"arrow. Rendered, that is a continuation line whose visual indent reaches the "+

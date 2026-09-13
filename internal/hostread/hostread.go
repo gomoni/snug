@@ -8,7 +8,7 @@
 // a file the user pointed snug at by name (identity.ssh.key), and a file a
 // hostile REPO can influence the location or timing of ($XDG_CONFIG_HOME
 // pointed into a checked-out tree, CLAUDE.md invariant 3; a target directory
-// under @cwd-rw). A plain os.ReadFile trusts the node at that path to be an
+// under @target-rw). A plain os.ReadFile trusts the node at that path to be an
 // ordinary file that returns promptly and eventually ends. None of those
 // three owners is obliged to honor that: `rm key.pub && mkfifo key.pub`
 // (issue #337) turns the read into an open(2) that never returns — no

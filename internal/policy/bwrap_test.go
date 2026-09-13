@@ -25,20 +25,20 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// silently grow a host value every future case inherits.
 		env func() *fakeEnv
 	}{
-		{"sys", []ProfileName{"@sys", "@cwd-rw"}, testCtx(), nil},
+		{"sys", []ProfileName{"@sys", "@target-rw"}, testCtx(), nil},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
-		// `cwd-rw` anyway — but this is the file that changes if the shipped
+		// `target-rw` anyway — but this is the file that changes if the shipped
 		// defaults ever do, which is the diff a human most needs to see.
 		{"defaults", testDefaults, testCtx(), nil},
-		{"parent-ro", []ProfileName{"@sys", "@cwd-rw", "@parent-ro"}, testCtx(), nil},
+		{"parent-ro", []ProfileName{"@sys", "@target-rw", "@parent-ro"}, testCtx(), nil},
 		// No prior golden selected a podman profile at all, so this is the
 		// review artifact for the whole podman-client change: the container
 		// proxy socket AND the staged dispatcher stub (this fixture's host
 		// detects podman as a distrobox shim — see testCtxWithPodmanShim),
 		// including its PATH placement ahead of the base but behind nothing
 		// else this selection grants.
-		{"podman-socket", []ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, testCtxWithPodmanShim(), nil},
+		{"podman-socket", []ProfileName{"@sys", "@target-rw", "@podman-socket"}, testCtxWithPodmanShim(), nil},
 		// The review artifact for the sanitise-C fix (envresolve.go's
 		// keepHostElement): no prior golden selected environ.sanitise at all, so
 		// the whole change to the filter's Kind-switch produced zero golden
@@ -64,7 +64,7 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// other case with the file present always has @sys too. "runtime-bin"
 		// supplies the OS-runtime grant Validate requires, deliberately at /bin
 		// rather than /usr, so it cannot accidentally cover the ssh path itself.
-		{"system-ssh-uncovered", []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
+		{"system-ssh-uncovered", []ProfileName{"@home", "@target-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
 		// The review artifact for the OSC-52 half of --new-session (issue
 		// #528): a run whose stdio carries no terminal — a pipe, a redirect, a
 		// CI job, a hook. Byte-identical to "defaults" except for the single
@@ -181,8 +181,8 @@ func goldenFormat(args []string) string {
 // The argv must be a pure function of the RESOLVED policy, never of the order
 // the profiles were named. Emission order comes from the depth sort.
 func TestBwrapArgsAreOrderIndependent(t *testing.T) {
-	a := mustResolve(t, "@sys", "@home", "@cwd-rw", "@parent-ro")
-	b := mustResolve(t, "@parent-ro", "@cwd-rw", "@home", "@sys")
+	a := mustResolve(t, "@sys", "@home", "@target-rw", "@parent-ro")
+	b := mustResolve(t, "@parent-ro", "@target-rw", "@home", "@sys")
 	if strings.Join(a.BwrapArgs(1000, 1000), " ") != strings.Join(b.BwrapArgs(1000, 1000), " ") {
 		t.Error("argv depends on the order profiles were named")
 	}

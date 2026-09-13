@@ -210,7 +210,7 @@ func TestShowIdentityRendersTheSigningKey(t *testing.T) {
 // The assertions are on configDecodeMessage rather than loadUserConfig because
 // that function exits the process. The fixture is #558's config verbatim.
 func TestConfigDecodeMessageNamesTheKeyAndTheFix(t *testing.T) {
-	const reported = `defaults = ["@sys", "@home", "@net", "@cwd-rw", "@git-ro"]
+	const reported = `defaults = ["@sys", "@home", "@net", "@target-rw", "@git-ro"]
 
 [profile.npm]
 description = "Share npm directory from home."

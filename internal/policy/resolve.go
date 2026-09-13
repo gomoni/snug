@@ -181,7 +181,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	// The target's writability is an rw grant like any other, so ONE check over
 	// writable grants covers both a profile granting rw over ~/.config and the
-	// case that was measured: `snug -p @cwd-rw ~/.config/snug/profiles.d`
+	// case that was measured: `snug -p @target-rw ~/.config/snug/profiles.d`
 	// resolved, and --dry-run printed the profile store as "WRITABLE and
 	// PERSISTS". Sandboxing ~/.config/snug is already refused, one level up, for
 	// an unrelated reason (it sits in @home's tmpfs), which is why nothing
@@ -992,6 +992,9 @@ func Expand(reg map[ProfileName]*Profile, selected []ProfileName) (map[ProfileNa
 // profile list", the same shape a retired key's generic unknown-key error already
 // uses for a retired TOML key.
 var retiredProfiles = map[ProfileName]string{
+	"cwd-rw": "@cwd-rw is now @target-rw: the grant was always {target}, the " +
+		"directory named on the command line, and \"cwd\" named a side effect of " +
+		"--chdir rather than the grant itself. Rewrite the selection",
 	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
@@ -1208,7 +1211,7 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 //	mkdir -p '/tmp/x/{home}' /tmp/x/home/u
 //	snug '/tmp/x/{home}'
 //	  -> TARGET  /tmp/x/{home}   read-only, via @parent-ro
-//	  -> rw      /tmp/x/home/u        @cwd-rw    <- a DIFFERENT directory, writable
+//	  -> rw      /tmp/x/home/u        @target-rw    <- a DIFFERENT directory, writable
 //
 // The payload wrote to it and the write persisted to the host, while the
 // directory the user actually named was read-only. "The target is the only
