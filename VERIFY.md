@@ -5572,17 +5572,39 @@ Expect two lines; then `/home/<you>/.ssh/id_snug_signing.pub`; then `true`. The
 path is snug's own staged copy — the host's `~/.ssh` is not mounted, and nothing
 was read from your `~/.gitconfig`.
 
-A commit signs, and the signature names the signing key rather than the
-authentication one:
+A commit signs. Read the commit OBJECT for it, not a `%G` placeholder: every
+one of those asks git to VERIFY, and verification is a separate grant that is
+not built (#576), so `%GK` prints an empty line and `%G?` prints `N` on a commit
+that really is signed.
 
 ```bash
-./bin/snug -p acct-a $SC/proj/sub -- sh -c 'git commit --allow-empty -m signed && git log -1 --format=%GK'
+./bin/snug -p acct-a $SC/proj/sub -- sh -c 'git commit --allow-empty -m signed && git cat-file commit HEAD | sed -n "/^gpgsig/,+1p"'
 ```
 
-Expect exit 0 and the signing key's fingerprint. `git log --show-signature`
-reports `gpg.ssh.allowedSignersFile needs to be configured` — that is
-VERIFICATION, a different grant with a different abuse sentence, deliberately
-not built (#453 point 5). The commit is signed regardless.
+Expect exit 0, `gpgsig -----BEGIN SSH SIGNATURE-----`, and the first line of the
+blob. Then check on the HOST, outside the sandbox, where your own
+`allowed_signers` exists — this is the step that proves WHICH key signed:
+
+```bash
+git -C $SC/proj/sub log --show-signature -1
+```
+
+Expect `Good "git" signature for <your signing email> with ED25519 key
+SHA256:<the signing key's fingerprint>` — the signing key, not the
+authentication one.
+
+Inside, verification is unavailable and fails in two different shapes:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- git log -1 --show-signature --format=%h
+./bin/snug -p acct-a $SC/proj/sub -- git verify-commit HEAD
+```
+
+Both print `error: gpg.ssh.allowedSignersFile needs to be configured and exist
+for ssh signature verification` on stderr. The first then prints `No signature`
+and exits **0** — a signed commit reads as unsigned, successfully; the second
+exits 1. That is VERIFICATION, a different grant with a different abuse
+sentence, not built (#576). The commit is signed regardless.
 
 **The negatives, and they are the point.**
 
