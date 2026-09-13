@@ -636,7 +636,7 @@ func run(cfg config) int {
 		LegacyTIOCSTI:   legacyTIOCSTI(),
 		StdioTerminals:  stdioTerminals(),
 		HostNameservers: hostNameservers(),
-		KnownHosts:      knownHostsFor(identityHost(reg, selected)),
+		KnownHosts:      knownHostsFor(identitySSHHost(reg, selected)),
 		HostGit:         hostGit,
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and

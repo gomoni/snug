@@ -63,11 +63,8 @@ func TestGoldenIdentityArgv(t *testing.T) {
 	reg["signed"] = &policy.Profile{
 		Name: "signed",
 		Identity: &policy.Identity{
-			SSHMode:    policy.SSHAgentProxy,
-			SSHKey:     authPath,
-			SigningKey: signPath,
-			GitName:    "Some One",
-			GitEmail:   "some.one@example.com",
+			SSH: policy.IdentitySSH{Agent: policy.SSHAgentProxy, Key: authPath},
+			Git: policy.IdentityGit{SigningKey: signPath, Name: "Some One", Email: "some.one@example.com"},
 		},
 	}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "signed")
@@ -109,6 +106,12 @@ func TestGoldenIdentityArgv(t *testing.T) {
 		}
 	}
 
+	// #454 NESTED THE Go FIXTURE ABOVE INTO SSH/Git/Gh BLOCKS BUT MUST NOT MOVE
+	// THIS FILE: the fd numbers 14-18 are ORDERING-sensitive (they are assigned
+	// by the order startIdentity stages mounts in, not by anything about the
+	// identity schema), and nothing about staging changed with the nesting. A
+	// diff here means the refactor changed staging order or content, which it
+	// must not — go back and find what moved.
 	path := filepath.Join("testdata", "identity.bwrap.txt")
 	if *update {
 		if err := os.MkdirAll("testdata", 0o755); err != nil {

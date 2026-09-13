@@ -55,27 +55,9 @@ type rawProfile struct {
 	// neither needs a special case below.
 	Environ *rawEnviron `toml:"environ"`
 
-	// Env and Path are the retired spellings, kept as FIELDS rather than
-	// deleted. Deleting them would let DisallowUnknownFields produce the generic
-	// "unknown key" message, and a key whose meaning MOVED deserves a named
-	// error pointing at the replacement — see retiredEnvKey and retiredPathKey,
-	// which is the whole reason these two lines are still here.
-	Env  []string `toml:"env"`
-	Path []string `toml:"path"`
-
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
-	// Address/Gateway/Address6/Gateway6 are the retired network-anonymisation
-	// spellings, kept as FIELDS for the same reason Env and Path are above —
-	// so toEnvGrants can name them in retiredAnonKey rather than let
-	// DisallowUnknownFields produce the generic "unknown key" message. The
-	// feature they configured (a synthetic address in place of the sandbox's
-	// real one) is retired, not moved: there is no replacement spelling.
-	Address  string `toml:"address"`
-	Gateway  string `toml:"gateway"`
-	Address6 string `toml:"address6"`
-	Gateway6 string `toml:"gateway6"`
-	MTU      int    `toml:"mtu"`
+	MTU     int    `toml:"mtu"`
 
 	Podman   string       `toml:"podman"`
 	Git      string       `toml:"git"`
@@ -103,14 +85,38 @@ type rawEnviron struct {
 	Sanitise map[string]bool   `toml:"sanitise"`
 }
 
+// rawIdentity is [profile.X.identity]: a container of per-tool blocks with no
+// keys of its own.
+//
+// The inner blocks are VALUES, not pointers, which is the opposite of
+// rawProfile.Identity above. That pointer is load-bearing — p.Identity != nil is
+// what gates the generated ~/.gitconfig and sets IdentityOwner — and inside it
+// there is no absent-vs-empty distinction left to preserve: an empty
+// [identity.ssh] and an absent one both yield empty strings, so pointers would buy
+// three nil guards and no behaviour. DisallowUnknownFields reaches a nested value
+// struct identically, which is what makes identity.ssh.kee an error one level down
+// for free — the same property rawEnviron relies on for environ.deny.
 type rawIdentity struct {
-	SSHKey     string `toml:"ssh_key"`
+	SSH rawIdentitySSH `toml:"ssh"`
+	Git rawIdentityGit `toml:"git"`
+	Gh  rawIdentityGh  `toml:"gh"`
+}
+
+type rawIdentitySSH struct {
+	Host  string `toml:"host"`
+	Key   string `toml:"key"`
+	Agent string `toml:"agent"`
+}
+
+type rawIdentityGit struct {
+	Name       string `toml:"name"`
+	Email      string `toml:"email"`
 	SigningKey string `toml:"signing_key"`
-	SSHMode    string `toml:"ssh_mode"`
-	GitName    string `toml:"git_name"`
-	GitEmail   string `toml:"git_email"`
-	GhUser     string `toml:"gh_user"`
-	GhHost     string `toml:"gh_host"`
+}
+
+type rawIdentityGh struct {
+	Host string `toml:"host"`
+	User string `toml:"user"`
 }
 
 // nameFault and nameByteDesc are policy.NameFault and policy.NameByteDesc, and
@@ -322,6 +328,10 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err := policy.ValidateEnvGrants(environ); err != nil {
 			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 		}
+		identity, err := toIdentity(r.Identity, rawName, source)
+		if err != nil {
+			return nil, err
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
@@ -339,7 +349,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			MTU:         r.MTU,
 			Podman:      r.Podman,
 			Git:         r.Git,
-			Identity:    toIdentity(r.Identity),
+			Identity:    identity,
 			Source:      source,
 			Trusted:     trusted,
 		}
@@ -348,9 +358,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 }
 
 // toEnvGrants turns one profile's raw `environ` block into the value the
-// resolver folds, and refuses the retired keys: the two `environ` replaced,
-// and the four network-anonymisation scalars snug no longer supports at all
-// (retiredAnonKey).
+// resolver folds.
 func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 	g := policy.EnvGrants{}
 	if e := r.Environ; e != nil {
@@ -369,110 +377,7 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 			return g, err
 		}
 	}
-
-	if len(r.Env) > 0 {
-		return g, retiredEnvKey(source, name, r.Env)
-	}
-	if len(r.Path) > 0 {
-		return g, retiredPathKey(source, name, r.Path)
-	}
-	if r.Address != "" || r.Gateway != "" || r.Address6 != "" || r.Gateway6 != "" {
-		return g, retiredAnonKey(source, name, r.Address, r.Gateway, r.Address6, r.Gateway6)
-	}
 	return g, nil
-}
-
-// The retired keys, and why they are FIELDS on rawProfile rather than
-// deletions.
-//
-// A key that never should have existed is retired by deleting its struct field
-// and letting DisallowUnknownFields fire, which yields the generic "unknown key"
-// message. That is right for such a key and wrong for two other classes, which
-// is why all of the fields below stay.
-//
-// The first class is a key whose MEANING MOVED: `env = [...]` is still a thing
-// a profile wants to say, and the reader needs to be told the new spelling
-// rather than told the key does not exist. Both errors name the replacement —
-// spelled out with this profile's own variables, so the fix can be pasted. The
-// prefix changed deliberately. `env` became `environ.inherit` and not
-// `environ.env`, because a silently CHANGED meaning is worse than a removed
-// key: anyone whose muscle memory reaches for the old word gets an error
-// naming the new one, rather than a subtly different grant that parses.
-//
-// The second class is a key whose FEATURE was removed after shipping:
-// `address`/`gateway`/`address6`/`gateway6` named a synthetic address that
-// hid the sandbox's real one, and network anonymisation is not a capability
-// snug offers any more (retiredAnonKey). There is no replacement spelling to
-// point at, so this refusal's fix is "remove it" rather than "write it this
-// other way" — a generic "unknown key" would read as a typo and send the
-// author looking for the field that moved, when the field is simply gone.
-
-func retiredEnvKey(source, name string, names []string) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: profile %q uses `env = [...]`, which snug no longer accepts.\n", source, name)
-	fmt.Fprintf(&b, "       It is now [profile.%s.environ.inherit], one NAME = true per variable:\n", name)
-	fmt.Fprintf(&b, "         [profile.%s.environ.inherit]\n", name)
-	for _, n := range sortedCopy(names) {
-		fmt.Fprintf(&b, "         %s = true\n", n)
-	}
-	b.WriteString("       One name per line because `inherit` is a hole punched in --clearenv, and a\n")
-	b.WriteString("       list is easy to extend without reading. Each name is now checked: snug\n")
-	b.WriteString("       refuses the ones whose value is code, and refuses a list variable outright\n")
-	b.WriteString("       (use environ.sanitise, which keeps only the elements policy grants).")
-	return fmt.Errorf("%s", b.String())
-}
-
-func retiredPathKey(source, name string, dirs []string) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: profile %q uses `path = [...]`, which snug no longer accepts.\n", source, name)
-	fmt.Fprintf(&b, "       It is now [profile.%s.environ.merge] on PATH:\n", name)
-	fmt.Fprintf(&b, "         [profile.%s.environ.merge]\n", name)
-	fmt.Fprintf(&b, "         PATH = [%s]\n", quotedList(dirs))
-	b.WriteString("       Use environ.prepend instead if you need to be ahead of every other\n")
-	b.WriteString("       profile's entry — at most one profile may hold the front of a variable, and\n")
-	b.WriteString("       two claiming it is a refusal rather than whichever sorted first.\n")
-	b.WriteString("       Note that the profile must now GRANT the directories it names: a variable\n")
-	b.WriteString("       pointing at a path that is not inside the sandbox is worse than an absent one.")
-	return fmt.Errorf("%s", b.String())
-}
-
-// retiredAnonKey refuses whichever of `address`/`gateway`/`address6`/`gateway6`
-// name is non-empty, and names exactly which — the FEATURE they configured
-// (a synthetic address standing in for the sandbox's real one) is gone, not
-// moved, so there is no replacement spelling to point at.
-func retiredAnonKey(source, name, address, gateway, address6, gateway6 string) error {
-	var present []string
-	for _, kv := range []struct {
-		key, val string
-	}{
-		{"address", address}, {"gateway", gateway},
-		{"address6", address6}, {"gateway6", gateway6},
-	} {
-		if kv.val != "" {
-			present = append(present, kv.key)
-		}
-	}
-	return fmt.Errorf("%s: profile %q sets %s, which snug no longer accepts.\n"+
-		"       snug no longer supports network anonymisation: `@net` copies the host's\n"+
-		"       addresses into the sandbox's network namespace (a small accepted disclosure)\n"+
-		"       rather than handing the sandbox a synthetic one. There is no replacement key —\n"+
-		"       remove %s from this profile",
-		source, name, strings.Join(present, ", "), strings.Join(present, ", "))
-}
-
-func quotedList(in []string) string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		out = append(out, fmt.Sprintf("%q", s))
-	}
-	return strings.Join(out, ", ")
-}
-
-// sortedCopy mirrors policy's, for a message that does not depend on map order.
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
 }
 
 // toElementLists accepts a bare string as ONE element and an array as its
@@ -563,21 +468,68 @@ func sortedBoolKeys(m map[string]bool) []string {
 	return out
 }
 
-func toIdentity(r *rawIdentity) *policy.Identity {
+// toIdentity converts [profile.X.identity], and refuses two things: an agent
+// mode snug does not accept, and a block that sets nothing.
+//
+// Both are properties of the profile TEXT, so they belong here rather than only
+// in Resolve (see the ValidateEnvGrants call above for the full reason): the
+// verdict is the same on every host, and `snug profile show` — which renders a
+// *policy.Profile straight from the registry and never resolves — reports it.
+//
+// The ACCEPTED SET of agent modes is checked HERE TOO, by calling ParseSSHMode
+// rather than by re-listing what it accepts. Two doors, one author: Resolve keeps
+// its call because ParseSSHMode is also the door for an Identity built in Go —
+// both identity goldens are struct literals — so the set has to be enforced where
+// every caller passes through; and this call exists because the value is a
+// property of the profile TEXT, so `snug profile show` must report it like every
+// other bad key. It did not: a profile carrying the retired `agent = "agent-proxy"`
+// rendered its ssh row, its capability paragraph and exit 0 on the screen a human
+// reads to decide whether to select it, while every run of it exited 77 (redteam,
+// #454's branch). Adding a second LIST of accepted spellings here would be the
+// copy-of-state this repository keeps deleting; calling the one function is not.
+func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if r == nil {
-		return nil
+		return nil, nil
 	}
-	// ssh_mode is validated in policy.Resolve, not here: an unknown mode should
-	// name the profile it came from, and only the resolver knows that.
-	return &policy.Identity{
-		SSHKey:     r.SSHKey,
-		SigningKey: r.SigningKey,
-		SSHMode:    policy.SSHMode(r.SSHMode),
-		GitName:    r.GitName,
-		GitEmail:   r.GitEmail,
-		GhUser:     r.GhUser,
-		GhHost:     r.GhHost,
+	if _, err := policy.ParseSSHMode(r.SSH.Agent); err != nil {
+		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 	}
+	id := &policy.Identity{
+		SSH: policy.IdentitySSH{
+			Host:  r.SSH.Host,
+			Key:   r.SSH.Key,
+			Agent: policy.SSHMode(r.SSH.Agent),
+		},
+		Git: policy.IdentityGit{
+			Name:       r.Git.Name,
+			Email:      r.Git.Email,
+			SigningKey: r.Git.SigningKey,
+		},
+		Gh: policy.IdentityGh{
+			Host: r.Gh.Host,
+			User: r.Gh.User,
+		},
+	}
+	if *id == (policy.Identity{}) {
+		return nil, emptyIdentityBlock(source, name)
+	}
+	return id, nil
+}
+
+// emptyIdentityBlock refuses [identity] with no keys under it.
+//
+// An empty block is NOT inert, which is why this is a refusal rather than a
+// tolerated no-op: a non-nil Identity sets IdentityOwner, and that relabels the
+// generated ~/.gitconfig's provenance from git:<name> to identity:<name>. So a
+// block setting nothing makes --dry-run and `snug profile show` claim a pin that
+// does not exist, on the screen a human reads to decide whether to trust the
+// sandbox. Nesting multiplied the shape from one empty block to four.
+func emptyIdentityBlock(source, name string) error {
+	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
+		"       An empty block is not inert: it makes the generated ~/.gitconfig's provenance\n"+
+		"       read \"identity:%s\" on --dry-run and on `snug profile show`, so the screen a\n"+
+		"       human reads to decide whether to trust the sandbox claims a pin that does not\n"+
+		"       exist. Write at least one key, or remove the block", source, name, name)
 }
 
 func asStrict(err error, target **toml.StrictMissingError) bool {

@@ -53,6 +53,23 @@ import (
 // characters, for the same reason the test drives every sink rather than one:
 // a set is checkable, an enumeration is a list someone has to remember to
 // extend.
+//
+// WHAT THIS SWEEP CANNOT SEE: every fixture above is folded into a policy that
+// RESOLVES — `t.Fatal(err)` right after the `policy.Resolve` call requires it —
+// and the screen driven afterwards is `dryRun` over that successfully resolved
+// `p`. A resolve-time REFUSAL is a different return value (a non-nil error,
+// with `p` either nil or the exact thing that was refused for display) and this
+// function structurally never reaches one: it would fail its own control at the
+// first hostile fixture that made Resolve return an error instead of a policy.
+// That gap is why a symlink-forging destination in a resolve-time refusal
+// (resolve.go's underTargetIsLiteral and visibleErr) shipped once — the
+// refusal is a screen too, and it is the one a human reads most carefully,
+// because it is the one that stopped them. It is covered instead by
+// internal/policy's own refusal-goldens (refusals_test.go's
+// grant_symlinked_through_a_forging_destination and neighbouring cases), which
+// assert the SAME property — no raw forging rune — directly on the error text
+// Resolve returns, rather than by forcing a refusal path through a sweep this
+// one is not shaped to drive.
 func TestNoSnugScreenEmitsARawControlCharacter(t *testing.T) {
 	const forged = "FORGED-BY-A-VALUE"
 

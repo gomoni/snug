@@ -207,9 +207,9 @@ INDEX §2.4 reads as though the per-key join is the whole story.
 
 **Shipped as `underTargetIsLiteral` (`internal/policy/resolve.go`), called from
 both grant paths.** It was later found to be needed a third time and was not
-there: `identity.ssh_key` went through `expandVars` against a map containing
+there: `identity.ssh.key` goes through `expandVars` against a map containing
 `{target}` and skipped both `EvalSymlinks` and this check, so
-`ssh_key = "{target}/deploy.pub"` followed a link a previous run had planted and
+`key = "{target}/deploy.pub"` followed a link a previous run had planted and
 `sshproxy.New` pinned whatever key it named — which selects *which host key the
 sandbox may sign with*. Fixed in the same function; `internal/policy/identitykey_test.go`
 carries three tests, because a fix that refused every key under the target would

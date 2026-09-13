@@ -243,9 +243,9 @@ func TestSSHConfigDirectoryCannotBeRenamedAway(t *testing.T) {
 	proj, _ := target(t)
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one throwaway key, for the anchored ~/.ssh regression\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
 
 	r := runEnv(t, env, []string{"-p", "pinned"}, proj, `
 		mv ~/.ssh ~/.sshOLD 2>&1

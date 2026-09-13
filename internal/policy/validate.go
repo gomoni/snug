@@ -401,11 +401,11 @@ func sortedGuests(mounts map[string]Mount) []string {
 // read, .aws read, a git alias from the host's ~/.gitconfig EXECUTED, ~/.bashrc
 // executed by an interactive shell, and — issue #219 — a host ssh-agent
 // enumerated and used for a signature through the socket in ~/.ssh, which is what
-// ssh_mode = "agent-proxy" (one pinned key, no enumeration) exists to prevent.
+// identity.ssh.agent = "proxy" (one pinned key, no enumeration) exists to prevent.
 //
 // Three rules this project already holds fail at once here: the command-table
 // rule (read-only SUPPLIES every program the file names), the socket rule
-// (#219), and what ssh_mode = "agent-proxy" exists to prevent. The working
+// (#219), and what identity.ssh.agent = "proxy" exists to prevent. The working
 // agreement's own test settles it — write the abuse sentence: "a hostile process inside the
 // sandbox can use this to read every credential you own, execute your shell rc
 // files, and sign with your ssh agent." If you cannot write it, the grant is not
@@ -447,7 +447,7 @@ func (p *Policy) rejectHostHomeBind() error {
 			"       That is the largest grant snug can emit: every credential under it is\n"+
 			"       readable by the sandbox, ~/.bashrc and ~/.gitconfig are COMMAND TABLES a\n"+
 			"       read-only bind SUPPLIES rather than restrains, and any agent socket in it\n"+
-			"       can be used unfiltered — which is what ssh_mode = \"agent-proxy\" (one pinned\n"+
+			"       can be used unfiltered — which is what identity.ssh.agent = \"proxy\" (one pinned\n"+
 			"       key, no enumeration) exists to prevent, defeated by a mount.\n"+
 			"       There is no flag to allow it. Grant the part you meant instead, e.g.\n"+
 			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
@@ -541,9 +541,9 @@ func (p *Policy) rejectEndpointSource(env Environ) error {
 			"       namespace does not help either — a unix socket is filesystem, not network.\n"+
 			"       If you want the sandbox to sign with ONE key, do not mount an agent socket.\n"+
 			"       Put an identity block in your own profile and select it with -p:\n"+
-			"           [profile.work.identity]\n"+
-			"           ssh_key  = \"{home}/.ssh/id_ed25519.pub\"   # the PUBLIC half\n"+
-			"           ssh_mode = \"agent-proxy\"\n"+
+			"           [profile.work.identity.ssh]\n"+
+			"           key   = \"{home}/.ssh/id_ed25519.pub\"   # the PUBLIC half\n"+
+			"           agent = \"proxy\"\n"+
 			"       snug then runs a proxy that offers that one key, enumerates nothing, and needs\n"+
 			"       no mount. If you want a container engine, select '@podman-socket', whose\n"+
 			"       socket is a filtering proxy rather than the engine itself.\n"+

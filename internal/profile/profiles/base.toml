@@ -263,7 +263,7 @@ ro = ["{target_parent}"]
 # crafted remote URL pulled in a host file carrying credential.helper = !command.
 #
 # Not in `defaults`: it reads a host file, and reading a host file is a thing a
-# human should ask for. Combine with an [identity] block and the block wins —
+# human should ask for. Combine with an [identity.git] block and the block wins —
 # a pin that a host value could override would not be a pin.
 #
 # The generated file bounds what the HOST's config can say inside the sandbox.
@@ -364,7 +364,7 @@ dns = true
 # ── identity: one git/ssh/gh account, and nothing else ───────────────────────
 # ABUSE: the sandbox gets a SIGNING ORACLE for the pinned ssh key(s). It can push
 # to any repository the authentication key reaches, authenticate to any host that
-# trusts it, and — once signing_key is set — SIGN COMMITS AND TAGS AS YOU:
+# trusts it, and — once identity.git.signing_key is set — SIGN COMMITS AND TAGS AS YOU:
 # vouching as a human the maintainer trusts, for code it wrote itself, on any
 # repository, for as long as the run lasts.
 # Pinning bounds WHICH keys, not WHAT is done with them, and the ssh-agent
@@ -391,34 +391,46 @@ dns = true
 # profile file — the same path ~/.config/snug/profiles.d takes. Keep each
 # fence on its own line with nothing else on it, and keep the block between
 # them exactly what a human should paste.
+# ONE BLOCK PER TOOL, AND [identity] HAS NO KEYS OF ITS OWN. Each block is
+# independently optional; an absent one contributes nothing. Nothing is inherited
+# between them, which is why the host — when you need one other than github.com —
+# is written TWICE: identity.ssh.host is what the generated ~/.ssh/config, the
+# known_hosts filter and git's insteadOf rule name, the host you PUSH to, and
+# identity.gh.host is what gh mints a token for. A fallback between the two would
+# be a precedence rule, and snug has none. Naming one and not the other is refused
+# rather than defaulted, because three of the four consumers would otherwise name a
+# host you never wrote.
+#
 # TEMPLATE-BEGIN
 #   [profile.work]
 #   include = ["@net", "@git-ro"]   # the `defaults` are selected as well; -p adds
-#     [profile.work.identity]
-#     gh_user   = "you"
-#     git_name  = "Your Name"
-#     git_email = "you@example.com"
-#     ssh_key     = "{home}/.ssh/id_ed25519.pub"        # the PUBLIC half
-#     ssh_mode    = "agent-proxy"
+#     [profile.work.identity.ssh]
+#     key   = "{home}/.ssh/id_ed25519.pub"              # the PUBLIC half
+#     agent = "proxy"
+#     [profile.work.identity.git]
+#     name        = "Your Name"
+#     email       = "you@example.com"
 #     signing_key = "{home}/.ssh/id_ed25519_sign.pub"   # optional; the PUBLIC half
+#     [profile.work.identity.gh]
+#     user = "you"
 # TEMPLATE-END
 #
-# signing_key is the key `gpg.format = ssh` commit signing uses, and on a normal
+# identity.git.signing_key is the key `gpg.format = ssh` commit signing uses, and on a normal
 # setup it is NOT the key you push with — which is why it is a second field: a
 # signing key is usually authorized nowhere, so granting signing does not grant
 # push and granting push does not grant signing. snug GENERATES user.signingkey,
 # gpg.format and commit.gpgsign pointing at its own staged copy; nothing is read
-# from your ~/.gitconfig. It requires ssh_mode = "agent-proxy", because the
+# from your ~/.gitconfig. It requires identity.ssh.agent = "proxy", because the
 # private half stays in your agent and with no proxy there is nothing inside to
 # sign with. snug refuses to start unless the host agent will actually SIGN with
 # the key — holding it is not enough, because a key added with `ssh-add -c` and
 # no askpass, or with `ssh-add -h`, is listed and then refuses every signature.
 # The alternative is every commit inside failing with a message naming no cause.
-# signing_key absent = today's behaviour exactly: no signing config is generated
+# An absent signing_key generates no signing config at all
 # and only one key is pinned.
 #
 # TWO ACCOUNTS ARE TWO PROFILES, and that needs no mechanism snug does not have.
-# Write the block twice with different keys and different gh_user values; each
+# Write the blocks twice with different keys and different identity.gh.user values; each
 # sandbox then acts as one account through BOTH channels — gh and git-over-ssh —
 # and cannot act as the other. Selecting both at once is a hard error naming
 # them, because an identity is a pin and two pins are a contradiction rather

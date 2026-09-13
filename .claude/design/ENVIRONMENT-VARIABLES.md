@@ -3,9 +3,12 @@
 **Status: shipped.** `internal/policy/env*.go` is the implementation and the
 truth; this document is the format and the evidence behind each rule. §1–§3
 format, §4 the measurements that forced each rule, §5 what was considered and
-rejected — read that one only to reopen something. **§6 is genuinely open**:
-`env = [...]` and `path = [...]` are still live keys (`internal/profile/file.go`)
-and both are slated for a named error, not a silent change of meaning.
+rejected — read that one only to reopen something. §6 is what is genuinely open.
+`env = [...]` and `path = [...]` are gone: `environ.inherit` and `environ.merge`
+on `PATH` took their meanings, and the old spellings are not fields on
+`rawProfile` any more, so a profile still writing one is refused by
+`DisallowUnknownFields` as an unknown key. snug commits to no configuration
+compatibility (CLAUDE.md, "Decisions made").
 
 Decided: five verbs nested under one `environ` section, all of them profile
 keys; `prepend` usable **once per variable** across the selected set, a second is
@@ -1387,11 +1390,6 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
 
 ## 6. Open
 
-- **The `env` key has to go.** `environ.inherit` takes its meaning, so existing
-  profiles with `env = [...]` break. Make it a named error pointing at the
-  replacement, in shape of the retired `@null`. Keeping prefix `environ` rather
-  than reusing `env` deliberate: a silently *changed* meaning worse than a
-  removed key.
 - **Is `environ.append` needed?** Nothing has asked. Leaving it out keeps exactly
   one ordered operation — what makes "at most one across the set" easy to state
   and check. Adding it means answering whether prepend and append coexist (they
@@ -1401,10 +1399,6 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   "config holds preferences, never grants" amended, which is the wrong
   direction — see §1.2. Config keeps `defaults` and `prompt`, which really are
   preferences.
-- **`path` must be retired alongside `env`.** `path = [...]` does exactly what
-  `environ.merge` on `PATH` would, and `@claude` uses it today. Shipping both is
-  two mechanisms for one idea — what the `default`-profile decision exists to
-  prevent. Same named-error treatment.
 - **`XDG_RUNTIME_DIR`** needs an owner — whichever profile create a directory
   meeting the spec's obligations.
 - §4.5 (the environment outranking a pinned config file) is untouched by any of

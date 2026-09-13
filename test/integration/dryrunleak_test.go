@@ -46,9 +46,9 @@ func TestDryRunLeavesNoRunDirectoryOrSocket(t *testing.T) {
 
 	profile := "[profile.pinned]\n" +
 		"description = \"one throwaway key\"\n" +
-		"[profile.pinned.identity]\n" +
-		"ssh_mode = \"agent-proxy\"\n" +
-		"ssh_key = \"" + pub + "\"\n"
+		"[profile.pinned.identity.ssh]\n" +
+		"agent = \"proxy\"\n" +
+		"key = \"" + pub + "\"\n"
 	env := writeProfile(t, profile, "SSH_AUTH_SOCK="+agent, "XDG_RUNTIME_DIR="+runtimeDir)
 
 	out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)

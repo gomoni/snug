@@ -204,8 +204,7 @@ func identityPolicy(key string) *policy.Policy {
 		Mounts: map[string]policy.Mount{},
 		Env:    map[string]policy.EnvVar{},
 		Identity: &policy.Identity{
-			SSHKey:  key,
-			SSHMode: policy.SSHAgentProxy,
+			SSH: policy.IdentitySSH{Key: key, Agent: policy.SSHAgentProxy},
 		},
 	}
 }
@@ -213,10 +212,10 @@ func identityPolicy(key string) *policy.Policy {
 // identityPolicyWithSigningKey is identityPolicy plus a pinned signing_key,
 // which is what makes sshproxy.New run the MustSign sign probe
 // TestDryRunNeverAsksTheAgentToSign exists to check — identityPolicy alone
-// never reaches it, since MustSign is set only for identity.signing_key.
+// never reaches it, since MustSign is set only for identity.git.signing_key.
 func identityPolicyWithSigningKey(key, signKey string) *policy.Policy {
 	p := identityPolicy(key)
-	p.Identity.SigningKey = signKey
+	p.Identity.Git.SigningKey = signKey
 	return p
 }
 

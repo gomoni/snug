@@ -112,7 +112,7 @@ func hostGitValues(reg profileRegistry, selected []policy.ProfileName, home, tar
 }
 
 // gitExtractSelected peeks at the selection so the caller only does the host IO
-// when something actually asked for it. Same shape as identityHost: resolution
+// when something actually asked for it. Same shape as identitySSHHost: resolution
 // stays pure, and a sandbox that never mentions git never reads your git config.
 func gitExtractSelected(reg profileRegistry, selected []policy.ProfileName) bool {
 	set, err := policy.Expand(map[policy.ProfileName]*policy.Profile(reg), selected)

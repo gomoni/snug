@@ -174,9 +174,9 @@ with the tests passing:
   **The narrow version is usually one flag on a HELPER, and the urge to reach
   for the coarse grant is invariant 2's corollary pointing at it.** "Host
   loopback, but only `:5432`" is `pasta`'s `-T 5432` where `pastaArgs` passes
-  `-T none`. "The agent needs one key" is `ssh_mode = "agent-proxy"` with
-  `ssh_key` set, not the whole agent. Where the narrow grant is not built,
-  **say so and leave it unbuilt** rather than shipping the wide one: today no
+  `-T none`. "The agent needs one key" is `identity.ssh.agent = "proxy"` with
+  `identity.ssh.key` set, not the whole agent. Where the narrow grant is not
+  built, **say so and leave it unbuilt** rather than shipping the wide one: today no
   profile reaches a host-local service, and that cost is stated in INDEX §4.6
   rather than papered over.
 

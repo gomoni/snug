@@ -247,8 +247,8 @@ func (m NetMode) Join(o NetMode) NetMode { if o > m { return o }; return m }
 type SSHMode string
 
 const (
-    SSHAgentProxy SSHMode = "agent-proxy" // filter the host agent to one pinned key
-    SSHNone       SSHMode = "none"        // the default
+    SSHAgentProxy SSHMode = "proxy" // filter the host agent to one pinned key
+    SSHNone       SSHMode = "none"  // the default
 )
 
 // ── Podman ───────────────────────────────────────────────────────────────────
@@ -426,12 +426,16 @@ podman   = "socket"               # off < socket < build
   [profile.example.environ.inherit]  # the VALUE comes from the host
   EDITOR = true
 
-  [profile.example.identity]      # pins ONE git/ssh/gh account (§9.1)
-  gh_user   = "work"
-  git_name  = "Your Name"
-  git_email = "you@work.example"
-  ssh_key   = "~/.ssh/id_ed25519.pub"
-  ssh_mode  = "agent-proxy"
+  # pins ONE git/ssh/gh account (§9.1). [identity] has no keys of its own; each
+  # tool block is independently optional and nothing is inherited between them.
+  [profile.example.identity.ssh]
+  key   = "~/.ssh/id_ed25519.pub"
+  agent = "proxy"
+  [profile.example.identity.git]
+  name  = "Your Name"
+  email = "you@work.example"
+  [profile.example.identity.gh]
+  user  = "work"
 ```
 
 There is deliberately no `[profile.null]`. It was tried and removed: a profile that grants nothing is a preference wearing a profile's clothes, and it is unreachable by its own documented purpose besides — `-p` only ever ADDS to `defaults`, so `-p @null` cannot subtract them, and cannot show "the true empty base" it claimed to. The floor of the lattice does not need a name in this file; it is what `Resolve` returns for an empty selection, and it is reachable directly with `snug --no-defaults --dry-run <dir>`. `-p @null` is a retired name that errors, naming `--no-defaults`.
@@ -1090,8 +1094,8 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 
 - **The anti-drift thesis, which is the single best idea in the prior design.** One `Policy` value, computed once, is the sole author of *both* the `bwrap` argv *and* the container-proxy's decisions. The set of host paths a container may bind therefore cannot widen past what the sandbox itself exposes — divergence is impossible by construction, not by review. `snug` keeps this verbatim, and extends it: the same `Policy` now also authors the `pasta` argv.
 - **`include` composes upward.** Kept, with the resolution semantics tightened (§2.3).
-- **The filtering ssh-agent proxy with `ssh_mode = "agent-proxy"`.** Kept as the recommended answer (§7.1).
-- **The `[identity]` block vocabulary** (`gh_user`, `gh_host`, `git_name`, `git_email`, `ssh_key`, `ssh_mode`). Kept as-is.
+- **The filtering ssh-agent proxy with `identity.ssh.agent = "proxy"`.** Kept as the recommended answer (§7.1).
+- **The `[identity]` pin itself.** agent-sandbox spelled it as six flat keys under one table; snug nests it by tool — `identity.ssh.{host,key,agent}`, `identity.git.{name,email,signing_key}`, `identity.gh.{host,user}` — so the idea carries over and the vocabulary does not. `[identity]` has no keys of its own and each tool block is independently optional. Scoped by SUBJECT rather than by consumer: `signing_key` sits under `git` because git signs with it, even though the ssh proxy is what holds the pin. The host is two fields, not one — `identity.ssh.host` is the host you push to (the generated `~/.ssh/config`, the `known_hosts` filter, git's `insteadOf`) and `identity.gh.host` is the host `gh` mints a token for. There is no `identity.host`, and naming one without the other is refused rather than defaulted: a fallback between blocks is a precedence rule, and invariant 1 has none. The field set is not a list anyone maintains — `identityFields` derives it from the struct tags, so a leaf cannot exist without passing `CheckText`.
 - **The fd model** (`ExtraFiles` → `3+i`), **pure-Go seccomp BPF via memfd**, **strict JSON decoding with `DisallowUnknownFields()` + trailing-data check** as the API-drift guard, **strip-and-inject mount rewriting**, **component-wise (not string-prefix) containment checks**, **`StoreKey` store math**, **SELinux `:z` relabel**, **`Setpgid` on the engine but nowhere in the sandbox chain**.
 - **Two bugs whose regression tests carry over verbatim**: `bwrap` cannot create a mountpoint at a symlink destination (§3.3); and a proxy that buffers streaming response headers deadlocks foreground `docker run`, because the client calls `ContainerWait` before `ContainerStart` — `Flush()` immediately after `WriteHeader`.
 
@@ -1113,7 +1117,7 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 | `ro`, `rw` | **kept** | Direct grants. `dev` added. |
 | `env` | **kept** | Allowlist. |
 | `match` | **kept in the design, not built** (§9.2) | Convenient; the failure mode must be stated. |
-| `[identity]` + all fields | **kept** | Already the right answer. |
+| `[identity]` | **kept, nested by tool** | The pin is right; six flat keys were not. See §6.1. |
 | `network = "host"\|"offline"\|"private"` | **kept as `"host"\|"egress"\|"isolated"`**, joined by max | `private` was ambiguous about egress. `offline` removed. |
 | `docker`, `docker_build` | **`podman = "off"\|"socket"\|"build"`** | One key, one lattice, and the name matches the engine. |
 | `allowlist_root`, `mask` | **removed** | §6.2 |
@@ -1132,14 +1136,14 @@ Every surface below is off by default and reached by naming a profile. Each is a
 
 ### 7.1 ssh — the filtering agent proxy
 
-**Recommendation: `ssh_mode = "agent-proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.2 generalises this shape into the pattern the rest of the credential work is measured against.
+**Recommendation: `identity.ssh.agent = "proxy"`, unconditionally, for every real workflow.** The alternatives exist to be rejected in writing. [`SECRETS.md`](SECRETS.md) §3.2 generalises this shape into the pattern the rest of the credential work is measured against.
 
 | Mode | What it does |
 |---|---|
-| **`agent-proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
+| **`proxy`** | `snug` binds a private socket, hands it to the sandbox as `SSH_AUTH_SOCK`, and forwards to the host's **already-unlocked** agent, exposing exactly one pinned key. No key material in the sandbox. No passphrase prompt. The sandbox cannot enumerate or use your other keys. |
 | `none` | No ssh. The default. |
 
-**Those are the whole set.** `ParseSSHMode` accepts nothing else, and a profile naming anything else is refused rather than resolved as something narrower — an unrecognised mode quietly read as `none`, or as `agent-proxy` with no pinned key, would hand the author a sandbox their profile does not describe. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `agent-proxy` lacks, and the second puts key bytes in the blast radius.
+**Those are the whole set.** `ParseSSHMode` accepts nothing else, and a profile naming anything else is refused rather than resolved as something narrower — an unrecognised mode quietly read as `none`, or as `proxy` with no pinned key, would hand the author a sandbox their profile does not describe. There is no per-spelling arm for a value snug has dropped either — it is refused by naming the accepted set, which is what lets the accepted set be read as the whole set. A private one-key agent prompting for a passphrase, and staging an encrypted private key inside, were both considered and are not built: neither reaches a capability `proxy` lacks, and the second puts key bytes in the blast radius.
 
 **The proxy's rules.** It speaks the agent protocol (`golang.org/x/crypto/ssh/agent`), fresh upstream dial per connection (the protocol is not safe to interleave), and is fail-closed on anything it does not understand:
 
@@ -1321,7 +1325,7 @@ The failure mode is real and must be written down: **the target path chooses the
 Mitigations the design requires:
 
 1. `match` may not select a profile carrying any privileged grant (§2.7).
-2. Auto-selection **always** prints one line before launch: `snug: profile 'work' auto-selected by match '…'; identity gh_user=work, ssh_key=personal.pub…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
+2. Auto-selection **always** prints one line before launch: `snug: profile 'work' auto-selected by match '…'; identity gh.user=work, ssh.key=personal.pub…`. Silent credential selection is the actual danger; a visible line makes the mistake self-evident.
 3. Exactly one profile may match; two matches is a fatal error rather than a precedence rule.
 4. `--profile X` always wins over `match`, and `--no-match` disables it.
 
@@ -1397,7 +1401,7 @@ A generated file, delivered read-only from an anonymous memfd (no host temporary
 >
 > **Tooling.** Personal skills and plugins are re-exposed read-only — invoke them normally, do not try to edit them. Host `~/.claude` settings, history, prior sessions and MCP server configuration are **not** carried in; do not rely on host-configured MCP tools.
 >
-> **Identity.** *(when pinned)* git/ssh/gh are scoped to `<gh_user>`. Exactly one ssh key is available for signing; you cannot enumerate or use others.
+> **Identity.** *(when pinned)* git/ssh/gh are scoped to `<identity.gh.user>`. Exactly one ssh key is available for signing; you cannot enumerate or use others.
 
 The point is not politeness. Every sentence here removes a class of wasted turns *and* a class of confusing failure that an agent might otherwise try to "fix" by disabling something.
 

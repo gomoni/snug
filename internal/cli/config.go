@@ -1000,7 +1000,7 @@ func networkConsequence(mode string) string {
 // own row rather than being packed onto one line.
 //
 // No key MATERIAL is rendered and none is available to render: Identity.SSHKey
-// selects one key from the already-unlocked host agent, and ssh_mode =
+// selects one key from the already-unlocked host agent, and identity.ssh.agent =
 // "agent-proxy" means no private key ever enters the sandbox.
 //
 // TWO keys is the normal case once signing is pinned, and they are two rows
@@ -1013,10 +1013,10 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 		return
 	}
 	var rows []string
-	if id.SSHKey != "" {
-		row := "ssh key " + id.SSHKey
-		if id.SSHMode != "" {
-			row += " (" + string(id.SSHMode) + ")"
+	if id.SSH.Key != "" {
+		row := "ssh key " + visibleValue(id.SSH.Key)
+		if id.SSH.Agent != "" {
+			row += " (" + string(id.SSH.Agent) + ")"
 		}
 		rows = append(rows, capRows(row,
 			"THE SANDBOX CAN ACT AS THIS ACCOUNT. It can push to any repository this "+
@@ -1024,10 +1024,10 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"the run lasts. No private key enters the sandbox and your other keys "+
 				"cannot be enumerated or used.")...)
 	}
-	if id.SigningKey != "" {
-		row := "signing key " + id.SigningKey
-		if id.SSHMode != "" {
-			row += " (" + string(id.SSHMode) + ")"
+	if id.Git.SigningKey != "" {
+		row := "signing key " + visibleValue(id.Git.SigningKey)
+		if id.SSH.Agent != "" {
+			row += " (" + string(id.SSH.Agent) + ")"
 		}
 		rows = append(rows, capRows(row,
 			"THE SANDBOX CAN SIGN COMMITS AND TAGS AS YOU — vouching as a human, for "+
@@ -1036,15 +1036,22 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"agent protocol carries no purpose, so either pinned key can be used "+
 				"for either job.")...)
 	}
-	if id.GitName != "" || id.GitEmail != "" {
-		rows = append(rows, strings.TrimSpace("git "+id.GitName+" <"+id.GitEmail+">"))
+	if id.Git.Name != "" || id.Git.Email != "" {
+		rows = append(rows, strings.TrimSpace("git "+visibleValue(id.Git.Name)+
+			" <"+visibleValue(id.Git.Email)+">"))
 	}
-	if id.GhUser != "" {
-		host := id.GhHost
-		if host == "" {
-			host = "github.com"
-		}
-		rows = append(rows, "gh "+id.GhUser+" @ "+host)
+	if id.Gh.User != "" {
+		// A capRows BLOCK, where this was a bare row. The gh token is the one
+		// credential here whose effects OUTLIVE the run, and the screen that named
+		// the two keys' blast radius said nothing about it — so a human comparing
+		// profiles could see what the keys can do and not what the token can.
+		rows = append(rows, capRows("gh "+visibleValue(id.Gh.User)+" @ "+visibleValue(id.GhHost()),
+			"THE SANDBOX HOLDS A FORGE TOKEN FOR THIS ACCOUNT in a file it can read "+
+				"(~/.config/gh/hosts.yml, 0600, on tmpfs — a private copy, because gh "+
+				"REWRITES it on first use). A normal `gh auth login` token commonly "+
+				"carries repo, gist, read:org and admin:public_key; with admin:public_key "+
+				"anything inside can add an SSH key to the account, an effect that "+
+				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
 	show("identity", rows)
 }

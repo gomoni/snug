@@ -123,7 +123,7 @@ func TestIdentityOverridesExtractedValues(t *testing.T) {
 	// same rule as "which credential is used must not be steerable", applied to
 	// the file the account commits under.
 	v := GitValues{"user.name": "Host Name", "user.email": "host@example.com"}
-	id := &Identity{SSHMode: SSHAgentProxy, GitName: "Pinned Name", GitEmail: "pinned@example.com"}
+	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy}, Git: IdentityGit{Name: "Pinned Name", Email: "pinned@example.com"}}
 	out := string(GitConfigFrom(v, id, "/home/u"))
 	if !strings.Contains(out, "Pinned Name") || !strings.Contains(out, "pinned@example.com") {
 		t.Fatalf("the pinned identity did not win:\n%s", out)
@@ -138,7 +138,7 @@ func TestIdentityOverridesExtractedValues(t *testing.T) {
 // never carries them from the host. See gitextract.go's GitKeyWhitelist
 // comment for why authoring beats extraction here specifically.
 func TestGitConfigFromAuthorsSigningDirectivesFromThePin(t *testing.T) {
-	id := &Identity{SSHMode: SSHAgentProxy, SigningKey: "~/.ssh/id_ed25519_signing.pub"}
+	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy}, Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub"}}
 	out := string(GitConfigFrom(nil, id, "/home/u"))
 
 	want := "/home/u/" + SigningKeyGuest
@@ -168,7 +168,7 @@ func TestGitConfigFromNeverCarriesSigningKeysFromTheHost(t *testing.T) {
 		"commit.gpgsign":             "false",
 		"gpg.ssh.allowedsignersfile": "/home/attacker/.ssh/allowed_signers",
 	}
-	id := &Identity{SSHMode: SSHAgentProxy, SigningKey: "~/.ssh/id_ed25519_signing.pub"}
+	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy}, Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub"}}
 	out := string(GitConfigFrom(v, id, "/home/u"))
 
 	for _, hostValue := range []string{

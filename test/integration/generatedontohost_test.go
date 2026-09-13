@@ -64,9 +64,9 @@ func TestSnugRefusesToWriteItsGeneratedFilesOntoTheHost(t *testing.T) {
 
 	identity := "[profile.pinned]\n" +
 		"description = \"one throwaway key, so the identity files are generated\"\n" +
-		"[profile.pinned.identity]\n" +
-		"ssh_mode = \"agent-proxy\"\n" +
-		"ssh_key = \"" + pub + "\"\n"
+		"[profile.pinned.identity.ssh]\n" +
+		"agent = \"proxy\"\n" +
+		"key = \"" + pub + "\"\n"
 	sshrw := "[profile.sshrw]\n" +
 		"description = \"the reproduction: rw over the directory snug generates into\"\n" +
 		"# ABUSE: with this grant snug writes its own generated ssh config onto the host's.\n" +

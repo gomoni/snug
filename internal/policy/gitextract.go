@@ -65,13 +65,13 @@ func ParseGitMode(s string) (GitMode, error) {
 //
 // It is a WHITELIST and must stay one, and the signing keys — `user.signingkey`,
 // `gpg.format`, `commit.gpgsign` — stay off it even though snug now GENERATES
-// all three from [identity].signing_key. Authoring beats carrying, and not by
+// all three from identity.git.signing_key. Authoring beats carrying, and not by
 // style: a carried user.signingkey names a path on the HOST that does not exist
 // inside, and a carried `commit.gpgsign = true` then turns every commit into
 // `error: No private key found for public key "…"` followed by `fatal: failed
 // to write commit object` (measured, git 2.55.0) — worse than an unsigned
 // commit. What snug authors, it authors only for a key it has staged, whose
-// ssh_mode = "agent-proxy" the resolver has already required, and which
+// identity.ssh.agent = "proxy" the resolver has already required, and which
 // sshproxy.New has already asked the host agent to SIGN with once. Presence was
 // not enough: a key added with `ssh-add -c` and no askpass, or with
 // `ssh-add -h <destination>`, is LISTED by the agent and refused at every
@@ -110,9 +110,9 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 		return nil
 	}
 	// Belt and braces, the same shape as withoutControlCharacters: Resolve has
-	// already refused signing_key with ssh_mode = none, and this is the backstop
+	// already refused signing_key with agent = none, and this is the backstop
 	// for whatever calls the renderer next.
-	signing := id != nil && id.SigningKey != "" && id.SSHMode != SSHNone
+	signing := id != nil && id.Git.SigningKey != "" && id.SSH.Agent != SSHNone
 	// Second guard, deliberately not the only one. The extractor already drops a
 	// value carrying a control character (internal/cli/gitconfig.go), and this is the
 	// backstop for whatever calls the renderer next — because the failure it
@@ -124,11 +124,11 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 	v = withoutControlCharacters(v)
 	name, email := v["user.name"], v["user.email"]
 	if id != nil {
-		if id.GitName != "" {
-			name = id.GitName
+		if id.Git.Name != "" {
+			name = id.Git.Name
 		}
-		if id.GitEmail != "" {
-			email = id.GitEmail
+		if id.Git.Email != "" {
+			email = id.Git.Email
 		}
 	}
 
@@ -150,7 +150,7 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 		}
 	}
 	if signing {
-		b.WriteString("# AUTHORED from [identity].signing_key, never carried from the host: the\n")
+		b.WriteString("# AUTHORED from identity.git.signing_key, never carried from the host: the\n")
 		b.WriteString("# private half stays in the host agent and only the .pub is inside, so a\n")
 		b.WriteString("# carried value naming a host path would fail every commit.\n")
 		b.WriteString("# gpgsign is true because snug asked your host agent for one signature with\n")
@@ -163,8 +163,8 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 	if br := v["init.defaultbranch"]; br != "" {
 		fmt.Fprintf(&b, "[init]\n\tdefaultBranch = %s\n", gitQuote(br))
 	}
-	if id != nil && id.SSHMode != SSHNone {
-		host := id.host()
+	if id != nil && id.SSH.Agent != SSHNone {
+		host := id.SSHHost()
 		fmt.Fprintf(&b, "[url \"git@%s:\"]\n\tinsteadOf = https://%s/\n", host, host)
 	}
 	b.WriteString("[safe]\n\tdirectory = *\n")

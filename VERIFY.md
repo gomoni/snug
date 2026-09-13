@@ -925,8 +925,8 @@ snug: profile binder binds /home/<you>/mounted, whose source is a FIFO (a named 
        If you want the sandbox to sign with ONE key, do not mount an agent socket.
        Put an identity block in your own profile and select it with -p:
            [profile.work.identity]
-           ssh_key  = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
-           ssh_mode = "agent-proxy"
+           key   = "{home}/.ssh/id_ed25519.pub"   # the PUBLIC half
+           agent = "proxy"
        snug then runs a proxy that offers that one key, enumerates nothing, and needs
        no mount. If you want a container engine, select '@podman-socket', whose
        socket is a filtering proxy rather than the engine itself.
@@ -1000,7 +1000,7 @@ there is no mount flag that closes this the way `nodev` closes the device
 case — this is a kernel-level residual, not laziness.
 
 snug's OWN sockets are exempt and must be: the ssh-agent proxy (an `identity`
-block with `ssh_mode = "agent-proxy"`) and the container proxy are sockets,
+block with `identity.ssh.agent = "proxy"`) and the container proxy are sockets,
 and they are the narrower alternatives this refusal exists to stop a mount
 from replacing. The exemption is keyed on `Mount.Authored`, which only
 `Policy.Replace` sets and nothing a profile can write reaches.
@@ -1050,30 +1050,64 @@ that case is caught — but a store directory created *after* resolution, at a p
 some grant already covers, is not, for the same reason issue #287 gives about
 sockets appearing later inside a granted directory.
 
-### 4b-ter. A retired network-anonymisation key is refused, not ignored
+### 4b-ter. A key snug no longer has is refused, not ignored
 
 `address`/`gateway`/`address6`/`gateway6` configured a synthetic address in
-place of the sandbox's real one. The feature is gone — `@net` copies the
-host's addresses unconditionally now — and the fix is "remove the key", not
-"write it a different way", so a profile still carrying one must be refused
-by name rather than silently accepted with no effect.
+place of the sandbox's real one. The feature is gone — `@net` copies the host's
+addresses unconditionally now — and the key is gone with it. snug commits to no
+configuration compatibility, so there is no migration arm: the strict decoder
+refuses the field and points at the line, which is what a profile written
+against an older snug must get rather than a silently ignored grant.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
-printf '[profile.pfx]\ndescription = "a retired anonymisation key"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
+printf '[profile.pfx]\ndescription = "a key snug no longer has"\nnetwork = "egress"\naddress = "10.13.13.2/24"\ngateway = "10.13.13.1"\n' \
   > $X/snug/profiles.d/p.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p pfx $SC/proj/sub; echo "exit=$?"
 ```
 
-Expect a refusal naming both keys and the fix, `exit=77`:
+Expect the file to be reported as not loaded, with the offending key underlined,
+and `exit=77`:
 
 ```
-snug: profile "pfx" sets address, gateway, which snug no longer accepts.
-       snug no longer supports network anonymisation: `@net` copies the host's
-       addresses into the sandbox's network namespace (a small accepted disclosure)
-       rather than handing the sandbox a synthetic one. There is no replacement key —
-       remove address, gateway from this profile
+snug: 1 profile file(s) in the search path did not load:
+         .../snug/profiles.d/p.toml
+           .../snug/profiles.d/p.toml: unknown key (snug decodes profiles strictly, so a key it does not understand is an error rather than a silently ignored grant):
+           1| [profile.pfx]
+           2| description = "a key snug no longer has"
+           3| network = "egress"
+           4| address = "10.13.13.2/24"
+            | ~~~~~~~ unknown field
 ```
+
+The same shape covers every other spelling snug has dropped — `env = [...]`
+(now `environ.inherit`), `path = [...]` (now `environ.merge` on `PATH`), and the
+flat identity keys `ssh_key`/`ssh_mode`/`signing_key`/`git_name`/`git_email`/
+`gh_user`/`gh_host` (now the per-tool blocks of §13). A dropped VALUE is
+different — the key parses and the decoder has nothing to say about it — so the
+refusal comes from the accepted set instead, and it must arrive at the same
+place: parse time, so the profile is unusable on every screen and not only on a
+run.
+
+```bash
+printf '[profile.x]\n[profile.x.identity.ssh]\nagent = "agent-proxy"\nkey = "/home/u/.ssh/id.pub"\n' \
+  > $X/snug/profiles.d/p.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p x $SC/proj/sub; echo "exit=$?"
+XDG_CONFIG_HOME=$X ./bin/snug profile show x; echo "exit=$?"
+```
+
+Both report the file, not a policy, and both `exit=77`:
+
+```
+snug: 1 profile file(s) in the search path did not load:
+         .../snug/profiles.d/p.toml
+           .../snug/profiles.d/p.toml: profile "x": unknown identity.ssh.agent "agent-proxy" (want proxy or none)
+```
+
+`profile show` matters as much as the run here. It answers "is this profile any
+good", so a value no run can use must not render a capability row there — it did,
+with the mode printed verbatim and the blast-radius paragraph beside it, until
+`toIdentity` began calling `ParseSSHMode` at parse time as well as `Resolve`.
 
 ### 4c. What the payload learns about its supervisor (issue #272, accepted)
 
@@ -2765,8 +2799,8 @@ exit=77
 ```
 
 The message quotes the offending value and names the accepted set — the two
-things a reader needs to fix their own file. `ssh_mode` behaves identically:
-`agent-proxy` and `none`, anything else refused with the same shape.
+things a reader needs to fix their own file. `identity.ssh.agent` behaves identically:
+`proxy` and `none`, anything else refused with the same shape.
 
 **And the forwarder's destination is named.** On a systemd-resolved host the
 dns line reads `169.254.1.1 -> pasta -> <addr>`, where `<addr>` is the host's
@@ -3353,7 +3387,7 @@ exit=77
 
 **Every sink, not most of them.** The refusal fires wherever a profile string is
 expanded — `ro`, `rw`, `tmpfs`, `optional`, `symlink.at` AND `symlink.target`,
-the `environ` verbs, `identity.ssh_key`, and through an `include`. The symlink
+the `environ` verbs, `identity.ssh.key`, and through an `include`. The symlink
 TARGET was the hole a red-team round found: it was the one key that never
 expanded any variable at all, so `{host_tmpdir}` rendered verbatim into a link
 inode there while refusing everywhere else, and so did `{home}`. Both keys of
@@ -5417,28 +5451,33 @@ The claim: a sandbox pinned to one GitHub account acts as that account through
 sandboxes side by side, two accounts, no crossing.
 
 Nothing new is needed to express it. One `[identity]` block per profile pins the
-ssh key, the gh account and the git author together; two profiles are two
-accounts. Write them somewhere that is not the repository being sandboxed
-(invariant 3) — `~/.config/snug/profiles.d/accounts.toml`:
+ssh key, the gh account and the git author together — one sub-block per tool, and
+nothing inherited between them. Two profiles are two accounts. Write them
+somewhere that is not the repository being sandboxed (invariant 3) —
+`~/.config/snug/profiles.d/accounts.toml`:
 
 ```toml
 [profile.acct-a]
 include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
-  [profile.acct-a.identity]
-  ssh_mode  = "agent-proxy"
-  ssh_key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
-  gh_user   = "ACCOUNT-A"
-  git_name  = "Your Name"
-  git_email = "a@example.com"
+  [profile.acct-a.identity.ssh]
+  key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
+  agent = "proxy"
+  [profile.acct-a.identity.git]
+  name  = "Your Name"
+  email = "a@example.com"
+  [profile.acct-a.identity.gh]
+  user  = "ACCOUNT-A"
 
 [profile.acct-b]
 include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
-  [profile.acct-b.identity]
-  ssh_mode  = "agent-proxy"
-  ssh_key   = "{home}/.ssh/ACCOUNT-B.pub"
-  gh_user   = "ACCOUNT-B"
-  git_name  = "Your Name"
-  git_email = "b@example.com"
+  [profile.acct-b.identity.ssh]
+  key   = "{home}/.ssh/ACCOUNT-B.pub"
+  agent = "proxy"
+  [profile.acct-b.identity.git]
+  name  = "Your Name"
+  email = "b@example.com"
+  [profile.acct-b.identity.gh]
+  user  = "ACCOUNT-B"
 ```
 
 `gh` must be inside for the staged token to be usable, and on a host where it is
@@ -5474,10 +5513,10 @@ The negative is the half that matters, and it is three separate refusals:
 ./bin/snug --dry-run -p acct-a -p acct-b $SC/proj/sub
 # snug: profiles "acct-a" and "acct-b" pin different identities; select only one
 
-./bin/snug --dry-run -p acct-badkey $SC/proj/sub     # ssh_key names a missing file
+./bin/snug --dry-run -p acct-badkey $SC/proj/sub     # identity.ssh.key names a missing file
 # snug: pinned ssh key: open /home/u/.ssh/does-not-exist.pub: no such file or directory
 
-./bin/snug --dry-run -p acct-baduser $SC/proj/sub    # gh_user gh is not logged in to
+./bin/snug --dry-run -p acct-baduser $SC/proj/sub    # identity.gh.user gh is not logged in to
 # snug: no gh token for no-such-account-here on github.com.
 ```
 
@@ -5493,18 +5532,21 @@ that account's:
 ```
 
 Expect one line. Every other key in your host agent is not merely unusable — it
-is not enumerable, which is the difference between `agent-proxy` and forwarding
-the agent.
+is not enumerable, which is the difference between `agent = "proxy"` and
+forwarding the agent.
 
 ### 13a-2. A signing key is a SECOND pin, and the run refuses without it (issue #453)
 
-`signing_key` names the key `gpg.format = ssh` signs commits with. On a normal
-setup it is not the key you push with, so it is a second field and a second pin.
+`identity.git.signing_key` names the key `gpg.format = ssh` signs commits with. On
+a normal setup it is not the key you push with, so it is a second field and a
+second pin. It sits under `git` because git is what signs with it, even though the
+ssh proxy is what holds the pin.
 
-Add it to `acct-a`'s identity block, with a key your agent holds:
+Add it to `acct-a`'s git block, with a key your agent holds:
 
 ```toml
-    signing_key = "{home}/.ssh/id_ed25519_sign.pub"
+  [profile.acct-a.identity.git]
+  signing_key = "{home}/.ssh/id_ed25519_sign.pub"
 ```
 
 The screen names it before the run, next to the authentication key — a key that
@@ -5514,8 +5556,8 @@ can vouch for code as a human is exactly what has to be visible first:
 ./bin/snug -p acct-a --dry-run $SC/proj/sub | grep -A1 'ssh key'
 ```
 
-Expect two rows, the second reading `signing key … (agent-proxy, signs commits
-and tags)`.
+Expect two rows, the second reading `signing key … (proxy)` followed by the
+block naming what signing as you costs.
 
 Inside, `ssh-add -l` now lists exactly TWO keys, and the generated git config
 names the staged copy of the signing one:
@@ -5554,14 +5596,14 @@ What IS refused: a third key. Pick any other key your host agent holds and ask
 the proxy to sign with it — `ssh-add -l` inside will not list it, and a sign
 request naming it gets `SSH_AGENT_FAILURE` without your agent being contacted.
 
-`signing_key` with no agent is refused at parse time, not generated:
+`identity.git.signing_key` with no agent is refused at parse time, not generated:
 
 ```bash
 ./bin/snug -p acct-sign-no-agent --dry-run $SC/proj/sub; echo "exit=$?"
 ```
 
-with `ssh_mode = "none"` and a `signing_key` set. Expect a non-zero exit and a
-message naming `signing_key` and `agent-proxy`.
+with `identity.ssh.agent = "none"` and a `signing_key` set. Expect a non-zero exit
+and a message naming `identity.git.signing_key` and `identity.ssh.agent`.
 
 And the one that costs a behaviour change: **a key the host agent does not hold
 refuses the run.** Remove it on the host and try again:
@@ -5571,11 +5613,11 @@ ssh-add -d ~/.ssh/id_ed25519_sign
 ./bin/snug -p acct-a $SC/proj/sub -- true; echo "exit=$?"
 ```
 
-Expect a non-zero exit, before any sandbox exists, naming `identity.signing_key`,
+Expect a non-zero exit, before any sandbox exists, naming `identity.git.signing_key`,
 the path, and the key's `SHA256:` fingerprint so you can match it against
 `ssh-add -l` by eye. This is invariant 5: snug generates `commit.gpgsign = true`,
 so a key the agent does not hold would fail EVERY commit inside with an error
-that names no cause. It applies to `ssh_key` too — a pinned authentication key
+that names no cause. It applies to `identity.ssh.key` too — a pinned authentication key
 the agent has dropped now refuses at startup rather than at the first push.
 
 **And the sharper one: HOLDING the key is not enough.** A key added with
@@ -5982,9 +6024,9 @@ EOF
 $ cat > "$cfg/snug/profiles.d/pinned.toml" <<'EOF'
 [profile.pinned]
 description = "an identity, so the ssh files are generated"
-[profile.pinned.identity]
-ssh_mode = "agent-proxy"
-ssh_key = "/path/to/some/id_ed25519.pub"
+[profile.pinned.identity.ssh]
+agent = "proxy"
+key = "/path/to/some/id_ed25519.pub"
 EOF
 $ HOME=$h XDG_CONFIG_HOME=$cfg snug -p pinned -p sshrw /tmp/some-target -- true
 snug: profile sshrw grants rw on .../.ssh (the host's .../.ssh), and snug generates

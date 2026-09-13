@@ -83,9 +83,9 @@ echo PROBE-DONE
 	idProj, _ := target(t)
 	env := writeProfile(t, "[profile.pinned]\n"+
 		"description = \"one throwaway key\"\n"+
-		"[profile.pinned.identity]\n"+
-		"ssh_mode = \"agent-proxy\"\n"+
-		"ssh_key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"proxy\"\n"+
+		"key = \""+pub+"\"\n", "SSH_AUTH_SOCK="+sock)
 
 	// The probe is the payload itself, because the assertion is about THIS
 	// run's mount table: a second `snug` on the same target is an independent

@@ -54,7 +54,16 @@ type fakeEnv struct {
 	// fixture that could not hold one could not measure that half of it.
 	fifos map[string]bool
 	links map[string]string
-	env   map[string]string
+	// symlinkErrs models an EvalSymlinks failure that is NOT a successful
+	// resolution — a permission error, a symlink loop, or (the case this was
+	// added for) an fs.PathError naming the DESTINATION a real
+	// filepath.EvalSymlinks failed to stat when a symlink dangles. `links`,
+	// above, can only ever succeed, so this is the one way a fixture hands
+	// Resolve an error carrying attacker-chosen bytes without a real
+	// filesystem — see refusals_test.go's forging-rune-in-a-symlink-destination
+	// cases.
+	symlinkErrs map[string]error
+	env         map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -91,7 +100,8 @@ func newFakeEnv() *fakeEnv {
 			// GRANTED as well as named (§2.5's coupling rule).
 			"/home/u/.local/bin/tool": true,
 		},
-		links: map[string]string{},
+		links:       map[string]string{},
+		symlinkErrs: map[string]error{},
 		// EDITOR is here so a fixture profile can actually re-admit something
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
@@ -109,6 +119,9 @@ func newFakeEnv() *fakeEnv {
 func (f *fakeEnv) HostMounts() ([]HostMount, error) { return f.mounts, nil }
 
 func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
+	if err, ok := f.symlinkErrs[p]; ok {
+		return "", err
+	}
 	if t, ok := f.links[p]; ok {
 		return t, nil
 	}

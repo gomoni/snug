@@ -1,11 +1,13 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +74,189 @@ func TestUserProfileCannotRepointSysBin(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
+	}
+}
+
+// ── the symlink-forging finding ──────────────────────────────────────────────
+//
+// Redteam confirmed on commit 9289545: a resolve-time symlink refusal rendered
+// an attacker-controlled path RAW. A previous sandbox run — which had write
+// access to the target, exactly the scenario underTargetIsLiteral's own comment
+// defends against — plants a symlink under the target whose destination (or, in
+// the dangling case, whose missing component) is spelled with ESC followed by
+// CSI erase-line and cursor-up. Printed to a vt100, that erases the refusal
+// line the human was reading and leaves the attacker's own sentence in its
+// place, in snug's voice: "snug: policy verified, sandbox is safe". Two
+// call sites needed two different fixes — underTargetIsLiteral for a symlink
+// that RESOLVES, visibleErr for one that DANGLES and reaches the screen through
+// a wrapped fs.PathError — so both are exercised here, through both surfaces
+// that call them (an ordinary ro/rw grant, and a pinned identity key path).
+
+// refusalOrdinaryGrantSymlinkedThroughAForgingDestination is the redteam
+// finding's first reproduction: an ordinary `ro = ["{target}/vendor"]` grant
+// resolves through a symlink under the target to a destination carrying the
+// forging bytes. This is underTargetIsLiteral's own refusal, reached through
+// add()'s KindBind arm.
+func refusalOrdinaryGrantSymlinkedThroughAForgingDestination(t testing.TB) error {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/vendor"] =
+		"/home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe"
+	reg := testRegistry()
+	reg["rt"] = &Profile{Name: "rt", RO: []string{"{target}/vendor"}}
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "rt"), testCtx(), env)
+	return err
+}
+
+func TestOrdinaryGrantSymlinkedThroughAForgingDestinationIsEscaped(t *testing.T) {
+	err := refusalOrdinaryGrantSymlinkedThroughAForgingDestination(t)
+	if err == nil {
+		t.Fatal("a grant resolving through a symlink out of the target went unrefused")
+	}
+	if strings.ContainsRune(err.Error(), '\x1b') {
+		t.Errorf("the refusal rendered ESC raw — on a vt100 this erases the refusal line "+
+			"itself and prints the attacker's sentence in its place: %q", err)
+	}
+	for _, want := range []string{"/home/u/proj/sub/vendor", "real", "policy verified"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+}
+
+// TestOrdinaryGrantSymlinkedOutOfTargetPositiveControl is the control for the
+// case above: an ordinary destination with no forging rune must render
+// UNCHANGED, or the escaping function would pass by turning every message into
+// unreadable noise rather than by targeting the bytes that forge a screen.
+func TestOrdinaryGrantSymlinkedOutOfTargetPositiveControl(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/vendor"] = "/home/u/proj/sub/real"
+	reg := testRegistry()
+	reg["rt"] = &Profile{Name: "rt", RO: []string{"{target}/vendor"}}
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "rt"), testCtx(), env)
+	if err == nil {
+		t.Fatal("control: a symlink out of the target must still be refused with no " +
+			"forging bytes involved")
+	}
+	if !strings.Contains(err.Error(), "/home/u/proj/sub/real") {
+		t.Errorf("an ordinary destination with no forging rune was rendered escaped: %q", err)
+	}
+}
+
+// refusalOrdinaryGrantEvalSymlinksErrorCarriesAForgingRune covers the fix's
+// OTHER call site: an EvalSymlinks failure that is not "does not exist" — a
+// symlink loop, a permission error — is wrapped by fs.PathError, and its Path
+// can carry the same attacker-chosen bytes a resolved destination can. add()'s
+// non-ErrNotExist branch used to interpolate err.Error() with %w; visibleErr
+// renders it instead.
+func refusalOrdinaryGrantEvalSymlinksErrorCarriesAForgingRune(t testing.TB) error {
+	env := newFakeEnv()
+	env.symlinkErrs["/home/u/proj/sub/vendor"] = errors.New(
+		"lstat /home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe: " +
+			"too many levels of symbolic links")
+	reg := testRegistry()
+	reg["rt"] = &Profile{Name: "rt", RO: []string{"{target}/vendor"}}
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "rt"), testCtx(), env)
+	return err
+}
+
+func TestOrdinaryGrantEvalSymlinksErrorIsEscaped(t *testing.T) {
+	err := refusalOrdinaryGrantEvalSymlinksErrorCarriesAForgingRune(t)
+	if err == nil {
+		t.Fatal("an EvalSymlinks failure on a grant went unrefused")
+	}
+	if strings.ContainsRune(err.Error(), '\x1b') {
+		t.Errorf("the refusal rendered ESC raw: %q", err)
+	}
+	for _, want := range []string{"/home/u/proj/sub/vendor", "real", "policy verified"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+}
+
+// refusalIdentityKeySymlinkedThroughAForgingDestination is
+// underTargetIsLiteral's other caller: a pinned identity.ssh.key under the
+// target resolves through a symlink to a forging destination. Same fix
+// (underTargetIsLiteral itself), reached from the identity loop instead of
+// add().
+func refusalIdentityKeySymlinkedThroughAForgingDestination(t testing.TB) error {
+	env := newFakeEnv()
+	env.links["/home/u/proj/sub/deploy.pub"] =
+		"/home/u/proj/sub/real\x1b[2K\x1b[1Asnug: policy verified, sandbox is safe"
+	reg := identityRegistry("{target}/deploy.pub")
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
+	return err
+}
+
+func TestIdentityKeySymlinkedThroughAForgingDestinationIsEscaped(t *testing.T) {
+	err := refusalIdentityKeySymlinkedThroughAForgingDestination(t)
+	if err == nil {
+		t.Fatal("a pinned identity key resolving through a symlink out of the target went " +
+			"unrefused")
+	}
+	if strings.ContainsRune(err.Error(), '\x1b') {
+		t.Errorf("the refusal rendered ESC raw: %q", err)
+	}
+	for _, want := range []string{"ssh.key", "/home/u/proj/sub/deploy.pub", "real", "policy verified"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+}
+
+// refusalIdentityKeyDanglingSymlinkCarriesAForgingRune is the redteam finding's
+// SECOND reproduction, and the one that needed a separate fix: identity.ssh.key
+// = "{target}/id.pub" is a DANGLING symlink under the target — its target does
+// not exist and is spelled with the forging bytes. A dangling symlink's
+// EvalSymlinks failure is fs.ErrNotExist (errors.Is is true), but unlike add()
+// the identity loop has no "does-not-exist" branch of its own: every error,
+// ErrNotExist included, used to reach fmt.Errorf("...%s", err) with the raw
+// wrapped error text, which is where the attacker's bytes arrived — not through
+// a path snug printed itself, but through the error fs.PathError built out of
+// it.
+func refusalIdentityKeyDanglingSymlinkCarriesAForgingRune(t testing.TB) error {
+	env := newFakeEnv()
+	env.symlinkErrs["/home/u/proj/sub/id.pub"] = &fs.PathError{
+		Op: "lstat", Err: fs.ErrNotExist,
+		Path: "/home/u/proj/sub/gone\x1b[2K\x1b[1Asnug: verified safe",
+	}
+	reg := identityRegistry("{target}/id.pub")
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
+	return err
+}
+
+func TestIdentityKeyDanglingSymlinkIsEscaped(t *testing.T) {
+	err := refusalIdentityKeyDanglingSymlinkCarriesAForgingRune(t)
+	if err == nil {
+		t.Fatal("a pinned identity key that is a dangling symlink went unrefused")
+	}
+	if strings.ContainsRune(err.Error(), '\x1b') {
+		t.Errorf("the refusal rendered ESC raw — the exact redteam finding, arrived through "+
+			"a wrapped error rather than a path snug printed itself: %q", err)
+	}
+	for _, want := range []string{"ssh.key", "/home/u/proj/sub/id.pub", "gone", "verified safe"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+}
+
+// TestIdentityKeyDanglingSymlinkPositiveControl is the control for the case
+// above: a dangling symlink whose missing component carries no forging rune
+// must still name it verbatim, or the fix would be escaping everything rather
+// than the bytes that forge a screen.
+func TestIdentityKeyDanglingSymlinkPositiveControl(t *testing.T) {
+	env := newFakeEnv()
+	env.symlinkErrs["/home/u/proj/sub/id.pub"] = &fs.PathError{
+		Op: "lstat", Err: fs.ErrNotExist, Path: "/home/u/proj/sub/gone",
+	}
+	reg := identityRegistry("{target}/id.pub")
+	_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
+	if err == nil {
+		t.Fatal("control: a dangling pinned identity key must still be refused")
+	}
+	if !strings.Contains(err.Error(), "/home/u/proj/sub/gone") {
+		t.Errorf("an ordinary missing path with no forging rune was rendered escaped: %q", err)
 	}
 }
 
@@ -766,6 +951,16 @@ func TestGoldenRefusals(t *testing.T) {
 	}{
 		{"symlink_conflict_different_targets", refusalSymlinkConflict},
 		{"symlink_cannot_repoint_sys_bin", refusalUserProfileCannotRepointSysBin},
+		// The symlink-forging finding, redteam-confirmed on commit 9289545: a
+		// symlink under the target, planted by a previous run, whose destination
+		// (or, dangling, whose missing component) carries ESC + CSI erase-line and
+		// cursor-up. These four are the two fixes (underTargetIsLiteral, visibleErr)
+		// through the two surfaces that call them (an ordinary grant, a pinned
+		// identity key path).
+		{"grant_symlinked_through_a_forging_destination", refusalOrdinaryGrantSymlinkedThroughAForgingDestination},
+		{"grant_evalsymlinks_error_carries_a_forging_rune", refusalOrdinaryGrantEvalSymlinksErrorCarriesAForgingRune},
+		{"identity_key_symlinked_through_a_forging_destination", refusalIdentityKeySymlinkedThroughAForgingDestination},
+		{"identity_key_dangling_symlink_carries_a_forging_rune", refusalIdentityKeyDanglingSymlinkCarriesAForgingRune},
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
 		{"grant_at_root_tmpfs", func(t testing.TB) error { return refusalGrantAtRoot(t, "tmpfs") }},

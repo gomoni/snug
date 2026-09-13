@@ -257,7 +257,7 @@ const maxCredentialsBytes = 64 << 10
 
 // readHostFileBounded used to live here as loadHostClaudeSettings' body,
 // generalised for a second caller. It is now internal/hostread.Optional: a
-// third caller outside internal/cli (internal/sshproxy, for identity.ssh_key,
+// third caller outside internal/cli (internal/sshproxy, for identity.ssh.key,
 // issue #337) cannot import this package, and a fourth (internal/profile, for
 // a profiles.d layer) genuinely cannot either — internal/policy must stay
 // pure, and profile sits below cli. The discipline moved so it stays one
@@ -1214,10 +1214,10 @@ func claudeGuidance(pol *policy.Policy) []byte {
 		b.WriteString("misconfiguration to repair.\n\n")
 	}
 
-	if id := pol.Identity; id != nil && id.SSHMode != policy.SSHNone {
+	if id := pol.Identity; id != nil && id.SSH.Agent != policy.SSHNone {
 		b.WriteString("## Identity\n\n")
-		if id.GhUser != "" {
-			fmt.Fprintf(&b, "git, ssh and gh are scoped to the account `%s`.\n", id.GhUser)
+		if id.Gh.User != "" {
+			fmt.Fprintf(&b, "git, ssh and gh are scoped to the account `%s`.\n", id.Gh.User)
 		}
 		b.WriteString("Exactly one ssh key is available for signing. You cannot enumerate or use\n")
 		b.WriteString("any other key, and no key material is present in this sandbox.\n\n")
