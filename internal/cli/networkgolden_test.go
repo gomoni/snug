@@ -33,8 +33,8 @@ func TestGoldenNetwork(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
+		{"isolated", []policy.ProfileName{"@sys", "@target-rw"}},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}},
 	}
 
 	for _, tc := range cases {

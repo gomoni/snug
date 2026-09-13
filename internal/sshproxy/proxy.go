@@ -802,7 +802,7 @@ func takeString(b []byte) (val, rest []byte, ok bool) {
 //
 // hostread.Required, not os.ReadFile: this path is payload-reachable in the
 // most direct sense a profile allows — identity.ssh.key names a file under the
-// target, which @cwd-rw makes rw, and `rm key.pub && mkfifo key.pub` from a
+// target, which @target-rw makes rw, and `rm key.pub && mkfifo key.pub` from a
 // PREVIOUS run turned a plain ReadFile into an open(2) that never returns,
 // before the sandbox even exists (issue #337). "Required" because an
 // unreadable pinned key must stay a hard error naming the path, exactly as

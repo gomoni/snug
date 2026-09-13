@@ -235,7 +235,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		// Containers, with a host whose podman is a distrobox shim — so the
 		// staged stub's directory appears on PATH and the golden shows where in
 		// the ordering it lands.
-		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtxWithShim(), false, nil},
+		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtxWithShim(), false, nil},
 		// The MARKS screen, and the reason it is a golden rather than a handful of
 		// strings.Contains: this is the layout a human reads when a profile hands
 		// over something snug has a measurement about. It carries, in one render,

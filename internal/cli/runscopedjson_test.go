@@ -24,7 +24,7 @@ import (
 func runScopedFixturePolicy(t *testing.T) *policy.Policy {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"})
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"})
 	ctr, err := startContainers(policy.OSEnviron{}, p, nil, false, true)
 	if err != nil {
 		t.Fatalf("startContainers(dryRun=true): %v", err)
@@ -98,7 +98,7 @@ func TestRunScopedFieldsAreNeverOmitempty(t *testing.T) {
 // row is expected false — which is precisely the case that used to carry NO
 // key of this name at all before the fix in this change.
 func TestRunScopedKeyIsPresentOnEveryRowIncludingFalse(t *testing.T) {
-	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"})
 	args := p.BwrapArgs(0, 0)
 	var buf bytes.Buffer
 	if err := dryRun(policy.OSEnviron{}, &buf, p, args, config{json: true}, nil, nil); err != nil {

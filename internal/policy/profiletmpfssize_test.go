@@ -34,7 +34,7 @@ func TestProfileAuthoredTmpfsCarriesTheSizeBound(t *testing.T) {
 	// @home's tmpfs list or to yieldTo's /tmp.
 	reg["tmpsy"] = &Profile{Name: "tmpsy", Tmpfs: []string{"/t1", "/t2", "/t3"}}
 
-	p, err := Resolve(reg, []ProfileName{"runtime-bin", "@cwd-rw", "tmpsy"}, ctx, newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"runtime-bin", "@target-rw", "tmpsy"}, ctx, newFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

@@ -76,7 +76,7 @@ func (p *Policy) Validate(env Environ) error {
 			"(add the 'sys' profile)")
 	case !hasTarget:
 		return fmt.Errorf("target %s is not visible inside the sandbox: no profile grants it.\n"+
-			"       Add 'cwd-rw' to make it writable, or 'parent-ro' to see it read-only.", p.Target)
+			"       Add 'target-rw' to make it writable, or 'parent-ro' to see it read-only.", p.Target)
 	}
 
 	// Build the sandbox's own symlink map so we can resolve guest paths through
@@ -863,7 +863,7 @@ func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 //
 // The one nesting that is legitimate is re-granting the SAME underlying host
 // tree at a stronger access — which is exactly what the default does, with
-// `cwd-rw` laying rw {target} over `parent-ro`'s ro {target_parent}. That exposes a
+// `target-rw` laying rw {target} over `parent-ro`'s ro {target_parent}. That exposes a
 // superset, not a subset. So a nested grant is allowed only when it is a bind
 // whose host source is the corresponding subpath of the outer bind's host.
 //
@@ -1013,7 +1013,7 @@ func checkNesting(env Environ, outer Mount, at string, inner Mount) error {
 
 	case KindBind:
 		if inner.Kind == KindBind && sameUnderlyingTree(env, outer, inner, at) {
-			return nil // re-granting the same tree, e.g. cwd-rw over parent-ro
+			return nil // re-granting the same tree, e.g. target-rw over parent-ro
 		}
 		return fmt.Errorf("profile %s puts %s at %s, which is inside %s from profile %s.\n"+
 			"       That hides what %s already exposes there, and profiles may only ever grant.\n"+
@@ -1154,7 +1154,7 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 //
 // IT IS A USABILITY RULE AND THE MESSAGE MUST NOT DRESS IT AS A CONFLICT.
 // MEASURED, with this check lifted and the default selection of the day
-// (@sys @home @cwd-rw, since issue #550 dropped @parent-ro): `snug ~/proj`
+// (@sys @home @target-rw, since issue #550 dropped @parent-ro): `snug ~/proj`
 // resolves and runs correctly — the target is read-write, $HOME is the empty
 // tmpfs holding only the XDG directories and the target, ~/.ssh is absent.
 // There is no mount collision to report, so reporting one would be a false
@@ -1186,7 +1186,7 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 //   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
 //     down works.
 //   - the target IS one (`snug ~`, `snug ~/.config`). Measured: no builtin
-//     selection sandboxes those at all — @cwd-rw includes @home, so the bind and
+//     selection sandboxes those at all — @target-rw includes @home, so the bind and
 //     the tmpfs collide however you select. "Move it" is the only answer, and
 //     saying "select differently" there would be advice that cannot be followed.
 func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
@@ -1238,7 +1238,7 @@ func (p *Policy) rejectTargetInAnEphemeralDirectory() error {
 //   - the target sits IN an ephemeral directory (`~/proj`). Moving it one level
 //     down works, and the message says exactly which command.
 //   - the target IS one (`snug ~`, `snug ~/.config`). MEASURED: no builtin
-//     selection sandboxes those — @cwd-rw includes @home, so a bind of the target
+//     selection sandboxes those — @target-rw includes @home, so a bind of the target
 //     and the tmpfs collide however you select. Telling that user to "select
 //     differently" would be advice that cannot be followed.
 func ephemeralTargetError(target, parent, ephemeral, home, from string, collides bool) error {

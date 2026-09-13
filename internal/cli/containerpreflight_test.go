@@ -235,7 +235,7 @@ func TestPreflightToolchainRootAgreesWithTheScreenOnOrdinarySpellings(t *testing
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
 	screenPolicy, err := policy.Resolve(reg,
-		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("building the screen's own policy: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestPreflightPodmanBinaryRefusesNonRegularObjects(t *testing.T) {
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg,
-		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("building the fixture policy: %v", err)
 	}

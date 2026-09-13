@@ -839,7 +839,7 @@ func TestDotdotGrantsTheParentAndNothingAbove(t *testing.T) {
 
 	// Drop parent-ro and the parent's other children disappear. Only the
 	// directory bwrap had to create to host the target's bind mount remains.
-	r = run(t, []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@cwd-rw"},
+	r = run(t, []string{"--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@target-rw"},
 		proj, `ls ..`).mustRun(t)
 	if strings.Contains(r.out, "sibling") {
 		t.Errorf("without parent-ro the sibling must not be visible:\n%s", r.out)
@@ -934,7 +934,7 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 			t.Errorf("-p git-ro appears to have REPLACED the default (%s missing):\n%s", want, r.out)
 		}
 	}
-	for _, want := range []string{"@git-ro", "@sys", "@cwd-rw"} {
+	for _, want := range []string{"@git-ro", "@sys", "@target-rw"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("SNUG_PROFILES should list %q:\n%s", want, r.out)
 		}
@@ -943,8 +943,8 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	// --no-defaults is the escape hatch, and it really does start from nothing.
 	//
 	// ON --dry-run, AND ON A SELECTION THAT CANNOT RUN, because no runnable one
-	// can tell the flag from a no-op: the defaults are @sys @home @cwd-rw, every
-	// one of which a sandbox that starts at all needs (@cwd-rw includes home),
+	// can tell the flag from a no-op: the defaults are @sys @home @target-rw, every
+	// one of which a sandbox that starts at all needs (@target-rw includes home),
 	// so `--no-defaults` plus the profiles a run needs resolves to exactly the
 	// default list either way.
 	//
@@ -971,7 +971,7 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	// list. Exit code is ignored on purpose — the --no-defaults arm exits 77,
 	// "target is not visible inside the sandbox: no profile grants it", which is
 	// the correct answer for a selection holding only @sys.
-	if got, want := profiles(t, "--dry-run", "-p", "@sys", proj), "@cwd-rw,@home,@sys"; got != want {
+	if got, want := profiles(t, "--dry-run", "-p", "@sys", proj), "@target-rw,@home,@sys"; got != want {
 		t.Fatalf("fixture: `snug -p @sys` resolved %q, want %q — if the defaults changed, "+
 			"the assertion below is measuring something else", got, want)
 	}
@@ -1315,7 +1315,7 @@ func TestSanitiseNeverLeavesAnEmptyPATHElement(t *testing.T) {
 	proj, _ := target(t)
 
 	// The one host PATH element policy grants. It lives inside the target, so
-	// @cwd-rw covers it, and it holds a symlink to bwrap so that snug can still
+	// @target-rw covers it, and it holds a symlink to bwrap so that snug can still
 	// find bwrap through the PATH it is about to filter.
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
@@ -3060,7 +3060,7 @@ func TestRepoLocalConfigIsNeverAutoLoaded(t *testing.T) {
 	// a trusted directory — which is exactly the job it was written for. /var is
 	// equally blatant and nothing generates into it.
 	const evil = "[profile.evil]\ndescription = \"a hostile repo granting itself /var\"\n" +
-		"include = [\"@sys\", \"@home\", \"@cwd-rw\"]\nrw = [\"/var\"]\n"
+		"include = [\"@sys\", \"@home\", \"@target-rw\"]\nrw = [\"/var\"]\n"
 
 	for _, rel := range []string{
 		".snug/profiles.toml",

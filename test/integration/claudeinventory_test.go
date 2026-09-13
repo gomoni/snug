@@ -136,7 +136,7 @@ func TestClaudeJSONInsideCarriesNoHostProjectInventory(t *testing.T) {
 //
 // Paths that overlap the sandbox's own grants are dropped rather than
 // exempted: the target and its parent are legitimately visible inside (that is
-// what @cwd-rw and @parent-ro are), and $HOME exists inside as a fresh tmpfs,
+// what @target-rw and @parent-ro are), and $HOME exists inside as a fresh tmpfs,
 // so any of the three would break the reachability control for reasons that
 // have nothing to do with the inventory.
 func hostProjectPaths(t *testing.T, target string) []string {

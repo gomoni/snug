@@ -172,7 +172,7 @@ func nameByteDesc(c byte) string { return policy.NameByteDesc(c) }
 // without breaking a name somebody already chose. '@' is already one.
 //
 // The hyphen is IN — decided by the owner, and five builtins depend on it
-// (cwd-rw, parent-ro, git-ro, podman-socket, podman-build), so
+// (target-rw, parent-ro, git-ro, podman-socket, podman-build), so
 // "alphanumerics only" would outlaw snug's own names.
 // Underscore is OUT until someone asks: adding a character later is additive,
 // removing one is a breaking change.

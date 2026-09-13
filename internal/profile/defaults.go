@@ -15,7 +15,7 @@ import "github.com/gomoni/snug/internal/policy"
 //
 // `@parent-ro` IS NOT HERE, AND THAT IS THE POINT OF THE LIST. Every name in it
 // has a blast radius fixed by the grant itself: `@sys` is a fixed enumeration,
-// `@home` is an empty tmpfs, `@cwd-rw` is the directory the user named. The
+// `@home` is an empty tmpfs, `@target-rw` is the directory the user named. The
 // target's PARENT is a directory the user did NOT name, and what it holds is a
 // property of their layout — every sibling project, their .git/config, their
 // .env files, and any socket or FIFO sitting in the tree (issues #287 and #296
@@ -66,5 +66,5 @@ import "github.com/gomoni/snug/internal/policy"
 // is why the conversion sweep in internal/cli looks for ProfileName(x) rather than
 // for every place a name is written down.
 func BuiltinDefaults() []policy.ProfileName {
-	return []policy.ProfileName{"@sys", "@home", "@cwd-rw"}
+	return []policy.ProfileName{"@sys", "@home", "@target-rw"}
 }

@@ -12,7 +12,7 @@
   "profiles": {
     "selected": [
       "@sys",
-      "@cwd-rw",
+      "@target-rw",
       "@podman-socket"
     ],
     "implied": [
@@ -328,7 +328,7 @@
       "kind": "bind",
       "access": "rw",
       "from": [
-        "@cwd-rw"
+        "@target-rw"
       ],
       "optional": false,
       "authored": false,
@@ -519,7 +519,7 @@
       "name": "SNUG_PROFILES",
       "entries": [
         {
-          "value": "@cwd-rw,@home,@podman-socket,@sys",
+          "value": "@home,@podman-socket,@sys,@target-rw",
           "verb": "(snug)",
           "from": null,
           "authored_by": "",
@@ -852,7 +852,7 @@
       "1",
       "--setenv",
       "SNUG_PROFILES",
-      "@cwd-rw,@home,@podman-socket,@sys",
+      "@home,@podman-socket,@sys,@target-rw",
       "--setenv",
       "SNUG_TARGET",
       "/home/u/proj/sub",

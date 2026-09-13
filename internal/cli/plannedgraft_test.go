@@ -24,7 +24,7 @@ const (
 
 // TestGoldenEngineViewPlannedPaths is the golden for the four HOST-TREE grafts
 // — store, runroot, sock, conf — built from the real engine.PlannedPaths, on
-// the same @sys @cwd-rw @podman-socket selection every other engine-view
+// the same @sys @target-rw @podman-socket selection every other engine-view
 // fixture in this package uses.
 //
 // # WHAT WAS MISSING, AND WHY IT MATTERED

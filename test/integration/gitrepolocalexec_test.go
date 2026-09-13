@@ -13,7 +13,7 @@ import (
 // snug's own extractor generated.
 //
 // This is git working exactly as designed and is NOT a snug defect — the
-// target directory is granted read-write by @cwd-rw, and a hook or fsmonitor
+// target directory is granted read-write by @target-rw, and a hook or fsmonitor
 // program living inside it is no different in kind from `make` or `npm
 // install` running arbitrary code there (T3/T4 in the threat model). It is
 // pinned because it rules out argv/value filtering — the whitelist

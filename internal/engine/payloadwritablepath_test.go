@@ -17,7 +17,7 @@ import (
 // mount_program (writeStorageConf). Both derived a value from
 // filepath.Dir(podman) and mapped it through policy.EngineGuestPath, whose bind
 // arm resolves through ANY KindBind mount — it has no Access test at all. So
-// with $SNUG_PODMAN inside a target that @cwd-rw grants writable, MEASURED on
+// with $SNUG_PODMAN inside a target that @target-rw grants writable, MEASURED on
 // cd17ea0:
 //
 //	helper_binaries_dir = ["/proj/bin", "/usr/libexec/podman", …]
@@ -62,7 +62,7 @@ func TestNoGeneratedConfigNamesAPayloadWritablePath(t *testing.T) {
 		Podman: policy.PodmanSocket,
 		Mounts: map[string]policy.Mount{
 			"/proj": {Guest: "/proj", Host: target, Kind: policy.KindBind,
-				Access: policy.AccessRW, From: []string{"@cwd-rw"}},
+				Access: policy.AccessRW, From: []string{"@target-rw"}},
 			"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind,
 				Access: policy.AccessRO, From: []string{"@sys"}},
 		},

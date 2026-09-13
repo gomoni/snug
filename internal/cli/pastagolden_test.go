@@ -38,7 +38,7 @@ func TestGoldenPastaArgv(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}},
 	}
 
 	for _, tc := range cases {
@@ -77,7 +77,7 @@ func TestGoldenPastaArgv(t *testing.T) {
 	// property this test exists to pin.
 	t.Run("net argv is unaffected by the v6 pair", func(t *testing.T) {
 		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-			[]policy.ProfileName{"@sys", "@cwd-rw", "@net"}, pastaGoldenCtx(), newEnvFakeEnv())
+			[]policy.ProfileName{"@sys", "@target-rw", "@net"}, pastaGoldenCtx(), newEnvFakeEnv())
 		if err != nil {
 			t.Fatal(err)
 		}

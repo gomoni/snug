@@ -227,7 +227,7 @@ rather than implying the store was re-checked.
 
 The summary reaches the report through a thunk, not a value. Passed by value it
 was evaluated as an argument, before the builder's early return for a run with no
-container profile — so `snug --dry-run -p @sys -p @cwd-rw` read the host's
+container profile — so `snug --dry-run -p @sys -p @target-rw` read the host's
 `policy.json` and every key it names (measured by strace) and discarded the
 answer. A host policy naming 24,000 key paths made an unrelated dry run do 24,000
 host reads.

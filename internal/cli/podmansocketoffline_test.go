@@ -24,7 +24,7 @@ func TestPodmanSocketDoesNotImplyEgress(t *testing.T) {
 	}
 	regMap := map[policy.ProfileName]*policy.Profile(reg)
 
-	off, err := policy.Resolve(regMap, []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
+	off, err := policy.Resolve(regMap, []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve(@podman-socket): %v", err)
 	}
@@ -38,7 +38,7 @@ func TestPodmanSocketDoesNotImplyEgress(t *testing.T) {
 	}
 
 	// Positive control.
-	with, err := policy.Resolve(regMap, []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}, envGoldenCtx(), newEnvFakeEnv())
+	with, err := policy.Resolve(regMap, []policy.ProfileName{"@sys", "@target-rw", "@podman-socket", "@net"}, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve(@podman-socket, @net): %v", err)
 	}

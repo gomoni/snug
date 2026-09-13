@@ -180,7 +180,7 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 //
 // No shipped builtin reaches this shape, and neither does the nearest thing a
 // user can write: a profile binding a host directory at /tmp looks like it
-// should, and does not, because a target under /tmp then nests @cwd-rw's bind
+// should, and does not, because a target under /tmp then nests @target-rw's bind
 // inside that grant and rejectMasking refuses the whole selection (measured
 // against the profile that used to ship that shape: "which is inside /tmp from
 // profile @tmp-shared"). So this test authors its own rw-granting profile, the

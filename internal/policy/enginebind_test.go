@@ -85,7 +85,7 @@ func TestCheckEngineBindSource(t *testing.T) {
 		{
 			// M1/M3: the target's own mount root sits directly under a
 			// writable-but-unbindable ancestor ($HOME as a bare KindTmpfs, no
-			// rw KindBind covering it) — the default `@parent-ro` + `@cwd-rw`
+			// rw KindBind covering it) — the default `@parent-ro` + `@target-rw`
 			// shape. The mount root itself is EBUSY against a rename from
 			// inside this sandbox, and nothing else offers a route to the
 			// same underlying entry, so it is anchored.

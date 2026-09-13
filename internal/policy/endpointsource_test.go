@@ -27,7 +27,7 @@ func resolveWithSource(t *testing.T, kind string) error {
 
 	reg := testRegistry()
 	reg["binder"] = &Profile{Name: "binder", RO: []string{host + ":/home/u/mounted"}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binder"}, testCtx(), env)
 	return err
 }
 
@@ -141,7 +141,7 @@ func TestSnugsOwnSocketsAreNotRefused(t *testing.T) {
 	env := newFakeEnv()
 	env.sockets = map[string]bool{sock: true}
 
-	p := mustResolve(t, "@sys", "@cwd-rw")
+	p := mustResolve(t, "@sys", "@target-rw")
 	p.BindSocket(sock, AgentSocketGuest, "(identity)")
 	if err := p.Validate(env); err != nil {
 		t.Fatalf("snug's own proxy socket was refused: %v\n\nEvery identity.ssh.agent=\"proxy\" "+
@@ -151,7 +151,7 @@ func TestSnugsOwnSocketsAreNotRefused(t *testing.T) {
 	// The same mount without authorship — what a profile could express — must
 	// still be refused, or the exemption is a hole rather than an author
 	// distinction.
-	p2 := mustResolve(t, "@sys", "@cwd-rw")
+	p2 := mustResolve(t, "@sys", "@target-rw")
 	p2.Mounts[AgentSocketGuest] = Mount{
 		Guest: AgentSocketGuest, Host: sock, Kind: KindBind,
 		Access: AccessRW, From: []string{"someprofile"},
@@ -180,7 +180,7 @@ func TestASymlinkToAnEndpointIsRefused(t *testing.T) {
 
 	reg := testRegistry()
 	reg["binder"] = &Profile{Name: "binder", RO: []string{"{home}/link:/home/u/mounted"}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binder"}, testCtx(), env)
 	if err == nil {
 		t.Fatal("a bind whose source is a SYMLINK to a FIFO was accepted — resolution " +
 			"canonicalises the host side with EvalSymlinks before rejectEndpointSource ever " +
@@ -225,7 +225,7 @@ func TestEndpointRefusalIsNotAPathList(t *testing.T) {
 			}
 			reg := testRegistry()
 			reg["binder"] = &Profile{Name: "binder", RO: []string{tc.spelling + ":/home/u/mounted"}}
-			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), env)
+			_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binder"}, testCtx(), env)
 			if err == nil {
 				t.Errorf("a %s at %s was accepted — the check is matching path text rather "+
 					"than asking the filesystem what is there", tc.kind, tc.spelling)

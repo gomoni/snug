@@ -172,7 +172,7 @@ func isPathValued(name string) bool {
 //	GIT_CONFIG_SYSTEM = "sys.gitconfig"        -> ACCEPTED, and --dry-run said
 //	                                              nothing about the value either
 //	  (grantMark returns "" for a value that does not start with '/')
-//	$ snug … -p @cwd-rw -p gitsys /tmp/rt2/tgt -- sh -c 'git st; git ls-remote …'
+//	$ snug … -p @target-rw -p gitsys /tmp/rt2/tgt -- sh -c 'git st; git ls-remote …'
 //	  CWD=/tmp/rt2/tgt
 //	  RELATIVE-GIT-CONFIG-SYSTEM-ALIAS-RAN uid=1000        <- [alias] st = "!cmd"
 //	  RELATIVE-GIT-CONFIG-SYSTEM-SSHCOMMAND-RAN args=…     <- core.sshCommand
