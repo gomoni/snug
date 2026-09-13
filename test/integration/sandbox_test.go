@@ -971,7 +971,7 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	// list. Exit code is ignored on purpose — the --no-defaults arm exits 77,
 	// "target is not visible inside the sandbox: no profile grants it", which is
 	// the correct answer for a selection holding only @sys.
-	if got, want := profiles(t, "--dry-run", "-p", "@sys", proj), "@target-rw,@home,@sys"; got != want {
+	if got, want := profiles(t, "--dry-run", "-p", "@sys", proj), "@home,@sys,@target-rw"; got != want {
 		t.Fatalf("fixture: `snug -p @sys` resolved %q, want %q — if the defaults changed, "+
 			"the assertion below is measuring something else", got, want)
 	}
