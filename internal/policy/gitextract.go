@@ -158,6 +158,14 @@ func GitConfigFrom(v GitValues, id *Identity, home string) []byte {
 		b.WriteString("# refuse every signature (ssh-add -c with no askpass, ssh-add -h), which\n")
 		b.WriteString("# would fail every commit here with an error naming no cause.\n")
 		b.WriteString("[gpg]\n\tformat = ssh\n")
+		// Without allowedSignersFile every `%G` placeholder and
+		// `git log --show-signature` fails VERIFICATION rather than signing, and
+		// the sharp shape is that --show-signature prints "No signature" and
+		// exits 0 — a signed commit reading as unsigned, successfully (#576).
+		// snug AUTHORS the file from the same two values it already holds, so
+		// the run verifies the key the profile pinned and nothing else.
+		fmt.Fprintf(&b, "[gpg \"ssh\"]\n\tallowedSignersFile = %s\n",
+			gitQuote(home+"/"+AllowedSignersGuest))
 		b.WriteString("[commit]\n\tgpgsign = true\n")
 	}
 	if br := v["init.defaultbranch"]; br != "" {

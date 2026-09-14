@@ -154,6 +154,40 @@ func TestGitConfigFromAuthorsSigningDirectivesFromThePin(t *testing.T) {
 	}
 }
 
+// A pinned signing_key also authors gpg.ssh.allowedSignersFile, pointing at
+// the verifier list snug generates from the same pin (#576). Without it
+// `git log --show-signature` fails VERIFICATION rather than signing — measured
+// on git 2.55.0, it prints "No signature" and exits 0, so a signed commit
+// reads as unsigned, successfully.
+func TestGitConfigFromAuthorsAllowedSignersFileWhenSigning(t *testing.T) {
+	id := &Identity{
+		SSH: IdentitySSH{Agent: SSHAgentProxy},
+		Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub", Email: "u@example.com"},
+	}
+	out := string(GitConfigFrom(nil, id, "/home/u"))
+
+	want := `allowedSignersFile = "/home/u/` + AllowedSignersGuest + `"`
+	if !strings.Contains(directives(out), want) {
+		t.Errorf("generated config has no %q directive:\n%s", want, out)
+	}
+}
+
+// TestGitConfigFromOmitsAllowedSignersFileWhenNotSigning is the half that
+// matters: a verifier list authored for a profile that does not sign is a
+// grant nobody asked for. Same identity as above, minus signing_key, so
+// `signing` in GitConfigFrom is false and the whole [gpg] block — format,
+// allowedSignersFile, gpgsign — must not appear.
+func TestGitConfigFromOmitsAllowedSignersFileWhenNotSigning(t *testing.T) {
+	id := &Identity{
+		SSH: IdentitySSH{Agent: SSHAgentProxy},
+		Git: IdentityGit{Name: "Some One", Email: "u@example.com"},
+	}
+	out := string(GitConfigFrom(nil, id, "/home/u"))
+	if strings.Contains(out, "allowedSignersFile") {
+		t.Errorf("generated config authors an allowedSignersFile with no signing_key pinned:\n%s", out)
+	}
+}
+
 // The negative that makes the positive above believable: a host git config
 // carrying all four signing-related keys — a developer who already has SSH
 // commit signing set up locally has exactly this — must contribute NONE of

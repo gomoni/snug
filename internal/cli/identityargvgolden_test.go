@@ -83,6 +83,20 @@ func TestGoldenIdentityArgv(t *testing.T) {
 	}
 	defer cleanup()
 
+	// THE SAME TWO CALLS main.go MAKES AFTER STAGING, and they are not
+	// decoration. A post-Resolve mount can introduce an intermediate directory
+	// Resolve never saw — the generated allowed_signers is the first identity
+	// file whose parent (~/.config/git) is new — and InstallAnchors is what puts
+	// snug's own tmpfs there. Without it this golden omitted the anchor line
+	// while a real run emitted it, so the file stopped being the argv under
+	// review: the anchor is what makes `mv ~/.config/git ...` EBUSY rather than
+	// a rename out from under the mount, and a change to that would have
+	// produced no golden diff (#576 red-team round, F6).
+	p.InstallAnchors()
+	if err := p.Validate(newEnvFakeEnv()); err != nil {
+		t.Fatalf("Validate after staging: %v", err)
+	}
+
 	got := runDirPID.ReplaceAllString(goldenFormat(p.BwrapArgs(1000, 1000)), "run-N")
 
 	guestSigning := ctx.Home + "/" + policy.SigningKeyGuest
