@@ -5553,11 +5553,20 @@ The screen names it before the run, next to the authentication key — a key tha
 can vouch for code as a human is exactly what has to be visible first:
 
 ```bash
-./bin/snug -p acct-a --dry-run $SC/proj/sub | grep -A1 'ssh key'
+./bin/snug -p acct-a profile show acct-a | grep -A1 'ssh key'
+./bin/snug -p acct-a --dry-run $SC/proj/sub | grep -A3 '^SIGNING'
 ```
 
-Expect two rows, the second reading `signing key … (proxy)` followed by the
-block naming what signing as you costs.
+The FIRST prints two rows, the second reading `signing key … (proxy)`. It is
+`profile show` and not `--dry-run` on purpose: `showIdentity` is reached only
+from `showCapabilities`, which only `snug profile show` calls, so `--dry-run`
+renders no ssh-key row at all — the step used to grep `--dry-run` for it and
+matched ZERO lines while passing.
+
+The SECOND prints the `SIGNING` block: `commits signed with the pinned key`,
+then `verifies ONLY that key, under <your signing email>, in the "git"
+namespace`, then the two `not carried` lines. That block is the disclosure that
+a trust decision is being installed.
 
 Inside, `ssh-add -l` now lists exactly TWO keys, and the generated git config
 names the staged copy of the signing one:
@@ -5572,10 +5581,12 @@ Expect two lines; then `/home/<you>/.ssh/id_snug_signing.pub`; then `true`. The
 path is snug's own staged copy — the host's `~/.ssh` is not mounted, and nothing
 was read from your `~/.gitconfig`.
 
-A commit signs. Read the commit OBJECT for it, not a `%G` placeholder: every
-one of those asks git to VERIFY, and verification is a separate grant that is
-not built (#576), so `%GK` prints an empty line and `%G?` prints `N` on a commit
-that really is signed.
+A commit signs, and since #576 it also VERIFIES — against exactly one key, the
+one the profile pinned. snug authors a one-line `~/.config/git/allowed_signers`
+(the pinned `identity.git.email` as the principal, the staged signing `.pub` as
+the key, `namespaces="git"`) and points `gpg.ssh.allowedSignersFile` at it. The
+host's own `allowed_signers` is never carried: it is a list of other people's
+keys and a trust decision no grant named.
 
 ```bash
 ./bin/snug -p acct-a $SC/proj/sub -- sh -c 'git commit --allow-empty -m signed && git cat-file commit HEAD | sed -n "/^gpgsig/,+1p"'
@@ -5593,18 +5604,51 @@ Expect `Good "git" signature for <your signing email> with ED25519 key
 SHA256:<the signing key's fingerprint>` — the signing key, not the
 authentication one.
 
-Inside, verification is unavailable and fails in two different shapes:
+Inside, verification now succeeds for THIS run's own commits:
 
 ```bash
-./bin/snug -p acct-a $SC/proj/sub -- git log -1 --show-signature --format=%h
+./bin/snug -p acct-a $SC/proj/sub -- sh -c 'git log -1 --format=%G?; git log -1 --format=%GK'
 ./bin/snug -p acct-a $SC/proj/sub -- git verify-commit HEAD
+./bin/snug -p acct-a $SC/proj/sub -- cat ~/.config/git/allowed_signers
 ```
 
-Both print `error: gpg.ssh.allowedSignersFile needs to be configured and exist
-for ssh signature verification` on stderr. The first then prints `No signature`
-and exits **0** — a signed commit reads as unsigned, successfully; the second
-exits 1. That is VERIFICATION, a different grant with a different abuse
-sentence, not built (#576). The commit is signed regardless.
+Expect `G`, then the signing key's fingerprint; then `verify-commit` exits 0;
+then exactly ONE line, `<your signing email> namespaces="git" ssh-ed25519
+<base64>` and no comment field. Before #576 the same three printed `N`, an empty
+line, and `error: gpg.ssh.allowedSignersFile needs to be configured and exist
+for ssh signature verification` — a signed commit reading as unsigned,
+successfully, because `git log --show-signature` prints `No signature` and exits
+**0**.
+
+**The negative that bounds it.** A commit signed by ANY OTHER key still reads as
+untrusted inside, including a colleague's real signature, because the authored
+list has one entry. Check it by verifying a commit from a repository you did not
+sign:
+
+```bash
+./bin/snug -p acct-a $SC/proj/sub -- git verify-commit <a commit signed by someone else>
+```
+
+Expect a non-zero exit and `No principal matched`. That is the grant's boundary,
+not a gap.
+
+**The refusals that keep the authored line one line.** `identity.git.email` is
+the PRINCIPAL and the file is unquoted, so a value that is not exactly one
+address is refused before the run — measured, all four spellings:
+
+```bash
+# in a profile with signing_key set, one at a time:
+#   email = ""                                     -> refused, "it is empty"
+#   email = " "                                    -> refused, leading/trailing whitespace
+#   email = "#u@example.com"                       -> refused, starts with `#`
+#   email = "u@example.com,evil@x ssh-ed25519 AAAA" -> refused, 3 fields
+./bin/snug -p <that profile> --dry-run $SC/proj/sub -- true
+```
+
+Expect exit 77 each time, and a message naming `identity.git.email` and saying
+the principal is exactly one address. Without these, an email carrying a space
+authored a SIX-field line whose key was the attacker's and whose pinned key was
+swallowed as a trailing comment.
 
 **The negatives, and they are the point.**
 

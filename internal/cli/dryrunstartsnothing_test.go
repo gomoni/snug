@@ -216,6 +216,11 @@ func identityPolicy(key string) *policy.Policy {
 func identityPolicyWithSigningKey(key, signKey string) *policy.Policy {
 	p := identityPolicy(key)
 	p.Identity.Git.SigningKey = signKey
+	// An email comes with it because a signing_key without one is refused
+	// (#576): the generated allowed_signers names the key under an address, and
+	// startIdentity authors that file. Resolve refuses the combination, so a
+	// fixture without an email is a policy no run can produce.
+	p.Identity.Git.Email = "u@example.com"
 	return p
 }
 

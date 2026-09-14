@@ -134,14 +134,38 @@ init.defaultBranch
 Not on it, and the reasoning is not "we ran out of time":
 
 - **`credential.helper`, `alias.*`, `core.*`, `diff.*`, `filter.*`** — §1.
-- **`user.signingkey`, `gpg.format`, `commit.gpgsign`, `tag.gpgsign`.** These
-  look harmless and are the trap. `commit.gpgsign = true` with a signing key that
-  is not inside the sandbox makes **every commit fail**, which is worse than an
-  unsigned commit. Signing needs the public key staged *and* an agent willing to
-  sign with it, and the ssh-agent proxy pins exactly one key today. That is a
-  feature with a design of its own; it is
-  https://github.com/gomoni/snug/issues/453, and the whitelist grows when it is
-  built.
+- **`user.signingkey`, `gpg.format`, `commit.gpgsign`, `tag.gpgsign`,
+  `gpg.ssh.allowedSignersFile`.** These look harmless and are the trap, which is
+  why they are AUTHORED rather than carried. `commit.gpgsign = true` carried from
+  a host config, with a signing key that is not inside the sandbox, makes **every
+  commit fail** — worse than an unsigned commit.
+
+  snug writes all five itself when `identity.git.signing_key` is pinned, and only
+  then: `user.signingkey` names snug's own staged copy of the public half,
+  `gpg.format = ssh`, `commit.gpgsign = true` (written because snug asked the
+  host agent for one signature with that key at startup and GOT one — a key the
+  agent merely lists can still refuse every signature), and
+  `gpg.ssh.allowedSignersFile` points at a file snug authors.
+
+  **That file is one line and it is a trust decision, so it is the narrow
+  version of the grant.** `<identity.git.email> namespaces="git" <keytype>
+  <base64>` — the pinned address as the principal, the staged signing key, and a
+  namespace pin so a signature the same key made for anything else does not read
+  as a good commit signature. A run verifies its OWN commits and nobody else's.
+  The host's `~/.config/git/allowed_signers` is never carried: it is the list of
+  people whose signatures you accept, so carrying it would hand the sandbox
+  collaborators' addresses and public keys *and* a trust decision no grant named.
+
+  **The principal is unquoted, and that is the whole reason for a refusal.**
+  `allowed_signers` has no quoting and space is its field separator, so an
+  `identity.git.email` that is not exactly one address stops being a value and
+  becomes syntax: an address of `u@example.com,evil@example.com ssh-ed25519
+  AAAA…` authors a six-field line whose key is the attacker's, with the pinned
+  key swallowed as a trailing comment, and `git verify-commit` then accepts
+  commits signed by a key no grant pinned. `CheckText` does not reach it — it
+  refuses forging runes and a space is not one. `refuseUnprincipledSigningEmail`
+  is scoped to `signing_key` for exactly that reason: everywhere else the email
+  is a value in a file `gitQuote` quotes, where a space is harmless.
 - **`url.*.insteadOf`** — rewrites where a fetch goes. An identity pin already
   generates the one rewrite it needs.
 - **`safe.directory`** — snug writes `*` itself, because the sandbox uid and the

@@ -100,8 +100,13 @@ func TestIdentitySSHKeyOutsideTargetIsNotCanonicalised(t *testing.T) {
 func identitySigningRegistry(sshKey, signingKey string, mode SSHMode) map[ProfileName]*Profile {
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
-		Name:     "pinned",
-		Identity: &Identity{SSH: IdentitySSH{Agent: mode, Key: sshKey}, Git: IdentityGit{SigningKey: signingKey}},
+		Name: "pinned",
+		// Email is set because signing_key without one is its own refusal
+		// (#576) and would preempt every case this registry exists to reach.
+		Identity: &Identity{
+			SSH: IdentitySSH{Agent: mode, Key: sshKey},
+			Git: IdentityGit{Email: "u@example.com", SigningKey: signingKey},
+		},
 	}
 	return reg
 }
@@ -194,5 +199,98 @@ func TestSSHConfigDoesNotOfferTheSigningKeyForAuthentication(t *testing.T) {
 		t.Errorf("the signing key's staged path appears in ~/.ssh/config; ssh would then "+
 			"offer it for authentication, which is exactly what SigningKeyGuest's absence "+
 			"here is meant to prevent:\n%s", cfg)
+	}
+}
+
+// An allowed_signers line is `PRINCIPAL [options] KEY`, and git.signing_key
+// with no identity.git.email would author one with no principal. Resolve
+// refuses the pairing rather than generating a file with an entry git cannot
+// parse (#576).
+func TestSigningKeyRequiresAnEmail(t *testing.T) {
+	reg := testRegistry()
+	reg["pinned"] = &Profile{
+		Name: "pinned",
+		Identity: &Identity{
+			SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub"},
+			Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub"},
+		},
+	}
+	sel := append(append([]ProfileName{}, testDefaults...), "pinned")
+
+	_, err := Resolve(reg, sel, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("signing_key with no identity.git.email resolved; the generated " +
+			"allowed_signers line would have no principal, which git cannot parse")
+	}
+	if !strings.Contains(err.Error(), "identity.git.email") {
+		t.Errorf("error does not name the fix (identity.git.email): %v", err)
+	}
+
+	// POSITIVE CONTROL: the identical profile carrying an email resolves. Without
+	// it the assertions above would pass equally on a build that refuses every
+	// signing_key outright, which is a different and much worse bug.
+	reg["pinned"].Identity.Git.Email = "u@example.com"
+	if _, err := Resolve(reg, sel, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("the same profile with identity.git.email set was refused: %v", err)
+	}
+}
+
+// TestRefuseUnprincipledSigningEmailCatchesEverySpelling extends
+// TestSigningKeyRequiresAnEmail above from "absent" to the three MALFORMED
+// spellings refuseUnprincipledSigningEmail (resolve.go) also refuses, each of
+// which defeats the generated one-line allowed_signers differently: more than
+// one field lets an attacker's own key and options ride in as a trailing
+// comment on the pinned entry; leading or trailing whitespace survives
+// `!= ""` but is skipped by ssh, handing the principal slot to whatever
+// follows; a leading `#` comments the whole entry out.
+func TestRefuseUnprincipledSigningEmailCatchesEverySpelling(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		email string
+	}{
+		{"empty", ""},
+		{"more than one whitespace-separated field",
+			"u@example.com,evil@example.com ssh-ed25519 AAAA"},
+		{"leading whitespace", " u@example.com"},
+		{"trailing whitespace", "u@example.com "},
+		{"a leading #", "#u@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := testRegistry()
+			reg["pinned"] = &Profile{
+				Name: "pinned",
+				Identity: &Identity{
+					SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub"},
+					Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub", Email: tc.email},
+				},
+			}
+			sel := append(append([]ProfileName{}, testDefaults...), "pinned")
+
+			_, err := Resolve(reg, sel, testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("identity.git.email %q resolved with a signing_key pinned; the "+
+					"generated allowed_signers line would not have exactly one address as "+
+					"its principal", tc.email)
+			}
+			if !strings.Contains(err.Error(), "identity.git.email") {
+				t.Errorf("error does not name identity.git.email: %v", err)
+			}
+		})
+	}
+
+	// POSITIVE CONTROL, at the same registry shape as every case above: an
+	// ordinary single address resolves. Without it every case would pass
+	// equally on a build that refuses every signing_key regardless of email.
+	reg := testRegistry()
+	reg["pinned"] = &Profile{
+		Name: "pinned",
+		Identity: &Identity{
+			SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub"},
+			Git: IdentityGit{SigningKey: "~/.ssh/id_ed25519_signing.pub", Email: "u@example.com"},
+		},
+	}
+	sel := append(append([]ProfileName{}, testDefaults...), "pinned")
+	if _, err := Resolve(reg, sel, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("an ordinary single-address identity.git.email was refused: %v", err)
 	}
 }
