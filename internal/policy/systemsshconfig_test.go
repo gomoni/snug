@@ -188,7 +188,7 @@ func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
 	// needs SOME runtime grant to be a legal policy — testRegistry's
 	// "runtime-bin" deliberately does NOT cover /usr, or the test would stop
 	// discriminating anything.
-	p, err := Resolve(testRegistry(), []ProfileName{"@home", "@cwd-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@home", "@target-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
 	// shape @home grants at {home}, aimed at the path this test needs covered.
 	reg["tmpfs-usr"] = &Profile{Name: "tmpfs-usr", Tmpfs: []string{"/usr"}}
 
-	p, err := Resolve(reg, []ProfileName{"@home", "@cwd-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@home", "@target-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}

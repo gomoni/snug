@@ -21,7 +21,7 @@ import (
 // not have, which is the same defect as claiming one it does.
 func TestTheInjectedGuidanceNamesTheImageProvenanceRules(t *testing.T) {
 	withEngine := string(claudeGuidance(resolveFor(t,
-		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude", "@podman-socket"})))
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@claude", "@podman-socket"})))
 	for _, want := range []string{"docker.io", "no registry credentials"} {
 		if !strings.Contains(strings.ToLower(withEngine), strings.ToLower(want)) {
 			t.Errorf("the injected guidance never says %q, so an agent meets an unresolvable "+
@@ -30,7 +30,7 @@ func TestTheInjectedGuidanceNamesTheImageProvenanceRules(t *testing.T) {
 	}
 
 	withoutEngine := string(claudeGuidance(resolveFor(t,
-		[]policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"})))
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"})))
 	if strings.Contains(withoutEngine, "## Containers") {
 		t.Errorf("the injected guidance has a Containers section on a run with no engine:\n%s",
 			withoutEngine)

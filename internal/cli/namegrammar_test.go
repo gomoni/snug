@@ -83,7 +83,7 @@ func TestDryRunDoesNotRenderAProfileNameVerbatim(t *testing.T) {
 	m[malSelected] = &policy.Profile{Name: malSelected, Tmpfs: []string{"/home"}}
 	m[malImplied] = &policy.Profile{Name: malImplied}
 
-	// @sys and @parent-ro (not @cwd-rw, which includes @home and would mount
+	// @sys and @parent-ro (not @target-rw, which includes @home and would mount
 	// $HOME itself — making it the DEEPEST covering mount and defeating the
 	// point of malSelected's ancestor grant) round the selection out to one
 	// Validate actually admits, so this test stays about the three dryrun.go

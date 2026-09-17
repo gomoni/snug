@@ -202,15 +202,15 @@ func TestDryRunAnnotationsAreTruthful(t *testing.T) {
 	// without this, the negative assertions below could be passing because
 	// resolveFor or the annotation helpers are broken, not because the claims
 	// are honest.
-	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"})
 	if got := targetAnnotation(def); !strings.Contains(got, "writable") {
-		t.Errorf("control: with @cwd-rw selected the target really is writable, got %q", got)
+		t.Errorf("control: with @target-rw selected the target really is writable, got %q", got)
 	}
 	if got := homeAnnotation(def); !strings.Contains(got, "tmpfs") {
 		t.Errorf("control: with @home selected, $HOME really is a tmpfs, got %q", got)
 	}
 
-	// Without @cwd-rw or @home: @parent-ro covers the target read-only (via its
+	// Without @target-rw or @home: @parent-ro covers the target read-only (via its
 	// parent), and $HOME is not mounted at all. Neither claim holds any more.
 	sparse := resolveFor(t, []policy.ProfileName{"@sys", "@parent-ro"})
 	if got := targetAnnotation(sparse); strings.Contains(got, "writable") {
@@ -264,7 +264,7 @@ func TestDryRunAnnotationsAreTruthfulFromACheckoutUnderTmp(t *testing.T) {
 	}
 	t.Chdir(checkout)
 
-	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"})
 	if got := homeAnnotation(def); !strings.Contains(got, "tmpfs") {
 		t.Errorf("control: with @home selected, $HOME really is a tmpfs, got %q", got)
 	}
@@ -333,14 +333,14 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 	// children as if they were surprises: "(tmpfs, ephemeral; WRITABLE and
 	// PERSISTS below: /home/michal/.cache/snug-dryrun-fixture-2863779639/home/u/
 	// proj/sub)"` — a pass/fail decided by where the test happened to run.
-	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"})
+	def := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"})
 	got = homeAnnotation(def)
 	// POSITIVE CONTROL, and it is what makes the suppression a measurement:
 	// @home's .cache is a tmpfs, so writableBelow can never list it whatever
 	// the code does. Without something the walk DOES report, "the tmpfs is not
 	// listed" is a fact about the assertion, not about the annotation.
 	if !strings.Contains(got, "WRITABLE and PERSISTS below") {
-		t.Fatalf("control: @cwd-rw grants a writable bind inside the HOME tmpfs, so the "+
+		t.Fatalf("control: @target-rw grants a writable bind inside the HOME tmpfs, so the "+
 			"walk below HOME should report one; got %q", got)
 	}
 	if cache := filepath.Join(def.Home, ".cache"); strings.Contains(got, cache) {
@@ -388,7 +388,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
 	}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	// CONTROL: without a detected shim, no podman profile grants a stub, and
 	// the block must not print at all — a block that always prints proves
 	// nothing about the staging condition.
-	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"})
+	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"})
 	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
 	}
@@ -434,7 +434,7 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
 	}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -812,7 +812,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "sshhost"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	// than from /usr, so it cannot coincidentally cover an ssh_config path the
 	// way selecting @sys would.
 	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{home + ":/bin"}}
-	plain, err := policy.Resolve(reg, []policy.ProfileName{"@cwd-rw", "runtime-only"}, ctx, policy.OSEnviron{})
+	plain, err := policy.Resolve(reg, []policy.ProfileName{"@target-rw", "runtime-only"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -874,7 +874,7 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostSSHConfigs: []string{guest}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@home", "@cwd-rw", "sshhost", "runtime-only"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@home", "@target-rw", "sshhost", "runtime-only"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -906,7 +906,7 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr"}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "sshhost"}, ctx, policy.OSEnviron{})
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

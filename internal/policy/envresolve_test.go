@@ -32,7 +32,7 @@ func entryVerbs(p *Policy, name string) []string {
 // with every band populated — a band nobody exercises is a band the ordering
 // tests cannot see.
 func TestListBandsResolveInOrder(t *testing.T) {
-	sel := []ProfileName{"@sys", "@cwd-rw", "firsty", "envy", "cwd-ro", "@podman-socket"}
+	sel := []ProfileName{"@sys", "@target-rw", "firsty", "envy", "cwd-ro", "@podman-socket"}
 	p, err := Resolve(testRegistry(), sel, testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestSanitiseBandComesAfterMerge(t *testing.T) {
 	reg["pkg"] = &Profile{Name: "pkg", RO: []string{"/usr/share/pkgconfig"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PKG_CONFIG_PATH": {"/usr/share/pkgconfig"}},
 	}}
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "pkg", "sanity"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "pkg", "sanity"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestSanitiseKeepsGrantedElementsInHostOrder(t *testing.T) {
 	// and this would fail.
 	env.env["PKG_CONFIG_PATH"] = "/usr/share/pkgconfig:/srv/a:/usr/lib64/pkgconfig:/srv/b"
 
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSanitiseToNothingLeavesTheVariableUnset(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PKG_CONFIG_PATH"] = "/srv/a:/srv/b" // nothing granted
 
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSanitiseToNothingLeavesTheVariableUnset(t *testing.T) {
 	// POSITIVE CONTROL: with one granted element the variable IS present, so
 	// the assertion above cannot pass on a resolver where sanitise never runs.
 	env.env["PKG_CONFIG_PATH"] = "/srv/a:/usr/lib64/pkgconfig"
-	q, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	q, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestSanitiseNeverCarriesAnEmptyElement(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PKG_CONFIG_PATH"] = ":/usr/lib64/pkgconfig::/srv/a:"
 
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestSanitiseTreatsUnsetAndEmptyAlike(t *testing.T) {
 		if host.set {
 			env.env["PKG_CONFIG_PATH"] = ""
 		}
-		p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+		p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +216,7 @@ func TestSanitiseAcceptsAReadOnlyGrant(t *testing.T) {
 	reg := testRegistry()
 	reg["ro-opt"] = &Profile{Name: "ro-opt", RO: []string{"/opt/roonly"}}
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ro-opt", "sanity"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ro-opt", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestSanitiseAcceptsAReadOnlyGrant(t *testing.T) {
 const sanitiseProbeHost = "/opt/tools/bin:/tmp/x/bin:/tmp:/home/u/.local/bin:/home/u/.local/bin/tool:/home/u/proj/sub/bin:/srv/nothing"
 
 func sanitiseProbeSelection() []ProfileName {
-	return []ProfileName{"@sys", "@home", "@cwd-rw", "envy", "nested-bin", "sanity-path"}
+	return []ProfileName{"@sys", "@home", "@target-rw", "envy", "nested-bin", "sanity-path"}
 }
 
 func sanitiseProbeEnv() *fakeEnv {
@@ -403,7 +403,7 @@ func TestSanitiseEmitsTheHostElementVerbatimNotCleaned(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PATH"] = "/tmp/../usr/bin:/tmp/"
 
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@home", "@cwd-rw", "sanity-path"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@home", "@target-rw", "sanity-path"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +538,7 @@ func TestSanitiseResolvesProcSelfCwdOutOfPathAndArgv(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PATH"] = "/proc/self/cwd:/usr/bin"
 
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity-path"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity-path"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +773,7 @@ func TestSanitiseRecordsTheUncleanSpellingVerbatimNotCleaned(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PATH"] = "//data/bin:/opt/tools/bin"
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "uncleanshadow"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "uncleanshadow"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +940,7 @@ func TestACyclicSymlinkNamedOnPathIsRefusedByCouplingBeforeItCanResolve(t *testi
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "cyclic"}, testCtx(), newFakeEnv())
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "cyclic"}, testCtx(), newFakeEnv())
 		done <- err
 	}()
 	var err error
@@ -996,7 +996,7 @@ func TestSanitiseDropsASymlinkSpellingOfAShadowSlot(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PATH"] = "/data/bin:/opt/tools/bin:/nowhere"
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "symlinkshadow"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "symlinkshadow"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1042,7 +1042,7 @@ func TestSanitiseDropsASymlinkSpellingOfAShadowSlot(t *testing.T) {
 // value depends on how many profiles happened to name a directory, which is a
 // fold artifact and not a decision anybody made.
 func TestDuplicateEntriesCollapseToTheEarliestBand(t *testing.T) {
-	p := mustResolve(t, "@sys", "@cwd-rw", "dupe-path")
+	p := mustResolve(t, "@sys", "@target-rw", "dupe-path")
 
 	path, _ := p.EnvValue("PATH")
 	if n := strings.Count(":"+path+":", ":/usr/bin:"); n != 1 {
@@ -1083,7 +1083,7 @@ func TestSecondPrependIsRefused(t *testing.T) {
 		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
 	reg["b"] = &Profile{Name: "b", RO: []string{"/opt/bin"},
 		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "a", "b"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: two profiles prepending the SAME value must agree: %v", err)
 	}
@@ -1133,7 +1133,7 @@ func TestPrependsDifferingOnlyInElementBoundariesDisagree(t *testing.T) {
 	reg["qtools"] = &Profile{Name: "qtools", RO: []string{"/opt/a b"},
 		Environ: EnvGrants{Prepend: map[string][]string{"PATH": {"/opt/a b"}}}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptools", "qtools"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ptools", "qtools"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("two profiles prepending DIFFERENT sequences resolved silently: one wants two " +
 			"elements, the other wants one element containing a space. They cannot both be " +
@@ -1142,7 +1142,7 @@ func TestPrependsDifferingOnlyInElementBoundariesDisagree(t *testing.T) {
 	// Commutative, like every other refusal here: the verdict may not depend on
 	// selection order, or the same pair passes review one way round and fails the
 	// other.
-	if _, err2 := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "qtools", "ptools"}, testCtx(), newFakeEnv()); err2 == nil {
+	if _, err2 := Resolve(reg, []ProfileName{"@sys", "@target-rw", "qtools", "ptools"}, testCtx(), newFakeEnv()); err2 == nil {
 		t.Error("refused in one selection order and accepted in the other")
 	}
 
@@ -1151,7 +1151,7 @@ func TestPrependsDifferingOnlyInElementBoundariesDisagree(t *testing.T) {
 	// version ALONE is perfectly legal. A key that refused everything would pass
 	// the assertion above.
 	delete(reg, "ptools")
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "qtools"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "qtools"}, testCtx(), newFakeEnv()); err != nil {
 		t.Errorf("one profile prepending a single element containing a space was refused: %v", err)
 	}
 }
@@ -1176,7 +1176,7 @@ func TestConflictingScalarSetsAreRefused(t *testing.T) {
 	// change the verdict.
 	reg["a"] = &Profile{Name: "a", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
 	reg["b"] = &Profile{Name: "b", Environ: EnvGrants{Set: map[string]string{"MY_MODE": "fast"}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "a", "b"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: two profiles agreeing on a scalar must join, not conflict: %v", err)
 	}
 }
@@ -1198,7 +1198,7 @@ func TestSetAndInheritOnOneScalarMustAgree(t *testing.T) {
 
 	// POSITIVE CONTROL: agreeing claims resolve, and BOTH profiles are credited
 	// — `setty` sets EDITOR=vim, `envy` inherits the fake host's EDITOR=vim.
-	p := mustResolve(t, "@sys", "@cwd-rw", "setty", "envy")
+	p := mustResolve(t, "@sys", "@target-rw", "setty", "envy")
 	if v, _ := p.EnvValue("EDITOR"); v != "vim" {
 		t.Errorf("EDITOR = %q, want vim", v)
 	}
@@ -1213,7 +1213,7 @@ func TestSetAndInheritOnOneScalarMustAgree(t *testing.T) {
 	delete(env.env, "EDITOR")
 	reg := testRegistry()
 	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{Set: map[string]string{"EDITOR": "emacs"}}}
-	q, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), env)
+	q, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "emacsy", "envy"}, testCtx(), env)
 	if err != nil {
 		t.Fatalf("an inherit of a name the host does not have must contribute nothing, not "+
 			"conflict: %v", err)
@@ -1229,7 +1229,7 @@ func TestSetAndInheritOnOneScalarMustAgree(t *testing.T) {
 // entries. sanitise's predicate is "is this path granted", and grants only ever
 // grow, so adding a profile can only make MORE host elements survive.
 func TestEnvIsMonotoneAsASet(t *testing.T) {
-	base := []ProfileName{"@sys", "@cwd-rw"}
+	base := []ProfileName{"@sys", "@target-rw"}
 	basePol := mustResolve(t, base...)
 
 	for name := range testRegistry() {
@@ -1273,8 +1273,8 @@ func TestEnvIsMonotoneAsASet(t *testing.T) {
 // already carves out for mount depth — but it has to be said out loud, and this
 // test is where it is said.
 func TestPrependReordersWithoutRemoving(t *testing.T) {
-	without := mustResolve(t, "@sys", "@cwd-rw", "envy")
-	with := mustResolve(t, "@sys", "@cwd-rw", "envy", "firsty")
+	without := mustResolve(t, "@sys", "@target-rw", "envy")
+	with := mustResolve(t, "@sys", "@target-rw", "envy", "firsty")
 
 	if entryValues(without, "PATH")[0] != "/opt/tools/bin" {
 		t.Fatalf("control: without the prepend, envy's merged entry is first: %v",

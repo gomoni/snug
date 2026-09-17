@@ -84,8 +84,8 @@ func TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped(t *testing.T) 
 
 	// Now the real sweep: the FOUR corrected emitters, driven for real rather
 	// than quoted, so a future edit to any of them is checked automatically.
-	isolated := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}))
-	egress := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net"}))
+	isolated := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"}))
+	egress := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@net"}))
 
 	units := map[string]string{
 		"dryrun.go describeNetwork, NetIsolated arm": isolated,
@@ -111,7 +111,7 @@ func TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped(t *testing.T) 
 // the TRUE things — abstract sockets ARE netns-scoped, and host loopback IS
 // closed by the netns.
 func TestTheNetworkBlockStillMakesItsTrueClaims(t *testing.T) {
-	isolated := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}))
+	isolated := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"}))
 	if !strings.Contains(isolated, "abstract unix sockets (netns-scoped)") {
 		t.Errorf("the isolated arm no longer says abstract unix sockets are closed by the "+
 			"netns, which remains TRUE:\n%s", isolated)
@@ -121,7 +121,7 @@ func TestTheNetworkBlockStillMakesItsTrueClaims(t *testing.T) {
 			"TRUE (closed by the netns):\n%s", isolated)
 	}
 
-	egress := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@net"}))
+	egress := networkBlock(t, resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@net"}))
 	if !strings.Contains(egress, "abstract unix   UNREACHABLE (netns-scoped)") {
 		t.Errorf("the egress arm no longer says abstract unix sockets are unreachable "+
 			"because they are netns-scoped, which remains TRUE:\n%s", egress)
@@ -185,7 +185,7 @@ func TestDryRunDoesNotContradictAGrantThatExposesAPathnameSocket(t *testing.T) {
 			ctx := policy.Context{
 				Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 			}
-			p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "hostsock"}, ctx, policy.OSEnviron{})
+			p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "hostsock"}, ctx, policy.OSEnviron{})
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}

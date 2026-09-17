@@ -33,7 +33,7 @@ import (
 //     targets are how VERIFY.md and the whole integration suite build theirs.
 //     Only tmpfs paths rooted at $HOME count.
 //  3. When the target IS one of those five (`snug ~`), NO builtin selection
-//     works — @cwd-rw includes @home, so a bind of the target and the tmpfs
+//     works — @target-rw includes @home, so a bind of the target and the tmpfs
 //     collide however you select. That case needs its own sentence, because
 //     "select differently" there is advice nobody can follow.
 
@@ -97,9 +97,9 @@ func TestATargetDirectlyInAnEphemeralDirectoryIsRefused(t *testing.T) {
 // message says so rather than implying no working selection exists.
 func TestTheSafeSelectionIsRefusedToo(t *testing.T) {
 	reg := testRegistry()
-	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "@cwd-rw"}, ephemeralCtx("/home/u/proj"), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "@target-rw"}, ephemeralCtx("/home/u/proj"), newFakeEnv())
 	if err == nil {
-		t.Fatal("`--no-defaults -p @sys -p @home -p @cwd-rw ~/proj` was accepted. It resolves " +
+		t.Fatal("`--no-defaults -p @sys -p @home -p @target-rw ~/proj` was accepted. It resolves " +
 			"cleanly, and the maintainer's ruling on #179 is that it is refused anyway: a " +
 			"project directly in an ephemeral directory is the wrong thing to sandbox")
 	}

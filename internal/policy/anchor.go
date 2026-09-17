@@ -82,7 +82,7 @@ const AnchorNote = "(snug anchor) rows are snug's own empty tmpfs at an ancestor
 // and a fresh `proj`. NO SHIPPED BUILTIN REACHES THIS SHAPE, and the nearest
 // one a user can write does not either: a profile binding a host directory at
 // /tmp is legal (it is the one path snug's own tmpfs yields), but a target
-// under /tmp then makes @cwd-rw's bind nest inside that grant and
+// under /tmp then makes @target-rw's bind nest inside that grant and
 // rejectMasking refuses the whole selection — measured against the profile
 // that used to ship this shape, `snug -p @tmp-shared /tmp/X/proj/sub` exited
 // on "which is inside /tmp from profile @tmp-shared".

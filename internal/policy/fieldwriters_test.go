@@ -527,7 +527,7 @@ func TestJoinDoesNotInheritAuthored(t *testing.T) {
 		// exempt whichever way the two arrived.
 		reg := testRegistry()
 		reg["hostile"] = &Profile{Name: "hostile", RW: []string{"/opt:/tmp"}}
-		p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "hostile"}, testCtx(), newFakeEnv())
+		p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "hostile"}, testCtx(), newFakeEnv())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -560,7 +560,7 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 	// carrying Authored through, so the check is on the resolved policy.
 	reg := testRegistry()
 	reg["binder"] = &Profile{Name: "binder", RO: []string{"/opt:/home/u/mounted"}}
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binder"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}

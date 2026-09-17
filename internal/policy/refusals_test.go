@@ -35,7 +35,7 @@ func refusalSymlinkConflict(t testing.TB) error {
 	reg := testRegistry()
 	reg["link-a"] = &Profile{Name: "link-a", Symlink: []Symlink{{At: "/custom/tool", Target: "vendor-a"}}}
 	reg["link-b"] = &Profile{Name: "link-b", Symlink: []Symlink{{At: "/custom/tool", Target: "vendor-b"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "link-a", "link-b"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "link-a", "link-b"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -60,7 +60,7 @@ func TestSymlinkConflictAtSamePathIsFatal(t *testing.T) {
 func refusalUserProfileCannotRepointSysBin(t testing.TB) error {
 	reg := testRegistry()
 	reg["0shadow"] = &Profile{Name: "0shadow", Symlink: []Symlink{{At: "/bin", Target: "usr/sbin"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "0shadow"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "0shadow"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -317,7 +317,7 @@ func TestJoinRefusesDifferingPermsAtSamePath(t *testing.T) {
 func refusalGrantAtExactly(t testing.TB, guest string) error {
 	reg := testRegistry()
 	reg["claim"] = &Profile{Name: "claim", RW: []string{"/opt:" + guest}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -382,7 +382,7 @@ func refusalGrantCoversStagedBinDir(t testing.TB, kind, guest string) error {
 		t.Fatalf("unknown kind %q", kind)
 	}
 	reg["claim"] = p
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -434,7 +434,7 @@ func TestGrantAtOrAboveStagedBinDirIsFatal(t *testing.T) {
 func TestGrantInsideStagedBinDirStillLegal(t *testing.T) {
 	reg := testRegistry()
 	reg["claim"] = &Profile{Name: "claim", RO: []string{"/opt:" + StagedBinDir + "/mytool"}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: a grant strictly inside %s must stay legal: %v", StagedBinDir, err)
 	}
@@ -453,7 +453,7 @@ func TestGrantInsideStagedBinDirStillLegal(t *testing.T) {
 func TestGrantAtStringPrefixSiblingOfSnugDirStillLegal(t *testing.T) {
 	reg := testRegistry()
 	reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{SnugDir + "ly"}} // /snugly
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: %sly is a string-prefix sibling of %s, not inside it, and must "+
 			"stay legal: %v", SnugDir, SnugDir, err)
@@ -471,7 +471,7 @@ func TestGrantAnywhereInsideSnugDirIsFatal(t *testing.T) {
 		t.Run(guest, func(t *testing.T) {
 			reg := testRegistry()
 			reg["claim"] = &Profile{Name: "claim", Tmpfs: []string{guest}}
-			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+			_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 			if err == nil {
 				t.Fatalf("a tmpfs at %s was accepted; it is inside %s, which is snug's own, and a "+
 					"profile's tmpfs there escapes --remount-ro / exactly as one at %s would",
@@ -500,7 +500,7 @@ func TestGrantAtTheLegacySnugDirIsRefusedAndNamesTheNewPath(t *testing.T) {
 		t.Run(guest, func(t *testing.T) {
 			reg := testRegistry()
 			reg["claim"] = &Profile{Name: "claim", RO: []string{"/opt:" + guest}}
-			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "claim"}, testCtx(), newFakeEnv())
+			_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "claim"}, testCtx(), newFakeEnv())
 			if err == nil {
 				t.Fatalf("a grant at the pre-#206 path %s was accepted; it would validate and then "+
 					"stage into a directory that is not on PATH, saying nothing", guest)
@@ -536,7 +536,7 @@ func refusalGrantAtRoot(t testing.TB, kind string) error {
 		p.RW = []string{"/opt:/"}
 	}
 	reg["takeroot"] = p
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "takeroot"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "takeroot"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -562,7 +562,7 @@ func TestGrantAtRootIsFatalForEveryKind(t *testing.T) {
 // authors its own nodes at depth 1 (/proc, /dev, /tmp) and those are Authored,
 // so the refusal must not fire on a normal run.
 func TestOrdinaryPolicyStillResolvesAfterRootRefusal(t *testing.T) {
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw"}, testCtx(), newFakeEnv())
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: an ordinary selection must still resolve: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestOrdinaryPolicyStillResolvesAfterRootRefusal(t *testing.T) {
 func refusalGrantStrictlyInside(t testing.TB, guest string) error {
 	reg := testRegistry()
 	reg["nest"] = &Profile{Name: "nest", RO: []string{"/opt:" + guest}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "nest"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "nest"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -645,7 +645,7 @@ func refusalGrantStrictlyInsideResolvConf(t testing.TB) error {
 	// it names.
 	reg["runtime"] = &Profile{Name: "runtime", RO: []string{"/usr"}}
 	reg["nest"] = &Profile{Name: "nest", RO: []string{"/opt:/etc/resolv.conf/x"}}
-	_, err := Resolve(reg, []ProfileName{"runtime", "@cwd-rw", "nest"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"runtime", "@target-rw", "nest"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -671,7 +671,7 @@ func refusalScalarConflict(t testing.TB, key string) error {
 	case "mtu":
 		reg["mtu-a"] = &Profile{Name: "mtu-a", Network: "egress", MTU: 1400}
 		reg["mtu-b"] = &Profile{Name: "mtu-b", Network: "egress", MTU: 9000}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mtu-a", "mtu-b"}, testCtx(), newFakeEnv())
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "mtu-a", "mtu-b"}, testCtx(), newFakeEnv())
 		return err
 	default:
 		t.Fatalf("unknown scalar key %q", key)
@@ -704,7 +704,7 @@ func TestConflictingMTUsAreFatal(t *testing.T) {
 func refusalNestedGrantUnderLaterReplace(t testing.TB) error {
 	reg := testRegistry()
 	reg["hostile"] = &Profile{Name: "hostile", RO: []string{"/opt:{home}/.claude.json/evil"}}
-	p, err := Resolve(reg, []ProfileName{"@sys", "@home", "@cwd-rw", "hostile"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@home", "@target-rw", "hostile"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("control: Resolve alone must accept this — nothing occupies {home}/.claude.json "+
 			"yet, so its own Validate cannot see the nesting: %v", err)
@@ -746,7 +746,7 @@ func refusalForbiddenEnvUnsetOnHost(t testing.TB) error {
 	reg := testRegistry()
 	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Inherit: []string{"LD_PRELOAD"}}}
 	env := newFakeEnv() // deliberately WITHOUT LD_PRELOAD set
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "bad"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bad"}, testCtx(), env)
 	return err
 }
 
@@ -775,7 +775,7 @@ func refusalTwoPrepends(t testing.TB) error {
 		Prepend: map[string][]string{"PATH": {"/opt/bin"}}}}
 	reg["othertools"] = &Profile{Name: "othertools", RO: []string{"/srv/bin"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/srv/bin"}}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mytools", "othertools"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "mytools", "othertools"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -788,7 +788,7 @@ func refusalPrependOrder(t testing.TB) error {
 		Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
 	reg["orderb"] = &Profile{Name: "orderb", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
 		Prepend: map[string][]string{"PATH": {"/opt/b", "/opt/a"}}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ordera", "orderb"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ordera", "orderb"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -804,7 +804,7 @@ func refusalTwoSets(t testing.TB) error {
 	reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
 	reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
 	reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "seta", "setb", "setc"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "seta", "setb", "setc"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -815,7 +815,7 @@ func refusalSetVsInherit(t testing.TB) error {
 	reg["emacsy"] = &Profile{Name: "emacsy", Environ: EnvGrants{
 		Set: map[string]string{"EDITOR": "emacs"}}}
 	// `envy` inherits EDITOR, and the fake host has EDITOR=vim.
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "emacsy", "envy"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -832,7 +832,7 @@ func refusalUncoupledSet(t testing.TB) error {
 	reg := testRegistry()
 	reg["broken"] = &Profile{Name: "broken", Tmpfs: []string{"{home}/.config"}, Environ: EnvGrants{
 		Set: map[string]string{"XDG_DATA_HOME": "{home}/.local/share"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "broken"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "broken"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -842,7 +842,7 @@ func refusalUncoupledMerge(t testing.TB) error {
 	reg := testRegistry()
 	reg["tpath"] = &Profile{Name: "tpath", Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/nonexistent/bin"}}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tpath"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "tpath"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -854,7 +854,7 @@ func refusalUncoupledDespiteAnotherProfile(t testing.TB) error {
 	reg := testRegistry()
 	reg["namer"] = &Profile{Name: "namer", Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/opt/tools/bin"}}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer", "envy"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "namer", "envy"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -866,7 +866,7 @@ func refusalRelativeSet(t testing.TB) error {
 	reg := testRegistry()
 	reg["rel"] = &Profile{Name: "rel", Environ: EnvGrants{
 		Set: map[string]string{"CARGO_HOME": "cargo"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "rel"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "rel"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -886,7 +886,7 @@ func refusalRelativeStartupFile(t testing.TB) error {
 	reg := testRegistry()
 	reg["startup"] = &Profile{Name: "startup", Environ: EnvGrants{
 		Set: map[string]string{"BASH_ENV": ".snug-init.sh"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "startup"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -909,7 +909,7 @@ func refusalRelativePointer(t testing.TB) error {
 	reg := testRegistry()
 	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
 		Set: map[string]string{"GIT_CONFIG_SYSTEM": "sys.gitconfig"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ptr"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -933,7 +933,7 @@ func refusalRelativeAnnotatedPath(t testing.TB) error {
 	reg := testRegistry()
 	reg["tpl"] = &Profile{Name: "tpl", Environ: EnvGrants{
 		Set: map[string]string{"GIT_TEMPLATE_DIR": "tpl"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tpl"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "tpl"}, testCtx(), newFakeEnv())
 	return err
 }
 
@@ -1010,7 +1010,7 @@ func TestGoldenRefusals(t *testing.T) {
 			env.sockets = map[string]bool{"/home/u/agent.sock": true}
 			reg := testRegistry()
 			reg["binder"] = &Profile{Name: "binder", RO: []string{"/home/u/agent.sock:/home/u/mounted"}}
-			_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binder"}, testCtx(), env)
+			_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binder"}, testCtx(), env)
 			return err
 		}},
 		{"grant_strictly_inside_resolv_conf", refusalGrantStrictlyInsideResolvConf},
@@ -1276,7 +1276,7 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 		env.dirs[probe.host] = true
 		reg := testRegistry()
 		reg["mask"] = &Profile{Name: "mask", RO: []string{probe.host + ":/opt/x"}}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mask"}, testCtx(), env)
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "mask"}, testCtx(), env)
 		if err == nil || !strings.Contains(err.Error(), "which is inside /opt") {
 			t.Fatalf("fixture: the MASKING refusal did not fire for %s, so this case measures "+
 				"nothing: %v", probe.why, err)
@@ -1289,7 +1289,7 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 		reg2 := testRegistry()
 		reg2["a"] = &Profile{Name: "a", RO: []string{"/srv/bin:/srv/x"}}
 		reg2["b"] = &Profile{Name: "b", RO: []string{probe.host + ":/srv/x"}}
-		_, err = Resolve(reg2, []ProfileName{"@sys", "@cwd-rw", "a", "b"}, testCtx(), env2)
+		_, err = Resolve(reg2, []ProfileName{"@sys", "@target-rw", "a", "b"}, testCtx(), env2)
 		if err == nil || !strings.Contains(err.Error(), "two host sources") {
 			t.Fatalf("fixture: the JOIN CONFLICT did not fire for %s: %v", probe.why, err)
 		}
@@ -1304,7 +1304,7 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 	env.dirs["/srv/a b/caf\u00e9"] = true
 	reg := testRegistry()
 	reg["plain"] = &Profile{Name: "plain", RO: []string{"/srv/a b/caf\u00e9:/opt/x"}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "plain"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "plain"}, testCtx(), env)
 	if err == nil {
 		t.Fatal("fixture: the control did not reach a refusal")
 	}
@@ -1318,7 +1318,7 @@ func TestARefusalNeverRendersARawForgingRune(t *testing.T) {
 // through EngineToolchain, the B1 call site — where the ancestor arm now
 // actually fires on a real run, before any graft is attempted at all (G4b,
 // checkGraft's own ancestor arm below, never runs while $SNUG_PODMAN_ROOT is
-// unset). Root is the target itself, which @cwd-rw grants AccessRW, so this
+// unset). Root is the target itself, which @target-rw grants AccessRW, so this
 // is CheckEngineToolchainTree's ancestor arm, reached through the writer that
 // now asks it, and the message is UNPREFIXED — EngineToolchain returns the
 // error CheckEngineToolchainTree built, with no "cannot graft ...: %w" wrapper
@@ -1332,7 +1332,7 @@ func refusalEngineToolchainRootIsPayloadWritable(t testing.TB) error {
 // refusalEngineToolchainRootContainsAWritableGrant is issue #405's SECOND
 // half, and the finding the ticket exists for: the root itself
 // (/home/u/proj) is only read-only (@parent-ro), so the ancestor arm clears,
-// but /home/u/proj/sub sits strictly inside it and @cwd-rw grants THAT
+// but /home/u/proj/sub sits strictly inside it and @target-rw grants THAT
 // AccessRW — a writable grant inside the tree the ancestor arm can never see.
 // Reached through EngineToolchain (B1), the same call site as the row above,
 // so the pair demonstrates both arms through one writer.
@@ -1391,7 +1391,7 @@ func refusalEngineBinarySelectedThroughAWritablePathEntry(t testing.TB) error {
 
 // refusalEngineToolchainRootSelectedThroughAWritableName is issue #369's
 // second door: $SNUG_PODMAN_ROOT names a payload-writable symlink
-// (/home/u/proj/sub/bundle, inside @cwd-rw's own grant) into a CLEAN host
+// (/home/u/proj/sub/bundle, inside @target-rw's own grant) into a CLEAN host
 // directory that no grant makes writable (/opt/tools/bin, read-only under
 // @sys). CheckEngineToolchainTree alone judges only the resolved directory
 // and would accept it; EngineToolchain's own call to writableNameOnChain,
@@ -1404,7 +1404,7 @@ func refusalEngineToolchainRootSelectedThroughAWritableName(t testing.TB) error 
 }
 
 // refusalGraftToolchainRootWritable: issue #390, G4b. The recorded toolchain
-// root is the TARGET, which @cwd-rw grants writable — the real spelling, since
+// root is the TARGET, which @target-rw grants writable — the real spelling, since
 // $SNUG_PODMAN pointed at ./bin/podman inside a sandboxed source tree produces
 // exactly this. Read-only is requested, and refused anyway.
 func refusalGraftToolchainRootWritable(t testing.TB) error {

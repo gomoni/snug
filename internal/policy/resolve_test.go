@@ -207,9 +207,9 @@ func testRegistry() map[ProfileName]*Profile {
 				"XDG_STATE_HOME":  "{home}/.local/state",
 				"XDG_DATA_HOME":   "{home}/.local/share",
 			}}},
-		"@cwd-rw":    {Name: "@cwd-rw", Include: []ProfileName{"@home"}, RW: []string{"{target}"}},
+		"@target-rw": {Name: "@target-rw", Include: []ProfileName{"@home"}, RW: []string{"{target}"}},
 		"@parent-ro": {Name: "@parent-ro", RO: []string{"{target_parent}"}},
-		// Deliberately overlaps @cwd-rw at the same guest path with weaker
+		// Deliberately overlaps @target-rw at the same guest path with weaker
 		// access, to prove the join takes the max rather than the last writer.
 		//
 		// It also carries the `path` entry, and that placement is deliberate:
@@ -262,11 +262,11 @@ func testRegistry() map[ProfileName]*Profile {
 		"gitty":     {Name: "gitty", Git: "extract"},
 		"gitty-too": {Name: "gitty-too", Git: "extract"},
 		// A pure composition point with a two-level include chain
-		// (combo -> @cwd-rw -> @home). The builtin `default` used to be one of
+		// (combo -> @target-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
 		// but the resolver must still handle include-only profiles, so the fake
 		// registry keeps one.
-		"combo": {Name: "combo", Include: []ProfileName{"@sys", "@cwd-rw", "@parent-ro"}},
+		"combo": {Name: "combo", Include: []ProfileName{"@sys", "@target-rw", "@parent-ro"}},
 		// Carries the SCALARS, so the commutativity and idempotence property
 		// tests actually exercise them now that canon() renders them. Without a
 		// fixture setting one, widening canon() would assert nothing: the
@@ -318,7 +318,7 @@ func testRegistry() map[ProfileName]*Profile {
 // selects. internal/policy cannot import internal/profile (that is the
 // dependency the other way round), so the list is repeated here; if it ever
 // diverges, the goldens are describing a sandbox no user gets.
-var testDefaults = []ProfileName{"@sys", "@home", "@cwd-rw"}
+var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 
 // testCtx is an INTERACTIVE run: all three descriptors are terminals, which is
 // what a human typing `snug <dir>` at a terminal produces, and what every
@@ -420,7 +420,7 @@ func canon(p *Policy) string {
 // Resolve must be commutative. If it is not, the order profiles are named
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
-	all := []ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
+	all := []ProfileName{"@sys", "@home", "@target-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
 		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too"}
 	want := canon(mustResolve(t, all...))
 
@@ -436,9 +436,9 @@ func TestResolveIsCommutative(t *testing.T) {
 
 // Selecting a profile twice must be identical to selecting it once.
 func TestResolveIsIdempotent(t *testing.T) {
-	for _, name := range []ProfileName{"@sys", "@cwd-rw", "@parent-ro", "combo"} {
-		once := canon(mustResolve(t, "@sys", "@cwd-rw", name))
-		twice := canon(mustResolve(t, "@sys", "@cwd-rw", name, name))
+	for _, name := range []ProfileName{"@sys", "@target-rw", "@parent-ro", "combo"} {
+		once := canon(mustResolve(t, "@sys", "@target-rw", name))
+		twice := canon(mustResolve(t, "@sys", "@target-rw", name, name))
 		if once != twice {
 			t.Errorf("%s: selecting twice differs from once\n--- once\n%s\n--- twice\n%s", name, once, twice)
 		}
@@ -448,7 +448,7 @@ func TestResolveIsIdempotent(t *testing.T) {
 // THE invariant: adding a profile may never remove or weaken a grant. This is
 // the executable form of .claude/design/INDEX.md §2.4.
 func TestResolveIsMonotone(t *testing.T) {
-	base := []ProfileName{"@sys", "@cwd-rw"}
+	base := []ProfileName{"@sys", "@target-rw"}
 	basePol := mustResolve(t, base...)
 
 	for name := range testRegistry() {
@@ -545,7 +545,7 @@ func TestDeeperGrantOverridesShallowerAccess(t *testing.T) {
 	reg := testRegistry()
 	reg["protect-git"] = &Profile{Name: "protect-git", RO: []string{"{target}/.git"}}
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "protect-git"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "protect-git"}, testCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestSymlinkInsideTargetCannotDivertAGrant(t *testing.T) {
 	reg := testRegistry()
 	reg["build-rw"] = &Profile{Name: "build-rw", RW: []string{"{target}/build"}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "build-rw"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "build-rw"}, testCtx(), env)
 	if err == nil {
 		t.Fatal("a symlink inside the target diverted a grant to /home/u/secrets")
 	}
@@ -606,7 +606,7 @@ func TestSymlinkAboveTargetIsStillFollowed(t *testing.T) {
 // A weaker grant at the same path must not win, no matter which order it
 // arrives in. This is the join doing its job.
 func TestAccessJoinTakesTheMaximum(t *testing.T) {
-	for _, order := range [][]ProfileName{{"@cwd-rw", "cwd-ro"}, {"cwd-ro", "@cwd-rw"}} {
+	for _, order := range [][]ProfileName{{"@target-rw", "cwd-ro"}, {"cwd-ro", "@target-rw"}} {
 		p := mustResolve(t, append([]ProfileName{"@sys"}, order...)...)
 		if got := p.Mounts["/home/u/proj/sub"].Access; got != AccessRW {
 			t.Errorf("order %v: target access = %s, want rw", order, got)
@@ -625,7 +625,7 @@ func TestFailsClosed(t *testing.T) {
 	}{
 		{"no profile", nil, nil, "no profile selected"},
 		{"unknown profile", []ProfileName{"nope"}, nil, "unknown profile"},
-		{"no runtime granted", []ProfileName{"@cwd-rw"}, nil, "no OS runtime granted"},
+		{"no runtime granted", []ProfileName{"@target-rw"}, nil, "no OS runtime granted"},
 		{"grants nothing", []ProfileName{"nothing"}, nil, "grant nothing"},
 		{"target not visible", []ProfileName{"@sys"}, nil, "is not visible"},
 		{"missing target", testDefaults, func(c Context) Context {
@@ -662,7 +662,7 @@ func TestMaskingByOvermountIsRejected(t *testing.T) {
 	reg["etc-full"] = &Profile{Name: "etc-full", RO: []string{"/etc"}}
 	reg["hide-profiled"] = &Profile{Name: "hide-profiled", Tmpfs: []string{"/etc/profile.d"}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "etc-full", "@cwd-rw", "hide-profiled"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "etc-full", "@target-rw", "hide-profiled"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a profile masked part of another profile's grant; the model has no subtraction")
 	}
@@ -683,7 +683,7 @@ func TestMaskingByNestedBindIsRejected(t *testing.T) {
 	reg := testRegistry()
 	reg["mask-misc"] = &Profile{Name: "mask-misc", RO: []string{"/decoy:/usr/share/misc"}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mask-misc"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "mask-misc"}, testCtx(), env)
 	if err == nil {
 		t.Fatal("a bind of an unrelated host dir masked part of sys's /usr grant")
 	}
@@ -708,7 +708,7 @@ func TestSanitiseMonotonicityRestsOnRejectMasking(t *testing.T) {
 	// entry to a tmpfs-covered one — an element sanitise would then drop,
 	// which is monotonicity failing from a totally unrelated profile choice.
 	reg["mask-usr"] = &Profile{Name: "mask-usr", Tmpfs: []string{"/usr/local"}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "mask-usr"}, testCtx(), newFakeEnv()); err == nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "mask-usr"}, testCtx(), newFakeEnv()); err == nil {
 		t.Fatal("a tmpfs installed beneath @sys's /usr bind was accepted; sanitise's " +
 			"monotonicity depends on rejectMasking refusing exactly this arrangement")
 	}
@@ -719,18 +719,18 @@ func TestSanitiseMonotonicityRestsOnRejectMasking(t *testing.T) {
 	// because Resolve refuses every tmpfs nested inside anything, which would
 	// prove nothing about the specific coupling this test exists to pin.
 	reg["scratch"] = &Profile{Name: "scratch", Include: []ProfileName{"@home"}, Tmpfs: []string{"{home}/scratch"}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "scratch"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "scratch"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: a tmpfs nested inside another tmpfs must resolve fine, got %v", err)
 	}
 }
 
-// The legitimate nesting must keep working: cwd-rw lays rw {target} over
+// The legitimate nesting must keep working: target-rw lays rw {target} over
 // parent-ro's ro {target_parent}. That re-grants the SAME host tree at stronger
 // access — a superset, not a mask — and the default selection depends on it.
 func TestReGrantingTheSameTreeIsAllowed(t *testing.T) {
 	// @parent-ro is SELECTED here, not inherited from the defaults: issue #550
 	// took it out of them, and this test is about the profile's join with
-	// @cwd-rw rather than about what a bare `snug <dir>` picks.
+	// @target-rw rather than about what a bare `snug <dir>` picks.
 	p := mustResolve(t, withParentRo()...)
 
 	parent := p.Mounts["/home/u/proj"]
@@ -790,7 +790,7 @@ func TestSharedTmpReplacesThePrivateTmpfs(t *testing.T) {
 
 	ctx := testCtx()
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "shared-tmp"}, ctx, env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "shared-tmp"}, ctx, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,7 +906,7 @@ func TestSymlinkMountpointHazardIsRejected(t *testing.T) {
 	env.dirs["/usr/bin/tool"] = true
 	reg["shim"] = &Profile{Name: "shim", RO: []string{"/usr/bin/tool:/bin/tool"}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "shim"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "shim"}, testCtx(), env)
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected a symlink-mountpoint rejection, got %v", err)
 	}
@@ -944,7 +944,7 @@ func TestUngrantedPathsAreAbsent(t *testing.T) {
 // THE DEFAULT SELECTION DOES NOT GRANT THE TARGET'S PARENT (issue #550).
 //
 // Every other default is bounded by construction — @sys is a fixed
-// enumeration, @home is an empty tmpfs, @cwd-rw is the directory the user
+// enumeration, @home is an empty tmpfs, @target-rw is the directory the user
 // named on the command line. The parent is the one nobody named, and what it
 // holds depends on where the target happens to sit: every sibling project,
 // their .git/config, their .env files, and any socket or FIFO in the tree
@@ -993,7 +993,7 @@ func TestParentRoGrantsTheParentAndNoHigher(t *testing.T) {
 	}
 
 	// Without parent-ro, the parent itself is gone.
-	q := mustResolve(t, "@sys", "@cwd-rw")
+	q := mustResolve(t, "@sys", "@target-rw")
 	if reachable(q, "/home/u/proj/other") {
 		t.Error("without parent-ro the parent must not be granted at all")
 	}
@@ -1017,7 +1017,7 @@ func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 	}
 	// Selecting a read-only view of the same tree does not demote the writable
 	// grant: the join takes the maximum, in both directions.
-	q := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
+	q := mustResolve(t, "@sys", "@target-rw", "cwd-ro")
 	if got := q.Mounts["/home/u/proj/sub"].Access; got != AccessRW {
 		t.Errorf("adding cwd-ro demoted the target to %s; profiles may only ever grant", got)
 	}
@@ -1029,7 +1029,7 @@ func TestPolicyHasNoRestrictionOperation(t *testing.T) {
 // was: it bound ~/.local/bin/claude and `snug -p @claude . -- claude` answered
 // "execvp claude: No such file or directory".
 func TestProfilePathReachesPATH(t *testing.T) {
-	p := mustResolve(t, "@sys", "@cwd-rw", "cwd-ro")
+	p := mustResolve(t, "@sys", "@target-rw", "cwd-ro")
 	got, _ := p.EnvValue("PATH")
 
 	if !strings.HasPrefix(got, "/home/u/.local/bin:") {
@@ -1053,11 +1053,11 @@ func TestPATHIsOrderIndependent(t *testing.T) {
 	reg["tools-b"] = &Profile{Name: "tools-b", RO: []string{"/opt/b/bin"},
 		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/b/bin"}}}}
 
-	one, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
+	one, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "tools-a", "tools-b"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := Resolve(reg, []ProfileName{"tools-b", "tools-a", "@cwd-rw", "@sys"}, testCtx(), newFakeEnv())
+	two, err := Resolve(reg, []ProfileName{"tools-b", "tools-a", "@target-rw", "@sys"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1190,6 +1190,39 @@ func TestRetiredNullProfileNamesTheFix(t *testing.T) {
 	}
 }
 
+// @cwd-rw was renamed to @target-rw (#578). The old name has to keep NAMING THE
+// FIX rather than reading as a typo: it is in every shipped README example and in
+// every `defaults = [...]` anyone wrote, so a bare "unknown profile" would send
+// the reader to `snug profile list` to guess which of nine names replaced it.
+func TestRetiredCwdRwNamesTargetRw(t *testing.T) {
+	_, err := Resolve(testRegistry(), append(append([]ProfileName{}, testDefaults...), "@cwd-rw"), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("-p @cwd-rw was accepted; the profile is @target-rw now")
+	}
+	if !strings.Contains(err.Error(), "@target-rw") {
+		t.Errorf("the error should name the new spelling, got: %v", err)
+	}
+
+	err = UnknownProfile(testRegistry(), "@cwd-rw")
+	if err == nil || !strings.Contains(err.Error(), "@target-rw") {
+		t.Errorf("UnknownProfile(@cwd-rw), the route `snug profile show @cwd-rw` takes, "+
+			"should name @target-rw, got: %v", err)
+	}
+
+	// CONTROL, and it is the one the @null table already learned the hard way:
+	// `cwd-rw` is a perfectly legal name for a profile a USER defines in their
+	// own profiles.d. The retired table must not preempt it and tell that user
+	// their own profile is snug's retired builtin.
+	reg := testRegistry()
+	reg["cwd-rw"] = &Profile{Name: "cwd-rw"}
+	if err := UnknownProfile(reg, "cwd-rw"); err == nil {
+		t.Error("a user's own cwd-rw resolved through UnknownProfile, which only " +
+			"runs on a miss — fixture wrong")
+	} else if strings.Contains(err.Error(), "@target-rw") {
+		t.Errorf("a user's OWN cwd-rw was answered with snug's retirement notice: %v", err)
+	}
+}
+
 // ── Positive controls for the nesting rules ─────────────────────────────────
 //
 // The rules Validate now enforces (RULE 2, RULE 4) are permissive in three
@@ -1219,7 +1252,7 @@ func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
 	reg := testRegistry()
 	reg["id-file"] = &Profile{Name: "id-file", Include: []ProfileName{"@home"}, RO: []string{"/opt:{home}/.gitconfig"}}
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "id-file"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "id-file"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @git-ro and @claude depend on "+
 			"it for every identity and credential file they expose: %v", err)
@@ -1245,7 +1278,7 @@ func TestSysStyleNestedBindOfTheSameTreeIsAllowed(t *testing.T) {
 	sys.RO = append(append([]string(nil), sys.RO...), "/usr/share/ca-certificates")
 	reg["@sys"] = &sys
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw"}, testCtx(), env)
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw"}, testCtx(), env)
 	if err != nil {
 		t.Fatalf("a bind nested inside another bind of the SAME host tree, from the SAME "+
 			"profile, must stay legal — this is @sys's own shape: %v", err)
@@ -1262,7 +1295,7 @@ func TestSysStyleNestedBindOfTheSameTreeIsAllowed(t *testing.T) {
 // profiles agreeing on an MTU, and one repeating a port the other already
 // named, must join cleanly rather than conflict or duplicate.
 func TestScalarsAndSetsAgreeAcrossProfiles(t *testing.T) {
-	p := mustResolve(t, "@sys", "@cwd-rw", "netty", "netty-too")
+	p := mustResolve(t, "@sys", "@target-rw", "netty", "netty-too")
 
 	if p.Net.MTU != 1400 {
 		t.Errorf("mtu = %d, want 1400 — two profiles agreeing on a scalar must join, not conflict", p.Net.MTU)
@@ -1309,7 +1342,7 @@ func TestBindSocketProvenanceIsParameterized(t *testing.T) {
 func TestRelativeProfilePathIsRefused(t *testing.T) {
 	reg := testRegistry()
 	reg["bad"] = &Profile{Name: "bad", Environ: EnvGrants{Merge: map[string][]string{"PATH": {"bin"}}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "bad"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bad"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a relative path entry was accepted")
 	}
@@ -1488,7 +1521,7 @@ func TestASymlinkTargetExpandsVariablesLikeEveryOtherField(t *testing.T) {
 		Symlink: []Symlink{{At: "{home}/link", Target: "{home}/real"}},
 	}
 
-	p, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "links"}, testCtx(), newFakeEnv())
+	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "links"}, testCtx(), newFakeEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1510,7 +1543,7 @@ func TestASymlinkTargetExpandsVariablesLikeEveryOtherField(t *testing.T) {
 		Name:    "retired",
 		Symlink: []Symlink{{At: "/zz/l", Target: "{host_tmpdir}/x"}},
 	}
-	_, err = Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "retired"}, testCtx(), newFakeEnv())
+	_, err = Resolve(reg, []ProfileName{"@sys", "@target-rw", "retired"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("{host_tmpdir} in a symlink target resolved. It refuses in every other sink, " +
 			"so this one rendered a variable snug no longer has into the sandbox")

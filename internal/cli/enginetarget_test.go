@@ -34,7 +34,7 @@ func TestTargetGraftIsRenderedInTheEngineViewBlock(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", plannedDataHome)
 	t.Setenv("TMPDIR", plannedTmpDir)
 
-	p := engineViewPolicy(t) // @sys @cwd-rw @podman-socket, target /home/u/proj/sub
+	p := engineViewPolicy(t) // @sys @target-rw @podman-socket, target /home/u/proj/sub
 	env := newEnvFakeEnv()
 
 	ctr, err := startContainers(env, p, nil, false, true)
@@ -56,7 +56,7 @@ func TestTargetGraftIsRenderedInTheEngineViewBlock(t *testing.T) {
 		t.Errorf("target graft Host = %q, want the resolved target %q", gr.Host, p.Target)
 	}
 	if gr.Access != policy.AccessRW {
-		t.Errorf("target graft Access = %v, want AccessRW — the fixture's target is @cwd-rw", gr.Access)
+		t.Errorf("target graft Access = %v, want AccessRW — the fixture's target is @target-rw", gr.Access)
 	}
 	if gr.Why == "" {
 		t.Error("target graft has no abuse sentence")

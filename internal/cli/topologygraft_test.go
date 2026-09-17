@@ -55,7 +55,7 @@ func TestTopologyBlockDoesNotDependOnGrafts(t *testing.T) {
 	// other policy. @podman-socket is what makes p.Podman != PodmanOff and so
 	// what makes describeTopology render the engine line group at all — the
 	// only branch where a graft row could plausibly be added by mistake.
-	sel := []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}
+	sel := []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel,
 		envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {

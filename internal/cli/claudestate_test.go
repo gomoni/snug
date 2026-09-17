@@ -146,7 +146,7 @@ func stageClaude(t *testing.T, host hostClaude) (policy.Mount, string, string) {
 		hostClaudeJSONTrusting(t, home, key)
 	}
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
-	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}, ctx, policy.OSEnviron{})
+	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestClaudeDotJSONIsGeneratedWithNoHostFile(t *testing.T) {
 // agent's own $HOME. It is the one a reader cannot check against the code, so a
 // stale sentence there costs turns rather than review time.
 func TestClaudeGuidanceDoesNotClaimTheHostJSONIsStaged(t *testing.T) {
-	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"})
+	p := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"})
 	got := string(claudeGuidance(p))
 
 	for _, dead := range []string{"re-" + "onboard", "IS staged"} {
@@ -452,7 +452,7 @@ func TestClaudeGuidanceDoesNotClaimTheHostJSONIsStaged(t *testing.T) {
 // TestClaudeSettingsFilterDropsEveryExecutingKey and its siblings in
 // internal/policy for that half.
 func TestClaudeGuidanceDescribesTheGeneratedSettingsFile(t *testing.T) {
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}
 	got := string(claudeGuidance(resolveFor(t, sel)))
 	if strings.Contains(got, "read-only bind") {
 		t.Errorf("the guidance still calls ~/.claude/settings.json a read-only bind of the "+
@@ -556,7 +556,7 @@ func equalStrings(a, b []string) bool {
 // The sentence this pins was UNCONDITIONAL and false under the DEFAULT
 // selection. It read "every other project on this machine [is] not hidden —
 // [it was] never mounted, and read as **absent**", and the defaults are
-// `@sys @home @cwd-rw @parent-ro`: @parent-ro binds the target's PARENT
+// `@sys @home @target-rw @parent-ro`: @parent-ro binds the target's PARENT
 // read-only, so every sibling of the target is readable. Reported from inside a
 // real run (issue #461) — "Sibling project directories alongside the target ...
 // are present and fully readable from inside the sandbox."
@@ -572,7 +572,7 @@ func equalStrings(a, b []string) bool {
 // whose own header says it "describes what is actually true".
 func TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent(t *testing.T) {
 	t.Run("with @parent-ro the guidance says reads are NOT confined", func(t *testing.T) {
-		sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro", "@claude"}
+		sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro", "@claude"}
 		pol := resolveFor(t, sel)
 		got := string(claudeGuidance(pol))
 
@@ -594,7 +594,7 @@ func TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent(t *testing.T) {
 	})
 
 	t.Run("control: without it the absence claim is true and is still made", func(t *testing.T) {
-		sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}
+		sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}
 		got := string(claudeGuidance(resolveFor(t, sel)))
 
 		if strings.Contains(got, "Reads are NOT confined") {
@@ -621,7 +621,7 @@ func TestClaudeGuidanceDoesNotClaimSiblingProjectsAreAbsent(t *testing.T) {
 // deleted.
 
 func TestClaudeGuidanceDoorArmNamesTheActualDoors(t *testing.T) {
-	pol := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude", "@net"})
+	pol := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude", "@net"})
 	pol.ListenNames = []string{"web", "api"}
 	got := string(claudeGuidance(pol))
 
@@ -637,7 +637,7 @@ func TestClaudeGuidanceDoorArmNamesTheActualDoors(t *testing.T) {
 }
 
 func TestClaudeGuidanceNetworkPostureIsDerived(t *testing.T) {
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude", "@net"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude", "@net"}
 
 	withDoor := resolveFor(t, sel)
 	withDoor.ListenNames = []string{"web"}

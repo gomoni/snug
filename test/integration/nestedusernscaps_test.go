@@ -84,7 +84,7 @@ func buildCapregainProbe(t *testing.T) string {
 }
 
 // stageCapregainProbe copies the built probe under the target, because that is
-// the only place a `-p @cwd-rw` sandbox can see it: the build output lives in
+// the only place a `-p @target-rw` sandbox can see it: the build output lives in
 // the test's own scratch directory, outside every grant.
 func stageCapregainProbe(t *testing.T, proj, bin string) {
 	t.Helper()
@@ -146,7 +146,7 @@ func TestNestedUserNamespaceCapsCannotReachSnugsNamespaces(t *testing.T) {
 			proj, _ := target(t)
 			stageCapregainProbe(t, proj, bin)
 
-			args := append([]string{"--no-seccomp", "--no-defaults", "-p", "@sys", "-p", "@cwd-rw"}, arm.extra...)
+			args := append([]string{"--no-seccomp", "--no-defaults", "-p", "@sys", "-p", "@target-rw"}, arm.extra...)
 			r := run(t, args, proj, "./capregainprobe").mustRun(t)
 			f := parseProbeFields(r.out)
 

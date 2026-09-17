@@ -77,7 +77,7 @@ func TestTheHomeBindRuleIsNarrow(t *testing.T) {
 		{"/home/u", KindTmpfs, "@home's tmpfs at {home} — this is the mechanism that makes a bind there unrepresentable in the default selection, not a violation of it"},
 		{"/home/u", KindData, "snug's own generated files land under the home"},
 		{"/home/u/src", KindBind, "a bind BELOW the home is the enumerate-instead answer the refusal itself recommends"},
-		{"/home/u/proj", KindBind, "@cwd-rw's grant of a home-child target"},
+		{"/home/u/proj", KindBind, "@target-rw's grant of a home-child target"},
 		{"/tmp", KindBind, "@parent-ro on a /tmp target — unrelated, and the whole integration suite builds targets there"},
 		{"/etc", KindBind, "@sys"},
 		{"/home/other", KindBind, "another user's home is not this policy's Home"},

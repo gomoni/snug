@@ -31,14 +31,14 @@ func TestGoldenTopology(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
+		{"isolated", []policy.ProfileName{"@sys", "@target-rw"}},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}},
 		// Issue #63, Tier B: a container engine needs a stage even OFFLINE —
 		// the engine line group and the CAP_SYS_PTRACE/CAP_NET_ADMIN-excluding
 		// bounding set only render when p.Podman != PodmanOff, so these two
 		// are the only cases in this file that walk that branch at all.
-		{"podman-offline", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}},
-		{"podman-egress", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket", "@net"}},
+		{"podman-offline", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}},
+		{"podman-egress", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket", "@net"}},
 	}
 
 	for _, tc := range cases {
@@ -100,8 +100,8 @@ func TestTheSubuidLineNamesTheRightAuthorPerArm(t *testing.T) {
 		wantStage  bool
 		mustNotSay string
 	}{
-		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}, false, "the stage"},
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}, true, ""},
+		{"isolated", []policy.ProfileName{"@sys", "@target-rw"}, false, "the stage"},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), tc.sel, envGoldenCtx(), newEnvFakeEnv())

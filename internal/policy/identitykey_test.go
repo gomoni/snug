@@ -124,7 +124,7 @@ func TestResolveExpandsSigningKeyVariables(t *testing.T) {
 
 // The symlink-redirect regression (issue #337's shape, applied to the second
 // key field): signing_key resolved under the target follows a symlink a
-// PREVIOUS run's own @cwd-rw could have planted there, and the proxy would then
+// PREVIOUS run's own @target-rw could have planted there, and the proxy would then
 // pin whatever key that link points at.
 func TestResolveRefusesASigningKeySymlinkedOutOfTheTarget(t *testing.T) {
 	env := newFakeEnv()

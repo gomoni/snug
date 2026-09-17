@@ -103,7 +103,7 @@ func TestBuiltinsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"} {
+	for _, want := range []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"} {
 		if _, ok := reg[want]; !ok {
 			t.Errorf("builtin profile %q is missing", want)
 		}

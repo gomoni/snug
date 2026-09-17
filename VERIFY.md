@@ -415,7 +415,7 @@ carries the real bytes and one top-level flag says the document has one:
 
 ```bash
 BAD=$SC/proj/$(printf 'bad\xff\xfedir'); mkdir -p $BAD
-./bin/snug --dry-run --json --no-defaults -p @sys -p @cwd-rw $BAD |
+./bin/snug --dry-run --json --no-defaults -p @sys -p @target-rw $BAD |
   python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["snug"]["lossy"], d["target_bytes"][-6:])'
 ```
 
@@ -439,7 +439,7 @@ X=$(mktemp -d); mkdir -p $X/snug/profiles.d
 { echo '[profile.hostbidi]'; echo 'description = "a host path carrying a bidi override"'
   echo "ro = [\"$H:/mnt/x\"]"; } > $X/snug/profiles.d/hostbidi.toml
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run --json --no-defaults \
-  -p @sys -p @cwd-rw -p hostbidi $SC/proj/sub | grep '"host".*OLR-FORGED'
+  -p @sys -p @target-rw -p hostbidi $SC/proj/sub | grep '"host".*OLR-FORGED'
 ```
 
 ```
@@ -455,7 +455,7 @@ it is not `policy.VisibleText`, which is a TERMINAL-display transform and would
 make the field stop being the value.
 
 The guest side needs no escaping and gets none: `Validate` refuses a forging
-rune in a guest path outright, so `-p @cwd-rw` on a target whose own name
+rune in a guest path outright, so `-p @target-rw` on a target whose own name
 carries one exits 77 — with a complete document, which is the point of the
 previous check.
 
@@ -624,7 +624,7 @@ the people who already know.
 
 ```bash
 CH=$(mktemp -d); mkdir -p $CH/snug/profiles.d
-printf '[profile.door]\ndescription = "a door for VERIFY"\ninclude = ["@sys", "@home", "@cwd-rw"]\nlisten_names = ["web"]\n' \
+printf '[profile.door]\ndescription = "a door for VERIFY"\ninclude = ["@sys", "@home", "@target-rw"]\nlisten_names = ["web"]\n' \
   > $CH/snug/profiles.d/door.toml
 XDG_CONFIG_HOME=$CH ./bin/snug -p door $SC/proj/sub -- /bin/true 2>&1 >/dev/null
 ```
@@ -1009,7 +1009,7 @@ from replacing. The exemption is keyed on `Mount.Authored`, which only
 
 The profile set comes from outside the sandboxed material, and nothing enforced
 it. MEASURED before the fix, with the real binary on a scratch `$HOME`: `snug -p
-@cwd-rw ~/.config/snug/profiles.d` resolved, and `--dry-run` printed the store
+@target-rw ~/.config/snug/profiles.d` resolved, and `--dry-run` printed the store
 as `(writable)` with `HOME … WRITABLE and PERSISTS below:` naming it. A payload
 there writes a `*.toml` that a LATER run loads — a sandbox granting itself
 permissions. What hid it is that `snug ~/.config/snug` is refused one level up,
@@ -1017,18 +1017,18 @@ by the ephemeral-target rule and for an unrelated reason, so every obvious
 spelling already failed.
 
 The check is over writable GRANTS, not over the target, because the target's
-writability IS a grant: `@cwd-rw` grants `{target}`. One rule therefore also
+writability IS a grant: `@target-rw` grants `{target}`. One rule therefore also
 covers a hand-written profile granting `rw` over `~/.config`.
 
 ```bash
 X=$(mktemp -d); mkdir -p $X/snug/profiles.d
-XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p @cwd-rw $X/snug/profiles.d; echo "exit=$?"
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p @target-rw $X/snug/profiles.d; echo "exit=$?"
 ```
 
 Expect the refusal at `--dry-run`, naming the profile that did it and the fix:
 
 ```
-snug: refusing to grant WRITE access to /tmp/tmp.XXXX/snug/profiles.d: profile "@cwd-rw" grants /tmp/tmp.XXXX/snug/profiles.d, and snug reads its trusted profiles from there.
+snug: refusing to grant WRITE access to /tmp/tmp.XXXX/snug/profiles.d: profile "@target-rw" grants /tmp/tmp.XXXX/snug/profiles.d, and snug reads its trusted profiles from there.
        A process inside could write a profile file that a LATER run loads, which is a
        sandbox granting itself permissions — the one thing the profile set being outside
        the sandboxed material prevents. Edit profiles on the host, or keep the copy you
@@ -1159,7 +1159,7 @@ carries the row; #272 carries the reproduction.
 ## 5. What `@parent-ro` actually grants, and that a bare run does not
 
 **A bare `snug <dir>` does not reach the target's parent** (issue #550). The
-default selection is `@sys @home @cwd-rw`:
+default selection is `@sys @home @target-rw`:
 
 ```bash
 ./bin/snug $SC/proj/sub -- /bin/sh -c "ls $SC/proj"
@@ -1347,7 +1347,7 @@ printf '[profile.sanp]\n\n[profile.sanp.environ.sanitise]\nPATH = true\n' \
 
 PATH="/tmp/attacker/bin:/proc/self/cwd:/srv/nothing:/usr/bin:/bin" \
 XDG_CONFIG_HOME=$X ./bin/snug --dry-run --no-defaults \
-  -p @sys -p @home -p @cwd-rw -p sanp $SC/proj/sub | sed -n '/^  PATH/,/^  PS1/p'
+  -p @sys -p @home -p @target-rw -p sanp $SC/proj/sub | sed -n '/^  PATH/,/^  PS1/p'
 rm -rf $X
 ```
 
@@ -1486,7 +1486,7 @@ SH
 chmod +x $SC/proj/sub/id
 
 XDG_CONFIG_HOME=$X PATH="/proc/self/cwd:/usr/bin:/bin" \
-  ./bin/snug --no-defaults -p @sys -p @cwd-rw -p sanpath $SC/proj/sub -- id
+  ./bin/snug --no-defaults -p @sys -p @target-rw -p sanpath $SC/proj/sub -- id
 
 rm -f $SC/proj/sub/id
 rm -rf $X
@@ -2492,7 +2492,7 @@ traverse through.
 **And the direction this does NOT close**, which matters here because the two
 sessions above share one target. B cannot read A's credential; B can arrange for
 A to hand it over. Measured, three runs on one target with a synthetic
-credential: a `@cwd-rw` run with no credential of its own writes
+credential: a `@target-rw` run with no credential of its own writes
 `.git/hooks/pre-commit` carrying `cp "$HOME/.claude/.credentials.json"
 ./.stolen-token`; a later `@claude` run does an ordinary `git commit`, git fires
 the hook, and the first run reads the second's `accessToken` out of the target.
@@ -2644,8 +2644,8 @@ unshare -U -r sh -c '
 '
 EOF
 
-./bin/snug --no-seccomp --no-defaults -p @sys -p @cwd-rw       $SC/proj/sub -- /bin/sh probe.sh
-./bin/snug --no-seccomp --no-defaults -p @sys -p @cwd-rw -p @net $SC/proj/sub -- /bin/sh probe.sh
+./bin/snug --no-seccomp --no-defaults -p @sys -p @target-rw       $SC/proj/sub -- /bin/sh probe.sh
+./bin/snug --no-seccomp --no-defaults -p @sys -p @target-rw -p @net $SC/proj/sub -- /bin/sh probe.sh
 ```
 
 Expect the same eight lines from both, the inode aside:
@@ -2861,8 +2861,8 @@ Expect `200` (or another ordinary HTTP status) — not `UNREACHABLE`.
 ## 8. Profile order is irrelevant
 
 ```bash
-A=$(./bin/snug --dry-run -p @sys -p @cwd-rw -p @parent-ro $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
-B=$(./bin/snug --dry-run -p @parent-ro -p @cwd-rw -p @sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+A=$(./bin/snug --dry-run -p @sys -p @target-rw -p @parent-ro $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
+B=$(./bin/snug --dry-run -p @parent-ro -p @target-rw -p @sys $SC/proj/sub | sed -n '/── bwrap/,$p' | md5sum)
 [ "$A" = "$B" ] && echo "identical: ok" || echo "DIFFERENT <-- FAIL"
 ```
 
@@ -3005,7 +3005,7 @@ tmpfs grants, so a *bind* of an unrelated directory walked straight through it �
 `redteam` agent.
 
 Confirm the legitimate nesting still works, since the fix could easily have
-broken it — `@cwd-rw`'s writable target lies over `@parent-ro`'s read-only
+broken it — `@target-rw`'s writable target lies over `@parent-ro`'s read-only
 parent, which is re-granting the same tree, not masking. `@parent-ro` is named
 here because it is not in the defaults:
 
@@ -3121,7 +3121,7 @@ host's `/tmp` still printed `/tmp/.X11-unix` as not granted. `/sys` and
 `/tmp/.X11-unix` now route through `coverageOf` like every other candidate.
 
 ```console
-$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw . \
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @target-rw . \
     | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
     /sys  /tmp/.X11-unix
 ```
@@ -3138,7 +3138,7 @@ $ cat > /tmp/xdg/snug/profiles.d/hosttmp.toml <<'EOF'
 ro = ["/tmp:/hosttmp"]
 EOF
 $ XDG_CONFIG_HOME=/tmp/xdg ./bin/snug --dry-run --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p hosttmp . \
+    -p @sys -p @home -p @target-rw -p hosttmp . \
     | sed -n '/NOT GRANTED/,/^$/p' | grep -E '^\s+/'
     /sys
 ```
@@ -3262,7 +3262,7 @@ snug: refusing to sandbox /home/michal/.cache/build: it sits directly in /home/m
    still refused, which is the ruling:
 
 ```console
-$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @cwd-rw ~/proj | head -1
+$ ./bin/snug --dry-run --no-defaults -p @sys -p @home -p @target-rw ~/proj | head -1
 snug: refusing to sandbox /home/michal/proj: ...
 ```
 
@@ -3351,7 +3351,7 @@ $ ./bin/snug --dry-run ~/src/anything | grep -A1 'tmpfs  /tmp'
    the "this is the host's" note and loses the READ-ONLY clause, because that
    clause would be false.
 5. Every tmpfs snug emits is bounded, not just `/tmp` (issue #281): the default
-   selection resolves to `@sys @home @cwd-rw`, and `[profile.home]`
+   selection resolves to `@sys @home @target-rw`, and `[profile.home]`
    grants five more tmpfs mounts on top of `/tmp` itself.
 
 ```console
@@ -3412,7 +3412,7 @@ author to check a spelling that is correct.
 **The capability did not go anywhere; the allocation did.** `/tmp` is the one
 path snug's own mount yields, so a profile that names a host directory still
 takes it over, and `--dry-run` says whose it is. Run this outside `/tmp`: a
-target under `/tmp` nests `@cwd-rw`'s bind inside the `/tmp` grant and
+target under `/tmp` nests `@target-rw`'s bind inside the `/tmp` grant and
 `rejectMasking` refuses the whole selection.
 
 ```bash
@@ -3659,7 +3659,7 @@ This is a refusal, never a silent narrowing. Nothing mounts with less than what
 was asked for, and no container gains reach the sandbox lacks.
 
 Why an intermediate directory is enough to lose the whole chain — an ancestor
-of both the `@parent-ro` and the `@cwd-rw` mount carries them with it when it
+of both the `@parent-ro` and the `@target-rw` mount carries them with it when it
 is renamed:
 
 ```bash
@@ -3777,7 +3777,7 @@ inside snug's own code.
 # back to the built-in four would widen the sandbox past what the file asked
 # for, which is invariant 5.
 X=$(mktemp -d); mkdir -p $X/snug
-printf 'defaults = ["@sys", "@cwd-rw"]\n' > $X/snug/config.toml
+printf 'defaults = ["@sys", "@target-rw"]\n' > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config | head -6            # control: accepted
 printf 'defaults = ["@sys", "a b"]\n'    > $X/snug/config.toml
 XDG_CONFIG_HOME=$X ./bin/snug config; echo "exit $?"
@@ -3841,7 +3841,7 @@ Each of these is a *usage* error, so the flag help follows it and the exit code
 is 64. None of them says `unknown profile`, and none reaches the FILESYSTEM
 block — the name never gets as far as the registry.
 
-The `defaults` control prints `"@sys" "@cwd-rw"` and the file's path; the second
+The `defaults` control prints `"@sys" "@target-rw"` and the file's path; the second
 run exits **77** naming `entry 2` and the config file, rather than silently
 resolving the built-in list.
 
@@ -5458,7 +5458,7 @@ somewhere that is not the repository being sandboxed (invariant 3) —
 
 ```toml
 [profile.acct-a]
-include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+include = ["@sys", "@home", "@target-rw", "@parent-ro", "@net"]
   [profile.acct-a.identity.ssh]
   key   = "{home}/.ssh/ACCOUNT-A.pub"   # the PUBLIC half
   agent = "proxy"
@@ -5469,7 +5469,7 @@ include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
   user  = "ACCOUNT-A"
 
 [profile.acct-b]
-include = ["@sys", "@home", "@cwd-rw", "@parent-ro", "@net"]
+include = ["@sys", "@home", "@target-rw", "@parent-ro", "@net"]
   [profile.acct-b.identity.ssh]
   key   = "{home}/.ssh/ACCOUNT-B.pub"
   agent = "proxy"
@@ -5972,7 +5972,7 @@ what the automated `TestTwoLiveSandboxesOnOneDirectory` also checks.
 ### 14b. The shared surface is on the screen, with its abuse sentence
 
 ```bash
-./bin/snug --dry-run -p @cwd-rw "$T/proj" | sed -n '/^SHARED/,/^$/p'
+./bin/snug --dry-run -p @target-rw "$T/proj" | sed -n '/^SHARED/,/^$/p'
 ```
 
 Expect the writable host paths listed with their host sides, then, verbatim:
@@ -5994,7 +5994,7 @@ host-backed, but their host side is named after this run, so a second sandbox is
 handed its own and meets this one on neither:
 
 ```bash
-./bin/snug --dry-run -p @cwd-rw -p @podman-socket "$T/proj" \
+./bin/snug --dry-run -p @target-rw -p @podman-socket "$T/proj" \
   | sed -n '/^SHARED/,/^$/p' | grep -c -e podman.sock -e engine/sock
 ```
 
@@ -6195,7 +6195,7 @@ refuses first for an unrelated reason (§ the `$HOME`-ancestor refusal).
 $ B=./bin/snug; S=$(mktemp -d); H=$(mktemp -d); mkdir -p "$S/proj"
 $ ln -s /usr/bin/true "$S/proj/podman"          # the payload owns the NAME, not the bytes
 $ HOME=$H SNUG_PODMAN="$S/proj/podman" $B --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p @podman-socket "$S/proj" -- true
+    -p @sys -p @home -p @target-rw -p @podman-socket "$S/proj" -- true
 snug: /tmp/.../proj/podman cannot be this run's container engine: a grant of this sandbox makes that NAME writable.
        The bytes at the end of that chain (/usr/bin/true) are not writable, so this is not the
        payload EDITING the engine — it is the payload CHOOSING it. snug execs whatever
@@ -6218,7 +6218,7 @@ problem:
 ```console
 $ cp /usr/bin/true "$S/proj/podman2"
 $ HOME=$H SNUG_PODMAN="$S/proj/podman2" $B --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p @podman-socket "$S/proj" -- true
+    -p @sys -p @home -p @target-rw -p @podman-socket "$S/proj" -- true
 snug: /tmp/.../proj/podman2 cannot be this run's container engine: a grant of this sandbox makes it
        WRITABLE.
 ```
@@ -6275,7 +6275,7 @@ $ B=./bin/snug; S=$(mktemp -d); H=$(mktemp -d)
 $ mkdir -p "$S/proj/tools" "$S/outside"
 $ ln -s "$S/proj/tools" "$S/outside/bundle"     # outside every grant, resolves into the rw target
 $ HOME=$H SNUG_PODMAN_ROOT="$S/outside/bundle" $B --dry-run --no-defaults \
-    -p @sys -p @home -p @cwd-rw -p @parent-ro -p @podman-socket "$S/proj" -- true
+    -p @sys -p @home -p @target-rw -p @parent-ro -p @podman-socket "$S/proj" -- true
 ```
 
 `origin/main`, before the fix — a false clearance:
@@ -7103,7 +7103,7 @@ tmpfs = ["/sys/fs/cgroup"]
 TOML
 T=$(mktemp -d)
 for p in hostproc hostdev hostcg guestsys; do
-  XDG_CONFIG_HOME=$D ./bin/snug -p $p -p @cwd-rw $T --dry-run >/dev/null 2>&1
+  XDG_CONFIG_HOME=$D ./bin/snug -p $p -p @target-rw $T --dry-run >/dev/null 2>&1
   echo "$p exit=$?"
 done
 ```
@@ -7140,7 +7140,7 @@ cat > $D/snug/profiles.d/alt.toml <<'TOML'
 [profile.altproc]
 ro = ["/run/host/proc:/mnt/p"]
 TOML
-XDG_CONFIG_HOME=$D ./bin/snug -p altproc -p @cwd-rw $T -- \
+XDG_CONFIG_HOME=$D ./bin/snug -p altproc -p @target-rw $T -- \
   sh -c 'tr "\0" "\n" < /mnt/p/1/cmdline; ls /mnt/p/self/root/'
 echo "exit=$?"
 ```
@@ -7158,7 +7158,7 @@ cat > $D/snug/profiles.d/anc.toml <<'TOML'
 [profile.anc]
 ro = ["/run/host:/host"]
 TOML
-XDG_CONFIG_HOME=$D ./bin/snug -p anc -p @cwd-rw $T -- \
+XDG_CONFIG_HOME=$D ./bin/snug -p anc -p @target-rw $T -- \
   sh -c 'stat -f -c %T /host/proc; tr "\0" " " < /host/proc/1/cmdline'
 echo "exit=$?"
 ```
@@ -7187,8 +7187,8 @@ cat > $D/snug/profiles.d/ok.toml <<'TOML'
 [profile.lookalike]
 ro = ["/tmp:/system", "/tmp:/sysroot", "/tmp:/devel", "/tmp:/procedures"]
 TOML
-XDG_CONFIG_HOME=$D ./bin/snug -p lookalike -p @cwd-rw $T --dry-run >/dev/null; echo "exit=$?"
-./bin/snug -p @podman-socket -p @cwd-rw $T --dry-run | grep -E 'cgroup2-rw|--dir /sys'
+XDG_CONFIG_HOME=$D ./bin/snug -p lookalike -p @target-rw $T --dry-run >/dev/null; echo "exit=$?"
+./bin/snug -p @podman-socket -p @target-rw $T --dry-run | grep -E 'cgroup2-rw|--dir /sys'
 ```
 
 The lookalikes must resolve (`exit=0`) — each tree is a path COMPONENT, not a
@@ -7980,7 +7980,7 @@ so the verb still dispatches. Run this in a tree holding a `config` FILE:
 ```
 $ snug config
 config file      /home/you/.config/snug/config.toml   (absent)
-defaults         "@sys" "@home" "@cwd-rw"
+defaults         "@sys" "@home" "@target-rw"
                  built-in (internal/profile/defaults.go)
 $ echo $?
 0

@@ -244,7 +244,7 @@ type reg map[policy.ProfileName]*policy.Profile
 func fine(r reg, n policy.ProfileName, raw string) (string, []policy.ProfileName, error) {
 	_ = map[policy.ProfileName]*policy.Profile(r)   // named map -> underlying map
 	_ = string(n)                                    // out of the type: safe direction
-	list := []policy.ProfileName{"@sys", "@cwd-rw"}  // untyped constants
+	list := []policy.ProfileName{"@sys", "@target-rw"}  // untyped constants
 	out, err := policy.NewProfileName(raw)           // the door
 	return string(out), list, err
 }

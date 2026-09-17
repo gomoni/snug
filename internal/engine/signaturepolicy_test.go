@@ -695,7 +695,7 @@ func TestAProjectedKeyIsNotReachableFromTheSandbox(t *testing.T) {
 		Podman: policy.PodmanSocket,
 		Mounts: map[string]policy.Mount{
 			"/proj": {Guest: "/proj", Host: target, Kind: policy.KindBind,
-				Access: policy.AccessRW, From: []string{"@cwd-rw"}},
+				Access: policy.AccessRW, From: []string{"@target-rw"}},
 			"/usr": {Guest: "/usr", Host: "/usr", Kind: policy.KindBind,
 				Access: policy.AccessRO, From: []string{"@sys"}},
 		},

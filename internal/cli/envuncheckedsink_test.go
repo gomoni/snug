@@ -91,7 +91,7 @@ func leakyEnvRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	m := map[policy.ProfileName]*policy.Profile(reg)
 	m["leaky"] = &policy.Profile{
 		Name:    "leaky",
-		Include: []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Include: []policy.ProfileName{"@sys", "@home", "@target-rw"},
 		Environ: policy.EnvGrants{
 			Set: map[string]string{"MY_TOOL_MODE": "fast"},
 		},
@@ -186,7 +186,7 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	m := map[policy.ProfileName]*policy.Profile(reg)
 	m["markjoin"] = &policy.Profile{
 		Name:    "markjoin",
-		Include: []policy.ProfileName{"@sys", "@home", "@cwd-rw"},
+		Include: []policy.ProfileName{"@sys", "@home", "@target-rw"},
 		Environ: policy.EnvGrants{
 			Set: map[string]string{
 				"MY_TOOL_UNGRANTED": "/var/lib/nowhere",

@@ -162,7 +162,7 @@ func TestDescribeTTYNamesEveryReasonAndTheResidual(t *testing.T) {
 // sequence it emits is an action on the operator's machine rather than a
 // character on a screen.
 func TestClaudeGuidanceTerminalSectionTracksTheRun(t *testing.T) {
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@claude"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}
 
 	all := policy.StdinTerminal | policy.StdoutTerminal | policy.StderrTerminal
 	shared := string(claudeGuidance(resolveForTTY(t, sel, all, false)))

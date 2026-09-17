@@ -19,7 +19,7 @@ func TestCouplingAcceptsAPathCoveredByTheProfilesOwnGrant(t *testing.T) {
 	reg := testRegistry()
 	reg["deep"] = &Profile{Name: "deep", RO: []string{"/opt/tools/bin"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/opt/tools/bin/inner/deeper"}}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "deep"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "deep"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a path below the profile's own grant was refused: %v", err)
 	}
 }
@@ -33,7 +33,7 @@ func TestCouplingCountsTheIncludeClosure(t *testing.T) {
 	reg := testRegistry()
 	reg["viainclude"] = &Profile{Name: "viainclude", Include: []ProfileName{"@home"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"{home}/.local/bin"}}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "viainclude"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "viainclude"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a path covered by an INCLUDED profile's grant was refused: %v", err)
 	}
 }
@@ -52,11 +52,11 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 	// and selecting it must not launder `namer`'s claim.
 	reg["granter"] = &Profile{Name: "granter", RO: []string{"/opt/tools/bin"}}
 
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer"}, testCtx(), newFakeEnv())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "namer"}, testCtx(), newFakeEnv())
 	if err == nil {
 		t.Fatal("a profile naming a path it does not grant was accepted")
 	}
-	_, err2 := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer", "granter"}, testCtx(), newFakeEnv())
+	_, err2 := Resolve(reg, []ProfileName{"@sys", "@target-rw", "namer", "granter"}, testCtx(), newFakeEnv())
 	if err2 == nil {
 		t.Fatal("selecting another profile that grants the path made namer's claim legal — " +
 			"the verdict on a profile must be a property of that profile's own text, or " +
@@ -71,7 +71,7 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 	// unreachable in principle.
 	reg["namer-including"] = &Profile{Name: "namer-including", Include: []ProfileName{"granter"},
 		Environ: EnvGrants{Merge: map[string][]string{"PATH": {"/opt/tools/bin"}}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "namer-including"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "namer-including"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: an INCLUDED grant must satisfy the rule: %v", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestCouplingResolvesThroughTheProfilesOwnSymlinks(t *testing.T) {
 	// @sys grants /usr and creates /bin -> usr/bin.
 	reg["binny"] = &Profile{Name: "binny", Include: []ProfileName{"@sys"}, Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/bin"}}}}
-	if _, err := Resolve(reg, []ProfileName{"@cwd-rw", "binny"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@target-rw", "binny"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("/bin was refused for a profile that grants /usr and creates the symlink: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestCouplingResolvesThroughTheProfilesOwnSymlinks(t *testing.T) {
 	// pass on an implementation that accepts every path.
 	reg["binny-alone"] = &Profile{Name: "binny-alone", Environ: EnvGrants{
 		Merge: map[string][]string{"PATH": {"/bin"}}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "binny-alone"}, testCtx(), newFakeEnv()); err == nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "binny-alone"}, testCtx(), newFakeEnv()); err == nil {
 		t.Fatal("control: a profile granting nothing had /bin accepted")
 	}
 }
@@ -106,7 +106,7 @@ func TestCouplingDoesNotApplyToInheritOrSanitise(t *testing.T) {
 	env := newFakeEnv()
 	env.env["PKG_CONFIG_PATH"] = "/srv/nothing-grants-this"
 	// `sanity` sanitises PKG_CONFIG_PATH and grants nothing at all.
-	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw", "sanity"}, testCtx(), env)
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "sanity"}, testCtx(), env)
 	if err != nil {
 		t.Fatalf("sanitise was subjected to the coupling rule: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestCouplingIgnoresANonPathScalar(t *testing.T) {
 	// leaves it alone for the same reason it leaves EDITOR=vim alone
 	// (envcoupling.go's isPathValued).
 	reg["ed"] = &Profile{Name: "ed", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ed"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("a non-path scalar was subjected to the coupling rule: %v", err)
 	}
 }
@@ -168,7 +168,7 @@ func TestARelativeStartupFileIsRefused(t *testing.T) {
 	resolve := func(g EnvGrants) error {
 		reg := testRegistry()
 		reg["startup"] = &Profile{Name: "startup", Environ: g}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "startup"}, testCtx(), newFakeEnv())
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "startup"}, testCtx(), newFakeEnv())
 		return err
 	}
 
@@ -232,7 +232,7 @@ func TestARelativeStartupFileIsRefused(t *testing.T) {
 //	[profile.gitsys.environ.set] GIT_CONFIG_SYSTEM = "sys.gitconfig"   -> ACCEPTED
 //	  --dry-run said nothing about the value either: grantMark returns "" for a
 //	  value that does not start with '/'
-//	snug … -p @cwd-rw -p gitsys <tgt> -- sh -c 'git st; git ls-remote git@github…'
+//	snug … -p @target-rw -p gitsys <tgt> -- sh -c 'git st; git ls-remote git@github…'
 //	  CWD=<tgt>
 //	  RELATIVE-GIT-CONFIG-SYSTEM-ALIAS-RAN uid=1000
 //	  RELATIVE-GIT-CONFIG-SYSTEM-SSHCOMMAND-RAN args=git@github.com …
@@ -241,7 +241,7 @@ func TestARelativeStartupFileIsRefused(t *testing.T) {
 // added later is swept the day it is added — which is the property the original
 // four had by accident (they happened to be rostered) rather than by rule.
 func TestEveryPointerRefusesARelativeValue(t *testing.T) {
-	// The fixture INCLUDES @cwd-rw rather than merely being selected alongside it,
+	// The fixture INCLUDES @target-rw rather than merely being selected alongside it,
 	// because the coupling rule is a property of a profile's own text plus its
 	// include closure and deliberately not of the selected set
 	// (TestCouplingVerdictDoesNotDependOnTheSelectedSet). Four of these five names
@@ -249,9 +249,9 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 	// refused for a reason that has nothing to do with what this test measures.
 	resolve := func(name, value string) error {
 		reg := testRegistry()
-		reg["ptr"] = &Profile{Name: "ptr", Include: []ProfileName{"@cwd-rw"}, Environ: EnvGrants{
+		reg["ptr"] = &Profile{Name: "ptr", Include: []ProfileName{"@target-rw"}, Environ: EnvGrants{
 			Set: map[string]string{name: value}}}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ptr"}, testCtx(), newFakeEnv())
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ptr"}, testCtx(), newFakeEnv())
 		return err
 	}
 
@@ -281,7 +281,7 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 		}
 		// THE ACCEPTED SPELLING, which is what makes this a type verdict and not a
 		// denial: the author can say what they meant. {target} is granted by
-		// @cwd-rw, so the coupling rule (which applies to the four rostered names
+		// @target-rw, so the coupling rule (which applies to the four rostered names
 		// and not to the fifth) is satisfied too.
 		if err := resolve(p.name, "{target}/x"); err != nil {
 			t.Errorf("environ.set %s = \"{target}/x\" was refused: %v. A refusal with no "+
@@ -338,9 +338,9 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 // sweep that stopped covering them — a shape edited to shapeOpaque, a row
 // deleted — would otherwise still pass with a healthy-looking count.
 func TestEveryAnnotatedPathRefusesARelativeValue(t *testing.T) {
-	// The fixture grants {target} ITSELF rather than including @cwd-rw, and
-	// @cwd-rw is not selected either — the sweep reaches the XDG four, and
-	// @cwd-rw's include closure carries @home, which sets all four. Selecting both
+	// The fixture grants {target} ITSELF rather than including @target-rw, and
+	// @target-rw is not selected either — the sweep reaches the XDG four, and
+	// @target-rw's include closure carries @home, which sets all four. Selecting both
 	// is a scalar CONFLICT ("profiles @home and ap disagree about
 	// XDG_CONFIG_HOME"), which is a correct refusal about something else entirely
 	// and would have made the accepted-spelling control fail for the wrong reason.

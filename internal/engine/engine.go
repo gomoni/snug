@@ -1533,7 +1533,7 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 	// helperBesideEngine derives its value from filepath.Dir(podman), which
 	// e.guestPath then maps through EngineGuestPath's Access-blind bind arm.
 	// MEASURED on cd17ea0, with fuse-overlayfs beside an engine inside an
-	// @cwd-rw target: `mount_program = "/proj/bin/fuse-overlayfs"` — a
+	// @target-rw target: `mount_program = "/proj/bin/fuse-overlayfs"` — a
 	// payload-writable path written into the engine's storage configuration.
 	//
 	// Note what "inert" did and did not cover. The old comment here said the
@@ -1932,7 +1932,7 @@ func helperBinariesDirs() string {
 	// a HOST string snug transformed, and EngineGuestPath's bind arm resolves
 	// through any KindBind mount, WRITABLE ONES INCLUDED: it has no Access test
 	// at all. MEASURED on cd17ea0 with $SNUG_PODMAN inside a target granted rw
-	// by @cwd-rw, the generated file read
+	// by @target-rw, the generated file read
 	//
 	//     helper_binaries_dir = ["/proj/bin", "/usr/libexec/podman", …]
 	//

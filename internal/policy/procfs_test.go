@@ -24,7 +24,7 @@ func closurePaths(p *Policy) []string {
 // gets snug's own empty files over the host's kernel config and keyring, and
 // a read-only /proc/sys.
 func TestProcfsClosuresApplyToAnOrdinaryRun(t *testing.T) {
-	p := mustResolve(t, "@sys", "@cwd-rw")
+	p := mustResolve(t, "@sys", "@target-rw")
 
 	got := closurePaths(p)
 	if len(got) == 0 {
@@ -62,8 +62,8 @@ func TestProcfsClosuresApplyToAnOrdinaryRun(t *testing.T) {
 //
 // Both are asserted, because "scoped" is a claim about what does not change.
 func TestProcfsClosuresAreSkippedForAnEngineRun(t *testing.T) {
-	ordinary := mustResolve(t, "@sys", "@cwd-rw")
-	engine := mustResolve(t, "@sys", "@cwd-rw", "@podman-socket")
+	ordinary := mustResolve(t, "@sys", "@target-rw")
+	engine := mustResolve(t, "@sys", "@target-rw", "@podman-socket")
 
 	if got := closurePaths(engine); len(got) != 0 {
 		t.Errorf("an engine run still installs %v. The kernel refuses the engine a fresh procfs "+
@@ -122,8 +122,8 @@ func TestProcfsClosureExemptionIsOneCondition(t *testing.T) {
 		name string
 		sel  []ProfileName
 	}{
-		{"no engine", []ProfileName{"@sys", "@cwd-rw"}},
-		{"engine", []ProfileName{"@sys", "@cwd-rw", "@podman-socket"}},
+		{"no engine", []ProfileName{"@sys", "@target-rw"}},
+		{"engine", []ProfileName{"@sys", "@target-rw", "@podman-socket"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := mustResolve(t, tc.sel...)

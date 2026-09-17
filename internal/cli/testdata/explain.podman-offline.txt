@@ -9,7 +9,7 @@ because a tool that prints an absolute path inside should print one that means
 the same thing outside.
 
 Selected profiles:
-  @sys @home @cwd-rw @podman-socket
+  @sys @home @target-rw @podman-socket
 A profile only ever GRANTS. There is no rule anywhere that takes something
 away, so adding a profile can only ever make the sandbox see more, and the way
 to see less is to select fewer.
