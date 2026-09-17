@@ -297,6 +297,22 @@ const PubKeyGuest = ".ssh/id_snug.pub"
 // harmless — cheaper than a branch a reader has to simulate.
 const SigningKeyGuest = ".ssh/id_snug_signing.pub"
 
+// AllowedSignersGuest is the generated `gpg.ssh.allowedSignersFile`. It holds
+// exactly ONE line — the pinned signing key, under the pinned git email — so a
+// run can verify its OWN commits and nobody else's.
+//
+// UNDER .config/git AND NOT .ssh, because git is what reads it. The file is git
+// configuration naming an ssh key, the same way user.signingkey is; .ssh holds
+// what the ssh CLIENT reads (config, known_hosts, the staged .pub), and a
+// verifier list there would be the first place a reader looks for keys ssh
+// itself trusts, which this is not.
+//
+// The host's own ~/.config/git/allowed_signers is NEVER carried (#576): it is
+// the list of people whose signatures you accept, so carrying it would hand the
+// sandbox collaborators' emails and public keys plus a trust decision no grant
+// named.
+const AllowedSignersGuest = ".config/git/allowed_signers"
+
 // SSHConfig is the generated ~/.ssh/config.
 //
 // IdentityFile pointing at a .pub is the standard way to make ssh select

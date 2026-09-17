@@ -325,6 +325,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 					"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
 					"identity.git.signing_key", name)
 			}
+			if err := refuseUnprincipledSigningEmail(name, id); err != nil {
+				return nil, err
+			}
 			if err := refuseHalfNamedHost(name, id); err != nil {
 				return nil, err
 			}
@@ -1329,6 +1332,56 @@ func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileN
 // screen a human reads to decide whether to trust the sandbox, which is the last
 // place to spend attention on the common case. A refusal costs nothing when the
 // profile is coherent and stops the run when it is not.
+// refuseUnprincipledSigningEmail refuses an identity.git.email that cannot be
+// the PRINCIPAL of the generated allowed_signers line (#576).
+//
+// THE RULE IS SCOPED TO signing_key ON PURPOSE. Everywhere else the email is a
+// value in a file snug quotes (`gitQuote` in gitextract.go), so a space in it is
+// harmless. allowed_signers has NO quoting and SPACE IS ITS FIELD SEPARATOR, so
+// the same string stops being a value and becomes syntax — measured, an email of
+// `u@example.com,evil@example.com ssh-ed25519 AAAA...` authors a SIX-field line
+// whose key is the attacker's and whose `namespaces="git" <pinned key>` tail is
+// swallowed as a trailing comment. `git verify-commit` then accepts commits
+// signed by a key no grant pinned, under principals no grant named, in every
+// namespace, and STOPS accepting the pinned one. CheckText does not reach this:
+// it refuses forging runes (C0/DEL, bidi/C1) and a space is not one.
+//
+// Three spellings, one rule, because each defeats the line differently:
+//
+//   - MORE THAN ONE FIELD is the injection above.
+//   - WHITESPACE ONLY is not `== ""`, and ssh skips leading blanks: the line
+//     ` namespaces="git" ssh-ed25519 AAAA` parses with `namespaces=git` as the
+//     PRINCIPAL and no options at all, so the namespace pin evaporates with exit
+//     0 and nothing on screen (invariant 5).
+//   - A LEADING `#` comments the whole line out, leaving an empty verifier list
+//     and verification silently back where #576 found it.
+func refuseUnprincipledSigningEmail(name ProfileName, id Identity) error {
+	if id.Git.SigningKey == "" {
+		return nil
+	}
+	why := ""
+	switch f := strings.Fields(id.Git.Email); {
+	case len(f) == 0:
+		why = "it is empty"
+	case len(f) > 1:
+		why = "it holds " + strconv.Itoa(len(f)) + " whitespace-separated fields, and " +
+			"everything after the first would be read as the KEY and its options rather " +
+			"than as part of the address"
+	case len(id.Git.Email) != len(f[0]):
+		why = "it carries leading or trailing whitespace, which ssh skips — the next " +
+			"field on the line becomes the principal"
+	case strings.HasPrefix(f[0], "#"):
+		why = "it starts with `#`, which comments the whole entry out and leaves the " +
+			"sandbox verifying against an empty list"
+	default:
+		return nil
+	}
+	return fmt.Errorf("profile %q: identity.git.email cannot be the principal of the "+
+		"generated %s because %s. The file has one line, `PRINCIPAL namespaces=\"git\" KEY`, "+
+		"and it is unquoted — a principal is exactly one address. Set identity.git.email to a "+
+		"single address, or remove identity.git.signing_key", name, AllowedSignersGuest, why)
+}
+
 func refuseHalfNamedHost(name ProfileName, id Identity) error {
 	sshActive := id.SSH.Key != "" || id.SSH.Agent != SSHNone
 	ghActive := id.Gh.User != "" || id.Gh.Host != ""

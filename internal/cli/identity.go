@@ -317,11 +317,59 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 			Access: policy.AccessRO, Content: data,
 			From: []string{identityProvenance(pol)},
 		})
+
+		// The allowed_signers line is AUTHORED from the two values already in
+		// hand — the pinned email as the principal, the staged public key as
+		// the key — so verification needs no host read of its own and vouches
+		// for exactly one key (#576). Resolve refuses signing_key with an empty
+		// email, so the principal here is never blank.
+		signers, serr := allowedSignersLine(id.Git.Email, data)
+		if serr != nil {
+			cleanup()
+			return nil, fmt.Errorf("identity.git.signing_key %q: %w", id.Git.SigningKey, serr)
+		}
+		pol.Replace(policy.Mount{
+			Guest: pol.Home + "/" + policy.AllowedSignersGuest, Kind: policy.KindData,
+			Access: policy.AccessRO, Content: signers,
+			From: []string{identityProvenance(pol)},
+		})
 	}
 
 	pol.AuthorEnv("SSH_AUTH_SOCK", policy.AgentSocketGuest)
 
 	return cleanup, nil
+}
+
+// allowedSignersLine renders the one line of the generated allowed_signers.
+//
+// The KEY is rebuilt from the first two fields of the .pub rather than copied
+// whole: a .pub's trailing comment is free-form host text (it is usually
+// user@host but nothing enforces that), and allowed_signers is a file git parses
+// where that text would land in a field position the format gives meaning to.
+// Two fields is the whole key.
+//
+// namespaces="git" PINS what the entry vouches for. An ssh signature carries a
+// namespace and git uses `git`; without the option the line would accept a
+// signature the same key made for anything else — `ssh-keygen -Y sign -n file`,
+// say — as a good commit signature.
+func allowedSignersLine(email string, pub []byte) ([]byte, error) {
+	// Resolve refuses this already (refuseUnprincipledSigningEmail), and it is
+	// re-checked HERE because this is the function that writes the bytes: the
+	// refusal is a policy decision about a config, this is the last gate before
+	// a line whose field count decides which key the sandbox believes. A second
+	// caller reaching this without passing Resolve would otherwise author the
+	// six-field line the red team measured.
+	if p := strings.Fields(email); len(p) != 1 || len(email) != len(p[0]) || strings.HasPrefix(p[0], "#") {
+		return nil, fmt.Errorf("identity.git.email %q cannot be the principal of a "+
+			"one-line allowed_signers: it must be exactly one address, with no whitespace "+
+			"and no leading `#`", email)
+	}
+	f := strings.Fields(string(pub))
+	if len(f) < 2 {
+		return nil, fmt.Errorf("not an ssh public key: expected `<type> <base64> [comment]`, "+
+			"got %d field(s). This must be the .pub half, not the private key", len(f))
+	}
+	return []byte(fmt.Sprintf("%s namespaces=\"git\" %s %s\n", email, f[0], f[1])), nil
 }
 
 // identityProvenance is the `identity:<profile>` string Resolve stages its own

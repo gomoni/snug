@@ -85,6 +85,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
 	describeGit(out, p)
+	describeCommitSigning(out, p)
 	describeSSH(out, p)
 	describeCommands(out, p)
 	describeClaude(out, p)
@@ -1433,6 +1434,32 @@ func describeGit(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "                    alias = !cmd, core.pager, core.sshCommand, textconv\n")
 	fmt.Fprintf(out, "         includeIf  \"gitdir:\" evaluated against this target; \"hasconfig:\"\n")
 	fmt.Fprintf(out, "                    and \"onbranch:\" ignored — the repository decides those\n")
+}
+
+// describeCommitSigning states the TRUST DECISION the generated
+// allowed_signers installs (#576).
+//
+// It exists because the mount row alone does not say it. `data
+// ~/.config/git/allowed_signers identity:<profile>` names a file; what the file
+// DOES is decide whose signatures this run will call good, and a human reading
+// the pre-run screen cannot get that from a path. Every other row here that
+// installs a capability carries its consequence sentence; this one was the
+// exception, found by the red-team round on #576.
+//
+// The PRINCIPAL is printed, not just the fact of a principal. The address is
+// what the entry vouches under, so a wrong or surprising one is the defect a
+// reader is looking for — and it is not otherwise on this screen: --dry-run
+// never renders the identity pin (showIdentity is reached only from `snug
+// profile show`).
+func describeCommitSigning(out io.Writer, p *policy.Policy) {
+	if p.Identity == nil || p.Identity.Git.SigningKey == "" {
+		return
+	}
+	fmt.Fprintf(out, "SIGNING  commits signed with the pinned key; the private half stays in your agent\n")
+	fmt.Fprintf(out, "         verifies   ONLY that key, under %s, in the \"git\" namespace\n",
+		policy.VisibleText(p.Identity.Git.Email))
+	fmt.Fprintf(out, "         not carried your host's allowed_signers — a colleague's signature reads\n")
+	fmt.Fprintf(out, "                    as untrusted inside, and that is the grant's boundary\n")
 }
 
 // describeSSH states that snug replaced this host's system-wide ssh_config,

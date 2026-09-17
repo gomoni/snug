@@ -52,6 +52,8 @@
 --size 1073741824
 --tmpfs /home/u/proj
 --size 1073741824
+--tmpfs /home/u/.config/git
+--size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
@@ -60,6 +62,7 @@
 --ro-bind-data 17 /home/u/.ssh/id_snug_signing.pub
 --ro-bind-data 18 /home/u/.ssh/known_hosts
 --bind /home/u/proj/sub /home/u/proj/sub
+--ro-bind-data 19 /home/u/.config/git/allowed_signers
 --remount-ro /
 --clearenv
 --setenv GIT_CONFIG_GLOBAL /home/u/.gitconfig

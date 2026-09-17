@@ -1,7 +1,9 @@
 package policy
 
 import (
+	"io/fs"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -232,7 +234,7 @@ func TestTheDeepestMountDecidesWhichCoverIsJudged(t *testing.T) {
 	tmpfsAt(p, "/srv/app/deep")
 	generated(p, "/srv/app/deep/gen.conf", AccessRW)
 
-	if err := p.rejectGeneratedOntoHost(); err != nil {
+	if err := p.rejectGeneratedOntoHost(newFakeEnv()); err != nil {
 		t.Fatalf("the generated file resolves onto a tmpfs, not the host, and was still "+
 			"refused — a rule that walks past the deepest cover reports writes that do not "+
 			"happen:\n%v", err)
@@ -241,5 +243,191 @@ func TestTheDeepestMountDecidesWhichCoverIsJudged(t *testing.T) {
 		t.Fatal("a tmpfs nested inside a bind was accepted by Validate; if rejectMasking " +
 			"stopped refusing that shape, this rule's deepest-cover reading becomes reachable " +
 			"and needs its own end-to-end case")
+	}
+}
+
+// ── the containment arm (#576) ───────────────────────────────────────────────
+//
+// A generated file's destination has to stay inside the grant that is meant to
+// cover it. A HOST symlink at a directory component between a bind's root and
+// the generated file's own directory can take the destination somewhere the
+// grant never named — bwrap's mkdir_with_parents follows it when it creates
+// the mountpoint, with no error of its own, so the write lands on the host
+// silently. Measured (rejectGeneratedOntoHost's own comment): `ro
+// {home}/.config` plus a host `~/.config/git -> ~/proj/sub/dotfiles-git`
+// produced a 0-byte read-only allowed_signers file on the host, snug exit 0 —
+// the old guard passed this exact shape because it skipped every read-only
+// cover outright, on the theory that bwrap itself would refuse loudly. It does
+// not, once a symlink is involved.
+
+// TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfItsCoveringGrant is
+// the finding itself, under a read-only cover — the shape the pre-#576 guard
+// let straight through.
+func TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfItsCoveringGrant(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	env := newFakeEnv()
+	env.links["/home/u/.config/git"] = "/home/u/proj/sub/dotfiles-git"
+
+	err := p.Validate(env)
+	if err == nil {
+		t.Fatal("accepted a policy where a host symlink takes a generated file's destination " +
+			"outside the read-only grant that covers it")
+	}
+	for _, want := range []string{"evil", "/home/u/.config", "OUTSIDE", "allowed_signers", "symlink"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfARwCoveringGrant is
+// the same escape under an RW cover, so the new containment arm is not
+// silently shadowed by issue #186's own arm (ARM 2), which already refuses
+// most rw cases without needing a symlink at all. The assertion below checks
+// for the containment arm's own wording rather than #186's generic overwrite
+// text, so a regression that made ARM 2 catch this by accident — leaving the
+// containment arm itself unreachable under rw — would still be caught.
+func TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfARwCoveringGrant(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/home/u/.config", "/home/u/.config", AccessRW)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	env := newFakeEnv()
+	env.links["/home/u/.config/git"] = "/home/u/proj/sub/dotfiles-git"
+
+	err := p.Validate(env)
+	if err == nil {
+		t.Fatal("accepted a policy where a host symlink takes a generated file's destination " +
+			"outside an rw grant that covers it")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("refusal does not read as the containment arm's (no mention of a symlink); "+
+			"got:\n%v", err)
+	}
+}
+
+// TestGeneratedFileAllowedWhenTheHostSymlinkStaysInsideTheCoveringGrant is the
+// negative of the negative: a symlink that stays inside its own bind is an
+// ordinary dotfile layout (~/.config/git -> ~/.config/git.d), not an escape.
+// Without this case the rule degrades to "refuse if any symlink is anywhere in
+// the chain", which breaks real dotfile layouts that happen to use one.
+func TestGeneratedFileAllowedWhenTheHostSymlinkStaysInsideTheCoveringGrant(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	env := newFakeEnv()
+	env.links["/home/u/.config/git"] = "/home/u/.config/git.d"
+
+	if err := p.Validate(env); err != nil {
+		t.Fatalf("refused a host symlink whose target stays inside its own covering grant: %v", err)
+	}
+}
+
+// TestGeneratedFileAllowedWhenNoAncestorExistsYet: every ancestor between the
+// bind's root and the generated file's own directory answers fs.ErrNotExist —
+// the plain fixture host, where nothing under {home}/.config has been created
+// yet. A path that is not there yet cannot be a symlink, so the escape this
+// arm defends against cannot be happening through it.
+func TestGeneratedFileAllowedWhenNoAncestorExistsYet(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	if err := p.Validate(newFakeEnv()); err != nil {
+		t.Fatalf("refused a generated file whose covering directory does not exist yet on the "+
+			"host: %v", err)
+	}
+}
+
+// TestGeneratedFileRefusedWhenAnAncestorCannotBeResolved is the fail-closed
+// arm: EvalSymlinks answering a real error (EACCES here, not ErrNotExist) must
+// refuse rather than be treated the same as "not created yet" — "I cannot tell
+// where this resolves" and "it resolves outside the grant" have to give the
+// same answer, or the guard fails open on exactly the input nobody
+// anticipated.
+func TestGeneratedFileRefusedWhenAnAncestorCannotBeResolved(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	env := newFakeEnv()
+	env.symlinkErrs["/home/u/.config/git"] = &fs.PathError{
+		Op: "lstat", Path: "/home/u/.config/git", Err: syscall.EACCES,
+	}
+
+	err := p.Validate(env)
+	if err == nil {
+		t.Fatal("accepted a policy whose covering directory cannot be resolved on the host — " +
+			"snug cannot tell where the generated file's destination lands, so it must refuse " +
+			"rather than guess")
+	}
+	if !strings.Contains(err.Error(), "cannot be resolved") {
+		t.Errorf("refusal does not say the ancestor could not be resolved: %v", err)
+	}
+}
+
+// ── the negatives that keep the containment arm from over-reaching ─────────
+//
+// Each of these is a real arrangement snug ships or generates into on every
+// run. A version of the containment arm that refused any of them would refuse
+// the common case rather than the attack, which is the failure mode that gets
+// a security check deleted rather than fixed.
+
+// TestSystemSSHConfigUnderTheUsrBindIsStillAllowed pins the DEFAULT selection
+// on a host whose system-wide ssh_config lives under /usr (openSUSE;
+// systemsshconfig_test.go has the full story). replaceSystemSSHConfig
+// generates the replacement directly under @sys's ro /usr bind, and a
+// rejected alternative fix — walking every ancestor and refusing whenever one
+// could not be proven to exist, rather than treating "not there yet" as "the
+// escape can only be higher up" — would have refused this on every default
+// run on such a host, with no symlink and no attacker anywhere in the
+// picture.
+func TestSystemSSHConfigUnderTheUsrBindIsStillAllowed(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/usr/etc/ssh/ssh_config"] = true
+
+	p, err := Resolve(testRegistry(), testDefaults, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Validate(env); err != nil {
+		t.Fatalf("refused the default selection's generated system ssh_config under @sys's ro "+
+			"/usr bind: %v", err)
+	}
+}
+
+// TestProjectMCPJSONInsideTheTargetIsStillAllowed mirrors
+// stageProjectMCPJSON (internal/cli/claude.go): a read-only generated file
+// whose HostDestExists carries the os.Lstat fact that the target's own
+// .mcp.json already exists, landing directly inside the target's own rw bind.
+func TestProjectMCPJSONInsideTheTargetIsStillAllowed(t *testing.T) {
+	p := mustResolveDefaults(t)
+	p.Replace(Mount{
+		Guest: "/home/u/proj/sub/.mcp.json", Kind: KindData,
+		Access: AccessRO, Content: Secret("generated by snug\n"),
+		HostDestExists: true,
+	})
+
+	if err := p.Validate(newFakeEnv()); err != nil {
+		t.Fatalf("refused a generated file whose HostDestExists is true, inside the target's "+
+			"own rw bind: %v", err)
+	}
+}
+
+// TestResolvConfUnderAWholeEtcBindIsStillAllowed pins the arrangement
+// base.toml's own comment names as the one-line escape hatch for anyone who
+// wants more than the curated fourteen /etc entries (`ro = ["/etc"]`) —
+// testRegistry's fake @sys grants the whole tree the same way. /etc/resolv.conf
+// (resolve.go) is generated unconditionally on every run and lands directly
+// under it, with no intermediate directory to walk.
+func TestResolvConfUnderAWholeEtcBindIsStillAllowed(t *testing.T) {
+	p := mustResolveDefaults(t)
+	if err := p.Validate(newFakeEnv()); err != nil {
+		t.Fatalf("refused a default run — /etc granted whole, resolv.conf generated directly "+
+			"under it: %v", err)
 	}
 }

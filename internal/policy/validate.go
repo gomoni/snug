@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -343,7 +344,7 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
-	if err := p.rejectGeneratedOntoHost(); err != nil {
+	if err := p.rejectGeneratedOntoHost(env); err != nil {
 		return err
 	}
 
@@ -587,10 +588,18 @@ func (p *Policy) rejectEndpointSource(env Environ) error {
 //
 // Two neighbouring cases, deliberately not refused here:
 //
-//   - A READ-ONLY bind covering a generated path. bwrap fails loudly and by
-//     itself: `Can't create file …: Read-only file system`, which is the error
-//     that identified this mechanism in the first place. Loud is correct, and a
-//     second refusal here would be a rule with no failure left to prevent.
+//   - A READ-ONLY bind covering a generated path, WHEN THE DESTINATION STAYS
+//     INSIDE IT. bwrap then fails loudly and by itself: `Can't create file …:
+//     Read-only file system`, which is the error that identified this mechanism
+//     in the first place. That sentence used to be written without its first
+//     clause and was false: a HOST symlink at a directory component inside the
+//     bind takes the destination OUT of the read-only mount, bwrap's
+//     mkdir_with_parents follows it, and the file is created on the host with
+//     no error at all. Measured, bwrap 0.12.0 — `ro {home}/.config` plus a host
+//     `~/.config/git -> ~/proj/sub/dotfiles-git` produced a 0-byte
+//     `-r--r--r--` allowed_signers on the host, snug exit 0. That is what the
+//     containment arm below exists for, and it is why that arm does not consult
+//     Access.
 //   - A tmpfs covering a generated path. That is the normal case and the whole
 //     point: everything snug generates into the ephemeral $HOME sits inside
 //     @home's tmpfs.
@@ -602,19 +611,9 @@ func (p *Policy) rejectEndpointSource(env Environ) error {
 // the profile here never PRODUCES a KindData grant, it only makes one LAND on a
 // writable host path. An exemption's own reach is the thing to re-read whenever a
 // grant can steer where the exempted mount goes.
-func (p *Policy) rejectGeneratedOntoHost() error {
+func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 	for _, m := range p.SortedMounts() {
 		if m.Kind != KindData {
-			continue
-		}
-		// An overmount of a file that ALREADY EXISTS on the host writes nothing
-		// there — bwrap's --ro-bind-data binds over the existing inode rather
-		// than creating a mountpoint (measured, issue #73). The cli sets this
-		// only after an os.Stat, so it is a fact the guard can trust without a
-		// filesystem of its own. A generated mount over an ABSENT path still
-		// falls through and is refused, because there --ro-bind-data (or --file)
-		// creates the file on the host.
-		if m.HostDestExists {
 			continue
 		}
 		// The DEEPEST mount containing the generated path is the one that
@@ -622,7 +621,7 @@ func (p *Policy) rejectGeneratedOntoHost() error {
 		// it" rule join is keyed on. A tmpfs nested inside a writable bind
 		// therefore protects the file, and correctly reports no finding.
 		outer, at, ok := p.nearestCovering(m.Guest)
-		if !ok || outer.Kind != KindBind || outer.Access != AccessRW {
+		if !ok || outer.Kind != KindBind {
 			continue
 		}
 		// A bind with no host source is not a shape any profile produces, and
@@ -635,13 +634,76 @@ func (p *Policy) rejectGeneratedOntoHost() error {
 		if host == "" {
 			host = at
 		}
+		hostDest := filepath.Join(host, strings.TrimPrefix(m.Guest, at))
+
+		// ARM 1 — CONTAINMENT. Does the destination still lie inside the grant
+		// that covers it?
+		//
+		// This is the HOST's half of a rule Validate already applies to the
+		// symlinks SNUG creates: resolveViaDeepest refuses a grant whose guest
+		// path traverses a link snug itself made. Host symlinks inside a bound
+		// directory cannot be enumerated lexically, so they cost one
+		// EvalSymlinks per candidate — the default selection has one.
+		//
+		// The predicate is CONTAINMENT and not "does it land somewhere
+		// writable", because where an absolute symlink lands is decided by the
+		// sandbox's view rather than the host's, and a path-translating bind
+		// makes the two diverge (snug emits those: `ro /etc/os-release (from
+		// /usr/lib/os-release)`). A guard asking "does it reach a rw bind" fails
+		// open on the translating case; one asking "does it stay in this grant"
+		// does not.
+		//
+		// NOT ATOMIC, and this says so rather than implying otherwise: Validate
+		// resolves here and bwrap resolves again milliseconds later. This run's
+		// payload cannot race it — the sandbox does not exist yet — but a
+		// PREVIOUS run holding rw on the directory can plant the link for the
+		// next one, the same residual anchor.go already states for renames.
+		for d := filepath.Dir(hostDest); ; d = filepath.Dir(d) {
+			if d == host || !strings.HasPrefix(d, host+"/") {
+				break // reached the bind root, which Resolve already canonicalised
+			}
+			real, err := env.EvalSymlinks(d)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // not created yet; the escape can only be higher up
+			}
+			if err != nil {
+				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but the host path %s cannot be resolved: %v.\n"+
+					"       snug cannot tell where this destination resolves, so it refuses rather than guess.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(d), err)
+			}
+			if real != host && !strings.HasPrefix(real, host+"/") {
+				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
+					"       but on the host %s is a symlink to %s, which is OUTSIDE that grant. bwrap follows it\n"+
+					"       when it creates the mountpoint, so this policy would create a file on the HOST at a\n"+
+					"       path no grant names — outside the sandbox, with no undo, and surviving teardown.\n"+
+					"       A generated file is meant to land where the grant covering it says it lands.\n"+
+					"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(d), VisibleText(real),
+					outer.Access, at, provenance(m), m.Guest)
+			}
+			break
+		}
+
+		// ARM 2 — issue #186. An overmount of a file that ALREADY EXISTS on the
+		// host writes nothing there: bwrap's --ro-bind-data binds over the
+		// existing inode rather than creating a mountpoint (measured, issue
+		// #73). The cli sets this only after an os.Stat, so it is a fact the
+		// guard can trust without a filesystem of its own. A generated mount
+		// over an ABSENT path still falls through and is refused, because there
+		// --ro-bind-data (or --file) creates the file on the host.
+		if m.HostDestExists || outer.Access != AccessRW {
+			continue
+		}
 		return fmt.Errorf("profile %s grants rw on %s (the host's %s), and snug generates %s inside it.\n"+
 			"       snug writes generated content with bwrap's --file, which COPIES onto its destination,\n"+
 			"       so this policy would overwrite %s on the HOST — outside the sandbox, with no undo.\n"+
 			"       A generated file is meant to land on the sandbox's own tmpfs and die with the run.\n"+
 			"       Fix: drop the rw grant on %s, or deselect %s, which generates at %s.",
 			provenance(outer), at, VisibleText(host), m.Guest,
-			VisibleText(filepath.Join(host, strings.TrimPrefix(m.Guest, at))),
+			VisibleText(hostDest),
 			at, provenance(m), m.Guest)
 	}
 	return nil
