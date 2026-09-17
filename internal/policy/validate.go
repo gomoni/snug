@@ -957,8 +957,8 @@ func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 // one: masking requires the outer mount to HAVE content at the inner path.
 //
 // Two names left this sentence stale before anyone re-read it, which is worth
-// noting because the row itself is load-bearing: @git-ro's .gitconfig was cited
-// here as a BIND long after @git-ro stopped binding anything (it extracts and
+// noting because the row itself is load-bearing: @git's .gitconfig was cited
+// here as a BIND long after @git stopped binding anything (it extracts and
 // generates — .claude/design/GIT-CONFIG.md), and @claude's settings.json went
 // the same way in issue #17. Both are still covered by this row; they are just
 // covered as generated content rather than as binds.

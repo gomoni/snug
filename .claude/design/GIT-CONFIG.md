@@ -3,7 +3,7 @@
 **This is an instance of [GENERATED-CONFIG.md](GENERATED-CONFIG.md), which owns
 the rule; this document holds the git-specific measurements.**
 
-**Status: built.** `@git-ro` extracts and generates; it binds nothing. The
+**Status: built.** `@git` extracts and generates; it binds nothing. The
 measurements below were made on git 2.55 on the development host and are what
 the design rests on — re-run them before changing any of it.
 
@@ -38,7 +38,9 @@ Plus keys that are credentials outright (`sendemail.smtpPass`) or point at them
 None of that is exotic; it is what the file is *for*. Binding it read-only stops
 the sandbox editing it and stops nothing else.
 
-## 2. What `@git-ro` used to be, and why nobody caught it
+## 2. What this profile used to be, and why nobody caught it
+
+It was spelled `@git-ro` then, and the suffix was true, because it really did bind:
 
 ```toml
 [profile.git-ro]
@@ -239,8 +241,8 @@ material.
 ## 6. What a human sees
 
 ```
-$ snug -p @git-ro <dir> --dry-run
-  data   /home/u/.gitconfig                             git:@git-ro
+$ snug -p @git <dir> --dry-run
+  data   /home/u/.gitconfig                             git:@git
   GIT_CONFIG_GLOBAL /home/u/.gitconfig                  (snug)
 ```
 

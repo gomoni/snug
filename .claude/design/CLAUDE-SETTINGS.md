@@ -39,7 +39,7 @@ command. It is a **command table** — `hooks`, `apiKeyHelper`, `statusLine`,
 lesser-known siblings all name a program to run, a credential to print, or code
 to fetch — so snug reads the host's file as data, keeps an **allowlist** of
 scalar keys that carry no execution, and **writes the file the sandbox sees**.
-It is `@git-ro` one tool over, with two differences that matter: there is no
+It is `@git` one tool over, with two differences that matter: there is no
 `GIT_CONFIG_GLOBAL` equivalent, so snug authors the file at its canonical path
 rather than pointing the tool elsewhere; and the container is JSON, which closes
 git's value-injection route by construction and opens a different one.

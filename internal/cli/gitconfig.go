@@ -15,7 +15,7 @@ import (
 // whitelisted keys, with `includeIf "gitdir:"` evaluated against the target.
 //
 // WHY SNUG PARSES THIS AT ALL, rather than binding ~/.gitconfig read-only as the
-// previous @git-ro did: that file is a command table. `credential.helper`,
+// previous @git did: that file is a command table. `credential.helper`,
 // `alias.x = !cmd`, `core.pager`, `core.sshCommand`, `diff.*.textconv` and
 // `filter.*.clean/smudge` all name programs for git to run, and a read-only bind
 // does not stop them — it supplies them.

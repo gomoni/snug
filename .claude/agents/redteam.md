@@ -326,7 +326,7 @@ problem, so a sweep that finds "nothing is escapable" is not an answer to it.
 Note who the author is here, because it is what keeps this section consistent
 with the threat model above: the sweep runs over the profiles **snug ships**, and
 those are ours. "You get what you configure" is an answer available to the human
-who wrote a profile; it is not available to us about `@claude` or `@git-ro`.
+who wrote a profile; it is not available to us about `@claude` or `@git`.
 A shipped grant that hands over more than its abuse comment claims is a finding
 against snug, not a configuration choice.
 

@@ -273,7 +273,7 @@ ro = ["{target_parent}"]
 # nothing it did not already have — it already runs code and already holds
 # SSH_AUTH_SOCK — but do not read the generated file as a restraint on the
 # sandbox. See .claude/design/GIT-CONFIG.md §9.
-[profile.git-ro]
+[profile.git]
 description = "Your git name and email, extracted from the host config. Generated, never bound."
 git = "extract"
 
@@ -403,7 +403,7 @@ dns = true
 #
 # TEMPLATE-BEGIN
 #   [profile.work]
-#   include = ["@net", "@git-ro"]   # the `defaults` are selected as well; -p adds
+#   include = ["@net", "@git"]   # the `defaults` are selected as well; -p adds
 #     [profile.work.identity.ssh]
 #     key   = "{home}/.ssh/id_ed25519.pub"              # the PUBLIC half
 #     agent = "proxy"
