@@ -74,6 +74,13 @@ func newFakeEnv() *fakeEnv {
 		// every line of it.
 		files: map[string]bool{
 			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+			// The generated files whose DESTINATION exists on every real host.
+			// rejectGeneratedOntoHost stats the destination of a generated mount
+			// that lands inside a read-only bind, because where nothing is there
+			// bwrap has to create the mountpoint and cannot. A fixture host that
+			// published /etc but not /etc/resolv.conf is not a host anyone runs
+			// on, and every default selection would be refused against it.
+			"/etc/resolv.conf": true,
 		},
 		dirs: map[string]bool{
 			"/usr": true, "/etc": true, "/opt": true,

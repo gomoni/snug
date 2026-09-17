@@ -694,8 +694,33 @@ func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 		// guard can trust without a filesystem of its own. A generated mount
 		// over an ABSENT path still falls through and is refused, because there
 		// --ro-bind-data (or --file) creates the file on the host.
-		if m.HostDestExists || outer.Access != AccessRW {
+		if m.HostDestExists {
 			continue
+		}
+
+		// ARM 3 — a READ-ONLY bind, where nothing is at the destination on the
+		// host. bwrap must create the mountpoint and cannot, so the run dies on
+		// `Can't create file ...: Read-only file system` — bwrap's sentence,
+		// naming neither snug nor the profile nor a fix.
+		if outer.Access != AccessRW {
+			if _, err := env.Stat(hostDest); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but the host path %s cannot be examined: %v.\n"+
+					"       snug cannot tell whether bwrap would have to create it, so it refuses rather than guess.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(hostDest), err)
+			}
+			return fmt.Errorf("profile %s grants ro on %s (the host's %s), and snug generates %s inside it —\n"+
+				"       but nothing exists at %s on the host, so bwrap would have to CREATE that file\n"+
+				"       inside a read-only mount. It cannot, and the run dies on bwrap's own message,\n"+
+				"       which names neither snug nor this profile:\n"+
+				"           bwrap: Can't create file %s: Read-only file system\n"+
+				"       Fix: drop the ro grant on %s, or deselect %s, which generates at %s.",
+				provenance(outer), at, VisibleText(host), m.Guest,
+				VisibleText(hostDest), VisibleText(hostDest),
+				at, provenance(m), m.Guest)
 		}
 		return fmt.Errorf("profile %s grants rw on %s (the host's %s), and snug generates %s inside it.\n"+
 			"       snug writes generated content with bwrap's --file, which COPIES onto its destination,\n"+
