@@ -156,9 +156,12 @@ func nameByteDesc(c byte) string { return policy.NameByteDesc(c) }
 // The reasons behind the old denylist all survive, and are now covered without
 // naming a character:
 //
-//	","  snug joins the resolved names with commas into SNUG_PROFILES, and
-//	     engine.New joins them with commas into the container store key — two
-//	     consumers, and only one of them ever had a rule written for it.
+//	","  snug joins the resolved names with commas into SNUG_PROFILES
+//	     (internal/policy/resolve.go), so a name holding one would split into
+//	     two on the other side. That is the only comma join of names in the
+//	     tree: the engine's store key is targetkey.Hash(pol.Target) and nothing
+//	     else (internal/engine/paths.go, engineKey), because issue #276 took
+//	     the profile selection out of it.
 //	":"  reserved for the parked design where a profile takes arguments
 //	     (.claude/design/PARAMETERISED-PROFILES.md): "name:arg" must split
 //	     unambiguously.
