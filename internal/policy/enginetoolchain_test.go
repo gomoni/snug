@@ -262,7 +262,7 @@ func TestEngineToolchainRootInsideAWritableGrantIsRefused(t *testing.T) {
 	env := newFakeEnv()
 
 	// The real spelling, not a contrivance: $SNUG_PODMAN inside the target,
-	// which @cwd-rw grants writable. A podman developer sandboxing the podman
+	// which @target-rw grants writable. A podman developer sandboxing the podman
 	// tree and pointing snug at ./bin/podman types exactly this.
 	const writable = "/home/u/proj/sub"
 

@@ -23,7 +23,7 @@ func resolveWithGrant(t testing.TB, p *Profile) error {
 	// The fake host must publish these paths: the existence check in Resolve
 	// runs BEFORE Validate, so without them this file would be measuring "that
 	// path does not exist" rather than the rule.
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", ProfileName(p.Name)}, testCtx(), envWithKernelTrees())
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", ProfileName(p.Name)}, testCtx(), envWithKernelTrees())
 	return err
 }
 
@@ -127,7 +127,7 @@ func TestTheKernelTreeRuleDoesNotCatchALookalikePath(t *testing.T) {
 // one that would break every run: procfs.go binds it read-only from the host to
 // close the write side, and it goes through yieldTo, which sets Authored.
 func TestTheKernelTreeRuleDoesNotRefuseSnugsOwnProcSysBind(t *testing.T) {
-	pol, err := Resolve(testRegistry(), []ProfileName{"@sys", "@cwd-rw"}, testCtx(), envWithKernelTrees())
+	pol, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw"}, testCtx(), envWithKernelTrees())
 	if err != nil {
 		t.Fatalf("an ordinary run stopped resolving: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestTheKernelTreeRuleDoesNotRefuseSnugsOwnProcSysBind(t *testing.T) {
 // loop reads. This is the control that says so, because a rule that broke every
 // container run would otherwise be found by a user rather than here.
 func TestTheKernelTreeRuleDoesNotRefuseTheEnginesOwnMountpoints(t *testing.T) {
-	pol, err := Resolve(testRegistry(), []ProfileName{"@podman-socket", "@cwd-rw"},
+	pol, err := Resolve(testRegistry(), []ProfileName{"@podman-socket", "@target-rw"},
 		testCtxWithPodmanShim(), envWithKernelTrees())
 	if err != nil {
 		t.Fatalf("a container run stopped resolving: %v", err)
@@ -212,7 +212,7 @@ func TestProfileCannotBindFromAPseudoFilesystemAtAnOrdinaryPath(t *testing.T) {
 		env.mounts = []HostMount{{Path: c.host, FSType: c.fstype}}
 		reg := testRegistry()
 		reg["alt"] = &Profile{Name: "alt", RO: []string{c.host + ":/mnt/p"}}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "alt"}, testCtx(), env)
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "alt"}, testCtx(), env)
 		if err == nil {
 			t.Errorf("ro = [%q] resolved: the path is ordinary, the FILESYSTEM is not", c.host)
 			continue
@@ -232,7 +232,7 @@ func TestAnOrdinaryTmpfsIsNotAKernelTree(t *testing.T) {
 	env.mounts = []HostMount{{Path: "/run/user/1000", FSType: "tmpfs"}}
 	reg := testRegistry()
 	reg["rt"] = &Profile{Name: "rt", RW: []string{"/run/user/1000:/mnt/p"}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "rt"}, testCtx(), env); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "rt"}, testCtx(), env); err != nil {
 		t.Errorf("a bind from a tmpfs was refused (%v): tmpfs is where every socket snug "+
 			"proxies lives, and refusing it would take @podman-socket and @ssh-agent with it", err)
 	}
@@ -245,7 +245,7 @@ func TestAnOrdinaryTmpfsIsNotAKernelTree(t *testing.T) {
 func TestAGuestSymlinkIntoTheSandboxsOwnProcIsNotAHostBind(t *testing.T) {
 	reg := testRegistry()
 	reg["sl"] = &Profile{Name: "sl", Symlink: []Symlink{{At: "/hostfd", Target: "/proc/self/fd"}}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "sl"}, testCtx(), envWithKernelTrees()); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "sl"}, testCtx(), envWithKernelTrees()); err != nil {
 		t.Errorf("a symlink to /proc/self/fd was refused (%v): its target is inside the "+
 			"sandbox's own procfs, and Mount.Host is a link target here rather than a host path", err)
 	}
@@ -260,7 +260,7 @@ func TestTheKernelTreeRefusalDoesNotForgeItsOwnScreen(t *testing.T) {
 	env.dirs[host] = true
 	reg := testRegistry()
 	reg["forge"] = &Profile{Name: "forge", RW: []string{host + ":/mnt/x"}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "forge"}, testCtx(), env)
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "forge"}, testCtx(), env)
 	if err == nil {
 		t.Fatal("a host path under /sys resolved")
 	}
@@ -317,7 +317,7 @@ func TestProfileCannotBindAnAncestorOfAPseudoFilesystem(t *testing.T) {
 		}
 		reg := testRegistry()
 		reg["anc"] = &Profile{Name: "anc", RO: []string{c.grant + ":/mnt/p"}}
-		_, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "anc"}, testCtx(), env)
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "anc"}, testCtx(), env)
 		if err == nil {
 			t.Errorf("ro = [%q] resolved with a %s at %s beneath it: bwrap's bind is recursive",
 				c.grant, c.fstype, c.submount)
@@ -346,7 +346,7 @@ func TestAnOrdinarySubmountIsNotAKernelTree(t *testing.T) {
 	}
 	reg := testRegistry()
 	reg["ord"] = &Profile{Name: "ord", RW: []string{"/mnt/data:/mnt/p"}}
-	if _, err := Resolve(reg, []ProfileName{"@sys", "@cwd-rw", "ord"}, testCtx(), env); err != nil {
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "ord"}, testCtx(), env); err != nil {
 		t.Errorf("a grant with an ext4 and a tmpfs beneath it was refused (%v)", err)
 	}
 }

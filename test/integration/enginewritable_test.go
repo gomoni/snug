@@ -66,7 +66,7 @@ func wrapperScript(podman string) []byte {
 }
 
 // TestEngineBinaryInsideAWritableGrantIsRefused is issue #405's first half,
-// end to end: $SNUG_PODMAN names a file strictly inside @cwd-rw's rw grant of
+// end to end: $SNUG_PODMAN names a file strictly inside @target-rw's rw grant of
 // the target — the shape a real `$SNUG_PODMAN=./bin/podman` inside a
 // sandboxed source tree produces — and policy.(*Policy).CheckEngineBinary
 // must refuse it before the payload ever starts.
@@ -77,7 +77,7 @@ func TestEngineBinaryInsideAWritableGrantIsRefused(t *testing.T) {
 	requireRealEngine(t, gateEnv)
 	podman := hostEngine(t)
 
-	proj, _ := target(t) // <root>/proj/sub, rw via @cwd-rw
+	proj, _ := target(t) // <root>/proj/sub, rw via @target-rw
 
 	wrapperDir := filepath.Join(proj, "bin")
 	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
@@ -95,7 +95,7 @@ func TestEngineBinaryInsideAWritableGrantIsRefused(t *testing.T) {
 	r := runEnv(t, env, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
 	if r.ran {
 		t.Fatalf("the payload ran — CheckEngineBinary did not refuse an engine binary strictly "+
-			"inside @cwd-rw's rw grant of the target (%s):\n%s", wrapper, r.out)
+			"inside @target-rw's rw grant of the target (%s):\n%s", wrapper, r.out)
 	}
 	if r.code == 0 {
 		t.Fatalf("snug exited 0 without running the payload — that is not a refusal:\n%s", r.out)
@@ -132,7 +132,7 @@ func TestEngineBinaryInsideAWritableGrantIsRefused(t *testing.T) {
 // TestEngineToolchainRootContainsAWritableGrantIsRefused is issue #405's
 // second half, end to end — the finding the ticket exists for. The toolchain
 // root ($SNUG_PODMAN_ROOT) is the TARGET's own parent, which @parent-ro
-// grants read-only; the target itself sits strictly inside it and @cwd-rw
+// grants read-only; the target itself sits strictly inside it and @target-rw
 // grants THAT rw. The root itself trips no check, but the writable grant
 // inside its tree must.
 func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
@@ -142,7 +142,7 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 	requireRealEngine(t, gateEnv)
 	podman := hostEngine(t)
 
-	proj, _ := target(t)                // <root>/proj/sub, rw via @cwd-rw
+	proj, _ := target(t)                // <root>/proj/sub, rw via @target-rw
 	toolchainRoot := filepath.Dir(proj) // <root>/proj, ro via @parent-ro, CONTAINS proj
 
 	wrapper := filepath.Join(toolchainRoot, "podman-real")
@@ -187,7 +187,7 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 
 // TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused is issue
 // #369's measured defect, end to end: $SNUG_PODMAN names a SYMLINK strictly
-// inside @cwd-rw's rw grant of the target, resolving to a real engine binary
+// inside @target-rw's rw grant of the target, resolving to a real engine binary
 // OUTSIDE every grant. Before the fix, policy.CheckEngineBinary judged only
 // the resolved bytes — clean, outside every grant — and ACCEPTED it; snug
 // then exec'd the payload-chosen binary as the engine and the run failed
@@ -202,7 +202,7 @@ func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testin
 	requireRealEngine(t, gateEnv)
 	podman := hostEngine(t)
 
-	proj, _ := target(t) // <root>/proj/sub, rw via @cwd-rw
+	proj, _ := target(t) // <root>/proj/sub, rw via @target-rw
 
 	// The real binary lives OUTSIDE every grant of this sandbox — an
 	// ordinary host installation, exactly like /usr/bin/podman.
@@ -212,7 +212,7 @@ func TestEngineBinaryNamedThroughASymlinkInsideAWritableGrantIsRefused(t *testin
 		t.Fatal(err)
 	}
 
-	// The symlink is the payload's own: it sits inside @cwd-rw's rw grant, so
+	// The symlink is the payload's own: it sits inside @target-rw's rw grant, so
 	// rewriting it is exactly what a payload running inside this sandbox
 	// could do to itself. Its bytes resolve to something clean and outside
 	// every grant — the shape that made the measured defect ACCEPT it.

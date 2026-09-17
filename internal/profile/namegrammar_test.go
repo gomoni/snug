@@ -28,11 +28,11 @@ func TestEveryBuiltinNamePassesTheNameGrammar(t *testing.T) {
 	if len(reg) == 0 {
 		t.Fatal("no builtins loaded, so this sweep cannot fail — the embed is broken")
 	}
-	// CONTROL 2: @cwd-rw is present, so the sweep actually exercises a hyphen
+	// CONTROL 2: @target-rw is present, so the sweep actually exercises a hyphen
 	// (nameFault's rest-of-name branch) rather than passing on a builtin set
 	// that happens to contain none.
-	if _, ok := reg[policy.Sigil+"cwd-rw"]; !ok {
-		t.Fatal("@cwd-rw is missing; this sweep would never exercise the hyphen and could not " +
+	if _, ok := reg[policy.Sigil+"target-rw"]; !ok {
+		t.Fatal("@target-rw is missing; this sweep would never exercise the hyphen and could not " +
 			"tell a correct grammar from one that silently dropped it")
 	}
 
@@ -96,7 +96,7 @@ var rejectedNames = []struct {
 // rewrite cannot quietly stop explaining WHY.
 func TestProfileNameAllowlist(t *testing.T) {
 	sixtyFour := strings.Repeat("a", 64)
-	accepted := []string{"a", "Z", "0", "sys", "cwd-rw", "a-b-c", "x9", "ABC-123", "a--b", sixtyFour}
+	accepted := []string{"a", "Z", "0", "sys", "target-rw", "a-b-c", "x9", "ABC-123", "a--b", sixtyFour}
 	for _, name := range accepted {
 		t.Run("accept/"+name, func(t *testing.T) {
 			if err := checkName(name, "test.toml"); err != nil {
@@ -178,7 +178,7 @@ func TestNameGrammarIsEnforcedByParse(t *testing.T) {
 	// CONTROL: builtin-shaped names still parse, so the refusals above are
 	// about the grammar and not about parse() rejecting everything.
 	for _, src := range []string{
-		"[profile.\"cwd-rw\"]\nro = [\"/usr\"]\n",
+		"[profile.\"target-rw\"]\nro = [\"/usr\"]\n",
 		"[profile.sys]\nro = [\"/usr\"]\n",
 	} {
 		if _, err := parse([]byte(src), "test.toml", true); err != nil {

@@ -28,7 +28,7 @@ func TestTheEnginesPATHIsUnwritableUnderTheREALBuiltins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The DEFAULT selection, not a curated one: @home and @cwd-rw are what put
+	// The DEFAULT selection, not a curated one: @home and @target-rw are what put
 	// writable tmpfs into a sandbox at all, so a sweep run without them would
 	// be run against the one policy that has nothing writable to find.
 	sel := append(profile.BuiltinDefaults(), "@podman-socket")

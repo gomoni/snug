@@ -210,7 +210,7 @@ XDG_DATA_HOME = "{home}/.local/share"
 # ── the project ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can rewrite anything in the target directory. That is the
 # point, and it is why you review diffs. Nothing else persists.
-[profile.cwd-rw]
+[profile.target-rw]
 description = "The target directory is writable and persists."
 include = ["home"]
 rw = ["{target}"]

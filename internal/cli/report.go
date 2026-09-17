@@ -636,7 +636,7 @@ func buildTopologyReport(p *policy.Policy) reportTopology {
 //
 // A THUNK, not a value, because an argument is evaluated before the callee runs
 // and this callee returns early for a run with no engine. Passed by value, a
-// `snug --dry-run -p @sys -p @cwd-rw` read the host's policy.json and every key
+// `snug --dry-run -p @sys -p @target-rw` read the host's policy.json and every key
 // it names — measured by strace — and threw the answer away. --dry-run's whole
 // pitch is that it touches as little as possible, and a host policy naming
 // 24,000 key paths made an unrelated dry run do 24,000 host reads.
@@ -675,7 +675,7 @@ func buildContainersReport(env policy.Environ, p *policy.Policy,
 	// THE RUN'S OWN ENTRY POINTS, not a subset of their checks re-composed here
 	// (issue #422). This screen used to call CheckEngineBinary and
 	// CheckEngineToolchainTree on the raw env value, so a $SNUG_PODMAN_ROOT
-	// spelled outside every grant but resolving INTO the @cwd-rw target printed
+	// spelled outside every grant but resolving INTO the @target-rw target printed
 	// "no grant makes the root ... writable" while the run refused it. Neither
 	// ResolveEngineBinary nor JudgeEngineToolchain writes to p.
 	//

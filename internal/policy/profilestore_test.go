@@ -9,7 +9,7 @@ import (
 //
 // MEASURED before this was written, on a scratch $HOME with the real binary:
 //
-//	$ snug --dry-run -p @cwd-rw $H/.config/snug/profiles.d
+//	$ snug --dry-run -p @target-rw $H/.config/snug/profiles.d
 //	TARGET   …/.config/snug/profiles.d  (writable)
 //	HOME     … (tmpfs, ephemeral; WRITABLE and PERSISTS below: …/profiles.d)
 //
@@ -21,7 +21,7 @@ import (
 // never tried.
 //
 // The check is over writable GRANTS, not over the target, because the target's
-// writability IS an rw grant (@cwd-rw grants {target}) — one rule then covers
+// writability IS an rw grant (@target-rw grants {target}) — one rule then covers
 // both that case and a hand-written profile granting rw over ~/.config.
 
 func profileStoreCtx(target string, dirs ...string) Context {
@@ -114,7 +114,7 @@ func TestTheProfileStoreRuleIsNarrow(t *testing.T) {
 // canonicalises both sides through Environ.EvalSymlinks for this: comparing text
 // would pass a link, and /home being a symlink is ordinary on several distros
 // (this repo's own resolver comments cite /home -> /var/home). MEASURED with the
-// real binary too, on a scratch store: `snug -p @cwd-rw $X/link-to-store` exits
+// real binary too, on a scratch store: `snug -p @target-rw $X/link-to-store` exits
 // 77 and the message names the RESOLVED path.
 func TestASymlinkToTheProfileStoreIsStillTheProfileStore(t *testing.T) {
 	reg := testRegistry()

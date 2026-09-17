@@ -482,7 +482,7 @@ func wrapList(items []string, width int) []string {
 // Across five selections, the block's names, the argv's --setenv names
 // and `env` INSIDE agreed byte for byte except for exactly one name:
 //
-//	block 16 / argv 16 / inside 17   (@sys @home @cwd-rw @parent-ro)
+//	block 16 / argv 16 / inside 17   (@sys @home @target-rw @parent-ro)
 //	block 18 / argv 18 / inside 19   (@claude)
 //	…and PWD is the difference every time
 //
@@ -1070,7 +1070,7 @@ func mountedAt(p *policy.Policy, path string) (policy.Mount, bool) {
 
 // targetAnnotation and homeAnnotation replace two claims that used to be
 // hard-coded true — "(writable)" and "(tmpfs, ephemeral)" — and were false
-// for any selection that did not include @cwd-rw / @home, the floor (no
+// for any selection that did not include @target-rw / @home, the floor (no
 // profile at all) most of all: neither path is mounted, so the honest
 // annotation is "never granted", not "writable".
 func targetAnnotation(p *policy.Policy) string {
@@ -2418,7 +2418,7 @@ func wrapGraftField(label, text string) []string {
 // would produce no diff at all. One block, one golden, the same way FILESYSTEM
 // lives in filesystem.defaults.txt. THIS block's own golden is
 // engineview.enginemounts.txt — real installEngineViewGrafts output on the
-// same @sys @cwd-rw @podman-socket selection the podman-offline topology case
+// same @sys @target-rw @podman-socket selection the podman-offline topology case
 // uses — plus the hand-built engineview.tierc.txt for the host-tree render
 // path. The TOPOLOGY prose pointing at "ENGINE VIEW below" is true ON THE
 // SCREEN, which is where a human reads it, and graft_test.go's

@@ -279,7 +279,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 	if id.SSH.Key != "" {
 		// hostread.Required, not os.ReadFile: the key is a path a payload can
 		// plant a FIFO or a symlink to /dev/zero at (issue #337) — it is
-		// resolved under the target, which a previous run's own @cwd-rw could
+		// resolved under the target, which a previous run's own @target-rw could
 		// have written into. "Required" because an unreadable pinned key must
 		// stay a hard error naming the path, exactly as os.ReadFile's did.
 		data, rerr := hostread.Required(id.SSH.Key, hostread.MaxSSHPublicKeyBytes)
@@ -303,7 +303,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 	if id.Git.SigningKey != "" {
 		// Same hostread.Required for the same reason (#337): the signing key is a
 		// path that may resolve under the target, which a previous run's own
-		// @cwd-rw could have replaced with a FIFO.
+		// @target-rw could have replaced with a FIFO.
 		data, rerr := hostread.Required(id.Git.SigningKey, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			cleanup()

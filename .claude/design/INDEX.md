@@ -316,7 +316,7 @@ join(a, b) where a.Guest == b.Guest:
 
 **Why it is commutative:** every fold operation is a commutative, associative, idempotent binary join, or an *error* (which is symmetric). `From` is excluded from equality, so accumulating provenance does not perturb the fixpoint. Emission order is derived from the *result* (§3.2), never from profile order.
 
-**Why it is idempotent:** `join(a, a) == a` for every join used. Selecting `[sys, sys, cwd-rw]` is identical to `[cwd-rw, sys]`.
+**Why it is idempotent:** `join(a, a) == a` for every join used. Selecting `[sys, sys, target-rw]` is identical to `[target-rw, sys]`.
 
 **Three different orders get conflated, and only one of them exists at runtime.**
 
@@ -378,7 +378,7 @@ Policy_final = Resolve(profiles)
 
 That is the whole pipeline. An earlier design had a *clamp*: a post-resolution stage (`--read-only`, `--offline`) that moved the policy *down* the lattice, justified by "profiles are data that may originate near untrusted material; the CLI is the human, and only the human may tighten". The asymmetry was defensible, and it is still the right answer to *"may a profile tighten?"* — no. But it was the model's one carve-out, and both the flag and the machinery behind it are now gone. `snug` stays minimal; `bwrap` is the swiss knife.
 
-What that costs, stated plainly: a read-only project is obtained by not selecting `@cwd-rw` — `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — which is verbose on purpose. A read-only cwd is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
+What that costs, stated plainly: a read-only project is obtained by not selecting `@target-rw` — `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>` — which is verbose on purpose. A read-only target is possible but highly nonstandard, and the verbosity is proportionate to how rarely it is wanted.
 
 What it buys: an invariant with no exceptions. "Nothing anywhere reduces what a resolved policy grants" is a property a reader can check by grepping for a demote and finding none, and two AST sweeps assert directly (`TestEveryAccessWriteIsAJoinWithThePreviousValue` and `TestMountCollectionsHaveThreeWriters`, `internal/policy/norestriction_test.go`, from #271 via #355/#361) — the second catching the shape the first cannot see, a `Derive()` that lowers access by building fresh mounts rather than by assigning to an `Access` field. `TestPolicyHasNoRestrictionOperation` asserts only that `Access.Join` takes the max, which is why it was never sufficient on its own. One with a carve-out can only be checked by understanding where the carve-out applies.
 
@@ -392,7 +392,7 @@ It runs in both directions, and both are load-bearing:
 
 | arrangement | effect | who depends on it |
 |---|---|---|
-| `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | `@cwd-rw` over `@parent-ro`, which is `snug -p @parent-ro <dir>` — the parent is not in the defaults |
+| `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | `@target-rw` over `@parent-ro`, which is `snug -p @parent-ro <dir>` — the parent is not in the defaults |
 | `rw {target}` + `ro {target}/.git` | `.git` is read-only inside a writable target | the arrangement invariant 2 recommends for "X but not Y" |
 | tmpfs `$HOME` + `ro ~/.gitconfig` | a read-only host file inside a writable ephemeral home | `@git-ro`, `@claude`, every generated identity file |
 
@@ -440,9 +440,9 @@ podman   = "socket"               # off < socket < build
 
 There is deliberately no `[profile.null]`. It was tried and removed: a profile that grants nothing is a preference wearing a profile's clothes, and it is unreachable by its own documented purpose besides — `-p` only ever ADDS to `defaults`, so `-p @null` cannot subtract them, and cannot show "the true empty base" it claimed to. The floor of the lattice does not need a name in this file; it is what `Resolve` returns for an empty selection, and it is reachable directly with `snug --no-defaults --dry-run <dir>`. `-p @null` is a retired name that errors, naming `--no-defaults`.
 
-Nor is there a `[profile.default]`. **What a bare `snug <dir>` selects is the `defaults` *setting***, built in at `internal/profile/defaults.go` (`@sys @home @cwd-rw`) and replaceable wholesale by `defaults = [...]` in `~/.config/snug/config.toml`, because a default *selection* is a preference and a profile is a *grant*. `-p` adds to it; `--no-defaults` declines it.
+Nor is there a `[profile.default]`. **What a bare `snug <dir>` selects is the `defaults` *setting***, built in at `internal/profile/defaults.go` (`@sys @home @target-rw`) and replaceable wholesale by `defaults = [...]` in `~/.config/snug/config.toml`, because a default *selection* is a preference and a profile is a *grant*. `-p` adds to it; `--no-defaults` declines it.
 
-**Three names, not four: the target's PARENT is not in them.** `@sys` is a fixed enumeration, `@home` is an empty tmpfs and `@cwd-rw` is the directory the user named — each bounded by the grant itself. `@parent-ro` grants a directory the user did NOT name, and what that reaches depends on where the target happens to sit: every sibling project, their `.git/config`, their `.env` files, and any socket or FIFO in the tree. A grant whose blast radius is a property of the user's directory layout cannot be the one that is always on. It still ships, and `snug -p @parent-ro <dir>` is how a monorepo or a subdirectory target asks for it — the cost being that a target below a repository root does not see the `.git` above it until someone says so, and that a container `-v` of a SIBLING directory is refused where the target's own graft still works.
+**Three names, not four: the target's PARENT is not in them.** `@sys` is a fixed enumeration, `@home` is an empty tmpfs and `@target-rw` is the directory the user named — each bounded by the grant itself. `@parent-ro` grants a directory the user did NOT name, and what that reaches depends on where the target happens to sit: every sibling project, their `.git/config`, their `.env` files, and any socket or FIFO in the tree. A grant whose blast radius is a property of the user's directory layout cannot be the one that is always on. It still ships, and `snug -p @parent-ro <dir>` is how a monorepo or a subdirectory target asks for it — the cost being that a target below a repository root does not see the `.git` above it until someone says so, and that a container `-v` of a SIBLING directory is refused where the target's own graft still works.
 
 **The ungranted parent is a writable ephemeral ANCHOR, not a read-only skeleton and not a plain directory.** With no grant at the parent, the path is covered by `@home`'s tmpfs (or snug's own `/tmp` for a `/tmp` target), so `echo x > ../x` SUCCEEDS inside and evaporates at teardown — the host's `~/src` is untouched either way.
 
@@ -461,7 +461,7 @@ The rule is stated over every mount's ancestor chain rather than the target's, b
 
 Only the third row moved, and its "before" column is not a safe outcome — it is #553 itself: the rename succeeded because it carried the target's mount, so the host was untouched only in the sense that everything reading `$SNUG_TARGET` afterwards read the payload's directory. The first two rows are ordinary Unix and predate anchors: every mount in a snug sandbox is already a boundary. The cost is disclosed on `--dry-run` (`policy.AnchorNote`) and pinned by `TestMovingTheParentAcrossAnAnchorDeletesTheHostFiles`. Found by the `redteam` agent in this change's own round.
 
-An anchor grants nothing — the payload could already read, traverse and write that path through the tmpfs covering it — which is why it is exempt from `rejectMasking` and why it is placed only where the cover is a tmpfs. **The residual is an ancestor covered by a read-WRITE bind**: an empty tmpfs there would hide real host content, so none is placed, and the rename succeeds and reaches the host. No shipped builtin reaches that shape, and neither does a user profile binding a host directory at `/tmp`: a target under `/tmp` makes `@cwd-rw`'s bind nest inside it and the whole selection is refused as masking; a user profile granting `rw` over a directory containing the target does, and that is what an `rw` grant of a tree means.
+An anchor grants nothing — the payload could already read, traverse and write that path through the tmpfs covering it — which is why it is exempt from `rejectMasking` and why it is placed only where the cover is a tmpfs. **The residual is an ancestor covered by a read-WRITE bind**: an empty tmpfs there would hide real host content, so none is placed, and the rename succeeds and reaches the host. No shipped builtin reaches that shape, and neither does a user profile binding a host directory at `/tmp`: a target under `/tmp` makes `@target-rw`'s bind nest inside it and the whole selection is refused as masking; a user profile granting `rw` over a directory containing the target does, and that is what an `rw` grant of a tree means.
 
 Under that one shape the rename reaches the HOST, so the payload-authored directory outlives the run: a later `snug <dir>` on the same path resolves its realpath to content the previous payload wrote, with no warning, while every screen prints the path the human typed. `test/integration/targetrepoint_test.go` pins the residual, host-side rename included.
 
@@ -481,7 +481,7 @@ rest              [a-zA-Z0-9-]
 
 `checkName` (`internal/profile/file.go`) is an **allowlist**: a character outside that set is a fatal parse error naming the file, the name, the offending byte and its offset. It was a denylist of five individually-broken characters until [#20](https://github.com/gomoni/snug/issues/20), which is the wrong direction — what snug has not been taught about must fail closed — and the sixth character was already reachable: measured, `[profile."a\u001b[1A\rb"]` parsed cleanly and, once selected, that name reached the `PROFILES` line of `--dry-run` verbatim, where `ESC[1A CR` erases the row above it.
 
-The hyphen is in, decided by the owner; five builtins depend on it (`cwd-rw`, `parent-ro`, `git-ro`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
+The hyphen is in, decided by the owner; five builtins depend on it (`target-rw`, `parent-ro`, `git-ro`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
 
 Three things follow.
 
@@ -507,7 +507,7 @@ Profiles are loaded from, in order (all layers merged; **later layers may only a
 
 **There is no fourth layer.** `snug` **never** auto-loads `./.snug/`, `./snug.toml`, or anything else from inside or beside the target directory. Asserted by `TestRepoLocalConfigIsNeverAutoLoaded`.
 
-The prior generation stated the reason in a comment and it is correct: repo-local config is a persistence-attack vector. Under `snug`'s threat model (T2/T4) it is worse than that — it is a *complete* defeat. A hostile repository that ships `.snug/profiles.toml` redefining a profile the user's `defaults` already select — `[profile.cwd-rw] ro = ["/"]` — would grant itself read of the entire host on the very first `snug ~/src/hostile-repo`. The material inside the sandbox must never be able to author the sandbox's boundary.
+The prior generation stated the reason in a comment and it is correct: repo-local config is a persistence-attack vector. Under `snug`'s threat model (T2/T4) it is worse than that — it is a *complete* defeat. A hostile repository that ships `.snug/profiles.toml` redefining a profile the user's `defaults` already select — `[profile.target-rw] ro = ["/"]` — would grant itself read of the entire host on the very first `snug ~/src/hostile-repo`. The material inside the sandbox must never be able to author the sandbox's boundary.
 
 This is a monotonicity-adjacent property, and worth naming: **the trusted profile set must originate outside the material being sandboxed.** Monotonicity guarantees that composing profiles cannot tighten; it says nothing about *who gets to compose*. Both are needed.
 
@@ -651,7 +651,7 @@ A grant *inside* another grant is only masking if the outer mount **has content 
 | outer | inner allowed? | why |
 |---|---|---|
 | `KindTmpfs` | **yes** | a fresh tmpfs exposes nothing, so nothing can be hidden by mounting inside it |
-| `KindBind` of *H* | **yes** iff the inner is a bind of *H/rel* | re-granting the same tree at stronger access is a superset (`@cwd-rw` over `@parent-ro`); anything else substitutes content |
+| `KindBind` of *H* | **yes** iff the inner is a bind of *H/rel* | re-granting the same tree at stronger access is a superset (`@target-rw` over `@parent-ro`); anything else substitutes content |
 | `KindProc`, `KindDev` | **no** | populated by the kernel and by bwrap; a mount inside substitutes host content for kernel content |
 | `KindData` | **no** | a grant beneath a regular file is meaningless |
 | anything | **yes** if the inner is `snug`'s own authored replacement | RULE 3, below |
@@ -1506,9 +1506,9 @@ Dependencies: `github.com/pelletier/go-toml/v2` (strict decode), `github.com/doc
 snug [flags] [dir] [-- cmd ...]
 ```
 
-`dir` defaults to `.`. A bare `snug <dir>` selects the **`defaults` setting** — built-in `@sys @home @cwd-rw` (`internal/profile/defaults.go`), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `@net` is not in the list and must not be added: offline is the *absence* of the `@net` profile, so it cannot be re-enabled by accident.
+`dir` defaults to `.`. A bare `snug <dir>` selects the **`defaults` setting** — built-in `@sys @home @target-rw` (`internal/profile/defaults.go`), replaced wholesale by `defaults = [...]` in `~/.config/snug/config.toml`. `-p` **adds** to it; `--no-defaults` declines it. There is no `[profile.default]`, because a default selection is a preference and a profile is a grant — one idea, one mechanism. `@net` is not in the list and must not be added: offline is the *absence* of the `@net` profile, so it cannot be re-enabled by accident.
 
-There is no flag that grants less. A read-only project means not selecting `@cwd-rw`: `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>`. Verbose on purpose (§2.5).
+There is no flag that grants less. A read-only project means not selecting `@target-rw`: `snug --no-defaults -p @sys -p @home -p @parent-ro <dir>`. Verbose on purpose (§2.5).
 
 **Built today** (`snug --help` is the authority):
 
@@ -1774,7 +1774,7 @@ The issues carry the *known gaps with severities*; this is the list of things th
 - **Q4 — Should the 32-bit compat arch be FILTERED rather than killed?** §5.4 kills it, which costs every 32-bit binary. A per-arch syscall table would let the compat ABI run under the same denials as the native one. Nothing needs it today and no shipped profile has a 32-bit payload, so the question is whether one ever appears — not whether the kill is safe.
 - **Q5 — `bwrap` PR #766 (`--netns FD`)** would let `bwrap` *join* a preexisting netns. It changes nothing for the topology snug uses today but would simplify the engine-in-netns work considerably by removing an `unshare(1)` sandwich. Watch item, not a dependency.
 - **Q6 — Does the sandbox need `/sys/fs/cgroup` for parallelism detection?** No `/sys` at all, and a profile cannot add one: RULE 5 refuses a bind from the host's `/sys` at any access, RULE 5b refuses a mount at guest `/sys`. `nproc`, Go's runtime and anything reading `sched_getaffinity` are unaffected; a JVM or a tool that reads the cgroup CPU quota sees the host CPU count instead of a quota. If that ever bites, the shape is generate-don't-bind — snug authors `KindData` files under a synthetic `/sys/fs/cgroup` from values it read on the host, `Authored`, exempt by construction — not a grant.
-- **Q7 — Should `snug --dry-run` be able to *diff* two profile sets?** `--diff @sys+@cwd-rw @sys+@cwd-rw+@podman-socket` printing only the added grants would make "what does this profile actually cost me" a one-command question.
+- **Q7 — Should `snug --dry-run` be able to *diff* two profile sets?** `--diff @sys+@target-rw @sys+@target-rw+@podman-socket` printing only the added grants would make "what does this profile actually cost me" a one-command question.
 
 ---
 

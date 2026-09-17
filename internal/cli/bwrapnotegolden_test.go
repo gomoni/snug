@@ -54,8 +54,8 @@ func TestGoldenBwrapNote(t *testing.T) {
 		name string
 		sel  []policy.ProfileName
 	}{
-		{"isolated", []policy.ProfileName{"@sys", "@cwd-rw"}},
-		{"egress", []policy.ProfileName{"@sys", "@cwd-rw", "@net"}},
+		{"isolated", []policy.ProfileName{"@sys", "@target-rw"}},
+		{"egress", []policy.ProfileName{"@sys", "@target-rw", "@net"}},
 	}
 
 	for _, tc := range cases {
@@ -117,8 +117,8 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 		return false
 	}
 
-	staged, stagedArgv := render([]policy.ProfileName{"@sys", "@cwd-rw", "@net"})
-	isolated, isolatedArgv := render([]policy.ProfileName{"@sys", "@cwd-rw"})
+	staged, stagedArgv := render([]policy.ProfileName{"@sys", "@target-rw", "@net"})
+	isolated, isolatedArgv := render([]policy.ProfileName{"@sys", "@target-rw"})
 
 	// CONTROL for the premise: the staged argv really does omit --unshare-net,
 	// and the isolated one really does carry its own netns flag. Without this the

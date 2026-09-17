@@ -21,7 +21,7 @@ func TestDryRunStatesTheTmpfsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@parent-ro"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -76,7 +76,7 @@ func TestDryRunJSONCarriesTheTmpfsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw", "@podman-socket"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

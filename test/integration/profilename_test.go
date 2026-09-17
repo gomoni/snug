@@ -124,12 +124,12 @@ func TestAnIllegalNameInDefaultsIsFatalRatherThanIgnored(t *testing.T) {
 
 	// CONTROL first: a legal list is accepted and reported, so the refusal below
 	// is about the NAME and not about this fixture's config file being unusable.
-	write("defaults = [\"@sys\", \"@cwd-rw\"]\n")
+	write("defaults = [\"@sys\", \"@target-rw\"]\n")
 	out, code := cli(t, env, "config")
 	if code != 0 {
 		t.Fatalf("`snug config` with a legal `defaults` exited %d:\n%s", code, out)
 	}
-	if !strings.Contains(out, "@sys") || !strings.Contains(out, "@cwd-rw") {
+	if !strings.Contains(out, "@sys") || !strings.Contains(out, "@target-rw") {
 		t.Fatalf("`snug config` did not report the configured defaults:\n%s", out)
 	}
 

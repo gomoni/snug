@@ -15,7 +15,7 @@ import (
 // ── regression tests for issue #337: identity.ssh.key read with hostread ────
 //
 // New (via parsePublicKey) used to read id.SSHKey with a bare os.ReadFile.
-// the pinned key is resolved under the target, which @cwd-rw makes writable, so a
+// the pinned key is resolved under the target, which @target-rw makes writable, so a
 // PREVIOUS run's own payload can leave `rm key.pub && mkfifo key.pub` behind
 // for the next one: os.ReadFile then blocks in open(2) forever, before the
 // sandbox exists, with no output and no exit code (exit=124 measured on

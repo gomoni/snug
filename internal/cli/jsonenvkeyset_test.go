@@ -149,7 +149,7 @@ func TestTheJSONEnvironmentEntryKeySetIsPinned(t *testing.T) {
 	// because a type is only the format if it is the type the document is
 	// built from — and a block whose entries never reached the output would
 	// pass all three above by describing a struct nobody marshals.
-	doc := jsonGoldenReport(t, []policy.ProfileName{"@sys", "@home", "@cwd-rw"}, false)
+	doc := jsonGoldenReport(t, []policy.ProfileName{"@sys", "@home", "@target-rw"}, false)
 	var parsed struct {
 		Environment []struct {
 			Name    string                       `json:"name"`
@@ -197,7 +197,7 @@ func TestTheJSONEnvironmentEntryKeySetIsPinned(t *testing.T) {
 // variable count that was one short, and the JSON block shipped with the same
 // gap (#332 F1g: 16 entries for a sandbox that will have 17).
 func TestTheJSONEnvironmentCarriesPWD(t *testing.T) {
-	sel := []policy.ProfileName{"@sys", "@home", "@cwd-rw"}
+	sel := []policy.ProfileName{"@sys", "@home", "@target-rw"}
 
 	doc := jsonGoldenReport(t, sel, false)
 	var parsed struct {

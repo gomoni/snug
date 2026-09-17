@@ -135,7 +135,7 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// block gains the staged podman stub — the one mount whose
 		// "executable" is true, which is the fact behind the human column's
 		// "exec" word.
-		{"podman-socket", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "", engine.SignaturePolicySummary{}, ""},
+		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false, "", engine.SignaturePolicySummary{}, ""},
 		// A REFUSED policy still writes a complete document, and exits 77
 		// separately. `snug --dry-run --json x > policy.json` yielding a
 		// parseable file on a refusal is the property this format is designed
@@ -145,10 +145,10 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// human CONTAINERS block and this document. A wording change asserted
 		// in one is not asserted in the other, and CLAUDE.md's rule is to name
 		// every sink a value reaches and assert the SET. $SNUG_PODMAN points
-		// inside the target, which @cwd-rw grants writable — the finding's own
+		// inside the target, which @target-rw grants writable — the finding's own
 		// spelling — so engine_binary_refusal is populated here and nowhere
 		// else in this table.
-		{"engine-writable", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false,
+		{"engine-writable", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false,
 			"/home/u/proj/sub/bin/podman", engine.SignaturePolicySummary{}, ""},
 		// ISSUE #420. signature_policy_refusal was "" in EVERY golden, so the
 		// only refusal-bearing field with no pinned literal was the one whose
@@ -156,14 +156,14 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// refusal reaches two sinks and a wording change asserted in neither is
 		// not asserted at all. TestEveryRefusalFieldIsPinnedBySomeGolden is what
 		// makes a THIRD such field inherit this rather than need its own row.
-		{"signature-policy-refused", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "",
+		{"signature-policy-refused", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false, "",
 			engine.SignaturePolicySummary{Refusal: errors.New("/etc/containers/policy.json requires signatures snug cannot verify inside the sandbox")}, ""},
 		// The THIRD refusal-bearing field, and it was found by
 		// TestEveryRefusalFieldIsPinnedBySomeGolden rather than by anybody
 		// noticing — which is the argument for asserting the set. #420 named
 		// signature_policy_refusal and engine_binary_refusal; toolchain_root_refusal
 		// was unpinned too and nobody had said so.
-		{"toolchain-root-writable", []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}, false, "",
+		{"toolchain-root-writable", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false, "",
 			engine.SignaturePolicySummary{}, "/home/u/proj/sub/toolchain"},
 	}
 
@@ -328,7 +328,7 @@ func TestHumanAndJSONFilesystemBlocksAgree(t *testing.T) {
 	// shipped profile produces, and it is the one that carries a graft map as
 	// well — which the FILESYSTEM block must NOT list and the `mounts` array
 	// must not either.
-	sel := []policy.ProfileName{"@sys", "@cwd-rw", "@podman-socket"}
+	sel := []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

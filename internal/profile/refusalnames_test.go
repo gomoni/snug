@@ -74,7 +74,7 @@ func endpointSourceRefusal(t *testing.T) string {
 			"/usr": {Kind: policy.KindBind, Guest: "/usr", Host: "/usr",
 				Access: policy.AccessRO, From: []string{"@sys"}},
 			"/home/u/proj": {Kind: policy.KindBind, Guest: "/home/u/proj", Host: "/home/u/proj",
-				Access: policy.AccessRW, From: []string{"@cwd-rw"}},
+				Access: policy.AccessRW, From: []string{"@target-rw"}},
 			"/home/u/mounted": {Kind: policy.KindBind, Guest: "/home/u/mounted", Host: "/home/u/agent.sock",
 				Access: policy.AccessRO, From: []string{"binder"}},
 		},
