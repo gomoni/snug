@@ -3443,16 +3443,21 @@ The profile is `git = "extract"`: it reads `user.name`, `user.email` and
 `init.defaultBranch` from the host's config and GENERATES `~/.gitconfig` inside.
 It binds nothing, so the `-ro` suffix named a mechanism that is not there.
 
+**Both `grep` lines run against your real `XDG_CONFIG_HOME`.** A profile of your
+own named `git-ro`, or any description containing the string, makes the first one
+nonzero — that is the loader working, not a failure. The two blocks below pin
+`XDG_CONFIG_HOME` and are hermetic.
+
 ```bash
-./bin/snug profile list | grep -c git-ro              # 0
-./bin/snug profile list | grep -o '@git\b'            # @git
+./bin/snug profile list | grep -c '@git-ro'           # 0
+./bin/snug profile list | grep -c '^  @git  '         # 1
 
 ./bin/snug --dry-run -p @git-ro $SC/proj/sub; echo "exit=$?"
 ```
 
 ```
 0
-@git
+1
 snug: @git-ro is now @git: the -ro suffix asserted a read-only bind, and this profile binds nothing — it reads user.name, user.email and init.defaultBranch from the host's git config and GENERATES ~/.gitconfig inside. Rewrite the selection
 exit=77
 ```
