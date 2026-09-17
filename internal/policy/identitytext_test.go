@@ -158,6 +158,67 @@ func TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf(t *testing.T) {
 	}
 }
 
+// TestEveryIdentityLeafIsRefusedThroughResolve is the one test in this file
+// that fails if the CheckText call in Resolve's profile loop (resolve.go) is
+// ever deleted; neither test above it would notice. #549 asks that a new
+// identity field cannot be expressible without passing through CheckText, and
+// the two existing tests each hold half of that and no more.
+// TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf drives identityFields
+// too, but calls id.CheckText directly, so it says nothing about whether
+// Resolve itself ever reaches it. TestIdentityFieldsRefuseControlCharacters
+// drives the real Resolve entry point, but over a hand-written table, so a
+// leaf added tomorrow is checked by neither: it would decode, resolve, and
+// write into a generated config with nobody having asked "does this leaf pass
+// through CheckText" for it.
+//
+// This test drives identityFields (so a new leaf needs no edit here) through
+// Resolve (so it is the real entry point), and it checks for CheckText's own
+// wording in the error rather than merely "err != nil". That distinction is
+// load-bearing rather than decorative: identity.ssh.agent is refused by
+// ParseSSHMode on a payload that fails to parse regardless of CheckText, and
+// identity.ssh.host is refused by refuseHalfNamedHost given this test's other
+// fields, so a bare non-nil check on those two leaves would keep passing after
+// the CheckText call is removed, which is exactly the gap this test exists to
+// close.
+func TestEveryIdentityLeafIsRefusedThroughResolve(t *testing.T) {
+	for _, f := range identityFields {
+		t.Run(f.Key, func(t *testing.T) {
+			reg := testRegistry()
+			// An otherwise-ordinary identity (the same shape as
+			// TestOrdinaryIdentityFieldsStillResolve) so that the ONLY thing
+			// wrong with it is the forging rune appended to the one leaf
+			// under test — everything else stays clean, so identityFields'
+			// field-declaration order means CheckText's forging-rune loop
+			// finds this leaf and no other.
+			id := Identity{
+				SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub"},
+				Git: IdentityGit{Name: "Some One", Email: "some.one+tag@example.com"},
+				Gh:  IdentityGh{User: "some-one"},
+			}
+			fv := reflect.ValueOf(&id).Elem().FieldByIndex(f.Index)
+			fv.SetString(fv.String() + "\u202e")
+			reg["pinned"] = &Profile{Name: "pinned", Identity: &id}
+
+			_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"),
+				testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("identity.%s carrying a forging rune (U+202E) resolved through "+
+					"Resolve with no error", f.Key)
+			}
+			if !strings.Contains(err.Error(), f.Key) {
+				t.Errorf("error does not name %q: %v", f.Key, err)
+			}
+			if !strings.Contains(err.Error(), "pinned") {
+				t.Errorf("error does not name the profile that caused it: %v", err)
+			}
+			if !strings.Contains(err.Error(), "config file snug GENERATES") {
+				t.Errorf("error did not carry CheckText's own wording, so this leaf was "+
+					"refused for some other reason: %v", err)
+			}
+		})
+	}
+}
+
 // TestIdentityHasNoReferenceKindedField fails compilation-adjacent drift the
 // moment a Ptr, Slice, Map, Interface, Func or Chan field is added anywhere in
 // Identity's tree — including inside a future nested block — before that field
