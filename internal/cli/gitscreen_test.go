@@ -69,7 +69,7 @@ func TestTheGitExtractionBandNeverRendersHostTextRaw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := []policy.ProfileName{"@git-ro"}
+	sel := []policy.ProfileName{"@git"}
 
 	write := func(path, content string) {
 		t.Helper()

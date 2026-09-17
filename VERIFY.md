@@ -3437,6 +3437,48 @@ The file the payload wrote to guest `/tmp` is on the host, in the directory the
 profile named and nowhere else — `test/integration/hosttmpvisibility_test.go`
 asserts both halves of that against a decoy planted in the host's real `/tmp`.
 
+## 9a-quinquies. `@git-ro` is `@git`, and the retired name says why (issue #578)
+
+The profile is `git = "extract"`: it reads `user.name`, `user.email` and
+`init.defaultBranch` from the host's config and GENERATES `~/.gitconfig` inside.
+It binds nothing, so the `-ro` suffix named a mechanism that is not there.
+
+```bash
+./bin/snug profile list | grep -c git-ro              # 0
+./bin/snug profile list | grep -o '@git\b'            # @git
+
+./bin/snug --dry-run -p @git-ro $SC/proj/sub; echo "exit=$?"
+```
+
+```
+0
+@git
+snug: @git-ro is now @git: the -ro suffix asserted a read-only bind, and this profile binds nothing — it reads user.name, user.email and init.defaultBranch from the host's git config and GENERATES ~/.gitconfig inside. Rewrite the selection
+exit=77
+```
+
+**The control, because the retired table must not swallow a user's own name.**
+`git-ro` is a legal name for a profile somebody defines in their own
+`profiles.d`, and snug's retirement notice must not tell that person their own
+profile does not exist.
+
+```bash
+X=$(mktemp -d); mkdir -p $X/snug/profiles.d
+printf '[profile.git-ro]\nro = ["/usr/share/doc"]\n' > $X/snug/profiles.d/mine.toml
+XDG_CONFIG_HOME=$X ./bin/snug --dry-run -p git-ro $SC/proj/sub | head -4
+rm -rf $X
+```
+
+```
+snug — dry run, nothing was started
+
+TARGET   /tmp/tmp.XXXXXXXXXX/proj/sub  (writable)
+HOME     /home/u  (tmpfs, ephemeral)
+```
+
+A normal dry run selecting the user's own `git-ro`: no retirement notice, and
+exit 0.
+
 ## 9b. The `@` namespace belongs to snug
 
 `@` marks a profile snug ships. Nothing else may wear it, so a name in
@@ -3761,7 +3803,7 @@ inside snug's own code.
 
 ```bash
 # the control FIRST: a legal name still works, or the refusals prove nothing
-./bin/snug --dry-run -p @git-ro $SC/proj/sub | head -4
+./bin/snug --dry-run -p @git $SC/proj/sub | head -4
 
 # door 1 and 2: -p and --profile=
 ./bin/snug --dry-run -p 'a b'        $SC/proj/sub
@@ -3831,7 +3873,7 @@ XDG_CONFIG_HOME=$X ./bin/snug --dry-run $SC/proj/sub | grep -o -- "--size 128000
 rm -rf $X
 ```
 
-Expect: the control prints a normal dry run naming `@git-ro`. Each refusal names
+Expect: the control prints a normal dry run naming `@git`. Each refusal names
 the offending byte and its offset — `" "` at 1, `"."` at 1, `"_"` at 2 — and
 `my_profile` additionally suggests `"my-profile"`, because the hyphen is in the
 set and the underscore is not. `-p '@'` says the mark needs a name after it. The

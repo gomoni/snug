@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// `@git-ro` used to bind ~/.gitconfig read-only. It now reads the host's config
+// `@git` used to bind ~/.gitconfig read-only. It now reads the host's config
 // as DATA and generates the file the sandbox sees, because ~/.gitconfig is a
 // command table: credential.helper, alias = !cmd, core.pager, core.sshCommand,
 // diff.*.textconv. A read-only bind does not stop those, it supplies them.

@@ -949,7 +949,7 @@ the other two.** Those are two different decisions and the second one is the
 one with a cost:
 
 *Legality.* An identity-conditional refusal (the row read "refused inside
-`@git-ro`-style identity" for a milestone, with nothing behind it in code) is
+`@git`-style identity" for a milestone, with nothing behind it in code) is
 a profile's grant changing meaning because of its neighbours, which is the
 shape invariant 1 exists to refuse. An unconditional `forbidBoth` is not that,
 but it is a denylist entry in a table whose job is to carry sentences: profiles

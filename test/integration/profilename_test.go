@@ -67,13 +67,13 @@ func TestAnIllegalProfileNameIsRefusedBeforeAnythingRuns(t *testing.T) {
 
 	// CONTROL, and it is the one that stops every assertion above being true of
 	// a binary that refuses EVERY -p: a legal name still resolves.
-	out, code := cli(t, nil, "--dry-run", "-p", "@git-ro", proj)
+	out, code := cli(t, nil, "--dry-run", "-p", "@git", proj)
 	if code != 0 {
-		t.Fatalf("`--dry-run -p @git-ro` exited %d; the cases above prove nothing if snug "+
+		t.Fatalf("`--dry-run -p @git` exited %d; the cases above prove nothing if snug "+
 			"refuses every profile name:\n%s", code, out)
 	}
-	if !strings.Contains(out, "@git-ro") {
-		t.Fatalf("`--dry-run -p @git-ro` did not name the profile:\n%s", out)
+	if !strings.Contains(out, "@git") {
+		t.Fatalf("`--dry-run -p @git` did not name the profile:\n%s", out)
 	}
 }
 

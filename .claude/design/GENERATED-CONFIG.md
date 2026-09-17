@@ -1,7 +1,7 @@
 # Generating a tool's configuration inside the sandbox
 
 **Status: the rule.** Several files are generated under it today, four with a
-design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git-ro`,
+design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git`,
 `~/.gitconfig`), [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
 `~/.claude/settings.json`), [`STORAGE-CONF.md`](STORAGE-CONF.md) and
 [`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) (the container engine's
@@ -41,7 +41,7 @@ sandbox contains exactly the entries snug named, with values snug checked, and
 nothing else, whatever the host's file contains.*
 
 Two independent reasons, and both matter. A bind carries every unrelated thing
-in that file — measured: while `@git-ro` still bound `~/.gitconfig`, selecting
+in that file — measured: while this profile still bound `~/.gitconfig`, selecting
 it alongside a pinned `[identity]` put the host's credential helpers,
 `insteadOf` rules and `user.email` back beside the pin. And the env var that
 points at a generated file carries a **path, not a credential**:
@@ -77,7 +77,7 @@ file contain something dangerous", it is "**what can a key in this format make
 the tool DO**".
 
 Both profiles got the abuse sentence wrong in the same direction before they got
-it right. `@git-ro`'s said *"any secrets you unwisely put in `~/.gitconfig`"* —
+it right. `@git`'s said *"any secrets you unwisely put in `~/.gitconfig`"* —
 the wrong noun (secrets, not commands) and the wrong owner (the user's
 carelessness, not the file's purpose). It was written once, at authoring time,
 was honest when written, and nothing re-read it as `GIT_CONFIG_GLOBAL`, identity
@@ -172,7 +172,7 @@ applies again.
 ## 3. The value channel is per-container — and reconstruct, never edit
 
 **A whitelist of KEYS is half a rule.** The red team defeated the first version
-of `@git-ro` through values, not keys, and it defeated the whole design rather
+of `@git` through values, not keys, and it defeated the whole design rather
 than a corner of it.
 
 ### 3.1 INI: the grammar is the hazard

@@ -174,7 +174,7 @@ same hijack through `~/.bashrc`. What snug owes is narrower and is the `sanitise
 rule — *the environment snug ITSELF hands over must not ship the override
 pre-installed* — bounded by measurement, since none of it survives into a later
 `snug` run. And **"you get what you configure" is not available to us about our
-own profiles**: `@claude`, `@git-ro` and `@podman-socket` are snug's material, so
+own profiles**: `@claude`, `@git` and `@podman-socket` are snug's material, so
 a shipped grant that hands over more than its abuse comment claims is a finding
 against snug. That is what `redteam`'s standing inventory sweep is for, and why
 `checkBuiltinEnvRoster` holds a builtin to a stricter rule than a human's profile.
@@ -394,9 +394,9 @@ It runs in both directions, and both are load-bearing:
 |---|---|---|
 | `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | `@target-rw` over `@parent-ro`, which is `snug -p @parent-ro <dir>` — the parent is not in the defaults |
 | `rw {target}` + `ro {target}/.git` | `.git` is read-only inside a writable target | the arrangement invariant 2 recommends for "X but not Y" |
-| tmpfs `$HOME` + `ro ~/.gitconfig` | a read-only host file inside a writable ephemeral home | `@git-ro`, `@claude`, every generated identity file |
+| tmpfs `$HOME` + a file at a path inside it | a file inside a writable ephemeral home | `@git`'s generated `.gitconfig`, `@claude`'s projected `settings.json`, every generated identity file — all `KindData` that snug authors, not binds a profile expresses |
 
-So the second row — a profile *lowering* effective write access at a strict subpath — is not removable without breaking the third. Forbidding "a deeper grant may not be less permissive" would break `@git-ro`, `@claude` and every pinned identity on the first invocation.
+So the second row — a profile *lowering* effective write access at a strict subpath — is not removable without breaking the third. Forbidding "a deeper grant may not be less permissive" would break `@git`, `@claude` and every pinned identity on the first invocation, because each puts a read-only node at a path inside a writable tmpfs.
 
 **What is and is not conceded by writing this down.** It is a subtraction verb with a spelling (`ro = ["{target}/.git"]` inside a writable target), and §2.5 deleted `--read-only` and `Clamp` precisely so no exception would exist. But the two are not the same act: the clamp moved *the whole policy* down the lattice after resolution, while this is one grant being *more specific* than another. Nothing becomes invisible; the path is still there, still readable, and `rejectMasking` still refuses anything that would hide content (§3.4). A profile that only lowers write access at a path it names is a **nuisance, not an escalation** — and unlike the clamp, it is visible: it is a line in `--dry-run`'s FILESYSTEM block with a profile name next to it, and `--dry-run`'s headline annotation walks the same deepest-mount rule so it cannot report `(writable)` over a demoted subtree, nor `(read-only)` over a writable one.
 
@@ -481,7 +481,7 @@ rest              [a-zA-Z0-9-]
 
 `checkName` (`internal/profile/file.go`) is an **allowlist**: a character outside that set is a fatal parse error naming the file, the name, the offending byte and its offset. It was a denylist of five individually-broken characters until [#20](https://github.com/gomoni/snug/issues/20), which is the wrong direction — what snug has not been taught about must fail closed — and the sixth character was already reachable: measured, `[profile."a\u001b[1A\rb"]` parsed cleanly and, once selected, that name reached the `PROFILES` line of `--dry-run` verbatim, where `ESC[1A CR` erases the row above it.
 
-The hyphen is in, decided by the owner; five builtins depend on it (`target-rw`, `parent-ro`, `git-ro`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
+The hyphen is in, decided by the owner; five builtins depend on it (`target-rw`, `parent-ro`, `git`, `podman-socket`, `podman-build`), so the naive "alphanumerics only" reading would outlaw snug's own names. Underscore stays out until asked for, on the grounds that adding a character later is additive and removing one is a breaking change. Refusing punctuation in the FIRST position is the point: every printable ASCII symbol then stays free to become a sigil later without breaking a name somebody already chose. `@` is already one, and `:` is the reserved next candidate ([`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md)).
 
 Three things follow.
 
@@ -656,7 +656,7 @@ A grant *inside* another grant is only masking if the outer mount **has content 
 | `KindData` | **no** | a grant beneath a regular file is meaningless |
 | anything | **yes** if the inner is `snug`'s own authored replacement | RULE 3, below |
 
-The `KindTmpfs` row is not a convenience: every shipped profile that exposes a host file into the ephemeral `$HOME` is a bind inside `@home`'s tmpfs — `@git-ro`'s `.gitconfig`, `@claude`'s `settings.json`, every generated identity file — so treating a tmpfs as maskable breaks three profiles on the first invocation.
+The `KindTmpfs` row is not a convenience: every shipped profile that puts a file into the ephemeral `$HOME` puts it inside `@home`'s tmpfs — `@git`'s `.gitconfig`, `@claude`'s `settings.json`, every generated identity file — so treating a tmpfs as maskable breaks three profiles on the first invocation. Those three are `KindData` that snug generates rather than binds, and they are covered by this row as generated content; `validate.go`'s comment on the same rule says so too.
 
 Only the **nearest** covering mount is consulted. It is the one that actually supplies content at that path, and anything further up was already judged when it was itself the inner mount, because the walk is depth-ascending.
 
@@ -664,7 +664,7 @@ Only the **nearest** covering mount is consulted. It is the one that actually su
 
 `Mount.Authored` is set **only** by `Policy.Replace`, which is the only permitted writer of `p.Mounts` once `Resolve` has assembled them. `rejectMasking` exempts on `Authored`.
 
-This is the distinction the whole masking rule turns on, restated: **a profile mounting over another profile's grant is masking and is refused; `snug` replacing a path with its own generated content is replacement and is allowed** — the sandbox still sees a node there, just a truthful one, and `Replace` records what it displaced (`identity:work+replaces:@git-ro`) so `--dry-run` says so.
+This is the distinction the whole masking rule turns on, restated: **a profile mounting over another profile's grant is masking and is refused; `snug` replacing a path with its own generated content is replacement and is allowed** — the sandbox still sees a node there, just a truthful one, and `Replace` records what it displaced (`identity:work+replaces:@git`) so `--dry-run` says so.
 
 Two spellings of this were tried and are worse:
 
@@ -1411,7 +1411,7 @@ The point is not politeness. Every sentence here removes a class of wasted turns
 
 `~/.config` is where applications keep tokens (`~/.config/gh/hosts.yml`, `~/.config/gcloud`, `~/.config/op`, `~/.config/containers/auth.json`), and it is also where a persistence payload goes (`~/.config/autostart`, `~/.config/systemd/user`). A blanket bind is a credential dump and a persistence vector in one.
 
-`snug` ships exactly one `~/.config` grant, in `@git-ro`. Anything else is a line the human writes in their own profile. `~/.config` inside the sandbox is otherwise a **writable tmpfs**, so applications that expect to write there work and their writes evaporate.
+`snug` ships **no** `~/.config` grant. `@home` makes `~/.config` a **writable tmpfs** (`base.toml`, `[profile.home]`), so applications that expect to write there work and their writes evaporate, and anything read from the host is a line the human writes in their own profile. One generated file lands under it — `.config/git/allowed_signers`, `AllowedSignersGuest` — and it is authored from an `[identity.git]` block carrying `signing_key`, not read from the host and not a grant.
 
 ### 9.6 Environment variables
 

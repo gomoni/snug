@@ -14,7 +14,7 @@ import (
 // base.toml's `@identity` section carries a TEMPLATE inside its comments: text
 // a human is told to copy into ~/.config/snug/profiles.d/ and fill in. From
 // ceb24ea until this fix, that template's `include` line read
-// `["net", "git-ro"]` — the bare spelling that is correct INSIDE base.toml,
+// `["net", "git"]` — the bare spelling that is correct INSIDE base.toml,
 // because `mark` (builtin.go) rewrites a builtin's own includes into the
 // @-namespace unconditionally. A user file gets no such rewrite (checkName
 // refuses a leading '@' in a DEFINITION, but `include` is a REFERENCE and
@@ -118,7 +118,7 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 	// Both includes actually took effect, not merely parsed: a future edit
 	// that dropped the `include` line entirely would still parse and resolve
 	// (to an empty policy), and that must not read as this test passing.
-	for _, want := range []policy.ProfileName{"@net", "@git-ro"} {
+	for _, want := range []policy.ProfileName{"@net", "@git"} {
 		if !slices.Contains(p.Profiles, want) {
 			t.Errorf("resolved policy does not carry %q; want the template's "+
 				"`include` to have pulled it in. Profiles: %v", want, p.Profiles)

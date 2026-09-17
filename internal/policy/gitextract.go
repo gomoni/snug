@@ -15,7 +15,7 @@ import (
 // COMMAND TABLE. `credential.helper`, `alias.x = !cmd`, `core.pager`,
 // `core.sshCommand`, `diff.*.textconv`, `filter.*.clean/smudge` and
 // `core.fsmonitor` all name programs for git to run. Binding it read-only does
-// not stop any of that; it SUPPLIES it. The previous `@git-ro` bound the file
+// not stop any of that; it SUPPLIES it. The previous `@git` bound the file
 // and said so in an abuse comment that called the hazard "secrets you unwisely
 // put in ~/.gitconfig" — which reads as a user error, and understates a file
 // whose keys are executable by design.

@@ -1223,6 +1223,45 @@ func TestRetiredCwdRwNamesTargetRw(t *testing.T) {
 	}
 }
 
+// @git-ro was renamed to @git (#578). The suffix asserted a read-only bind and
+// the profile has none: it is `git = "extract"`, which generates ~/.gitconfig
+// from three whitelisted host keys. The old name is in README examples and in
+// user config files, so it has to name the new spelling rather than read as a
+// typo.
+func TestRetiredGitRoNamesGit(t *testing.T) {
+	_, err := Resolve(testRegistry(), append(append([]ProfileName{}, testDefaults...), "@git-ro"), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("-p @git-ro was accepted; the profile is @git now")
+	}
+	if !strings.Contains(err.Error(), "@git") {
+		t.Errorf("the error should name the new spelling, got: %v", err)
+	}
+
+	err = UnknownProfile(testRegistry(), "@git-ro")
+	if err == nil || !strings.Contains(err.Error(), "@git") {
+		t.Errorf("UnknownProfile(@git-ro), the route `snug profile show @git-ro` takes, "+
+			"should name @git, got: %v", err)
+	}
+
+	// The message has to say the -ro was the wrong part, not just that the name
+	// moved: a reader who wanted a read-only bind of ~/.gitconfig is not getting
+	// one under the new name either, and nothing else tells them.
+	if !strings.Contains(err.Error(), "binds nothing") {
+		t.Errorf("the retirement notice should say the profile binds nothing, got: %v", err)
+	}
+
+	// CONTROL, same shape as the @cwd-rw and @null ones: `git-ro` is a legal name
+	// for a profile a USER defines, and the retired table must not preempt it.
+	reg := testRegistry()
+	reg["git-ro"] = &Profile{Name: "git-ro"}
+	if err := UnknownProfile(reg, "git-ro"); err == nil {
+		t.Error("a user's own git-ro resolved through UnknownProfile, which only " +
+			"runs on a miss — fixture wrong")
+	} else if strings.Contains(err.Error(), "binds nothing") {
+		t.Errorf("a user's OWN git-ro was answered with snug's retirement notice: %v", err)
+	}
+}
+
 // ── Positive controls for the nesting rules ─────────────────────────────────
 //
 // The rules Validate now enforces (RULE 2, RULE 4) are permissive in three
@@ -1241,20 +1280,18 @@ func TestRetiredCwdRwNamesTargetRw(t *testing.T) {
 // would have included KindTmpfs among the masking outer kinds; this is the
 // test that draft would have failed.
 //
-// The example used to read "@git-ro and @claude both bind host FILES
-// ({home}/.gitconfig, ...)" and was wrong twice over by the time anyone
-// re-read it: @git-ro binds nothing at all any more (it extracts and
-// generates — .claude/design/GIT-CONFIG.md), and @claude's remaining grants
-// under $HOME are directories, not files. The fixture below still uses a
-// {home}/.gitconfig-shaped guest path because the SHAPE is what RULE 2 is
-// about; the comment just may not claim a profile ships it.
+// No shipped profile is an example of this rule, and the comment may not claim
+// one is: @git binds nothing (it extracts and generates —
+// .claude/design/GIT-CONFIG.md), and @claude's remaining grants under $HOME are
+// directories, not files. The fixture below still uses a {home}/.gitconfig-shaped
+// guest path because the SHAPE is what RULE 2 is about.
 func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
 	reg := testRegistry()
 	reg["id-file"] = &Profile{Name: "id-file", Include: []ProfileName{"@home"}, RO: []string{"/opt:{home}/.gitconfig"}}
 
 	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "id-file"}, testCtx(), newFakeEnv())
 	if err != nil {
-		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @git-ro and @claude depend on "+
+		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @git and @claude depend on "+
 			"it for every identity and credential file they expose: %v", err)
 	}
 	m, ok := p.Mounts["/home/u/.gitconfig"]

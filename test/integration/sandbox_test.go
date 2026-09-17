@@ -927,14 +927,14 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	r := run(t, []string{"-p", "@git-ro"}, proj,
+	r := run(t, []string{"-p", "@git"}, proj,
 		`ls /usr >/dev/null && echo SYS-PRESENT; touch ./x && echo TARGET-WRITABLE; echo "$SNUG_PROFILES"`).mustRun(t)
 	for _, want := range []string{"SYS-PRESENT", "TARGET-WRITABLE"} {
 		if !strings.Contains(r.out, want) {
-			t.Errorf("-p git-ro appears to have REPLACED the default (%s missing):\n%s", want, r.out)
+			t.Errorf("-p git appears to have REPLACED the default (%s missing):\n%s", want, r.out)
 		}
 	}
-	for _, want := range []string{"@git-ro", "@sys", "@target-rw"} {
+	for _, want := range []string{"@git", "@sys", "@target-rw"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("SNUG_PROFILES should list %q:\n%s", want, r.out)
 		}
@@ -949,7 +949,7 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	// default list either way.
 	//
 	// REDTEAM, issue #550's round: the shape here asserted the absence of
-	// @git-ro — a profile nothing in the defaults names, so it was absent
+	// @git — a profile nothing in the defaults names, so it was absent
 	// whether or not --no-defaults did anything. Two shapes before it asserted
 	// the absence of @parent-ro (a default then, not now) and of "dotdot" (a
 	// profile renamed to parent-ro and therefore unable to appear at all). Three

@@ -547,9 +547,9 @@ func run(cfg config) int {
 	}
 
 	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
-	// @git-ro` means "the usual sandbox, plus my git config" — which is both what
+	// @git` means "the usual sandbox, plus my git config" — which is both what
 	// the flag's help text says and the only reading consistent with the model,
-	// where naming a profile can never take anything away. (`snug -p @git-ro`
+	// where naming a profile can never take anything away. (`snug -p @git`
 	// once replaced the selection instead, producing a sandbox with no /usr that
 	// could not execute anything.) --no-defaults is how you start from nothing.
 	selected, _ := defaultProfiles()
