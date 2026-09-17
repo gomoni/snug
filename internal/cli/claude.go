@@ -115,6 +115,35 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 			len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), problem)
 	}
 
+	// NOTHING TO REPLACE WHERE THE HOST HAS NO MANIFEST, and staging one anyway
+	// killed the run. This mount is AccessRO and sits inside @claude's own
+	// read-only bind of ~/.claude/plugins, so bwrap has to CREATE the file to
+	// mount onto it and cannot:
+	//
+	//     bwrap: Can't create file .../.claude/plugins/installed_plugins.json:
+	//     Read-only file system
+	//
+	// Measured on a host whose ~/.claude/plugins exists and holds no manifest,
+	// which is what a plugins directory looks like before the first plugin.
+	// There is nothing to hide there and no host file to displace: the bind
+	// exposes no manifest either way.
+	//
+	// STATTED RATHER THAN INFERRED FROM hostread. Optional reports ABSENT as
+	// (nil, "") — the empty note means "nothing to say", not "the file is
+	// there" — so the problem string above cannot tell an absent manifest from
+	// a present one, and neither can a nil check once an empty file enters.
+	// os.Stat is also what Mount.HostDestExists is documented to be set from.
+	if _, err := os.Stat(guest); err != nil {
+		if len(pol.PluginAllowlist) > 0 {
+			return fmt.Errorf("@claude names %d plugin(s) (%s) but the host has no "+
+				"installed_plugins.json at %s — snug cannot validate the named plugins are "+
+				"installed, and a named plugin that is not installed is an error (issue #68, "+
+				"invariant 5)",
+				len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), guest)
+		}
+		return nil
+	}
+
 	body, err := policy.FilterInstalledPlugins(raw, pol.PluginAllowlist)
 	if err != nil {
 		return err
@@ -124,6 +153,10 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: policy.Secret(body), Perms: &perm, From: []string{"@claude"},
+		// The host file is there -- hostread read it. bwrap binds over the
+		// existing inode and creates nothing (issue #73), which is the fact
+		// rejectGeneratedOntoHost needs to tell this apart from the case above.
+		HostDestExists: true,
 	})
 	return nil
 }
