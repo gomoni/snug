@@ -142,6 +142,23 @@ func TestGeneratedFileOverAWritableHostBindIsRefused(t *testing.T) {
 			},
 			want: []string{"/srv/app", "gen.conf", "on the HOST"},
 		},
+		{
+			// #580. This used to be a "must NOT refuse" case, on the theory
+			// that a read-only bind covering a generated path was bwrap's own
+			// to refuse, loudly and by itself:
+			//     bwrap: Can't create file .../.claude/settings.json: Read-only file system
+			// That sentence names neither snug nor the profile nor a fix. ARM 3
+			// pre-empts it: nothing exists at the destination on the host, so
+			// bwrap would have to CREATE the file inside a read-only mount and
+			// cannot, and snug now refuses with its own message before bwrap
+			// ever runs, rather than letting the run die on bwrap's.
+			name: "a read-only bind over an absent destination is now snug's to refuse, not bwrap's",
+			build: func(p *Policy) {
+				bind(p, "/home/u/.claude", "/home/u/.claude", AccessRO)
+				generated(p, "/home/u/.claude/settings.json", AccessRW)
+			},
+			want: []string{"evil", "/home/u/.claude", "settings.json", "Read-only file system", "Fix:"},
+		},
 
 		// ── Must NOT refuse ──────────────────────────────────────────────
 		{
@@ -150,17 +167,6 @@ func TestGeneratedFileOverAWritableHostBindIsRefused(t *testing.T) {
 			// generates into the ephemeral $HOME sits inside @home's tmpfs.
 			name:  "a generated file on the ephemeral home tmpfs",
 			build: func(p *Policy) { generated(p, "/home/u/.gitconfig", AccessRW) },
-		},
-		{
-			// A READ-ONLY bind covering a generated path is left to bwrap,
-			// which fails loudly by itself — "Can't create file …: Read-only
-			// file system" is the error that identified this whole mechanism.
-			// A second refusal here would be a rule with no failure to prevent.
-			name: "a read-only bind is bwrap's to refuse, loudly",
-			build: func(p *Policy) {
-				bind(p, "/home/u/.claude", "/home/u/.claude", AccessRO)
-				generated(p, "/home/u/.claude/settings.json", AccessRW)
-			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -314,6 +320,24 @@ func TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfARwCoveringGrant(t 
 // ordinary dotfile layout (~/.config/git -> ~/.config/git.d), not an escape.
 // Without this case the rule degrades to "refuse if any symlink is anywhere in
 // the chain", which breaks real dotfile layouts that happen to use one.
+//
+// The destination is made to EXIST on the host (env.files below). #580's ARM 3
+// refuses whenever it does not, which after #580 landed was tripping this
+// fixture on ARM 3 instead of on the containment check it is named for — this
+// test would have passed for the wrong reason. Making the destination exist
+// takes ARM 3 out of the decision, so ARM 1's containment check is what
+// accepts this policy again.
+//
+// This is a NEGATIVE CONTROL, and its own limit is worth stating rather than
+// assuming away: with ARM 1's loop deleted outright, this fixture still
+// reports no error, because nothing is left to object — the loop can only
+// ever REFUSE, never require. Confirmed by deleting the loop and re-running:
+// this test stays green. What actually holds ARM 1 accountable is the paired
+// positive control above,
+// TestGeneratedFileRefusedWhenAHostSymlinkRedirectsItOutOfItsCoveringGrant,
+// which goes red the moment the loop is gone. This test's job is narrower: it
+// proves ARM 1 does not over-refuse an ordinary dotfile symlink, not that ARM
+// 1 exists at all.
 func TestGeneratedFileAllowedWhenTheHostSymlinkStaysInsideTheCoveringGrant(t *testing.T) {
 	p := mustResolveDefaults(t)
 	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
@@ -321,25 +345,44 @@ func TestGeneratedFileAllowedWhenTheHostSymlinkStaysInsideTheCoveringGrant(t *te
 
 	env := newFakeEnv()
 	env.links["/home/u/.config/git"] = "/home/u/.config/git.d"
+	env.files["/home/u/.config/git/allowed_signers"] = true
 
 	if err := p.Validate(env); err != nil {
 		t.Fatalf("refused a host symlink whose target stays inside its own covering grant: %v", err)
 	}
 }
 
-// TestGeneratedFileAllowedWhenNoAncestorExistsYet: every ancestor between the
-// bind's root and the generated file's own directory answers fs.ErrNotExist —
-// the plain fixture host, where nothing under {home}/.config has been created
-// yet. A path that is not there yet cannot be a symlink, so the escape this
-// arm defends against cannot be happening through it.
-func TestGeneratedFileAllowedWhenNoAncestorExistsYet(t *testing.T) {
+// TestGeneratedFileRefusedWhenTheDestinationDoesNotExistYet replaces
+// "TestGeneratedFileAllowedWhenNoAncestorExistsYet", whose whole premise —
+// every ancestor between the bind's root and the generated file's own
+// directory answers fs.ErrNotExist, therefore ALLOWED — is exactly what #580
+// reverses. This is the same fixture that test used, and it is also ARM 3's
+// canonical case: nothing exists yet at the destination itself, so bwrap
+// would have to CREATE the file inside the read-only bind covering it and
+// cannot.
+//
+// ARM 1's own tolerance for an absent ancestor is UNCHANGED by #580 — its
+// loop still treats fs.ErrNotExist as "not created yet, the escape can only
+// be higher up" and continues rather than refusing. What changed is that ARM
+// 3 now also looks at the final destination and refuses on its absence alone,
+// so the old test's premise cannot survive as an "allowed" case; it inverts
+// wholesale rather than leaving a narrower survivor, because the fixture IS
+// #580's reproduction.
+func TestGeneratedFileRefusedWhenTheDestinationDoesNotExistYet(t *testing.T) {
 	p := mustResolveDefaults(t)
 	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
 	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
 
-	if err := p.Validate(newFakeEnv()); err != nil {
-		t.Fatalf("refused a generated file whose covering directory does not exist yet on the "+
-			"host: %v", err)
+	err := p.Validate(newFakeEnv())
+	if err == nil {
+		t.Fatal("accepted a policy in which bwrap would have to create the generated file " +
+			"inside a read-only bind — it cannot, and the run used to die on bwrap's own " +
+			"message, naming neither snug nor the profile nor a fix (issue #580)")
+	}
+	for _, want := range []string{"evil", "/home/u/.config", "allowed_signers", "Read-only file system", "Fix:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q:\n%v", want, err)
+		}
 	}
 }
 
@@ -369,6 +412,102 @@ func TestGeneratedFileRefusedWhenAnAncestorCannotBeResolved(t *testing.T) {
 		t.Errorf("refusal does not say the ancestor could not be resolved: %v", err)
 	}
 }
+
+// ── ARM 3: the destination must already exist on the host (#580) ───────────
+//
+// A read-only bind covering a generated path used to be left entirely to
+// bwrap: if nothing was at the destination, bwrap had to create the
+// mountpoint inside a read-only mount and died with
+//
+//	bwrap: Can't create file .../.config/git/allowed_signers: Read-only file system
+//
+// which names neither snug, nor the profile, nor a fix. ARM 3 stats the
+// destination through the injected Environ — the same seam ARM 1 already uses
+// for EvalSymlinks — and refuses before bwrap ever runs, with a message that
+// does. These cases use a neutral tree (/srv/app) rather than {home}, for the
+// same reason "an ancestor grant two levels up" above does: an rw bind over
+// the ephemeral home is refused by rejectMasking first, and a fixture that
+// trips a different rule proves nothing about this one.
+
+// TestGeneratedFileOverAnAbsentDestinationUnderAReadOnlyBindIsRefused is ARM
+// 3's own case: a read-only bind, and nothing at the destination.
+func TestGeneratedFileOverAnAbsentDestinationUnderAReadOnlyBindIsRefused(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/srv/app", "/srv/app", AccessRO)
+	generated(p, "/srv/app/deep/gen.conf", AccessRW)
+
+	err := p.Validate(newFakeEnv())
+	if err == nil {
+		t.Fatal("accepted a policy in which bwrap would have to create a file inside a " +
+			"read-only bind — it cannot, and the run used to die on bwrap's own message, " +
+			"naming neither snug nor the profile nor a fix (issue #580)")
+	}
+	for _, want := range []string{
+		"evil",                   // the profile that granted the ro bind
+		"/srv/app",               // the grant
+		"/srv/app/deep/gen.conf", // the generated guest path
+		"Read-only file system",  // bwrap's own sentence, quoted so the reader recognises it
+		"Fix:",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestGeneratedFileOverAPresentDestinationUnderAReadOnlyBindIsAllowed is the
+// bind-over that already worked before #580 and must keep working: bwrap's
+// --ro-bind-data binds over an EXISTING inode rather than creating one
+// (issue #73), so a read-only cover is harmless once the destination is
+// already there. This also carries the part of the old
+// "TestGeneratedFileAllowedWhenNoAncestorExistsYet" that #580 did not
+// reverse: the intermediate directory /srv/app/deep is absent from the fake
+// host too, and ARM 1's loop still tolerates that (fs.ErrNotExist there means
+// "not created yet, the escape can only be higher up", not a refusal).
+func TestGeneratedFileOverAPresentDestinationUnderAReadOnlyBindIsAllowed(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/srv/app", "/srv/app", AccessRO)
+	generated(p, "/srv/app/deep/gen.conf", AccessRW)
+
+	env := newFakeEnv()
+	env.files["/srv/app/deep/gen.conf"] = true
+
+	if err := p.Validate(env); err != nil {
+		t.Fatalf("refused a read-only bind-over of a file that already exists on the host: %v", err)
+	}
+}
+
+// TestHostDestExistsShortCircuitsARM3BeforeAnyStat proves ARM 2's fast path
+// runs BEFORE ARM 3 ever stats the destination, rather than merely agreeing
+// with it. The destination here is absent from the fake host — env.Stat on
+// it answers fs.ErrNotExist, and ARM 3 refuses on that alone, as the sibling
+// test above shows for the identical path. HostDestExists carries the CLI's
+// own os.Lstat fact that the destination exists on the REAL host (the fake's
+// map is not the same claim), so this policy is only accepted if ARM 2's
+// `continue` short-circuits before ARM 3 gets to look.
+func TestHostDestExistsShortCircuitsARM3BeforeAnyStat(t *testing.T) {
+	p := mustResolveDefaults(t)
+	bind(p, "/srv/app", "/srv/app", AccessRO)
+	p.Replace(Mount{
+		Guest: "/srv/app/deep/gen.conf", Kind: KindData,
+		Access: AccessRW, Content: Secret("generated by snug\n"),
+		HostDestExists: true,
+	})
+
+	if err := p.Validate(newFakeEnv()); err != nil {
+		t.Fatalf("refused a generated mount whose HostDestExists is true, even though ARM 2's "+
+			"fast path is supposed to accept it before ARM 3 ever stats the (here, absent) "+
+			"destination: %v", err)
+	}
+}
+
+// No test exercises ARM 3's "cannot be examined" branch (a Stat error that is
+// NOT fs.ErrNotExist). fakeEnv.Stat in resolve_test.go has no mechanism to
+// produce one — unlike EvalSymlinks, which symlinkErrs lets a fixture fail
+// with an arbitrary error, Stat here only ever returns success or
+// fs.ErrNotExist. Adding that mechanism means touching fakeEnv, which is out
+// of scope for this change; this comment records the gap rather than
+// papering over it with a test that cannot reach the branch it claims to.
 
 // ── the negatives that keep the containment arm from over-reaching ─────────
 //
