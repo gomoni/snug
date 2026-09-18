@@ -489,6 +489,17 @@ profile evil grants ro on /srv/app (the host's /host/cover), and snug generates 
        A generated file is meant to land where the grant covering it says it lands.
        Fix: drop the ro grant on /srv/app, or deselect (snug), which generates at /srv/app/link/gen.conf.
 
+== generated_through_a_two_hop_link_chain ==
+profile evil grants ro on /home/u/.config (the host's /host/cover), and snug generates /home/u/.config/git/allowed_signers inside it —
+       but /host/cover/inner on the host is a symlink to "/w", and the SANDBOX resolves that to /w,
+       which is OUTSIDE that grant. bwrap follows it when it creates the mountpoint, so the
+       generated file lands wherever the sandbox has that path: on the host tree of whatever
+       grant covers it there (measured: a 0444 settings.json appeared under an unrelated rw
+       grant, snug exit 0, before the payload ran), or, where nothing in the sandbox has that
+       path, the run dies on bwrap's own `Can't mkdir parents for /home/u/.config/git/allowed_signers: No such file or directory`.
+       A generated file is meant to land where the grant covering it says it lands.
+       Fix: drop the ro grant on /home/u/.config, or deselect (snug), which generates at /home/u/.config/git/allowed_signers.
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 

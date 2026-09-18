@@ -500,74 +500,102 @@ func (p *Policy) followToDestination(env Environ, m, outer Mount, at, host strin
 	last, pending := comps[len(comps)-1], comps[:len(comps)-1]
 
 	guestAt, hostAt, links := at, host, 0
+
+	// step resolves whatever is AT the current position, following a CHAIN of
+	// symlinks until it reaches something that is not one. Following only the
+	// first link was an escape of its own: the walk remapped to the link's
+	// landing and moved on to the next component, so a link AT that landing —
+	// the generated file's own parent, reached through an in-grant first hop —
+	// was never read, and the Lstat of the finished hostDest then followed it in
+	// the HOST namespace while bwrap followed it in the sandbox's. MEASURED with
+	// bwrap 0.12.0 alone: `--ro-bind $cover $g --bind $realhost $wtarget` plus
+	// `$cover/d -> inner` and `$cover/inner -> $wtarget`, mounting at
+	// $g/d/gen.conf, exits 0 and leaves a 0444 $realhost/gen.conf on the host
+	// while the literal $wtarget/gen.conf is untouched.
+	//
+	// It returns false when the position does not exist, which ends the walk:
+	// nothing under an absent directory can be a link.
+	step := func() (exists bool, err error) {
+		for {
+			fi, lerr := env.Lstat(hostAt)
+			if errors.Is(lerr, fs.ErrNotExist) {
+				return false, nil
+			}
+			if lerr != nil {
+				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but the host path %s cannot be examined: %v.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(hostAt), lerr)
+			}
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				return true, nil
+			}
+
+			if links++; links > maxGeneratedDestLinks {
+				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but resolving the host symlinks between them took more than %d steps.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest, maxGeneratedDestLinks)
+			}
+			text, rerr := env.Readlink(hostAt)
+			if rerr != nil {
+				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but the host symlink %s cannot be read: %v.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(hostAt), rerr)
+			}
+
+			// The landing, in GUEST terms: an absolute link is read against the
+			// sandbox's root, a relative one against the directory the link
+			// sits in.
+			landing := text
+			if !filepath.IsAbs(text) {
+				landing = filepath.Join(filepath.Dir(guestAt), text)
+			}
+			landing = filepath.Clean(landing)
+
+			if landing != at && !strings.HasPrefix(landing, at+"/") {
+				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
+					"       but %s on the host is a symlink to %q, and the SANDBOX resolves that to %s,\n"+
+					"       which is OUTSIDE that grant. bwrap follows it when it creates the mountpoint, so the\n"+
+					"       generated file lands wherever the sandbox has that path: on the host tree of whatever\n"+
+					"       grant covers it there (measured: a 0444 settings.json appeared under an unrelated rw\n"+
+					"       grant, snug exit 0, before the payload ran), or, where nothing in the sandbox has that\n"+
+					"       path, the run dies on bwrap's own `Can't mkdir parents for %s: No such file or directory`.\n"+
+					"       A generated file is meant to land where the grant covering it says it lands.\n"+
+					"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(hostAt), VisibleText(text), VisibleText(landing),
+					VisibleText(m.Guest),
+					outer.Access, at, provenance(m), m.Guest)
+			}
+
+			// Inside the grant: carry on from where the link points, on both
+			// sides, so the rest of the path is read from the same place bwrap
+			// reads it — and look again, because the landing can be a link too.
+			guestAt = landing
+			hostAt = filepath.Join(host, strings.TrimPrefix(landing, at))
+		}
+	}
+
 	for len(pending) > 0 {
 		c := pending[0]
 		pending = pending[1:]
 		guestAt, hostAt = filepath.Join(guestAt, c), filepath.Join(hostAt, c)
 
-		fi, lerr := env.Lstat(hostAt)
-		if errors.Is(lerr, fs.ErrNotExist) {
+		exists, err := step()
+		if err != nil {
+			return "", false, err
+		}
+		if !exists {
 			// Not created yet. Nothing below an absent directory can be a
 			// symlink, so there is no escape left to find — and the parent of
 			// the destination does not exist, which is a different bwrap
 			// sentence than an absent file in a directory that does.
 			return filepath.Join(append([]string{hostAt}, append(pending, last)...)...), false, nil
 		}
-		if lerr != nil {
-			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
-				"       inside it, but the host path %s cannot be examined: %v.\n"+
-				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
-				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-				VisibleText(hostAt), lerr)
-		}
-		if fi.Mode()&fs.ModeSymlink == 0 {
-			continue
-		}
-
-		if links++; links > maxGeneratedDestLinks {
-			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
-				"       inside it, but resolving the host symlinks between them took more than %d steps.\n"+
-				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
-				provenance(outer), outer.Access, at, VisibleText(host), m.Guest, maxGeneratedDestLinks)
-		}
-		text, rerr := env.Readlink(hostAt)
-		if rerr != nil {
-			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
-				"       inside it, but the host symlink %s cannot be read: %v.\n"+
-				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
-				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-				VisibleText(hostAt), rerr)
-		}
-
-		// The landing, in GUEST terms: an absolute link is read against the
-		// sandbox's root, a relative one against the directory the link sits in.
-		landing := text
-		if !filepath.IsAbs(text) {
-			landing = filepath.Join(filepath.Dir(guestAt), text)
-		}
-		landing = filepath.Clean(landing)
-
-		if landing != at && !strings.HasPrefix(landing, at+"/") {
-			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
-				"       but %s on the host is a symlink to %q, and the SANDBOX resolves that to %s,\n"+
-				"       which is OUTSIDE that grant. bwrap follows it when it creates the mountpoint, so the\n"+
-				"       generated file lands wherever the sandbox has that path: on the host tree of whatever\n"+
-				"       grant covers it there (measured: a 0444 settings.json appeared under an unrelated rw\n"+
-				"       grant, snug exit 0, before the payload ran), or, where nothing in the sandbox has that\n"+
-				"       path, the run dies on bwrap's own `Can't mkdir parents for %s: No such file or directory`.\n"+
-				"       A generated file is meant to land where the grant covering it says it lands.\n"+
-				"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
-				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-				VisibleText(hostAt), VisibleText(text), VisibleText(landing),
-				VisibleText(m.Guest),
-				outer.Access, at, provenance(m), m.Guest)
-		}
-
-		// Inside the grant: keep walking from where the link points, on both
-		// sides, so the rest of the path is read from the same place bwrap
-		// reads it.
-		guestAt = landing
-		hostAt = filepath.Join(host, strings.TrimPrefix(landing, at))
 	}
 
 	if fi, lerr := env.Lstat(hostAt); lerr != nil || !fi.IsDir() {

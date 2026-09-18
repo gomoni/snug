@@ -116,3 +116,125 @@ func TestSnugRefusesToWriteItsGeneratedFilesOntoTheHost(t *testing.T) {
 		unchanged(t, "after the accepted run")
 	})
 }
+
+// ── the same write, steered by a HOST SYMLINK the sandbox reads differently ──
+//
+// Both cases below were MEASURED to write the host before their fixes landed:
+// snug exit 0, the payload ran, and a 0444 file that no line of --dry-run named
+// appeared under an unrelated writable grant. They are here rather than only in
+// internal/policy because what went wrong each time was a DISAGREEMENT between
+// what snug believed about the host and what bwrap then did to it, and a fake
+// host cannot hold both halves of that.
+
+// steeringFixture builds the shape both cases share: a PATH-TRANSLATING
+// read-only cover over the target — guest and host differ, which is what makes
+// a host-side and a sandbox-side reading of the same symlink land in different
+// places — a writable grant somewhere else, and @claude generating
+// {target}/.claude/settings.json inside the cover.
+//
+// links is the chain planted under the cover, as {name: link text}: the TEXT is
+// what bwrap reads, so a relative one resolves against the GUEST directory.
+func steeringFixture(t *testing.T, name string, links map[string]string) (env []string, proj, hostWritable string) {
+	t.Helper()
+
+	root := t.TempDir()
+	cover := filepath.Join(root, "cover") // the cover's HOST side
+	proj = filepath.Join(root, "proj")    // the cover's GUEST side, and the target
+	guestWritable := filepath.Join(root, "wtarget")
+	hostWritable = filepath.Join(root, "realhost") // where a write actually lands
+	for _, d := range []string{cover, proj, guestWritable, hostWritable, filepath.Join(proj, ".claude")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// @claude projects a project-scope settings.json only where the target has
+	// one, so the fixture ships it.
+	if err := os.WriteFile(filepath.Join(proj, ".claude", "settings.json"),
+		[]byte(`{"permissions":{"allow":["Bash"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A file at the literal host path an Lstat would examine, so that a guard
+	// asking the HOST gets the reassuring answer — "a regular file is there,
+	// bind over it, nothing is written" — while bwrap resolves the same name
+	// inside the sandbox and creates a file somewhere else entirely.
+	if err := os.WriteFile(filepath.Join(guestWritable, "settings.json"),
+		[]byte(`{"HOST":"untouched"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for at, text := range links {
+		if err := os.Symlink(text, filepath.Join(cover, at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	toml := "[profile." + name + "]\n" +
+		"description = \"a translating cover over the target, plus a writable grant\"\n" +
+		"# ABUSE: a host symlink under the cover steers snug's generated file into the\n" +
+		"# writable grant, where bwrap creates it ON THE HOST before the payload exists.\n" +
+		"include = [\"@sys\", \"@claude\"]\n" +
+		"ro = [\"" + cover + ":" + proj + "\"]\n" +
+		"rw = [\"" + hostWritable + ":" + guestWritable + "\"]\n"
+	return writeProfiles(t, map[string]string{name: toml}), proj, hostWritable
+}
+
+// refusedWithoutTouchingTheHost is the three-part assertion, because any one
+// part alone passes for the wrong reason: snug says no, the host directory is
+// still empty, and the sentence on the screen is snug's rather than bwrap's.
+func refusedWithoutTouchingTheHost(t *testing.T, screen string, code int, hostWritable string) {
+	t.Helper()
+
+	if code == 0 {
+		t.Errorf("snug ACCEPTED a policy whose generated file resolves, INSIDE the sandbox, "+
+			"into an unrelated writable grant:\n%s", screen)
+	}
+	entries, err := os.ReadDir(hostWritable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("snug WROTE THE HOST during setup: %s now holds %s. The writer is snug itself, "+
+			"before the sandbox exists, so no mitigation aimed at the payload applies — this is "+
+			"issue #186's own shape", hostWritable, strings.Join(names, ", "))
+	}
+	if !strings.Contains(screen, "OUTSIDE that grant") {
+		t.Errorf("the refusal is not the containment arm's: a run that dies on bwrap's own "+
+			"message names neither snug, nor the profile, nor a fix, which is the whole reason "+
+			"this guard exists:\n%s", screen)
+	}
+	if strings.Contains(screen, "bwrap: Can't") {
+		t.Errorf("bwrap refused this, not snug — the guard was supposed to answer first:\n%s", screen)
+	}
+}
+
+// TestAHostSymlinkUnderATranslatingCoverCannotSteerAGeneratedFileOntoTheHost is
+// the one-hop case: the cover's `.claude` is a relative link that stays inside
+// the cover on the HOST and lands in the writable grant inside the SANDBOX.
+func TestAHostSymlinkUnderATranslatingCoverCannotSteerAGeneratedFileOntoTheHost(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+
+	env, proj, hostWritable := steeringFixture(t, "steer1", map[string]string{
+		".claude": "../wtarget",
+	})
+	screen, code := cli(t, env, "--no-defaults", "-p", "steer1", proj, "--", "true")
+	refusedWithoutTouchingTheHost(t, screen, code, hostWritable)
+}
+
+// TestTheSecondHopOfAHostSymlinkChainIsFollowedToo is the same escape one hop
+// deeper, and it is the shape a walk that follows ONE link per component
+// misses: the first hop stays inside the cover, the second leaves it.
+func TestTheSecondHopOfAHostSymlinkChainIsFollowedToo(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+
+	env, proj, hostWritable := steeringFixture(t, "steer2", map[string]string{
+		".claude": "inner",      // hop 1: stays inside the cover
+		"inner":   "../wtarget", // hop 2: leaves it
+	})
+	screen, code := cli(t, env, "--no-defaults", "-p", "steer2", proj, "--", "true")
+	refusedWithoutTouchingTheHost(t, screen, code, hostWritable)
+}

@@ -1063,3 +1063,53 @@ func TestBwrapDeviceNodeRowIsMeasuredToo(t *testing.T) {
 		t.Errorf("device node, --file: bwrap writes nothing (EACCES on the open), got %q", v.writes)
 	}
 }
+
+// refusalGeneratedThroughATwoHopLinkChain is the fourth redteam round's escape,
+// and it is the first fix's own blind spot rather than a new mechanism: the
+// walk followed ONE link per component. A first hop that stays inside the grant
+// remapped the position and moved on, so a link AT THAT LANDING — the generated
+// file's own parent — was never read, and the Lstat of the finished destination
+// then followed it in the HOST namespace while bwrap followed it in the
+// sandbox's.
+//
+// MEASURED with bubblewrap 0.12.0 alone, no snug in the way:
+//
+//	--ro-bind $cover $g --bind $realhost $wtarget
+//	$cover/d -> inner        (relative, lands inside the cover)
+//	$cover/inner -> $wtarget (absolute, the writable mount's GUEST path)
+//	--ro-bind-data 9 $g/d/gen.conf
+//
+//	rc=0, and on the host: -r--r--r-- $realhost/gen.conf appeared,
+//	while $wtarget/gen.conf — the literal path an Lstat examines — was untouched.
+//
+// The fixture is that layout: two hops, the first in-grant, the second absolute
+// and out, with the host-literal destination made to exist so the shape question
+// would answer "bind over an existing file" if the walk ever got there.
+func refusalGeneratedThroughATwoHopLinkChain(t testing.TB) error {
+	p := resolveDefaults(t)
+	bind(p, "/home/u/.config", "/host/cover", AccessRO)
+	bind(p, "/w", "/host/writable", AccessRW)
+	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
+
+	env := newFakeEnv()
+	env.links["/host/cover/git"] = "inner" // hop 1: /home/u/.config/inner, in-grant
+	env.links["/host/cover/inner"] = "/w"  // hop 2: the writable mount, OUT
+	env.files["/host/cover/inner/allowed_signers"] = true
+	return p.Validate(env)
+}
+
+func TestGeneratedFileRefusedWhenTheSECONDHopEscapes(t *testing.T) {
+	err := refusalGeneratedThroughATwoHopLinkChain(t)
+	if err == nil {
+		t.Fatal("accepted a two-hop symlink chain whose FIRST hop stays inside the grant and " +
+			"whose second leaves it. bwrap follows both, so the generated file lands in the " +
+			"writable mount and snug creates it on that mount's host tree before the payload " +
+			"exists — measured with bwrap alone: a 0444 gen.conf appeared under the writable " +
+			"bind's host source (issue #186)")
+	}
+	for _, want := range []string{"/host/cover/inner", "/w", "OUTSIDE that grant"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q — the SECOND hop is the one that escapes:\n%v", want, err)
+		}
+	}
+}
