@@ -422,6 +422,19 @@ cannot graft /dev into the engine's view: /dev is snug's own: it must be bwrap's
        hole no graft may open, snug's own code included. Graft a destination that
        is neither /dev nor an ancestor of it.
 
+== generated_over_an_absent_destination_under_a_ro_bind ==
+profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it —
+       but nothing exists at /srv/app/deep/gen.conf on the host, so bwrap would have to CREATE that file
+       inside a read-only mount. It cannot, and the run dies on bwrap's own message,
+       which names neither snug nor this profile:
+           bwrap: Can't create file /srv/app/deep/gen.conf: Read-only file system
+       Fix: drop the ro grant on /srv/app, or deselect (snug), which generates at /srv/app/deep/gen.conf.
+
+== generated_destination_cannot_be_examined ==
+profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf
+       inside it, but the host path /srv/app/deep/gen.conf cannot be examined: stat /srv/app/deep/gen.conf: permission denied.
+       snug cannot tell whether bwrap would have to create it, so it refuses rather than guess.
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 

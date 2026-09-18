@@ -63,7 +63,13 @@ type fakeEnv struct {
 	// filesystem — see refusals_test.go's forging-rune-in-a-symlink-destination
 	// cases.
 	symlinkErrs map[string]error
-	env         map[string]string
+	// statErrs is symlinkErrs' equivalent for Stat, and it exists because
+	// without it the maps above answer only SUCCESS or fs.ErrNotExist. A rule
+	// that treats "absent" and "cannot be examined" as different answers —
+	// rejectGeneratedOntoHost's ARM 3 refuses rather than guess when Stat
+	// fails with anything else — then has a branch no fixture can reach.
+	statErrs map[string]error
+	env      map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -109,6 +115,7 @@ func newFakeEnv() *fakeEnv {
 		},
 		links:       map[string]string{},
 		symlinkErrs: map[string]error{},
+		statErrs:    map[string]error{},
 		// EDITOR is here so a fixture profile can actually re-admit something
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
@@ -146,6 +153,9 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 }
 
 func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
+	if err, ok := f.statErrs[p]; ok {
+		return nil, err
+	}
 	if f.dirs[p] {
 		return fakeInfo{name: p, dir: true, mode: fs.ModeDir}, nil
 	}
