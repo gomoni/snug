@@ -1121,6 +1121,9 @@ func TestGoldenRefusals(t *testing.T) {
 		// path, and a path-translating cover makes that a different file from
 		// the one bwrap touches.
 		{"generated_through_a_translating_cover", refusalGeneratedThroughATranslatingCoverWhoseDestinationIsAbsent},
+		// The containment arm's own namespace bug: host-side the link stays
+		// inside the grant, sandbox-side it lands in another one.
+		{"generated_through_a_relative_link_in_a_translating_cover", refusalGeneratedThroughARelativeLinkInATranslatingCover},
 
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},

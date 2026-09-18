@@ -472,6 +472,112 @@ func endpointNoun(mode fs.FileMode) string {
 	return "endpoint"
 }
 
+// maxGeneratedDestLinks bounds the walk below the way the kernel bounds its own
+// resolution (ELOOP at 40), so a cycle of host symlinks ends in a refusal
+// rather than in a loop inside Validate.
+const maxGeneratedDestLinks = 40
+
+// followToDestination walks from the covering grant's root down to the
+// generated file, resolving every symlink the way BWRAP will — against GUEST
+// components, inside the sandbox's namespace — and returns the host path bwrap
+// would really touch, plus whether that path's parent directory exists on the
+// host.
+//
+// It refuses when a link takes the destination OUT of the grant that covers it:
+// there the file lands wherever the sandbox has that path, which is another
+// grant's host tree or nothing at all, and neither is where the policy says the
+// generated file goes.
+//
+// The FINAL component is never followed. bwrap opens the destination without
+// following it (measured: `Can't mount on symlink destination …`), so a symlink
+// there is a shape for bwrapAtDestination to answer about, not a redirection.
+func (p *Policy) followToDestination(env Environ, m, outer Mount, at, host string) (hostDest string, parentExists bool, err error) {
+	rest := strings.Trim(strings.TrimPrefix(m.Guest, at), "/")
+	if rest == "" {
+		return host, true, nil // the generated file IS the grant, which has no ancestors to walk
+	}
+	comps := strings.Split(rest, "/")
+	last, pending := comps[len(comps)-1], comps[:len(comps)-1]
+
+	guestAt, hostAt, links := at, host, 0
+	for len(pending) > 0 {
+		c := pending[0]
+		pending = pending[1:]
+		guestAt, hostAt = filepath.Join(guestAt, c), filepath.Join(hostAt, c)
+
+		fi, lerr := env.Lstat(hostAt)
+		if errors.Is(lerr, fs.ErrNotExist) {
+			// Not created yet. Nothing below an absent directory can be a
+			// symlink, so there is no escape left to find — and the parent of
+			// the destination does not exist, which is a different bwrap
+			// sentence than an absent file in a directory that does.
+			return filepath.Join(append([]string{hostAt}, append(pending, last)...)...), false, nil
+		}
+		if lerr != nil {
+			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+				"       inside it, but the host path %s cannot be examined: %v.\n"+
+				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+				VisibleText(hostAt), lerr)
+		}
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			continue
+		}
+
+		if links++; links > maxGeneratedDestLinks {
+			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+				"       inside it, but resolving the host symlinks between them took more than %d steps.\n"+
+				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest, maxGeneratedDestLinks)
+		}
+		text, rerr := env.Readlink(hostAt)
+		if rerr != nil {
+			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+				"       inside it, but the host symlink %s cannot be read: %v.\n"+
+				"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+				VisibleText(hostAt), rerr)
+		}
+
+		// The landing, in GUEST terms: an absolute link is read against the
+		// sandbox's root, a relative one against the directory the link sits in.
+		landing := text
+		if !filepath.IsAbs(text) {
+			landing = filepath.Join(filepath.Dir(guestAt), text)
+		}
+		landing = filepath.Clean(landing)
+
+		if landing != at && !strings.HasPrefix(landing, at+"/") {
+			return "", false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
+				"       but %s on the host is a symlink to %q, and the SANDBOX resolves that to %s,\n"+
+				"       which is OUTSIDE that grant. bwrap follows it when it creates the mountpoint, so the\n"+
+				"       generated file lands wherever the sandbox has that path: on the host tree of whatever\n"+
+				"       grant covers it there (measured: a 0444 settings.json appeared under an unrelated rw\n"+
+				"       grant, snug exit 0, before the payload ran), or, where nothing in the sandbox has that\n"+
+				"       path, the run dies on bwrap's own `Can't mkdir parents for %s: No such file or directory`.\n"+
+				"       A generated file is meant to land where the grant covering it says it lands.\n"+
+				"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+				VisibleText(hostAt), VisibleText(text), VisibleText(landing),
+				VisibleText(m.Guest),
+				outer.Access, at, provenance(m), m.Guest)
+		}
+
+		// Inside the grant: keep walking from where the link points, on both
+		// sides, so the rest of the path is read from the same place bwrap
+		// reads it.
+		guestAt = landing
+		hostAt = filepath.Join(host, strings.TrimPrefix(landing, at))
+	}
+
+	if fi, lerr := env.Lstat(hostAt); lerr != nil || !fi.IsDir() {
+		// The parent is absent, or is not a directory — bwrap says "Can't mkdir
+		// parents for …" rather than "Can't create file …" for both.
+		return filepath.Join(hostAt, last), false, nil
+	}
+	return filepath.Join(hostAt, last), true, nil
+}
+
 // bwrapAtDestination is what bubblewrap does with a generated file at a
 // destination of this shape, and it is the whole of rejectGeneratedOntoHost's
 // second question. said is the sentence bwrap prints when it will NOT mount
@@ -519,10 +625,23 @@ type bwrapVerdict struct {
 // ok reports the one accepting case: bwrap mounts, and the host is untouched.
 func (v bwrapVerdict) ok() bool { return v.said == "" && v.writes == "" }
 
-func bwrapAtDestination(dest string, fi fs.FileInfo, access Access, coverWritable bool) bwrapVerdict {
+func bwrapAtDestination(dest string, fi fs.FileInfo, parentExists bool, access Access, coverWritable bool) bwrapVerdict {
 	cannot := func(why string) string { return "bwrap: Can't create file " + dest + ": " + why }
 
 	if fi == nil { // nothing at the name, so bwrap has to make the mountpoint
+		if !parentExists {
+			// A missing DIRECTORY above it is a different sentence and, under a
+			// writable cover, a bigger footprint: bwrap makes the directories
+			// too (measured: a 0700 sub/ as well as the 0444 file).
+			if coverWritable {
+				return bwrapVerdict{writes: "creates, along with every directory above it,"}
+			}
+			return bwrapVerdict{
+				said: "bwrap: Can't mkdir parents for " + dest + ": Read-only file system",
+				why: "nothing exists at " + dest + " on the host, nor the directory above it,\n" +
+					"       so bwrap would have to CREATE both inside a read-only mount",
+			}
+		}
 		if coverWritable {
 			return bwrapVerdict{writes: "creates"}
 		}
@@ -567,10 +686,17 @@ func bwrapAtDestination(dest string, fi fs.FileInfo, access Access, coverWritabl
 			"socket cannot be opened that way")
 	}
 
-	// A regular file, or a device node, which shares its row: --ro-bind-data
-	// binds over the inode and writes nothing.
+	// --ro-bind-data binds over a regular file, and over a device node, and
+	// writes nothing to either.
 	if access != AccessRW {
 		return bwrapVerdict{}
+	}
+	if fi.Mode()&fs.ModeDevice != 0 {
+		// --file OPENS its destination, and bwrap mounts /dev nodev, so the open
+		// is EACCES rather than a write (measured, --file onto /dev/null inside
+		// a --bind of /dev).
+		return shape(cannot("Permission denied"), "--file opens its destination, and bwrap "+
+			"cannot open a device node there")
 	}
 	if coverWritable {
 		return bwrapVerdict{writes: "overwrites"}
@@ -769,57 +895,39 @@ func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 		if host == "" {
 			host = at
 		}
-		hostDest := filepath.Join(host, strings.TrimPrefix(m.Guest, at))
-
-		// ARM 1 — CONTAINMENT. Does the destination still lie inside the grant
-		// that covers it?
+		// ARM 1 — CONTAINMENT, asked in the SANDBOX's namespace, because that is
+		// the one bwrap resolves the destination in.
 		//
-		// This is the HOST's half of a rule Validate already applies to the
-		// symlinks SNUG creates: resolveViaDeepest refuses a grant whose guest
-		// path traverses a link snug itself made. Host symlinks inside a bound
-		// directory cannot be enumerated lexically, so they cost one
-		// EvalSymlinks per candidate — the default selection has one.
+		// This is the host's half of a rule Validate already applies to the
+		// symlinks SNUG creates: resolveViaDeepest refuses a grant whose guest path
+		// traverses a link snug itself made. Host symlinks inside a bound directory
+		// cannot be enumerated lexically, so the walk costs one Lstat per component
+		// between the grant's root and the file — the default selection has one.
 		//
-		// The predicate is CONTAINMENT and not "does it land somewhere
-		// writable", because where an absolute symlink lands is decided by the
-		// sandbox's view rather than the host's, and a path-translating bind
-		// makes the two diverge (snug emits those: `ro /etc/os-release (from
-		// /usr/lib/os-release)`). A guard asking "does it reach a rw bind" fails
-		// open on the translating case; one asking "does it stay in this grant"
-		// does not.
+		// THE NAMESPACE IS THE POINT, and asking in the wrong one was a host write.
+		// The arm used to call EvalSymlinks on the HOST path, which resolves the
+		// link against host components. bwrap resolves the same link against GUEST
+		// components, and a path-translating grant (`ro = ["$H:$G"]`) makes those
+		// different places: a relative `../cover/real` under $H stays inside the
+		// grant host-side and lands in a DIFFERENT GRANT guest-side. MEASURED, with
+		// `ro = ["$S/h/cover:$S/proj"]` plus `rw = ["$S/data:$S/cover"]` and a host
+		// `$S/h/cover/.claude -> ../cover/real`: snug exit 0, the payload ran, and
+		// afterwards $S/data/real/settings.json existed on the HOST — 0444, created
+		// before the sandbox did, named by no line of --dry-run.
+		//
+		// So the walk reads each link's TEXT and resolves it the way bwrap will,
+		// against the guest path, then maps the landing back through the grant to
+		// keep walking. hostDest comes out of it: the host path bwrap really
+		// touches, which is what ARM 3 then asks about.
 		//
 		// NOT ATOMIC, and this says so rather than implying otherwise: Validate
 		// resolves here and bwrap resolves again milliseconds later. This run's
-		// payload cannot race it — the sandbox does not exist yet — but a
-		// PREVIOUS run holding rw on the directory can plant the link for the
-		// next one, the same residual anchor.go already states for renames.
-		for d := filepath.Dir(hostDest); ; d = filepath.Dir(d) {
-			if d == host || !strings.HasPrefix(d, host+"/") {
-				break // reached the bind root, which Resolve already canonicalised
-			}
-			real, err := env.EvalSymlinks(d)
-			if errors.Is(err, fs.ErrNotExist) {
-				continue // not created yet; the escape can only be higher up
-			}
-			if err != nil {
-				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
-					"       inside it, but the host path %s cannot be resolved: %v.\n"+
-					"       snug cannot tell where this destination resolves, so it refuses rather than guess.",
-					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-					VisibleText(d), err)
-			}
-			if real != host && !strings.HasPrefix(real, host+"/") {
-				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
-					"       but on the host %s is a symlink to %s, which is OUTSIDE that grant. bwrap follows it\n"+
-					"       when it creates the mountpoint, so this policy would create a file on the HOST at a\n"+
-					"       path no grant names — outside the sandbox, with no undo, and surviving teardown.\n"+
-					"       A generated file is meant to land where the grant covering it says it lands.\n"+
-					"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
-					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-					VisibleText(d), VisibleText(real),
-					outer.Access, at, provenance(m), m.Guest)
-			}
-			break
+		// payload cannot race it — the sandbox does not exist yet — but a PREVIOUS
+		// run holding rw on the directory can plant the link for the next one, the
+		// same residual anchor.go already states for renames.
+		hostDest, parentExists, err := p.followToDestination(env, m, outer, at, host)
+		if err != nil {
+			return err
 		}
 
 		// ARMS 2 AND 3 — ONE QUESTION, of ONE path: what does bwrap do at
@@ -851,7 +959,7 @@ func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 			fi = nil // absent, which is a shape of its own below
 		}
 
-		v := bwrapAtDestination(VisibleText(hostDest), fi, m.Access, outer.Access == AccessRW)
+		v := bwrapAtDestination(VisibleText(hostDest), fi, parentExists, m.Access, outer.Access == AccessRW)
 		if v.ok() {
 			continue // bwrap mounts over an inode already there, and writes nothing
 		}

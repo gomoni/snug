@@ -353,7 +353,13 @@ func TestGeneratedFileAllowedWhenTheHostSymlinkStaysInsideTheCoveringGrant(t *te
 
 	env := newFakeEnv()
 	env.links["/home/u/.config/git"] = "/home/u/.config/git.d"
-	env.files["/home/u/.config/git/allowed_signers"] = true
+	// The fixture publishes what such a host really holds: the DIRECTORY the
+	// link points at, and the file inside IT. The walk follows the link the way
+	// bwrap does and asks about the destination it lands on, so a fixture that
+	// published only the pre-link spelling described a host where the link
+	// points at nothing.
+	env.dirs["/home/u/.config/git.d"] = true
+	env.files["/home/u/.config/git.d/allowed_signers"] = true
 
 	if err := p.Validate(env); err != nil {
 		t.Fatalf("refused a host symlink whose target stays inside its own covering grant: %v", err)
@@ -394,30 +400,37 @@ func TestGeneratedFileRefusedWhenTheDestinationDoesNotExistYet(t *testing.T) {
 	}
 }
 
-// TestGeneratedFileRefusedWhenAnAncestorCannotBeResolved is the fail-closed
-// arm: EvalSymlinks answering a real error (EACCES here, not ErrNotExist) must
-// refuse rather than be treated the same as "not created yet" — "I cannot tell
-// where this resolves" and "it resolves outside the grant" have to give the
-// same answer, or the guard fails open on exactly the input nobody
-// anticipated.
-func TestGeneratedFileRefusedWhenAnAncestorCannotBeResolved(t *testing.T) {
+// TestGeneratedFileRefusedWhenAnAncestorCannotBeExamined is the fail-closed
+// arm: an ancestor whose Lstat answers a real error (EACCES here, not
+// ErrNotExist) must refuse rather than be treated the same as "not created yet"
+// — "I cannot tell where this resolves" and "it resolves outside the grant"
+// have to give the same answer, or the guard fails open on exactly the input
+// nobody anticipated.
+//
+// The fixture used to fail EvalSymlinks, which is what the arm called before it
+// started resolving in the sandbox's namespace. It fails the Lstat now: the
+// walk reads shapes and link TEXT, so that is the call an unreadable ancestor
+// breaks.
+func TestGeneratedFileRefusedWhenAnAncestorCannotBeExamined(t *testing.T) {
 	p := mustResolveDefaults(t)
 	bind(p, "/home/u/.config", "/home/u/.config", AccessRO)
 	generated(p, "/home/u/.config/git/allowed_signers", AccessRO)
 
 	env := newFakeEnv()
-	env.symlinkErrs["/home/u/.config/git"] = &fs.PathError{
+	env.statErrs["/home/u/.config/git"] = &fs.PathError{
 		Op: "lstat", Path: "/home/u/.config/git", Err: syscall.EACCES,
 	}
 
 	err := p.Validate(env)
 	if err == nil {
-		t.Fatal("accepted a policy whose covering directory cannot be resolved on the host — " +
+		t.Fatal("accepted a policy whose covering directory cannot be examined on the host — " +
 			"snug cannot tell where the generated file's destination lands, so it must refuse " +
 			"rather than guess")
 	}
-	if !strings.Contains(err.Error(), "cannot be resolved") {
-		t.Errorf("refusal does not say the ancestor could not be resolved: %v", err)
+	for _, want := range []string{"/home/u/.config/git", "cannot be examined", "permission denied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not carry %q:\n%v", want, err)
+		}
 	}
 }
 
@@ -863,6 +876,10 @@ func TestBwrapAtDestinationMirrorsTheMeasuredTable(t *testing.T) {
 		coverWritable bool
 		said, writes  string
 	}{
+		// Every row here has the destination's parent directory PRESENT; the
+		// missing-parent rows are their own table below, because bwrap says
+		// "Can't mkdir parents for …" there and creates directories as well as
+		// the file.
 		{"regular file, ro mount, ro cover", file(0), AccessRO, false, "", ""},
 		{"regular file, ro mount, rw cover", file(0), AccessRO, true, "", ""},
 		{"regular file, rw mount, rw cover", file(0), AccessRW, true, "", "overwrites"},
@@ -892,7 +909,7 @@ func TestBwrapAtDestinationMirrorsTheMeasuredTable(t *testing.T) {
 			"bwrap: Can't create file " + dest + ": No such device or address", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			v := bwrapAtDestination(dest, tc.fi, tc.access, tc.coverWritable)
+			v := bwrapAtDestination(dest, tc.fi, true, tc.access, tc.coverWritable)
 			if v.said != tc.said {
 				t.Errorf("said = %q, measured %q", v.said, tc.said)
 			}
@@ -910,7 +927,7 @@ func TestBwrapAtDestinationMirrorsTheMeasuredTable(t *testing.T) {
 	// reader blocks, and the run never returns. Measured with `timeout 10`,
 	// which is what killed it (rc 124). The refusal says so rather than quoting
 	// a sentence that does not exist.
-	v := bwrapAtDestination(dest, file(fs.ModeNamedPipe), AccessRW, true)
+	v := bwrapAtDestination(dest, file(fs.ModeNamedPipe), true, AccessRW, true)
 	if v.ok() {
 		t.Fatal("accepted a writable generated file onto a FIFO; bwrap blocks in the open and " +
 			"the run hangs with nothing printed")
@@ -937,5 +954,112 @@ func TestGeneratedFileOverAFifoDestinationIsAllowed(t *testing.T) {
 	if err := p.Validate(env); err != nil {
 		t.Fatalf("refused a read-only generated file over a FIFO, which bwrap mounts over "+
 			"happily (measured, 0.12.0, exit 0 and the host FIFO untouched): %v", err)
+	}
+}
+
+// refusalGeneratedThroughARelativeLinkInATranslatingCover is the third redteam
+// round's escape, and it is the one this whole guard exists to stop: SNUG
+// writing the host, before the sandbox exists, with exit 0.
+//
+// The arm resolved the ancestor chain on the HOST, with EvalSymlinks. bwrap
+// resolves it inside the SANDBOX, where the components are guest paths. A
+// path-translating cover makes those different places, so a relative link can
+// stay inside the grant host-side and land in ANOTHER grant guest-side.
+//
+// MEASURED end to end before the fix, with `ro = ["$S/h/cover:$S/proj"]`,
+// `rw = ["$S/data:$S/cover"]` and a host `$S/h/cover/.claude -> ../cover/real`:
+//
+//	host-side  $S/h/cover/.claude   -> $S/h/cover/real     (inside the grant, accepted)
+//	guest-side $S/proj/.claude      -> $S/cover/real       (the OTHER grant)
+//	result     snug exit 0, payload ran, and afterwards
+//	           $S/data/real/settings.json existed on the host, 0444
+//
+// Nothing on --dry-run named that path: every generated row prints the GUEST
+// path. After the fix the same selection is refused, exit 77, and $S/data is
+// still empty.
+//
+// The fixture mirrors it: the cover translates (/srv/app is the host's
+// /host/cover), the link text is relative, and the host side of it stays inside
+// the cover while the guest side does not.
+func refusalGeneratedThroughARelativeLinkInATranslatingCover(t testing.TB) error {
+	p := resolveDefaults(t)
+	bind(p, "/srv/app", "/host/cover", AccessRO)
+	generated(p, "/srv/app/link/gen.conf", AccessRO)
+
+	env := newFakeEnv()
+	env.links["/host/cover/link"] = "../cover/real" // host-side: /host/cover/real, inside
+	env.dirs["/host/cover/real"] = true
+	env.files["/host/cover/real/gen.conf"] = true
+	return p.Validate(env) // guest-side: /srv/cover/real, outside /srv/app
+}
+
+func TestGeneratedFileRefusedWhenARelativeLinkEscapesInTheSandboxNamespace(t *testing.T) {
+	err := refusalGeneratedThroughARelativeLinkInATranslatingCover(t)
+	if err == nil {
+		t.Fatal("accepted a policy whose ancestor symlink stays inside the grant on the HOST " +
+			"and leaves it inside the SANDBOX — bwrap resolves in the sandbox, so the generated " +
+			"file lands in whatever grant covers the landing there, and snug creates it on that " +
+			"grant's host tree before the payload exists (issue #186)")
+	}
+	for _, want := range []string{
+		"evil",             // the profile that granted the translating cover
+		"/host/cover/link", // the host symlink
+		"../cover/real",    // its text, which is what bwrap reads
+		"/srv/cover/real",  // where the SANDBOX puts it
+		"OUTSIDE that grant",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestBwrapMkdirParentsRowsAreMeasuredToo covers the rows the first table did
+// not: a destination whose PARENT DIRECTORY does not exist. bwrap says
+// something else there, and under a writable cover it makes the directories as
+// well as the file. MEASURED, bubblewrap 0.12.0:
+//
+//	--ro-bind cover, either flag   bwrap: Can't mkdir parents for <dest>: Read-only file system
+//	--bind cover, --ro-bind-data   exit 0, and on the host: d 700 sub/, f 444 sub/dest.json
+func TestBwrapMkdirParentsRowsAreMeasuredToo(t *testing.T) {
+	const dest = "/srv/app/sub/gen.conf"
+
+	v := bwrapAtDestination(dest, nil, false, AccessRO, false)
+	if want := "bwrap: Can't mkdir parents for " + dest + ": Read-only file system"; v.said != want {
+		t.Errorf("read-only cover, missing parent: said = %q, measured %q", v.said, want)
+	}
+	if v.writes != "" {
+		t.Errorf("read-only cover, missing parent: bwrap writes nothing there, got %q", v.writes)
+	}
+
+	v = bwrapAtDestination(dest, nil, false, AccessRO, true)
+	if v.said != "" {
+		t.Errorf("writable cover, missing parent: bwrap succeeds, got the refusal %q", v.said)
+	}
+	if !strings.Contains(v.writes, "directory") {
+		t.Errorf("writable cover, missing parent: the refusal must say the DIRECTORIES are "+
+			"created too (measured: a 0700 sub/ as well as the 0444 file), got %q", v.writes)
+	}
+}
+
+// TestBwrapDeviceNodeRowIsMeasuredToo is the shape fileShape could already name
+// and the table had no case for. MEASURED with /dev/null as the destination
+// inside a --bind of /dev: --ro-bind-data exits 0 and the sandbox reads the
+// generated file, while --file dies on `Can't create file /dev/null: Permission
+// denied` — bwrap's /dev is nodev, so the open fails rather than writing.
+func TestBwrapDeviceNodeRowIsMeasuredToo(t *testing.T) {
+	const dest = "/dev/null"
+	dev := fakeInfo{name: dest, mode: fs.ModeDevice}
+
+	if v := bwrapAtDestination(dest, dev, true, AccessRO, true); !v.ok() {
+		t.Errorf("refused --ro-bind-data over a device node, which bwrap mounts (exit 0, host "+
+			"node intact): %+v", v)
+	}
+	v := bwrapAtDestination(dest, dev, true, AccessRW, true)
+	if want := "bwrap: Can't create file " + dest + ": Permission denied"; v.said != want {
+		t.Errorf("device node, --file: said = %q, measured %q", v.said, want)
+	}
+	if v.writes != "" {
+		t.Errorf("device node, --file: bwrap writes nothing (EACCES on the open), got %q", v.writes)
 	}
 }

@@ -36,6 +36,15 @@ type Environ interface {
 	// makes the fake host and the real one answer the same question.
 	Lstat(path string) (fs.FileInfo, error)
 
+	// Readlink is the link's TEXT, unresolved, and the reason it is here rather
+	// than EvalSymlinks is which namespace the answer belongs to. bwrap resolves
+	// a mount destination inside the SANDBOX, where the components are guest
+	// paths; EvalSymlinks resolves it on the HOST. A path-translating grant
+	// (`ro = ["/host/dir:/guest/dir"]`) makes those two different places, and a
+	// relative link can stay inside the grant host-side while landing outside it
+	// guest-side. Only the text is common to both readings.
+	Readlink(path string) (string, error)
+
 	Getenv(key string) string
 
 	// LookupEnv distinguishes SET-BUT-EMPTY from UNSET, which Getenv cannot.
@@ -72,6 +81,7 @@ type OSEnviron struct{}
 func (OSEnviron) EvalSymlinks(p string) (string, error) { return filepath.EvalSymlinks(p) }
 func (OSEnviron) Stat(p string) (fs.FileInfo, error)    { return os.Stat(p) }
 func (OSEnviron) Lstat(p string) (fs.FileInfo, error)   { return os.Lstat(p) }
+func (OSEnviron) Readlink(p string) (string, error)     { return os.Readlink(p) }
 func (OSEnviron) Getenv(k string) string                { return os.Getenv(k) }
 func (OSEnviron) LookupEnv(k string) (string, bool)     { return os.LookupEnv(k) }
 func (OSEnviron) LookPath(f string) (string, error)     { return exec.LookPath(f) }

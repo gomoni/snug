@@ -187,6 +187,15 @@ func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
 	return f.Stat(p)
 }
 
+// Readlink is the link TEXT the fixture wrote, which may be relative — that is
+// the whole point of the guest-namespace walk in rejectGeneratedOntoHost.
+func (f *fakeEnv) Readlink(p string) (string, error) {
+	if t, ok := f.links[p]; ok {
+		return t, nil
+	}
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
+}
+
 func (f *fakeEnv) Getenv(k string) string { return f.env[k] }
 
 func (f *fakeEnv) LookupEnv(k string) (string, bool) {

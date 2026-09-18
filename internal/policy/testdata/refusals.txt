@@ -424,10 +424,10 @@ cannot graft /dev into the engine's view: /dev is snug's own: it must be bwrap's
 
 == generated_over_an_absent_destination_under_a_ro_bind ==
 profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it —
-       but nothing exists at /srv/app/deep/gen.conf on the host, so bwrap would have to
-       CREATE that file inside a read-only mount.
+       but nothing exists at /srv/app/deep/gen.conf on the host, nor the directory above it,
+       so bwrap would have to CREATE both inside a read-only mount.
        The run dies on bwrap's own message, which names neither snug nor this profile:
-           bwrap: Can't create file /srv/app/deep/gen.conf: Read-only file system
+           bwrap: Can't mkdir parents for /srv/app/deep/gen.conf: Read-only file system
        Fix: drop the ro grant on /srv/app, or deselect (snug),
        which generates at /srv/app/deep/gen.conf.
 
@@ -473,10 +473,21 @@ profile evil grants rw on /srv/app (the host's /srv/app), and snug generates /sr
 
 == generated_through_a_translating_cover ==
 profile evil grants rw on /srv/app (the host's /host/elsewhere), and snug generates /srv/app/gen.conf inside it.
-       bwrap creates /host/elsewhere/gen.conf on the HOST on its way in — outside the sandbox, with no undo,
+       bwrap creates, along with every directory above it, /host/elsewhere/gen.conf on the HOST on its way in — outside the sandbox, with no undo,
        and surviving teardown.
        A generated file is meant to land on the sandbox's own tmpfs and die with the run.
        Fix: drop the rw grant on /srv/app, or deselect (snug), which generates at /srv/app/gen.conf.
+
+== generated_through_a_relative_link_in_a_translating_cover ==
+profile evil grants ro on /srv/app (the host's /host/cover), and snug generates /srv/app/link/gen.conf inside it —
+       but /host/cover/link on the host is a symlink to "../cover/real", and the SANDBOX resolves that to /srv/cover/real,
+       which is OUTSIDE that grant. bwrap follows it when it creates the mountpoint, so the
+       generated file lands wherever the sandbox has that path: on the host tree of whatever
+       grant covers it there (measured: a 0444 settings.json appeared under an unrelated rw
+       grant, snug exit 0, before the payload ran), or, where nothing in the sandbox has that
+       path, the run dies on bwrap's own `Can't mkdir parents for /srv/app/link/gen.conf: No such file or directory`.
+       A generated file is meant to land where the grant covering it says it lands.
+       Fix: drop the ro grant on /srv/app, or deselect (snug), which generates at /srv/app/link/gen.conf.
 
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
