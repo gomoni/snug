@@ -697,6 +697,21 @@ default, and the host's manifest naming every plugin ever installed is not what
 the sandbox sees. The measurements above are why the fix exists and stay true;
 what changed is the conclusion, not them.
 
+**Mounted only where the host's manifest EXISTS**, the same residual §4 states
+for the settings files and for the same reason: `~/.claude/plugins` is bound
+read-only, so a generated mount at a path with nothing behind it makes bwrap
+CREATE the mountpoint inside a read-only mount, which it cannot —
+`Can't create file …/installed_plugins.json: Read-only file system`, and the run
+does not start. A plugins directory holding no manifest is what one looks like
+before the first plugin is installed. Nothing is staged there, and nothing is
+lost by it: there is no host manifest to displace, so the bind exposes none
+either way. A profile that NAMES plugins against such a host is refused instead
+of quietly filtered — `policy.FilterInstalledPlugins` owns that rule (issue #68,
+invariant 5), and `stageInstalledPlugins` calls it before it decides whether to
+stage anything. Where the file is there, the mount carries `HostDestExists` and
+`rejectGeneratedOntoHost` accepts the overmount of an existing inode (issue
+#580).
+
 Keep the residual NARROW, because this section is itself the record of a rule
 being defeated one indirection below where it was written — three times so far
 (the `@claude` PATH shadow slot, the `/snug/bin` overmount, and this plugin
