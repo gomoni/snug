@@ -101,6 +101,12 @@ var (
 	// rather than a bash script. See that file's package doc for why the
 	// probe targets the calling process itself rather than a sibling.
 	pidfdProbeBin string
+
+	// integrationTmp is TestMain's temporary directory, removed when the
+	// process exits. Anything built ONCE PER PROCESS rather than once per test
+	// belongs here rather than under t.TempDir, which is removed when the
+	// first test that asked for it ends — see fakeHostEtc.
+	integrationTmp string
 )
 
 // cmdTimeout bounds every snug invocation. Nothing in this suite should take
@@ -203,6 +209,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
+	integrationTmp = dir
 
 	snugBin = filepath.Join(dir, "snug")
 	build := exec.Command("go", "build", "-o", snugBin, "./cmd/snug")

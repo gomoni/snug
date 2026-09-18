@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,13 +67,44 @@ func TestTheDNSLineOnScreenMatchesTheFileInsideTheSandbox(t *testing.T) {
 	}
 }
 
+// resolvConfDest is the path the outer wrapper actually mounts the fixture
+// onto: /etc/resolv.conf with its symlinks RESOLVED, and the resolution is the
+// whole of what makes the cheap shape below work on a GitHub runner.
+//
+// bubblewrap refuses to mount on a symlink destination since CVE-2026-87766
+// (upstream 0.12.0; Ubuntu noble 0.9.0-1ubuntu0.2, which reached the runner
+// image between 14:41 and 19:21 UTC on 2026-09-17):
+//
+//	bwrap: Can't mount on symlink destination /etc/resolv.conf
+//
+// and on a systemd-resolved host — every GitHub runner among them —
+// /etc/resolv.conf IS a symlink to ../run/systemd/resolve/stub-resolv.conf.
+// Binding the resolved path puts the fixture where that symlink lands, so
+// /etc/resolv.conf inside still reads it and hostNameservers
+// (internal/cli/main.go) — a plain os.ReadFile, which follows the link — sees
+// the fixture and nothing else.
+//
+// The failure this replaces named neither DNS nor bwrap: the probe below
+// answered false, every call fell back to copying /etc at ~19s a time, and
+// TestNoResolverHostFailsFastAndSaysSo — four such calls — was killed by
+// budget()'s watchdog at 20s (main, f85489d, run 35264394910).
+var resolvConfDest = sync.OnceValue(func() string {
+	if p, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil {
+		return p
+	}
+	// Dangling (a stub symlink with no resolved daemon behind it) or
+	// unreadable: name the literal path and let the probe answer for it.
+	return "/etc/resolv.conf"
+})
+
 // resolvConfOverlay returns the bwrap arguments that put `content` at
 // /etc/resolv.conf inside the outer wrapper, choosing between two shapes
 // because the cheap one does not work everywhere.
 //
-// PREFERRED — bind the one file. One 4-byte fixture, no copying.
+// PREFERRED — bind the one file, at resolvConfDest(). One 4-byte fixture, no
+// copying.
 //
-// FALLBACK — bind a whole synthetic /etc. Needed where /etc/resolv.conf is
+// FALLBACK — bind a whole synthetic /etc. Needed where the destination is
 // ITSELF a bind mount whose source inode has since been deleted (a distrobox
 // holding the inode NetworkManager replaced by rename, which is this project's
 // development environment): nothing mounts onto a deleted dentry, and both
@@ -94,15 +126,21 @@ func resolvConfOverlay(t *testing.T, content string) []string {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		return []string{"--ro-bind", path, "/etc/resolv.conf"}
+		return []string{"--ro-bind", path, resolvConfDest()}
 	}
 	return []string{"--ro-bind", fakeHostEtc(t, content), "/etc"}
 }
 
 // singleFileResolvConfBind reports whether an outer bwrap on THIS host can
-// mount anything onto /etc/resolv.conf at all. The probe is raw bwrap and a
+// mount anything onto resolvConfDest() at all. The probe is raw bwrap and a
 // throwaway file, deliberately not snug, for requireSandbox's own reason: a
 // bug in snug must not be able to choose the harness.
+//
+// It ANNOUNCES the fallback on stderr, and that line is not decoration. The
+// fallback is ~19s per call against a 10s budget() whose watchdog panics
+// without flushing the test's own log, so the shape that costs the suite its
+// job is otherwise invisible in CI output — which is exactly how the bwrap
+// change above cost a session to diagnose.
 var singleFileResolvConfBind = sync.OnceValue(func() bool {
 	f, err := os.CreateTemp("", "snug-resolvconf-probe")
 	if err != nil {
@@ -110,20 +148,39 @@ var singleFileResolvConfBind = sync.OnceValue(func() bool {
 	}
 	defer os.Remove(f.Name())
 	f.Close()
-	return exec.Command("bwrap", "--dev-bind", "/", "/",
-		"--ro-bind", f.Name(), "/etc/resolv.conf", "--", "true").Run() == nil
+	out, err := exec.Command("bwrap", "--dev-bind", "/", "/",
+		"--ro-bind", f.Name(), resolvConfDest(), "--", "true").CombinedOutput()
+	if err == nil {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "integration: nothing mounts onto %s here, so every fake-resolv.conf "+
+		"run copies the whole of /etc instead (~19s each on a GitHub runner, against a %s "+
+		"test budget). bwrap said: %s (%v)\n",
+		resolvConfDest(), defaultBudget, strings.TrimSpace(string(out)), err)
+	return false
 })
 
 // fakeHostEtc builds a copy of this host's /etc with `content` substituted for
 // resolv.conf and returns its path, for resolvConfOverlay's fallback shape.
+//
+// CACHED PER CONTENT, under TestMain's directory rather than t.TempDir: the
+// copy is the expensive half, a test calls this several times with the same
+// fixture, and a t.TempDir copy would also be removed the moment the first
+// test that made it ended.
 //
 // The copy is made as the test user, so files it cannot read are dropped.
 // That is faithful rather than lossy: bwrap runs the sandbox as that same uid,
 // and a file unreadable to the copy is equally unreadable inside.
 func fakeHostEtc(t *testing.T, content string) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "etc")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	fakeEtcMu.Lock()
+	defer fakeEtcMu.Unlock()
+	if dir, ok := fakeEtcByContent[content]; ok {
+		return dir
+	}
+
+	dir, err := os.MkdirTemp(integrationTmp, "etc")
+	if err != nil {
 		t.Fatal(err)
 	}
 	// cp exits non-zero on the files this uid may not read (shadow, gshadow),
@@ -159,8 +216,14 @@ func fakeHostEtc(t *testing.T, content string) string {
 	if err := os.WriteFile(filepath.Join(dir, "resolv.conf"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fakeEtcByContent[content] = dir
 	return dir
 }
+
+var (
+	fakeEtcMu        sync.Mutex
+	fakeEtcByContent = map[string]string{}
+)
 
 // cliWithFakeHostResolvConf is cli() (internal/cli's entry point, invoked
 // directly), wrapped in the SAME outer-bwrap /etc overlay
@@ -225,6 +288,45 @@ func runWithFakeHostResolvConf(t *testing.T, fixture string, args []string, dir,
 		kept = append(kept, line)
 	}
 	return sandboxRun{out: strings.Join(kept, "\n"), ran: ran, code: code}
+}
+
+// TestTheFakeResolvConfHarnessReallySubstitutes is the harness's own
+// regression test, and the only POSITIVE use of the overlay in this file: the
+// fixture names a resolver this host does not have, and both the generated
+// file inside the sandbox and --dry-run's screen must name it back.
+//
+// Every other assertion here is a negative — "no nameserver directive inside"
+// — and a negative passes just as well when the overlay silently fails to
+// apply. It nearly did: bubblewrap's CVE-2026-87766 fix refuses to mount on a
+// symlink destination, which is what /etc/resolv.conf is on every
+// systemd-resolved host, and the harness answered by copying the whole of /etc
+// per call until budget()'s watchdog killed the test at 20s naming neither
+// bwrap nor DNS. See resolvConfDest.
+//
+// 198.51.100.53 is TEST-NET-2 (RFC 5737), routable as far as
+// RoutableNameservers is concerned and reachable by nothing.
+func TestTheFakeResolvConfHarnessReallySubstitutes(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	requirePasta(t)
+	proj, _ := target(t)
+
+	const fixture = "nameserver 198.51.100.53\n"
+	r := runWithFakeHostResolvConf(t, fixture, []string{"-p", "@net"}, proj,
+		`cat /etc/resolv.conf`).mustRun(t)
+	if !strings.Contains(r.out, "nameserver 198.51.100.53") {
+		t.Errorf("the sandbox was not told about the fixture's resolver, so the outer "+
+			"wrapper's /etc/resolv.conf overlay did not reach hostNameservers and every "+
+			"other test in this file is asserting against this host's real resolvers:\n%s", r.out)
+	}
+
+	screen, code := cliWithFakeHostResolvConf(t, fixture, "--dry-run", "-p", "@net", proj, "--", "true")
+	if code != 0 {
+		t.Fatalf("--dry-run -p @net exited %d:\n%s", code, screen)
+	}
+	if !strings.Contains(screen, "198.51.100.53") {
+		t.Errorf("--dry-run's dns line does not name the fixture's resolver:\n%s", screen)
+	}
 }
 
 // TestNoResolverHostFailsFastAndSaysSo is issue #162's remnant: a host that
