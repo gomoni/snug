@@ -115,6 +115,15 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 			len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), problem)
 	}
 
+	// FIRST, so this function cannot swallow the refusal it owns: a NON-EMPTY
+	// allowlist against a host with no manifest is an error, and
+	// FilterInstalledPlugins is where that lives (issue #68, invariant 5). The
+	// early return below runs only once that has had its say.
+	body, err := policy.FilterInstalledPlugins(raw, pol.PluginAllowlist)
+	if err != nil {
+		return err
+	}
+
 	// NOTHING TO REPLACE WHERE THE HOST HAS NO MANIFEST, and staging one anyway
 	// killed the run. This mount is AccessRO and sits inside @claude's own
 	// read-only bind of ~/.claude/plugins, so bwrap has to CREATE the file to
@@ -126,7 +135,8 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 	// Measured on a host whose ~/.claude/plugins exists and holds no manifest,
 	// which is what a plugins directory looks like before the first plugin.
 	// There is nothing to hide there and no host file to displace: the bind
-	// exposes no manifest either way.
+	// exposes no manifest either way, and an allowlist that named anything was
+	// already refused above.
 	//
 	// STATTED RATHER THAN INFERRED FROM hostread. Optional reports ABSENT as
 	// (nil, "") — the empty note means "nothing to say", not "the file is
@@ -134,19 +144,7 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 	// a present one, and neither can a nil check once an empty file enters.
 	// os.Stat is also what Mount.HostDestExists is documented to be set from.
 	if _, err := os.Stat(guest); err != nil {
-		if len(pol.PluginAllowlist) > 0 {
-			return fmt.Errorf("@claude names %d plugin(s) (%s) but the host has no "+
-				"installed_plugins.json at %s — snug cannot validate the named plugins are "+
-				"installed, and a named plugin that is not installed is an error (issue #68, "+
-				"invariant 5)",
-				len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), guest)
-		}
 		return nil
-	}
-
-	body, err := policy.FilterInstalledPlugins(raw, pol.PluginAllowlist)
-	if err != nil {
-		return err
 	}
 
 	perm := uint32(0o600)
