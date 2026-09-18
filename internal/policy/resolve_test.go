@@ -171,6 +171,22 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 }
 
+// Lstat answers what is AT the name. `links` is the fixture's symlink set, so a
+// path with an entry there is a SYMLINK here even when EvalSymlinks resolves it
+// happily and Stat (which follows) reports whatever it points at. That
+// difference is the whole reason Environ carries both: bwrap does not follow a
+// generated file's destination, and rejectGeneratedOntoHost's ARM 3 has to see
+// what bwrap sees.
+func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
+	if err, ok := f.statErrs[p]; ok {
+		return nil, err
+	}
+	if _, ok := f.links[p]; ok {
+		return fakeInfo{name: p, mode: fs.ModeSymlink}, nil
+	}
+	return f.Stat(p)
+}
+
 func (f *fakeEnv) Getenv(k string) string { return f.env[k] }
 
 func (f *fakeEnv) LookupEnv(k string) (string, bool) {

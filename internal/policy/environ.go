@@ -18,6 +18,24 @@ type Environ interface {
 	// cannot widen one.
 	EvalSymlinks(path string) (string, error)
 	Stat(path string) (fs.FileInfo, error)
+
+	// Lstat answers what is AT a name, without following it, because that is
+	// the question bwrap asks of a generated file's destination and Stat
+	// cannot ask it. MEASURED on bubblewrap 0.12.0, destination inside a
+	// --ro-bind:
+	//
+	//	regular file   --ro-bind-data succeeds, binding over the inode
+	//	symlink        bwrap: Can't mount on symlink destination <path>
+	//	directory      bwrap: Destination is not a file <path>
+	//	absent         bwrap: Can't create file <path>: Read-only file system
+	//
+	// Stat FOLLOWS the link, so it reports a symlink to a regular file as a
+	// regular file and agrees with none of those rows but the first.
+	// rejectGeneratedOntoHost reads this; internal/cli reads os.Lstat for the
+	// same decision on the same paths (projectableTargetFile), which is what
+	// makes the fake host and the real one answer the same question.
+	Lstat(path string) (fs.FileInfo, error)
+
 	Getenv(key string) string
 
 	// LookupEnv distinguishes SET-BUT-EMPTY from UNSET, which Getenv cannot.
@@ -53,6 +71,7 @@ type OSEnviron struct{}
 
 func (OSEnviron) EvalSymlinks(p string) (string, error) { return filepath.EvalSymlinks(p) }
 func (OSEnviron) Stat(p string) (fs.FileInfo, error)    { return os.Stat(p) }
+func (OSEnviron) Lstat(p string) (fs.FileInfo, error)   { return os.Lstat(p) }
 func (OSEnviron) Getenv(k string) string                { return os.Getenv(k) }
 func (OSEnviron) LookupEnv(k string) (string, bool)     { return os.LookupEnv(k) }
 func (OSEnviron) LookPath(f string) (string, error)     { return exec.LookPath(f) }

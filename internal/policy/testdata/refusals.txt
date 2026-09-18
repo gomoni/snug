@@ -432,8 +432,42 @@ profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /sr
 
 == generated_destination_cannot_be_examined ==
 profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf
-       inside it, but the host path /srv/app/deep/gen.conf cannot be examined: stat /srv/app/deep/gen.conf: permission denied.
+       inside it, but the host path /srv/app/deep/gen.conf cannot be examined: lstat /srv/app/deep/gen.conf: permission denied.
        snug cannot tell whether bwrap would have to create it, so it refuses rather than guess.
+
+== generated_writable_under_a_ro_bind ==
+profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it —
+       WRITABLE, which snug delivers with bwrap's --file, and --file COPIES onto its
+       destination rather than binding over it. A read-only cover refuses that whether or
+       not /srv/app/deep/gen.conf exists, so the run dies on bwrap's own message, which names neither snug nor
+       this profile:
+           bwrap: Can't create file /srv/app/deep/gen.conf: Read-only file system
+       Fix: grant rw on /srv/app, or deselect (snug), which generates at /srv/app/deep/gen.conf.
+
+== generated_over_a_symlink_destination ==
+profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it —
+       but /srv/app/deep/gen.conf on the host is a symlink, and bwrap puts a generated file onto a REGULAR FILE or
+       onto nothing at all. It does not follow the name, so the run dies on bwrap's own
+       message, which names neither snug nor this profile:
+           bwrap: Can't mount on symlink destination /srv/app/deep/gen.conf
+       Fix: make /srv/app/deep/gen.conf a regular file, drop the ro grant on /srv/app, or deselect (snug), which
+       generates at /srv/app/deep/gen.conf.
+
+== generated_over_a_directory_destination ==
+profile evil grants ro on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it —
+       but /srv/app/deep/gen.conf on the host is a directory, and bwrap puts a generated file onto a REGULAR FILE or
+       onto nothing at all. It does not follow the name, so the run dies on bwrap's own
+       message, which names neither snug nor this profile:
+           bwrap: Destination is not a file /srv/app/deep/gen.conf
+       Fix: make /srv/app/deep/gen.conf a regular file, drop the ro grant on /srv/app, or deselect (snug), which
+       generates at /srv/app/deep/gen.conf.
+
+== generated_writable_with_hostdestexists_over_a_rw_bind ==
+profile evil grants rw on /srv/app (the host's /srv/app), and snug generates /srv/app/deep/gen.conf inside it.
+       snug writes generated content with bwrap's --file, which COPIES onto its destination,
+       so this policy would overwrite /srv/app/deep/gen.conf on the HOST — outside the sandbox, with no undo.
+       A generated file is meant to land on the sandbox's own tmpfs and die with the run.
+       Fix: drop the rw grant on /srv/app, or deselect (snug), which generates at /srv/app/deep/gen.conf.
 
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line

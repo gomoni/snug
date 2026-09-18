@@ -1109,6 +1109,14 @@ func TestGoldenRefusals(t *testing.T) {
 		// rule.
 		{"generated_over_an_absent_destination_under_a_ro_bind", refusalGeneratedOverAnAbsentDestinationUnderARoBind},
 		{"generated_destination_cannot_be_examined", refusalGeneratedDestinationCannotBeExamined},
+		// The other three shapes bwrap has a different sentence for, and the
+		// one the exemption used to wave through. A reader comparing these
+		// rows is reading the measured table in generatedontohost_test.go's
+		// ARM 3 header: which of bwrap's errors each policy would have hit.
+		{"generated_writable_under_a_ro_bind", refusalWritableGeneratedFileUnderAReadOnlyBind},
+		{"generated_over_a_symlink_destination", refusalGeneratedOverASymlinkDestination},
+		{"generated_over_a_directory_destination", refusalGeneratedOverADirectoryDestination},
+		{"generated_writable_with_hostdestexists_over_a_rw_bind", refusalWritableGeneratedFileWithHostDestExistsOverARwBind},
 
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},

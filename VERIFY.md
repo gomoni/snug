@@ -1646,6 +1646,24 @@ but the host has no installed_plugins.json to validate them against`. It comes
 from `FilterInstalledPlugins`, which owns that rule for every caller; the
 staging skip runs after it, not instead of it.
 
+**A manifest that is a SYMLINK is refused, not staged over.** A dotfiles manager
+(stow, chezmoi) symlinks files into `~/.claude`, and bwrap does not follow the
+name — measured on bubblewrap 0.12.0, `--ro-bind-data` at a symlink destination
+says `Can't mount on symlink destination …` and creates nothing:
+
+```bash
+H=$SC/linkedmanifest
+mkdir -p $H/.claude/skills $H/.claude/plugins $H/dotfiles $H/proj/sub
+printf '{"version":2,"plugins":{}}' > $H/dotfiles/installed_plugins.json
+ln -s $H/dotfiles/installed_plugins.json $H/.claude/plugins/installed_plugins.json
+HOME=$H snug -p @claude $H/proj/sub -- true
+```
+
+Expect exit 77 and `the host's ~/.claude/plugins/installed_plugins.json is a
+symlink, not a regular file`, naming the path to replace. The control is the
+same host with the link replaced by a copy: the run starts and the manifest
+inside reads `{"version": 2, "plugins": {}}`.
+
 **The checks above assert what snug WRITES, and that is the whole of what this
 repository asserts.** What the real `claude` binary DOES with the regenerated
 manifest — a plugin absent from it does not fire its `SessionStart` hook, one
