@@ -8,7 +8,7 @@ command was **executed**; everything else is marked as reasoning.
 > `__inengine` (`EnterEngine`) `setns`es it there and drops it to
 > `policy.EngineCapBounding`. So the finding — *a sandbox with no `@net`
 > reaches the internet through a container* — is closed, and
-> `@podman-socket` no longer includes `net`. The fact every citation relies on
+> `@podman-socket` does not include `net`. The fact every citation relies on
 > is permanent: **a container's network IS the sandbox's**, so
 > `@podman-socket` hands a container exactly the network the sandbox has and
 > nothing more. Measured against a real engine: `@podman-socket` alone, a pull
@@ -42,28 +42,15 @@ could not resolve DNS, and a container reached `https://example.com` anyway.
 That is a false guarantee, which is the one failure mode invariant 5 forbids
 outright.
 
-**Status, 2026-08-09 — step M-a landed (commit `ae848de`); the channel is still
-open.** `@podman-socket` now carries `include = ["sys", "home", "net"]`, so
-selecting containers selects egress *visibly*, `--dry-run` renders the egress
-block, and a `CONTAINERS` block states that containers run in the engine's netns
-and that the pasta guarantees do not cover them. **What changed is that snug
-stopped denying it — not that a container can reach less.** Two consequences
-worth stating plainly:
+**The host-loopback half is the sharper one**, and it is about the topology this
+measurement was taken under — an engine on the host — not about a claim this
+document makes for the shipped shape: a container there can port-scan and reach
+the host's loopback, a channel `@net` never grants.
 
-- The original measurement is **no longer reproducible on this tree**: there is
-  no way to select `@podman-socket` without `@net`, so the "egress without
-  `@net`" configuration no longer exists. Reproducing it needs a pre-`ae848de`
-  checkout.
-- The **host-loopback half is unaffected** and is now the sharper finding: a
-  container can port-scan and reach the host's loopback, which is a channel
-  `@net` never grants and `--dry-run` still does not describe.
-
-The `net` include is interim and its removal is part of M-b;
-`TestPodmanSocketIncludesNetAsAnInterimHonestyFix` makes that removal a
-conscious act.
-
-INDEX §4.4 described the fix ("topology A") in the present tense. It was never
-implemented — see the banner now on that section.
+`@podman-socket` includes `sys` and `home` and not `net`, and
+`TestPodmanSocketDoesNotIncludeNet` (`internal/profile`) plus
+`TestPodmanSocketDoesNotImplyEgress` (`internal/cli`) are what keep both the
+include list and the resolved policy saying so.
 
 ## 0.1 What this document is for, and where each subject lives
 
@@ -173,26 +160,20 @@ ifaces: 1                       # lo only, no route out
 engine-hostname=laptop store=/home/u/.local/share/containers/storage
 ```
 
-From a netns with no route, the shim reached the **host's** engine. So on a
-host so configured, topology A puts a *shim* in N, the engine stays on the host, and
-the guarantee evaporates while everything looks like it worked. `podmanClientUsable()`
-in `internal/cli/podmanshim.go` already performs exactly this detection and is
-currently used only for a cosmetic warning. It must become a **hard refusal**,
-with a test — per the standing rule that a documented-but-unchecked gate is not
-a gate.
+From a netns with no route, the shim reached the **host's** engine. So on a host
+so configured, a topology that puts a *shim* in N leaves the engine on the host
+and the guarantee evaporates while everything looks like it worked.
 
-> **No longer decisive, 2026-08-13.** Calling this "the decisive negative" read
-> the symptom as the cause. The engine is not broken on such a host; only the
-> `/usr/bin/podman` *path* is, and `rpm -V podman` shows the package differing
-> from its manifest in the symlink alone. A self-contained engine bundle sidesteps
-> it entirely — the host's own podman is the engine, and the engine
-> then runs rootless inside a netns on this very host, which is what unblocked
-> the measurement this section said could not be taken here.
->
-> The refusal above is still owed, and for an unchanged reason: where a shim
-> *is* what gets invoked, the guarantee evaporates while everything looks like it
-> worked. What changes is that the refusal now has an alternative to name — bring
-> your own engine — rather than being a dead end.
+This is a broken `/usr/bin/podman` *path*, not a broken engine: `rpm -V podman`
+shows the package differing from its manifest in the symlink alone, and the
+host's own podman runs rootless inside a netns on this very host, which is how
+the measurement this section calls untakeable here was taken.
+
+`podmanClientUsable()` (`internal/cli/podmanshim.go`) already performs exactly
+this detection and feeds `warnAboutPodmanClient` — a note, not a refusal. **A
+refusal is owed**, per the standing rule that a documented-but-unchecked gate is
+not a gate, and it has an alternative to name rather than being a dead end:
+bring your own engine.
 
 **Full subuid delegation is structurally required.** A single-uid map fails:
 
@@ -210,8 +191,8 @@ around it. Preflight: `unshare --user --map-auto --map-root-user -- true`, plus
 `/proc/self/cgroup` reads `0::/../../app.slice/…` — outside the cgroup-ns root —
 so `podman info` fails and an API-created container fails at start. Not caused
 by N (the CLI works with `--cgroups=disabled --runtime crun`), but it means the
-preflight must cover it and that the runtime/cgroup-manager choice can no longer
-be "whatever `containers.conf` says".
+preflight must cover it and that the runtime/cgroup-manager choice cannot be
+"whatever `containers.conf` says".
 
 **`$XDG_RUNTIME_DIR` gets masked.** Root-in-userns podman needs writable
 `/run/lock` and `/var/cache`; `/run/lock` does not exist in this image, forcing
@@ -225,7 +206,7 @@ re-execs itself, the host uid must be passed, or the sandbox becomes root-shaped
 
 ## 4. Two guarantees change shape
 
-**Teardown is no longer unconditional.** INDEX §4.3 says orphan netns leaks are
+**Teardown is conditional.** INDEX §4.3 says orphan netns leaks are
 "impossible by construction" — true today, because N dies with bwrap. Under
 topology A, N holds the engine and the containers, so N lives as long as the
 engine does. Measured under `Pdeathsig: SIGKILL`:
@@ -311,7 +292,7 @@ here and the steps are not:
 
 The current implementation status of all of the above lives in the GitHub
 issues and in the supervisor phase documents, not here. This section states what must be true;
-it deliberately no longer states when.
+it deliberately does not state when.
 
 **The abuse sentence changes shape rather than shrinking:**
 

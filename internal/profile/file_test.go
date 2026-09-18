@@ -131,11 +131,10 @@ func TestBuiltinsLoad(t *testing.T) {
 	}
 }
 
-// TestPodmanSocketDoesNotIncludeNet is the inverse of the deleted
-// TestPodmanSocketIncludesNetAsAnInterimHonestyFix — that test's own failure
-// message said deleting it was part of the milestone (issue #63, Tier B): the
-// engine now runs in the SANDBOX's own network namespace, so `@podman-socket`
-// no longer needs to include `@net` to tell the truth about egress.
+// TestPodmanSocketDoesNotIncludeNet pins the include list: the engine runs in
+// the SANDBOX's own network namespace, so `@podman-socket` tells the truth
+// about egress without including `@net`, and including it would hand a
+// container egress the profile does not name (issue #63).
 // `@podman-socket` alone must resolve OFFLINE; the behavioural half of this
 // claim (a container really has no egress) is
 // TestPodmanSocketDoesNotImplyEgress in internal/cli, which resolves the real

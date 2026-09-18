@@ -38,33 +38,22 @@ Plus keys that are credentials outright (`sendemail.smtpPass`) or point at them
 None of that is exotic; it is what the file is *for*. Binding it read-only stops
 the sandbox editing it and stops nothing else.
 
-## 2. What this profile used to be, and why nobody caught it
+## 2. No builtin may grant a command table
 
-It was spelled `@git-ro` then, and the suffix was true, because it really did bind:
-
-```toml
-[profile.git-ro]
-ro = ["{home}/.config/git", "{home}/.gitconfig"]
-```
-
-The profile carried an abuse sentence, as the working agreement requires: *"the
-sandbox learns your git name, email, aliases, and any secrets you unwisely put in
-`~/.gitconfig`"*. It was written at authoring time and it was honest. It was also
-wrong in two ways that matter:
-
-- it classified the file as **data with secrets in it**, not as a command table;
-- *"unwisely put in"* reads as a user error, when the executable keys are the
-  file's purpose.
-
-Nothing re-read that sentence as `GIT_CONFIG_GLOBAL`, identity pinning and
-credential staging grew around it. **A comment cannot fail.** That is the
-process finding, and the answer to it is mechanical:
 `TestNoBuiltinGrantsACredentialOrCommandTablePath` (internal/profile) refuses,
 with no allowlist and no flag, any builtin grant whose host side is in a
 catalogue of credential paths and command tables. A human writing the same grant
 in their own `profiles.d` is making a declaration about their own machine, which
 invariant 3 puts outside the sandboxed material — what must never happen is snug
 shipping that decision for everyone.
+
+**An abuse sentence is not what stops this.** A read-only bind of `~/.gitconfig`
+admits a sentence that is honest at authoring time and still wrong — *"the
+sandbox learns your git name, email, aliases, and any secrets you unwisely put
+in `~/.gitconfig`"* classifies the file as data with secrets in it rather than as
+the command table §1 shows it is, and *"unwisely put in"* reads as a user error
+when the executable keys are the file's purpose. **A comment cannot fail.** The
+test can.
 
 ## 3. Why snug evaluates `includeIf` itself
 

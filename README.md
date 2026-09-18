@@ -848,22 +848,18 @@ refined in the near future.
 
 ## Drafts — designed, not built
 
-Two designs are written down and deliberately unimplemented. They are kept
-because the reasoning is expensive to re-derive, not because the work is
-scheduled:
+One design is written down and deliberately unimplemented. It is kept because
+the reasoning is expensive to re-derive, not because the work is scheduled:
 
- * [`SECRETS.md`](.claude/design/SECRETS.md) — which credentials reach a
-   sandbox, the severity model, and brokering versus injection. What ships
-   today is narrower than what it proposes: one pinned ssh key through a
-   filtering agent proxy, a five-key projection of Claude Code's credentials,
-   and a generated `~/.gitconfig`. The broker itself is not built.
  * [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) —
    profiles that take arguments, postponed by decision.
 
-Everything else that was once on this list has landed: the container engine
-runs in the sandbox's own network namespace, environment handling has its five
-`environ` verbs, and an identity is one `[identity]` block per profile, nested by
-tool.
+What credentials reach a sandbox is not a draft:
+[`SECRETS.md`](.claude/design/SECRETS.md) carries the severity model, the three
+mechanisms, and the shapes that are refused with the measurement that refused
+them. What ships is one pinned ssh key through a filtering agent proxy, a
+five-key projection of Claude Code's credentials with the refresh half dropped,
+and a generated `~/.gitconfig`.
 
 **Known gaps live in the [issue tracker](https://github.com/gomoni/snug/issues),
 never here** — each one carries a severity label and the measurement that

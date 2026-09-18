@@ -280,23 +280,14 @@ Two constraints follow and both are load-bearing:
    risk is belief, so identification is the mitigation — on the error paths only,
    never as a banner on the happy path.
 
-> **CLAUDE.md amendment owed.** The rule says *"write the replacement into the
-> writable tmpfs `$HOME`"*. The principle (PATH precedence, not overmounting) is
-> right; the location is wrong. Replace with: *"…into a directory snug owns and
-> the sandbox cannot write, and put that directory on `PATH` ahead of
-> `/usr/bin`."* Pre-existing and separate: `@claude` already puts writable
-> `~/.local/bin` first on `PATH`.
->
-> **Both closed.** CLAUDE.md carries the amendment, and the `@claude` half — the
-> one this note filed as "pre-existing and separate", which is how it survived a
-> further milestone — is gone: its binary is bound at `/snug/bin/claude`,
-> `@claude` names no `PATH` directory at all, and snug adds the staging directory
-> itself whenever anything is staged there. So the abuse sentence above no longer
-> has its second clause: **no shipped profile puts a writable directory ahead of
-> snug's on `PATH`**, and `TestNoBuiltinPutsAWritableDirectoryOnPATH` plus
-> `TestSnugStagesNoCommandInAWritableDirectory` are what keep that true. Constraint
-> 1 generalised from "the staged file and its directory" to every executable snug
-> stages — see `policy.StagedBinDir`.
+> **No shipped profile puts a writable directory ahead of snug's on `PATH`.**
+> `TestNoBuiltinPutsAWritableDirectoryOnPATH` and
+> `TestSnugStagesNoCommandInAWritableDirectory` are what keep that true.
+> `@claude` names no `PATH` directory at all — its binary is bound at
+> `/snug/bin/claude` — and snug adds the staging directory itself whenever
+> anything is staged there. Constraint 1 therefore covers every executable snug
+> stages, not only the staged file and its own directory: see
+> `policy.StagedBinDir`.
 
 **Mechanism.** `/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
 `From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so
