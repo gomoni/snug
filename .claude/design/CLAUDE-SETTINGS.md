@@ -708,9 +708,9 @@ lost by it: there is no host manifest to displace, so the bind exposes none
 either way. A profile that NAMES plugins against such a host is refused instead
 of quietly filtered — `policy.FilterInstalledPlugins` owns that rule (issue #68,
 invariant 5), and `stageInstalledPlugins` calls it before it decides whether to
-stage anything. Where the file is there, the mount carries `HostDestExists` and
-`rejectGeneratedOntoHost` accepts the overmount of an existing inode (issue
-#580).
+stage anything. Where the file is there, `rejectGeneratedOntoHost` sees a
+regular file at its own destination and accepts the overmount of an existing
+inode (issue #580).
 
 Keep the residual NARROW, because this section is itself the record of a rule
 being defeated one indirection below where it was written — three times so far
@@ -757,14 +757,17 @@ claude had never seen; `settings.local.json` behaved identically; an interactive
 host scenarios have no gate.
 
 **All three are projected only where a REGULAR FILE exists, and a non-regular
-one REFUSES the run.** `os.Lstat` answers "is there a name here"; bwrap's
-`--ro-bind-data` follows it. Measured: a target shipping
-`ln -s NOTES.generated .mcp.json` left a 0-byte read-only `NOTES.generated` in
-the HOST tree before the payload ran — `HostDestExists` was set on Lstat's
-answer, so `rejectGeneratedOntoHost` (issue #186) skipped the mount, and the
-guard was defeated through its own exemption. A directory at the name, or a
-symlink whose parent is absent, aborts bwrap setup instead
-(`Can't create file … Is a directory`), which lets a hostile repo deny the run.
+one REFUSES the run.** `os.Lstat` answers "is there a name here"; the shapes
+disagree with it. Measured: a target shipping `ln -s NOTES.generated .mcp.json`
+left a 0-byte read-only `NOTES.generated` in the HOST tree before the payload
+ran — `HostDestExists` was set on Lstat's answer, so `rejectGeneratedOntoHost`
+(issue #186) skipped the mount, and the guard was defeated through its own
+exemption. That measurement is **version-bound**: on bubblewrap 0.12.0 a symlink
+destination is refused rather than followed (`Can't mount on symlink destination
+…` for `--ro-bind-data`, `Too many levels of symbolic links` for `--file`, and
+nothing created — all eight combinations re-measured), which is
+CVE-2026-87766's fix. A directory at the name aborts bwrap setup instead
+(`Destination is not a file …`), which lets a hostile repo deny the run.
 Skipping the projection is not the fix: a symlink to a sibling in the same repo
 would then feed Claude Code the repo's own hooks or servers. So
 `projectableTargetFile` refuses, naming the shape and the path.
@@ -793,8 +796,10 @@ over an ABSENT path does not overmount an inode — bwrap CREATES the mountpoint
 FILE on the host (MEASURED: a 0-byte read-only `settings.local.json` appeared in
 the host repo). snug must not write the host during setup (§1's whole premise,
 and `rejectGeneratedOntoHost`, issue #186), so the projection is mounted only
-where an `os.Stat` confirms the file exists, carried to the pure guard as
-`Mount.HostDestExists`. The half that closes is the sharper one: a hostile repo
+where an `os.Lstat` confirms a regular file is there. The guard asks the same
+question of its OWN destination through `Environ.Lstat` — the guest path
+translated through the covering grant, which a path-translating grant makes a
+different file (issue #580). The half that closes is the sharper one: a hostile repo
 SHIPPING a `settings.json` with hooks is the exists case, reinterpreted. A clean
 repo where the payload CREATES one that did not exist is NOT closed — it leaves a
 file the human sees in `git status`, which is not a guarantee and is not nothing.

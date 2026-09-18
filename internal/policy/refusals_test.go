@@ -1117,6 +1117,10 @@ func TestGoldenRefusals(t *testing.T) {
 		{"generated_over_a_symlink_destination", refusalGeneratedOverASymlinkDestination},
 		{"generated_over_a_directory_destination", refusalGeneratedOverADirectoryDestination},
 		{"generated_writable_with_hostdestexists_over_a_rw_bind", refusalWritableGeneratedFileWithHostDestExistsOverARwBind},
+		// The exemption's own hole: HostDestExists is a fact about the GUEST
+		// path, and a path-translating cover makes that a different file from
+		// the one bwrap touches.
+		{"generated_through_a_translating_cover", refusalGeneratedThroughATranslatingCoverWhoseDestinationIsAbsent},
 
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},

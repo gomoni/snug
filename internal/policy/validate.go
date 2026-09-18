@@ -472,6 +472,118 @@ func endpointNoun(mode fs.FileMode) string {
 	return "endpoint"
 }
 
+// bwrapAtDestination is what bubblewrap does with a generated file at a
+// destination of this shape, and it is the whole of rejectGeneratedOntoHost's
+// second question. said is the sentence bwrap prints when it will NOT mount
+// there, empty when it mounts. writes says what bwrap does to the HOST when it
+// DOES mount — "creates" a mountpoint where nothing was, "overwrites" a file
+// that was — and is empty for an overmount, which leaves the host alone. Both
+// empty is the one accepting case.
+//
+// MEASURED, bubblewrap 0.12.0, every row run: fd 9 carries the content, the
+// destination sits inside the cover, and the host tree was read afterwards.
+//
+//	destination     --ro-bind-data (AccessRO)            --file (AccessRW)
+//	regular file    exit 0, host unchanged               under --bind: exit 0, HOST FILE OVERWRITTEN
+//	                                                     under --ro-bind: Can't create file …: Read-only file system
+//	absent          under --bind: exit 0, a 0444 file    same as --ro-bind-data
+//	                CREATED on the host; under
+//	                --ro-bind: Can't create file …:
+//	                Read-only file system
+//	symlink         Can't mount on symlink destination … Can't create file …: Too many levels of symbolic links
+//	dangling link   same                                 same
+//	directory       Destination is not a file …          Can't create file …: Is a directory
+//	FIFO            exit 0, host unchanged               BLOCKS in the open and never returns; killed at 10s
+//	socket          exit 0, host unchanged               Can't create file …: No such device or address
+//
+// The FIFO and socket rows are why this is a table and not an IsRegular test:
+// bwrap binds over both and writes nothing, so refusing them would deny a
+// policy bubblewrap runs. The symlink rows are why it is Lstat and not Stat —
+// CVE-2026-87766's fix is what makes them refusals, and the bubblewrap before
+// it followed the link and wrote the host at the link's target instead.
+type bwrapVerdict struct {
+	// said is the sentence bwrap prints when it will NOT mount there, empty
+	// when it mounts.
+	said string
+	// writes is what bwrap does to the HOST when it DOES mount: "creates" a
+	// mountpoint where nothing was, "overwrites" a file that was already
+	// there. Empty for an overmount, which leaves the host alone.
+	writes string
+	// why says, in snug's own words, what bwrap objected to. fix is which
+	// extra way out the refusal should offer besides dropping the grant:
+	// "regular" (the destination is the wrong shape) or "rw" (the cover is
+	// read-only and the generated file is not). Both empty when bwrap mounts.
+	why, fix string
+}
+
+// ok reports the one accepting case: bwrap mounts, and the host is untouched.
+func (v bwrapVerdict) ok() bool { return v.said == "" && v.writes == "" }
+
+func bwrapAtDestination(dest string, fi fs.FileInfo, access Access, coverWritable bool) bwrapVerdict {
+	cannot := func(why string) string { return "bwrap: Can't create file " + dest + ": " + why }
+
+	if fi == nil { // nothing at the name, so bwrap has to make the mountpoint
+		if coverWritable {
+			return bwrapVerdict{writes: "creates"}
+		}
+		return bwrapVerdict{
+			said: cannot("Read-only file system"),
+			why: "nothing exists at " + dest + " on the host, so bwrap would have to\n" +
+				"       CREATE that file inside a read-only mount",
+		}
+	}
+
+	shape := func(said, why string) bwrapVerdict {
+		return bwrapVerdict{
+			said: said,
+			why:  dest + " on the host is " + fileShape(fi.Mode()) + ",\n       and " + why,
+			fix:  "regular",
+		}
+	}
+
+	switch mode := fi.Mode(); {
+	case mode&fs.ModeSymlink != 0:
+		if access == AccessRW {
+			return shape(cannot("Too many levels of symbolic links"), "bwrap does not follow the name")
+		}
+		return shape("bwrap: Can't mount on symlink destination "+dest, "bwrap does not follow the name")
+	case mode.IsDir():
+		if access == AccessRW {
+			return shape(cannot("Is a directory"), "a directory is not a file to copy onto")
+		}
+		return shape("bwrap: Destination is not a file "+dest, "a directory is not a file to mount onto")
+	case mode&fs.ModeNamedPipe != 0:
+		if access != AccessRW {
+			return bwrapVerdict{} // bwrap binds over it and writes nothing
+		}
+		return shape("bwrap: (no message at all — it blocks opening the FIFO and never returns; "+
+			"measured, killed after 10s)", "--file OPENS its destination, and opening a FIFO with "+
+			"no reader blocks forever")
+	case mode&fs.ModeSocket != 0:
+		if access != AccessRW {
+			return bwrapVerdict{} // likewise
+		}
+		return shape(cannot("No such device or address"), "--file opens its destination, and a "+
+			"socket cannot be opened that way")
+	}
+
+	// A regular file, or a device node, which shares its row: --ro-bind-data
+	// binds over the inode and writes nothing.
+	if access != AccessRW {
+		return bwrapVerdict{}
+	}
+	if coverWritable {
+		return bwrapVerdict{writes: "overwrites"}
+	}
+	return bwrapVerdict{
+		said: cannot("Read-only file system"),
+		why: "snug generates there WRITABLE, which it delivers with bwrap's --file,\n" +
+			"       and --file COPIES onto its destination instead of binding over it — a\n" +
+			"       read-only cover refuses that however present " + dest + " is",
+		fix: "rw",
+	}
+}
+
 // fileShape names what is at a path, for a refusal that has to tell a human
 // which shape bwrap tripped over. It is endpointNoun's wider sibling: that one
 // renders the two kinds rejectEndpointSource tests for, this one renders every
@@ -710,107 +822,73 @@ func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 			break
 		}
 
-		// ARM 2 — issue #186. An overmount of a file that ALREADY EXISTS on the
-		// host writes nothing there: bwrap's --ro-bind-data binds over the
-		// existing inode rather than creating a mountpoint (measured, issue
-		// #73). The cli sets this only after an os.Stat, so it is a fact the
-		// guard can trust without a filesystem of its own. A generated mount
-		// over an ABSENT path still falls through and is refused, because there
-		// --ro-bind-data (or --file) creates the file on the host.
+		// ARMS 2 AND 3 — ONE QUESTION, of ONE path: what does bwrap do at
+		// hostDest with a mount of this Access, inside a cover of that one?
+		// bwrapAtDestination carries the measured answer, and the accept case is
+		// exactly the one where bwrap mounts and the host is not touched.
 		//
-		// ACCESSRW IS EXCLUDED FROM THE EXEMPTION, which is what makes the
-		// sentence above true: it is --ro-bind-data's behaviour, not --file's.
-		// MEASURED on bubblewrap 0.12.0, destination an existing regular file
-		// inside a WRITABLE --bind:
-		//
-		//	--ro-bind-data   exit 0, host file unchanged   (HOST-ORIGINAL)
-		//	--file           exit 0, HOST FILE OVERWRITTEN (GENERATED)
-		//
-		// so exempting a writable generated mount because its destination exists
-		// re-opens issue #186 in full. No setter pairs HostDestExists with
-		// AccessRW today; this is what keeps the fourth one from being silent.
-		if m.HostDestExists && m.Access != AccessRW {
-			continue
+		// IT ASKS Lstat(hostDest) RATHER THAN READING Mount.HostDestExists, and
+		// that is a fix rather than a preference. HostDestExists is set by the CLI
+		// from an os.Lstat of the mount's GUEST path; hostDest is that path
+		// translated through the covering grant, and the grant language has a
+		// translating form (`rw = ["/host/dir:/guest/dir"]` — @claude itself uses
+		// one for the staged binary). With such a cover the two are different
+		// paths, and the exemption answered for the wrong one. MEASURED: @claude
+		// plus `rw = ["$S/out:$S/target"]`, snug exit 0 with no refusal and nothing
+		// on --dry-run, and afterwards $S/out held a 0444 .mcp.json, a .claude/ and
+		// a .claude/settings.json that snug had created ON THE HOST before the
+		// payload existed — issue #186's own mechanism, reached through the
+		// exemption meant to prevent it.
+		fi, lerr := env.Lstat(hostDest)
+		if lerr != nil && !errors.Is(lerr, fs.ErrNotExist) {
+			return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+				"       inside it, but the host path %s cannot be examined: %v.\n"+
+				"       snug cannot tell what bwrap would do there, so it refuses rather than guess.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+				VisibleText(hostDest), lerr)
+		}
+		if lerr != nil {
+			fi = nil // absent, which is a shape of its own below
 		}
 
-		// ARM 3 — a READ-ONLY bind. bwrap has to put the generated file at a
-		// destination it may not write, and the run dies on bwrap's own
-		// sentence, which names neither snug nor the profile nor a fix. WHICH
-		// sentence depends on what is at the destination, so this arm asks
-		// Lstat exactly what bwrap asks, and says what bwrap would have said.
-		if outer.Access != AccessRW {
-			// WRITABLE generated content is bwrap's --file, which COPIES onto
-			// its destination rather than binding over it, so a read-only cover
-			// refuses it whether or not the destination is there and no Lstat
-			// rescues it. MEASURED on bubblewrap 0.12.0, destination an
-			// existing regular file inside a --ro-bind:
-			//
-			//	--file           bwrap: Can't create file <path>: Read-only file system
-			//	--ro-bind-data   exit 0
-			//
-			// The existence question below is therefore only ever asked of
-			// AccessRO.
-			if m.Access == AccessRW {
-				return fmt.Errorf("profile %s grants ro on %s (the host's %s), and snug generates %s inside it —\n"+
-					"       WRITABLE, which snug delivers with bwrap's --file, and --file COPIES onto its\n"+
-					"       destination rather than binding over it. A read-only cover refuses that whether or\n"+
-					"       not %s exists, so the run dies on bwrap's own message, which names neither snug nor\n"+
-					"       this profile:\n"+
-					"           bwrap: Can't create file %s: Read-only file system\n"+
-					"       Fix: grant rw on %s, or deselect %s, which generates at %s.",
-					provenance(outer), at, VisibleText(host), m.Guest,
-					VisibleText(hostDest), VisibleText(hostDest),
-					at, provenance(m), m.Guest)
-			}
-
-			fi, err := env.Lstat(hostDest)
-			switch {
-			case err == nil && fi.Mode().IsRegular():
-				continue // --ro-bind-data over an existing inode: the case that works
-			case err == nil:
-				// bwrap opens the destination without following it, so a
-				// symlink or a directory here is refused by bwrap too — with a
-				// DIFFERENT sentence. A human told "nothing exists there" about
-				// a path an `ls` shows would go looking for the wrong thing.
-				said := "bwrap: Destination is not a file " + VisibleText(hostDest)
-				if fi.Mode()&fs.ModeSymlink != 0 {
-					said = "bwrap: Can't mount on symlink destination " + VisibleText(hostDest)
-				}
-				return fmt.Errorf("profile %s grants ro on %s (the host's %s), and snug generates %s inside it —\n"+
-					"       but %s on the host is %s, and bwrap puts a generated file onto a REGULAR FILE or\n"+
-					"       onto nothing at all. It does not follow the name, so the run dies on bwrap's own\n"+
-					"       message, which names neither snug nor this profile:\n"+
-					"           %s\n"+
-					"       Fix: make %s a regular file, drop the ro grant on %s, or deselect %s, which\n"+
-					"       generates at %s.",
-					provenance(outer), at, VisibleText(host), m.Guest,
-					VisibleText(hostDest), fileShape(fi.Mode()), said,
-					VisibleText(hostDest), at, provenance(m), m.Guest)
-			case !errors.Is(err, fs.ErrNotExist):
-				return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
-					"       inside it, but the host path %s cannot be examined: %v.\n"+
-					"       snug cannot tell whether bwrap would have to create it, so it refuses rather than guess.",
-					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
-					VisibleText(hostDest), err)
-			}
-			return fmt.Errorf("profile %s grants ro on %s (the host's %s), and snug generates %s inside it —\n"+
-				"       but nothing exists at %s on the host, so bwrap would have to CREATE that file\n"+
-				"       inside a read-only mount. It cannot, and the run dies on bwrap's own message,\n"+
-				"       which names neither snug nor this profile:\n"+
-				"           bwrap: Can't create file %s: Read-only file system\n"+
-				"       Fix: drop the ro grant on %s, or deselect %s, which generates at %s.",
-				provenance(outer), at, VisibleText(host), m.Guest,
-				VisibleText(hostDest), VisibleText(hostDest),
-				at, provenance(m), m.Guest)
+		v := bwrapAtDestination(VisibleText(hostDest), fi, m.Access, outer.Access == AccessRW)
+		if v.ok() {
+			continue // bwrap mounts over an inode already there, and writes nothing
 		}
-		return fmt.Errorf("profile %s grants rw on %s (the host's %s), and snug generates %s inside it.\n"+
-			"       snug writes generated content with bwrap's --file, which COPIES onto its destination,\n"+
-			"       so this policy would overwrite %s on the HOST — outside the sandbox, with no undo.\n"+
-			"       A generated file is meant to land on the sandbox's own tmpfs and die with the run.\n"+
-			"       Fix: drop the rw grant on %s, or deselect %s, which generates at %s.",
-			provenance(outer), at, VisibleText(host), m.Guest,
-			VisibleText(hostDest),
-			at, provenance(m), m.Guest)
+
+		if v.writes != "" {
+			// The #186 family: bwrap succeeds and the HOST is changed on the way in.
+			// "creates" is a mountpoint made where nothing was; "overwrites" is
+			// --file copying onto a file that was already there.
+			return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it.\n"+
+				"       bwrap %s %s on the HOST on its way in — outside the sandbox, with no undo,\n"+
+				"       and surviving teardown.\n"+
+				"       A generated file is meant to land on the sandbox's own tmpfs and die with the run.\n"+
+				"       Fix: drop the %s grant on %s, or deselect %s, which generates at %s.",
+				provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+				v.writes, VisibleText(hostDest),
+				outer.Access, at, provenance(m), m.Guest)
+		}
+
+		// The other family: bwrap will not mount there at all, so the run dies on
+		// ITS message, which names neither snug nor the profile nor a fix. snug
+		// prints the same sentence first, and says whose grant produced it.
+		fix := fmt.Sprintf("drop the %s grant on %s", outer.Access, at)
+		switch v.fix {
+		case "regular":
+			fix = fmt.Sprintf("make %s a regular file, or %s", VisibleText(hostDest), fix)
+		case "rw":
+			fix = "grant rw on " + at
+		}
+		return fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
+			"       but %s.\n"+
+			"       The run dies on bwrap's own message, which names neither snug nor this profile:\n"+
+			"           %s\n"+
+			"       Fix: %s, or deselect %s,\n"+
+			"       which generates at %s.",
+			provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+			v.why, v.said,
+			fix, provenance(m), m.Guest)
 	}
 	return nil
 }
