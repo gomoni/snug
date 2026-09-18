@@ -218,21 +218,24 @@ type Mount struct {
 	Anchor bool
 
 	// HostDestExists states a FACT the caller measured, not a permission: the
-	// file at this mount's guest path ALREADY EXISTS on the host. It matters for
-	// exactly one thing — a KindData mount rendered as bwrap's --ro-bind-data
-	// over an EXISTING file OVERMOUNTS it and writes nothing to the host, while
-	// the same mount over an ABSENT path CREATES the mountpoint file on the host
-	// (measured, issue #73). So rejectGeneratedOntoHost, which otherwise refuses
-	// a generated mount landing on a writable host bind because it would write
-	// the host, may pass one whose destination preexists.
+	// file at this mount's guest path ALREADY EXISTS on the host. The CLI sets
+	// it after an os.Lstat and reads it back to decide what --dry-run prints
+	// about a projection.
+	//
+	// THE GUARD NO LONGER READS IT, and the reason is worth keeping: a fact
+	// about the GUEST path is not a fact about the path bwrap touches. The
+	// grant language has a path-translating form (`rw = ["/host/dir:/guest/dir"]`),
+	// and rejectGeneratedOntoHost's destination is the guest path translated
+	// through the covering grant. With such a cover the two are different files,
+	// so the exemption answered for the wrong one — MEASURED: @claude plus
+	// `rw = ["$S/out:$S/target"]` ran with exit 0 and created .mcp.json and
+	// .claude/settings.json on the HOST, which is issue #186 reached through the
+	// exemption written to prevent it. The guard asks Environ.Lstat about its
+	// own destination instead, so one question is asked of one path.
 	//
 	// It is a fact rather than an "allowed" flag deliberately: a reader can
 	// check "does the host file exist" against the filesystem; a reader cannot
-	// check "was this allowed to overmount" against anything. Set ONLY by the
-	// cli after an os.Stat — internal/policy has no filesystem and must not
-	// acquire one to answer this (issue #73). A false value is the safe default:
-	// a generated mount whose destination is not known to exist is refused by
-	// the guard as before.
+	// check "was this allowed to overmount" against anything.
 	HostDestExists bool
 
 	// RunScoped states a FACT about the HOST side, like HostDestExists and

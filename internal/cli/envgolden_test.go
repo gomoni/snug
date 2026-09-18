@@ -127,6 +127,18 @@ func (f *envFakeEnv) Stat(p string) (fs.FileInfo, error) {
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 }
 
+// Lstat: this fixture's links map is consulted by EvalSymlinks alone — nothing
+// it holds is a symlink AT a name a generated file lands on — so what is at the
+// name is what Stat says.
+func (f *envFakeEnv) Lstat(p string) (fs.FileInfo, error) { return f.Stat(p) }
+
+func (f *envFakeEnv) Readlink(p string) (string, error) {
+	if t, ok := f.links[p]; ok {
+		return t, nil
+	}
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
+}
+
 func (f *envFakeEnv) Getenv(k string) string { return f.env[k] }
 
 func (f *envFakeEnv) LookupEnv(k string) (string, bool) {

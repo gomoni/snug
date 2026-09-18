@@ -1098,6 +1098,36 @@ func TestGoldenRefusals(t *testing.T) {
 		{"graft_fresh_mount_carries_a_host", refusalGraftFreshMountCarriesAHost},
 		{"graft_kindproc_at_the_wrong_path", refusalGraftKindProcAtTheWrongPath},
 
+		// issue #580, rejectGeneratedOntoHost's ARM 3: a generated file whose
+		// destination does not exist under a READ-ONLY bind. bwrap has to create
+		// the mountpoint there and cannot, and the run used to die on
+		// `bwrap: Can't create file ...: Read-only file system` — a sentence
+		// naming neither snug, nor the profile, nor a fix. Replacing that
+		// sentence with snug's IS the change, so the text is the review artifact
+		// and belongs here rather than only behind a strings.Contains. The
+		// producers live in generatedontohost_test.go, beside the rest of the
+		// rule.
+		{"generated_over_an_absent_destination_under_a_ro_bind", refusalGeneratedOverAnAbsentDestinationUnderARoBind},
+		{"generated_destination_cannot_be_examined", refusalGeneratedDestinationCannotBeExamined},
+		// The other three shapes bwrap has a different sentence for, and the
+		// one the exemption used to wave through. A reader comparing these
+		// rows is reading the measured table in generatedontohost_test.go's
+		// ARM 3 header: which of bwrap's errors each policy would have hit.
+		{"generated_writable_under_a_ro_bind", refusalWritableGeneratedFileUnderAReadOnlyBind},
+		{"generated_over_a_symlink_destination", refusalGeneratedOverASymlinkDestination},
+		{"generated_over_a_directory_destination", refusalGeneratedOverADirectoryDestination},
+		{"generated_writable_with_hostdestexists_over_a_rw_bind", refusalWritableGeneratedFileWithHostDestExistsOverARwBind},
+		// The exemption's own hole: HostDestExists is a fact about the GUEST
+		// path, and a path-translating cover makes that a different file from
+		// the one bwrap touches.
+		{"generated_through_a_translating_cover", refusalGeneratedThroughATranslatingCoverWhoseDestinationIsAbsent},
+		// The containment arm's own namespace bug: host-side the link stays
+		// inside the grant, sandbox-side it lands in another one.
+		{"generated_through_a_relative_link_in_a_translating_cover", refusalGeneratedThroughARelativeLinkInATranslatingCover},
+		// And the same arm's blind spot: one link per component was not
+		// enough, because a link's landing can be a link.
+		{"generated_through_a_two_hop_link_chain", refusalGeneratedThroughATwoHopLinkChain},
+
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
 		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},
@@ -1433,37 +1463,55 @@ func refusalGraftToolchainRootWritable(t testing.TB) error {
 //
 // The sweep is over the SOURCE rather than over a list, because a list of the
 // producers would be the same opt-in problem one file further away. It parses
-// this file, collects every top-level `func refusal*`, and requires each name to
-// appear somewhere in TestGoldenRefusals' body — which is where the cases table
-// lives, whether a producer is named directly or wrapped in a closure.
+// EVERY _test.go in this package, collects every top-level `func refusal*`, and
+// requires each name to appear somewhere in TestGoldenRefusals' body — which is
+// where the cases table lives, whether a producer is named directly or wrapped
+// in a closure.
+//
+// Reading this file alone was the same opt-in hole one level down: a producer
+// belongs beside the rule it exercises (graft_test.go, graftkind_test.go and
+// generatedontohost_test.go each hold some), and every one of those escaped the
+// sweep entirely. Widening it caught nothing on the day it was widened — the
+// producers that live elsewhere were all registered already — which is the
+// point: the check now holds for the next one rather than for the ones somebody
+// happened to remember.
 //
 // POSITIVE CONTROL, mandatory: zero hits from a broken detector is
 // indistinguishable from zero violations, so the test fails if the walk finds
 // no producers or no registrations at all.
 func TestEveryRefusalProducerIsRegistered(t *testing.T) {
-	const src = "refusals_test.go"
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, src, nil, 0)
+	srcs, err := filepath.Glob("*_test.go")
 	if err != nil {
-		t.Fatalf("parsing %s: %v", src, err)
+		t.Fatalf("globbing the package's test sources: %v", err)
+	}
+	if len(srcs) == 0 {
+		t.Fatal("the glob matched no _test.go at all, so the sweep has no subject — a " +
+			"detector that cannot see its input reports the same thing as a clean tree")
 	}
 
 	var producers []string
 	var registry string
-	for _, d := range f.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil {
-			continue
+	for _, src := range srcs {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, src, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", src, err)
 		}
-		switch {
-		case strings.HasPrefix(fn.Name.Name, "refusal"):
-			producers = append(producers, fn.Name.Name)
-		case fn.Name.Name == "TestGoldenRefusals":
-			var b strings.Builder
-			if err := printer.Fprint(&b, fset, fn.Body); err != nil {
-				t.Fatalf("printing TestGoldenRefusals' body: %v", err)
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil {
+				continue
 			}
-			registry = b.String()
+			switch {
+			case strings.HasPrefix(fn.Name.Name, "refusal"):
+				producers = append(producers, fn.Name.Name)
+			case fn.Name.Name == "TestGoldenRefusals":
+				var b strings.Builder
+				if err := printer.Fprint(&b, fset, fn.Body); err != nil {
+					t.Fatalf("printing TestGoldenRefusals' body: %v", err)
+				}
+				registry = b.String()
+			}
 		}
 	}
 

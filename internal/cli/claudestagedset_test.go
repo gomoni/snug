@@ -229,6 +229,15 @@ func claudeFixtureHome(t *testing.T, trustTarget bool) (*policy.Policy, string, 
 			t.Fatal(err)
 		}
 	}
+	// And the manifest itself, for the same reason one directory up:
+	// stageInstalledPlugins stages a filtered copy only where the host HAS one,
+	// because the staged file is read-only inside @claude's read-only bind and
+	// bwrap cannot create it. A fixture with an empty plugins directory would
+	// drop that row and read as "we do not hand this over".
+	if err := os.WriteFile(filepath.Join(home, ".claude/plugins/installed_plugins.json"),
+		[]byte(`{"version":2,"plugins":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// The 62 KB file's shape, with issue #19's canaries.
 	if trustTarget {
 		key, err := filepath.EvalSymlinks(target)

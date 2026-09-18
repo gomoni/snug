@@ -78,7 +78,15 @@ func TestProjectSettingsProjectionDropsHooksWhereTheFileExists(t *testing.T) {
 
 	// And Validate accepts it (the guard passes an overmount of an existing
 	// file), the end-to-end proof the #186 refusal does not fire here.
-	if err := pol.Validate(newEnvFakeEnv()); err != nil {
+	// VALIDATED AGAINST THE SAME HOST IT WAS RESOLVED AGAINST.
+	// resolveClaudeWithTarget resolves with policy.OSEnviron{}, so the policy
+	// names this machine's paths; handing Validate a fixture host instead asks
+	// it whether those paths exist somewhere they were never going to.
+	// rejectGeneratedOntoHost stats the destination of a generated mount that
+	// lands inside a read-only bind, and under the fixture the system-wide
+	// ssh_config replacement -- which replaceSystemSSHConfig only stages where
+	// env.Stat found the file -- became a file that does not exist.
+	if err := pol.Validate(policy.OSEnviron{}); err != nil {
 		t.Errorf("Validate refused the read-only projection over the existing target file (issue "+
 			"#73/#186):\n%v", err)
 	}
@@ -101,7 +109,7 @@ func TestProjectSettingsMountsNothingWhereTheFileIsAbsent(t *testing.T) {
 		}
 	}
 	// The run is not refused: nothing generated onto a rw host bind.
-	if err := pol.Validate(newEnvFakeEnv()); err != nil {
+	if err := pol.Validate(policy.OSEnviron{}); err != nil {
 		t.Errorf("a target with no project settings was refused:\n%v", err)
 	}
 }
@@ -183,7 +191,7 @@ func TestProjectMCPJSONIsProjectedAndNamesNoServers(t *testing.T) {
 		t.Errorf("the generated .mcp.json names %d servers, want 0:\n%s", len(doc.Servers), content)
 	}
 
-	if err := pol.Validate(newEnvFakeEnv()); err != nil {
+	if err := pol.Validate(policy.OSEnviron{}); err != nil {
 		t.Errorf("Validate refused the read-only projection over the existing target file "+
 			"(issue #73/#186):\n%v", err)
 	}

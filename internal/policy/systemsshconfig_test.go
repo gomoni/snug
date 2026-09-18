@@ -36,7 +36,7 @@ func TestIdentityReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 	env := newFakeEnv()
 	// This host has the /usr spelling and not the /etc one, which is the shape
 	// that produced the bug.
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
 		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
@@ -108,7 +108,7 @@ func TestSystemSSHConfigIsNotInventedWhereTheHostHasNone(t *testing.T) {
 // replaceSystemSSHConfig, not on p.Identity.
 func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 
 	p, err := Resolve(testRegistry(), testDefaults, testCtx(), env)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.
 // selected, so the replacement fires all the same.
 func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 
 	reg := testRegistry()
 	reg["pinned"] = &Profile{
@@ -181,7 +181,7 @@ func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 // already covers the other half (host has no file, @sys selected).
 func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
 	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 
 	// Validate refuses a policy with no OS runtime at all (a mount at exactly
 	// /usr or /bin) before this predicate is ever reached, so the selection
@@ -206,7 +206,7 @@ func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
 // replacement.
 func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
 	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 
 	reg := testRegistry()
 	// A profile granting a writable tmpfs at /usr instead of a bind — the same
@@ -232,7 +232,7 @@ func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
 // mirroring the openSUSE shape that motivated the issue.
 func sysSSHProbeEnv() *fakeEnv {
 	env := newFakeEnv()
-	env.dirs["/usr/etc/ssh/ssh_config"] = true
+	env.files["/usr/etc/ssh/ssh_config"] = true
 	return env
 }
 
@@ -252,7 +252,7 @@ func TestDiscoveredSystemSSHConfigPathIsReplaced(t *testing.T) {
 	env := newFakeEnv()
 	// The FreeBSD/Homebrew spelling, and NOT either fixed one — so a run that
 	// still consults only the fixed list authors nothing at all here.
-	env.dirs["/usr/local/etc/ssh/ssh_config"] = true
+	env.files["/usr/local/etc/ssh/ssh_config"] = true
 
 	ctx := testCtx()
 	ctx.HostSSHConfigs = []string{"/usr/local/etc/ssh/ssh_config"}

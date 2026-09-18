@@ -115,15 +115,59 @@ func stageInstalledPlugins(pol *policy.Policy, home string) error {
 			len(pol.PluginAllowlist), strings.Join(pol.PluginAllowlist, ", "), problem)
 	}
 
+	// FIRST, so this function cannot swallow the refusal it owns: a NON-EMPTY
+	// allowlist against a host with no manifest is an error, and
+	// FilterInstalledPlugins is where that lives (issue #68, invariant 5). The
+	// early return below runs only once that has had its say.
 	body, err := policy.FilterInstalledPlugins(raw, pol.PluginAllowlist)
 	if err != nil {
 		return err
+	}
+
+	// NOTHING TO REPLACE WHERE THE HOST HAS NO MANIFEST, and staging one anyway
+	// killed the run. This mount is AccessRO and sits inside @claude's own
+	// read-only bind of ~/.claude/plugins, so bwrap has to CREATE the file to
+	// mount onto it and cannot:
+	//
+	//     bwrap: Can't create file .../.claude/plugins/installed_plugins.json:
+	//     Read-only file system
+	//
+	// Measured on a host whose ~/.claude/plugins exists and holds no manifest,
+	// which is what a plugins directory looks like before the first plugin.
+	// There is nothing to hide there and no host file to displace: the bind
+	// exposes no manifest either way, and an allowlist that named anything was
+	// already refused above.
+	//
+	// STATTED RATHER THAN INFERRED FROM hostread. Optional reports ABSENT as
+	// (nil, "") — the empty note means "nothing to say", not "the file is
+	// there" — so the problem string above cannot tell an absent manifest from
+	// a present one, and neither can a nil check once an empty file enters.
+	//
+	// projectableTargetFile rather than os.Stat, and the difference is a whole
+	// class of failure: Stat FOLLOWS the name, so a dotfiles manager's symlink
+	// at installed_plugins.json (stow and chezmoi both produce exactly that)
+	// read as "a regular file is there", HostDestExists went on the mount, and
+	// rejectGeneratedOntoHost's exemption skipped every check — leaving bwrap,
+	// which does not follow the name, to end the run on `Can't mount on symlink
+	// destination …`. Reproduced with the shipped @claude and no other profile.
+	// The same function is what the project-scope projections already use, 500
+	// lines below, and its doc comment enumerates these shapes.
+	project, err := projectableTargetFile(guest, "the host's ~/.claude/plugins/installed_plugins.json")
+	if err != nil {
+		return err
+	}
+	if !project {
+		return nil // absent: mount nothing, write nothing
 	}
 
 	perm := uint32(0o600)
 	pol.Replace(policy.Mount{
 		Guest: guest, Kind: policy.KindData, Access: policy.AccessRO,
 		Content: policy.Secret(body), Perms: &perm, From: []string{"@claude"},
+		// The host file is there -- hostread read it. bwrap binds over the
+		// existing inode and creates nothing (issue #73), which is the fact
+		// rejectGeneratedOntoHost needs to tell this apart from the case above.
+		HostDestExists: true,
 	})
 	return nil
 }
@@ -602,12 +646,32 @@ func stageProjectClaudeSettings(pol *policy.Policy, n *notes) error {
 //     "Can't create file … Is a directory" / "No such file or directory", so a
 //     hostile repo denies the human the ability to run claude on it at all.
 //
+// THE FIRST BULLET IS VERSION-BOUND, and that only surfaced on re-measuring it
+// here. On bubblewrap 0.12.0 a symlink destination is REFUSED, not followed, and
+// nothing is created on the host — all eight combinations measured, {symlink to
+// an existing file, dangling symlink} × {--ro-bind-data, --file} × {--ro-bind,
+// --bind}:
+//
+//	--ro-bind-data   bwrap: Can't mount on symlink destination <path>
+//	--file           bwrap: Can't create file <path>: Too many levels of symbolic links
+//
+// That is CVE-2026-87766's fix ("rejects mount operations on symlink
+// destinations"); the host write in the first bullet belongs to the bubblewrap
+// that predates it, and both readings are kept because a host runs whichever it
+// has. What the check prevents therefore depends on the version — a host write
+// there, a run that dies on bwrap's sentence here — and snug owes its own
+// message either way.
+//
 // So a non-regular file REFUSES rather than being skipped, and the refusal is
 // invariant 5: skipping would leave the file un-reinterpreted while snug ran
 // anyway, which for a symlink pointing at a sibling in the same repo means the
 // repo's own hooks or MCP servers reach Claude Code — the whole thing these
 // projections exist to stop. A repo that ships a symlink here is anomalous;
 // the error says so and names what to do.
+//
+// It is not only the target's files: stageInstalledPlugins asks the same
+// question about the host's ~/.claude/plugins/installed_plugins.json, which a
+// dotfiles manager symlinks (issue #580).
 func projectableTargetFile(guest, label string) (bool, error) {
 	fi, err := os.Lstat(guest)
 	if err != nil {
@@ -618,8 +682,9 @@ func projectableTargetFile(guest, label string) (bool, error) {
 	}
 	return false, fmt.Errorf("%s is %s, not a regular file. snug reinterprets this file "+
 		"rather than binding it, and it cannot do that through a link or a directory: "+
-		"bwrap follows the name, so it would either write your host or refuse to start. "+
-		"Replace %s with a regular file, or run without @claude",
+		"bwrap mounts onto a regular file or onto nothing, and older bubblewrap followed "+
+		"the name and wrote your host instead. Replace %s with a regular file, or run "+
+		"without @claude",
 		label, fileShape(fi.Mode()), guest)
 }
 

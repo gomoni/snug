@@ -41,6 +41,14 @@ func (e refusalFakeEnv) Stat(p string) (fs.FileInfo, error) {
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 }
 
+// Lstat: this fixture holds no symlinks, so "what is at the name" and "what
+// does the name resolve to" are the same question here.
+func (e refusalFakeEnv) Lstat(p string) (fs.FileInfo, error) { return e.Stat(p) }
+
+func (e refusalFakeEnv) Readlink(p string) (string, error) {
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
+}
+
 func (e refusalFakeEnv) Getenv(string) string            { return "" }
 func (e refusalFakeEnv) LookupEnv(string) (string, bool) { return "", false }
 func (e refusalFakeEnv) Uid() int                        { return 1000 }

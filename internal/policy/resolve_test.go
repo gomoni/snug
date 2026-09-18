@@ -63,7 +63,13 @@ type fakeEnv struct {
 	// filesystem — see refusals_test.go's forging-rune-in-a-symlink-destination
 	// cases.
 	symlinkErrs map[string]error
-	env         map[string]string
+	// statErrs is symlinkErrs' equivalent for Stat, and it exists because
+	// without it the maps above answer only SUCCESS or fs.ErrNotExist. A rule
+	// that treats "absent" and "cannot be examined" as different answers —
+	// rejectGeneratedOntoHost's ARM 3 refuses rather than guess when Stat
+	// fails with anything else — then has a branch no fixture can reach.
+	statErrs map[string]error
+	env      map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -74,6 +80,13 @@ func newFakeEnv() *fakeEnv {
 		// every line of it.
 		files: map[string]bool{
 			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+			// The generated files whose DESTINATION exists on every real host.
+			// rejectGeneratedOntoHost stats the destination of a generated mount
+			// that lands inside a read-only bind, because where nothing is there
+			// bwrap has to create the mountpoint and cannot. A fixture host that
+			// published /etc but not /etc/resolv.conf is not a host anyone runs
+			// on, and every default selection would be refused against it.
+			"/etc/resolv.conf": true,
 		},
 		dirs: map[string]bool{
 			"/usr": true, "/etc": true, "/opt": true,
@@ -102,6 +115,7 @@ func newFakeEnv() *fakeEnv {
 		},
 		links:       map[string]string{},
 		symlinkErrs: map[string]error{},
+		statErrs:    map[string]error{},
 		// EDITOR is here so a fixture profile can actually re-admit something
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
@@ -139,6 +153,9 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 }
 
 func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
+	if err, ok := f.statErrs[p]; ok {
+		return nil, err
+	}
 	if f.dirs[p] {
 		return fakeInfo{name: p, dir: true, mode: fs.ModeDir}, nil
 	}
@@ -152,6 +169,31 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 		return fakeInfo{name: p}, nil
 	}
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+}
+
+// Lstat answers what is AT the name. `links` is the fixture's symlink set, so a
+// path with an entry there is a SYMLINK here even when EvalSymlinks resolves it
+// happily and Stat (which follows) reports whatever it points at. That
+// difference is the whole reason Environ carries both: bwrap does not follow a
+// generated file's destination, and rejectGeneratedOntoHost's ARM 3 has to see
+// what bwrap sees.
+func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
+	if err, ok := f.statErrs[p]; ok {
+		return nil, err
+	}
+	if _, ok := f.links[p]; ok {
+		return fakeInfo{name: p, mode: fs.ModeSymlink}, nil
+	}
+	return f.Stat(p)
+}
+
+// Readlink is the link TEXT the fixture wrote, which may be relative — that is
+// the whole point of the guest-namespace walk in rejectGeneratedOntoHost.
+func (f *fakeEnv) Readlink(p string) (string, error) {
+	if t, ok := f.links[p]; ok {
+		return t, nil
+	}
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
 }
 
 func (f *fakeEnv) Getenv(k string) string { return f.env[k] }

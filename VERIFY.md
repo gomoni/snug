@@ -1606,6 +1606,64 @@ Expect a refusal naming `ghost-plugin-xyz` and listing the installed plugins,
 and the payload does NOT run — a plugin the run asked for and did not get is an
 error, not a silent omission.
 
+**A host with NO manifest at all still runs** (issue #580). A `~/.claude/plugins`
+that exists and holds no `installed_plugins.json` is what the directory looks
+like before the first plugin is installed. snug staged its generated manifest
+there anyway, and bwrap had to CREATE that file inside `@claude`'s own read-only
+bind, which it cannot — `snug -p @claude` did not run at all on such a host:
+
+```
+bwrap: Can't create file .../.claude/plugins/installed_plugins.json: Read-only file system
+```
+
+On a scratch home that has the directory and not the file:
+
+```bash
+H=$SC/emptyplugins
+mkdir -p $H/.claude/plugins $H/proj/sub
+HOME=$H snug -p @claude $H/proj/sub -- sh -c 'ls -a $HOME/.claude/plugins'
+```
+
+Expect `.` and `..`, and exit 0: the tree is bound, nothing is staged into it,
+and nothing needed creating. There is no manifest to hide — the bind exposes
+none either way.
+
+**And a named plugin is still refused there.** The skip above must not swallow
+the rule that a named plugin has to be installed:
+
+```bash
+mkdir -p $H/.config/snug/profiles.d
+cat > $H/.config/snug/profiles.d/badclaude.toml <<'EOF'
+[profile.badclaude]
+include = ["@claude"]
+plugins = ["caveman"]
+EOF
+HOME=$H XDG_CONFIG_HOME=$H/.config snug -p badclaude $H/proj/sub -- true
+```
+
+Expect exit 77 and a refusal reading `the profile names 1 plugin(s) (caveman)
+but the host has no installed_plugins.json to validate them against`. It comes
+from `FilterInstalledPlugins`, which owns that rule for every caller; the
+staging skip runs after it, not instead of it.
+
+**A manifest that is a SYMLINK is refused, not staged over.** A dotfiles manager
+(stow, chezmoi) symlinks files into `~/.claude`, and bwrap does not follow the
+name — measured on bubblewrap 0.12.0, `--ro-bind-data` at a symlink destination
+says `Can't mount on symlink destination …` and creates nothing:
+
+```bash
+H=$SC/linkedmanifest
+mkdir -p $H/.claude/skills $H/.claude/plugins $H/dotfiles $H/proj/sub
+printf '{"version":2,"plugins":{}}' > $H/dotfiles/installed_plugins.json
+ln -s $H/dotfiles/installed_plugins.json $H/.claude/plugins/installed_plugins.json
+HOME=$H snug -p @claude $H/proj/sub -- true
+```
+
+Expect exit 77 and `the host's ~/.claude/plugins/installed_plugins.json is a
+symlink, not a regular file`, naming the path to replace. The control is the
+same host with the link replaced by a copy: the run starts and the manifest
+inside reads `{"version": 2, "plugins": {}}`.
+
 **The checks above assert what snug WRITES, and that is the whole of what this
 repository asserts.** What the real `claude` binary DOES with the regenerated
 manifest — a plugin absent from it does not fire its `SessionStart` hook, one

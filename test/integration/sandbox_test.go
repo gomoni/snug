@@ -2969,8 +2969,16 @@ func TestAnUnknownProfileKeyIsFatal(t *testing.T) {
 	if err := os.MkdirAll(okDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// /usr rather than /etc, for the reason TestRepoLocalConfigIsNeverAutoLoaded
+	// already records one screen up: a grant on the whole of /etc covers
+	// /etc/resolv.conf, which snug GENERATES. On a systemd-resolved host — every
+	// GitHub runner — that path is a SYMLINK, bwrap refuses to mount a generated
+	// file onto one, and Validate now says so first (issue #580). The control
+	// would then fail for a reason that has nothing to do with strict decoding.
+	// MEASURED: this control went red on CI while passing on a developer host
+	// whose /etc/resolv.conf is a regular file.
 	if err := os.WriteFile(filepath.Join(okDir, "x.toml"),
-		[]byte("[profile.x]\nro = [\"/etc\"]\n"), 0o644); err != nil {
+		[]byte("[profile.x]\nro = [\"/usr\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+okCfg), "--dry-run", "-p", "x", proj); code != 0 {
