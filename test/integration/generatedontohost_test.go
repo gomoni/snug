@@ -238,3 +238,59 @@ func TestTheSecondHopOfAHostSymlinkChainIsFollowedToo(t *testing.T) {
 	screen, code := cli(t, env, "--no-defaults", "-p", "steer2", proj, "--", "true")
 	refusedWithoutTouchingTheHost(t, screen, code, hostWritable)
 }
+
+// TestAWholeEtcGrantIsRefusedWhereResolvConfIsASymlink is the case CI caught
+// and this machine could not: base.toml names `ro = ["/etc"]` as the one-line
+// escape hatch for anyone who wants more than the curated fourteen entries, and
+// on a systemd-resolved host — every GitHub runner — /etc/resolv.conf is a
+// SYMLINK to ../run/systemd/resolve/stub-resolv.conf.
+//
+// snug GENERATES /etc/resolv.conf on every run, so that grant puts a generated
+// file onto a symlink, and bubblewrap refuses to mount one there:
+//
+//	bwrap: Can't mount on symlink destination /etc/resolv.conf
+//
+// The run therefore does not start either way. What changed with issue #580 is
+// WHOSE sentence the human reads, and that is the whole point of the guard: the
+// refusal has to name the grant and the generator, which bwrap's cannot.
+//
+// The test skips where /etc/resolv.conf is a regular file, because there the
+// same grant WORKS and refusing would be a false positive — a developer host
+// with a plain resolv.conf is the shape this whole suite passed on while CI was
+// red.
+func TestAWholeEtcGrantIsRefusedWhereResolvConfIsASymlink(t *testing.T) {
+	budget(t)
+
+	fi, err := os.Lstat("/etc/resolv.conf")
+	if err != nil {
+		t.Skipf("this host has no /etc/resolv.conf at all (%v), so there is no destination "+
+			"to judge", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Skip("this host's /etc/resolv.conf is a regular file, so a whole-/etc grant is " +
+			"legitimate here and bwrap mounts over the inode — nothing to refuse")
+	}
+
+	proj, _ := target(t)
+	env := writeProfiles(t, map[string]string{"etcall": "[profile.etcall]\n" +
+		"description = \"base.toml's documented escape hatch: the whole of /etc\"\n" +
+		"ro = [\"/etc\"]\n"})
+
+	screen, code := cli(t, env, "--dry-run", "-p", "etcall", proj)
+	if code == 0 {
+		t.Fatalf("accepted a whole-/etc grant on a host whose /etc/resolv.conf is a symlink. "+
+			"snug generates that file, bwrap will not mount a generated file onto a symlink, "+
+			"and the run dies on bwrap's own message instead of on one naming the grant:\n%s",
+			screen)
+	}
+	for _, want := range []string{
+		"/etc/resolv.conf",
+		"a symlink",
+		"Can't mount on symlink destination", // what bwrap would have said
+		"drop the ro grant on /etc",          // and what to do about it
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the refusal does not carry %q:\n%s", want, screen)
+		}
+	}
+}
