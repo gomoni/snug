@@ -131,8 +131,8 @@ mandatory.
   chose the directory. What is *under* it is not.
 - **Anything snug would have to allocate before resolving.** A variable whose
   value snug creates on the host is chicken-and-egg with the pre-flight, and it
-  is why `{host_tmpdir}` no longer exists at all (issue #399): a profile that
-  wants a host directory names it.
+  is why `{host_tmpdir}` is refused by name (issue #399): a profile that wants a
+  host directory names it.
 
 ### The interaction that most worries the architect
 

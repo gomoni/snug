@@ -2,9 +2,8 @@
 
 What pins each part of the container engine's store, and which keys snug's
 generated `storage.conf` can and cannot deliver. Measured against podman 5.8.4 and 6.0.2; the two agree except on one row of
-§3. 5.8.4 was a pinned static bundle, retired in #384 — the measurements stand,
-but the engine is now host-provided and therefore **not pinned**, so any claim
-here that depends on a version needs re-measuring rather than trusting.
+§3. The engine is host-provided and therefore **not pinned**, so any claim here
+that depends on a version needs re-measuring rather than trusting.
 
 ## 1. The oracle
 
