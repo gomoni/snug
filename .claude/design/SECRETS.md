@@ -77,9 +77,9 @@ row. Every mechanism in §3 is an answer to A1 and A2; only §3.3 answers A3.
 | what | how it reaches the sandbox | who can read it inside | class |
 |---|---|---|---|
 | ssh key material | **nothing enters.** `internal/sshproxy` answers `REQUEST_IDENTITIES` with one pinned blob (`proxy.go`) and signs only for it | — | capability |
-| GitHub token | `oauth_token:` in a generated `hosts.yml` (`internal/cli/identity.go:330`) | every process in the sandbox | **credential** |
-| Anthropic token | a generated `~/.claude/.credentials.json` carrying five allowlisted fields (`internal/policy/claudecreds.go:88`) — `refreshToken` and `refreshTokenExpiresAt` are not among them | every process in the sandbox | **credential** — see below |
-| git identity | generated `~/.gitconfig`: `user.name`, `user.email`, and `insteadOf` rewriting `https://<host>/` to `git@<host>:` (`internal/policy/gitextract.go:131`) | — | public material |
+| GitHub token | `oauth_token:` in a generated `hosts.yml` (`stageGhConfig`, `internal/cli/identity.go`) | every process in the sandbox | **credential** |
+| Anthropic token | a generated `~/.claude/.credentials.json` carrying five allowlisted fields (`policy.ClaudeCredentialAllowlist`) — `refreshToken` and `refreshTokenExpiresAt` are not among them | every process in the sandbox | **credential** — see below |
+| git identity | generated `~/.gitconfig`: `user.name`, `user.email`, and `insteadOf` rewriting `https://<host>/` to `git@<host>:` (`GitConfigFrom`, `internal/policy/gitextract.go`) | — | public material |
 | registry auth | nothing on this host to inherit **[M]** — no `~/.docker/config.json`, no `auth.json` under `~/.config/containers` or `$XDG_RUNTIME_DIR/containers` | — | — |
 
 On this host the GitHub token is **keyring-backed**: `hosts.yml` is 84 bytes and
