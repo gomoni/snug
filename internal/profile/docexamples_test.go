@@ -213,7 +213,7 @@ func extractProfileExamples(t *testing.T, path string) []docCandidate {
 func TestDocumentedExampleProfilesParse(t *testing.T) {
 	var all []docCandidate
 	all = append(all, extractProfileExamples(t, "../../README.md")...)
-	all = append(all, extractProfileExamples(t, "../../VERIFY.md")...)
+	all = append(all, extractProfileExamples(t, "../../scripts/VERIFY.md")...)
 
 	// NON-VACUITY CONTROL. README and VERIFY.md between them write at least
 	// ten in-scope profile examples today (five apiece); if the extraction

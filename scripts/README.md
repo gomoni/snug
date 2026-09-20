@@ -39,7 +39,7 @@ A payload is a program run INSIDE a sandbox. It has no pass/fail of its own, so
 `make verify` does not walk it; a check or a Go test runs it and grades what it
 printed.
 
-| payload | run it | VERIFY.md |
+| payload | run it | [`VERIFY.md`](VERIFY.md) |
 |---|---|---|
 | [`payloads/http-door-server.py`](payloads/http-door-server.py) | as the payload of a run whose profile declares a `listen_names` door | §20 |
 | [`payloads/pid-nesting.py`](payloads/pid-nesting.py) | twice — `inside` as the payload, `host` beside it | §21 |
@@ -62,10 +62,10 @@ programs rather than assertions.
 
 ## The migration rule
 
-`VERIFY.md` is markdown that nothing executes — `wc -l VERIFY.md` says how much
-of it is left — and the claim earning it its exemption from the no-`docs/` rule,
-"every line is a command with its expected output", was the claim nothing
-enforced. A command plus the output it produced once is a copy of state: stale
+[`VERIFY.md`](VERIFY.md) beside this file is markdown that nothing executes —
+`wc -l scripts/VERIFY.md` says how much of it is left — and the claim earning it
+its exemption from the no-`docs/` rule, "every line is a command with its
+expected output", was the claim nothing enforced. A command plus the output it produced once is a copy of state: stale
 the moment the code moves, and the staleness found by whoever finally walks it.
 
 So:

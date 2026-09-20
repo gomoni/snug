@@ -7,28 +7,35 @@ Every command below was run on the development host and produced the output
 shown. If yours differs, that is a finding — see [If a check fails](#if-a-check-fails).
 
 **This file is being converted into executable checks, and it is shrinking.**
-The claim that earned it its exemption from the no-`docs/` rule — every line is
-a command with its expected output — was the claim nothing enforced: a command
-plus the output it produced once is a copy of state, stale the moment the code
-moves, and the staleness is found by whoever finally walks it. So:
+It sits in `scripts/` because that is where the converted half already is, and
+a checklist in one directory with its executable form in another is two places
+a reader has to know about. The claim that earned it its exemption from the
+no-`docs/` rule — every line is a command with its expected output — was the
+claim nothing enforced: a command plus the output it produced once is a copy of
+state, stale the moment the code moves, and the staleness is found by whoever
+finally walks it. So:
 
-- **Every new check is a script in [`scripts/`](scripts/) or a Go test in
+- **Every new check is a script in [this directory](./) or a Go test in
   `test/integration`. Never a new section here.** A check CI can run on every
-  push belongs in Go; what belongs in `scripts/` is what CI cannot run, because
-  the answer is per-machine or it needs state CI structurally lacks.
+  push belongs in Go; what belongs here is what CI cannot run, because the
+  answer is per-machine or it needs state CI structurally lacks.
 - **A section is migrated when it is touched, never edited in place** — into a
   script, into a Go test, or deleted because a Go test already asserts it.
-  [`scripts/README.md`](scripts/README.md) is the index.
+  [`README.md`](README.md) beside this file is the index.
 - What is left here in the end is the prose that is genuinely not executable:
   §2 below, §16, and *Where the reasoning is thinnest*. Reasoning, not readings.
 
 Run the migrated half with `make verify`.
 
+**Every command in this file is run from the repository root**, not from this
+directory — `make build`, `./bin/snug`, `scripts/payloads/pid-nesting.py`. The
+file moved; the working directory it assumes did not.
+
 What it checks is that **the sandbox holds**, which is not the same question as
 whether your profiles are safe. snug does not second-guess a profile: `rw
 ["{home}"]` and `environ.set EDITOR = "/tmp/evil"` are holes you opened, they are
 on screen in `--dry-run`, and no check below will fail on them. See
-[`.claude/design/INDEX.md`](.claude/design/INDEX.md) §1.4 and the README's *What
+[`.claude/design/INDEX.md`](../.claude/design/INDEX.md) §1.4 and the README's *What
 snug does not defends against*.
 
 Setup used throughout:
@@ -63,7 +70,7 @@ that is deliberate, so the security-critical parts are checkable anywhere.
 make verify
 ```
 
-Runs the numbered checks in [`scripts/`](scripts/), which is where this
+Runs the numbered checks in [this directory](./), which is where this
 question now lives — `0010` and `0011` are what §1 used to be. A check prints
 what it asserted; a SKIP names the precondition your host did not meet.
 

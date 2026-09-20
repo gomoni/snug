@@ -83,15 +83,17 @@ intact. `.claude/design/` holds the design and research material they work from
 (INDEX.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
 There is deliberately **no `docs/` tree**: a generated user guide was tried and
 removed, because the prose churned faster than the code it described and nobody
-was going to keep it honest. `VERIFY.md` at the root was the exception, on the
+was going to keep it honest. `VERIFY.md` was the exception, on the
 grounds that every line is a command with its expected output — and that was
-the claim nothing enforced. `wc -l VERIFY.md` says how big the unenforced half
+the claim nothing enforced. `wc -l scripts/VERIFY.md` says how big the unenforced half
 still is, and the only thing that ever checked whether a line of it was true
 was a human reading it. A command plus the output it produced once is a copy of
 state; the count is not written down here for the same reason.
 
 So the exemption now belongs to `scripts/`, which is executable in the sense
-VERIFY.md claimed: `make verify` walks `scripts/NNNN-slug.sh` in numeric order,
+VERIFY.md claimed — and VERIFY.md now lives there too, because a checklist in
+one directory with its executable form in another is two places a reader has to
+know about: `make verify` walks `scripts/NNNN-slug.sh` in numeric order,
 each prints what it asserted, and 79 is SKIP (**not** 77 — that is snug's own
 `exitPolicy`, so a script ending on an uncaptured refusal would report SKIP).
 `VERIFY.md` shrinks to the prose that is genuinely not executable. Three rules,

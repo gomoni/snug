@@ -110,7 +110,7 @@ gate:
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
-# is the automated half of VERIFY.md — the by-hand checklist stays, because
+# is the automated half of scripts/VERIFY.md — the by-hand checklist stays, because
 # it carries the reasoning; this is the ratchet.
 #
 # Build-tagged, so it is excluded from `make gate` by construction: it needs
