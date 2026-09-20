@@ -500,6 +500,44 @@ profile evil grants ro on /home/u/.config (the host's /host/cover), and snug gen
        A generated file is meant to land where the grant covering it says it lands.
        Fix: drop the ro grant on /home/u/.config, or deselect (snug), which generates at /home/u/.config/git/allowed_signers.
 
+== relocated_onto_another_grant ==
+profile evil puts a bind of /w/mnt at /G/sub/mnt, but that is
+       not where it lands.
+       profile evil grants ro on /G (the host's /cover), and /cover/sub on the host
+       is a symlink to "/w". bwrap resolves a mount destination INSIDE the sandbox, so it
+       creates the mountpoint at
+       /w/mnt instead — on top of whatever grant has that path, named by no line of --dry-run.
+       Measured that way (issue #588): a second profile's rw grant became read-only, snug
+       exit 0, no refusal.
+       Fix: grant /w/mnt — the path the sandbox really has.
+
+== relocated_onto_nothing ==
+profile beta puts a bind of /etc/ssl/certs/extra.pem at /etc/ssl/certs/extra.pem, but that is
+       not where it lands.
+       profile alpha grants ro on /etc/ssl (the host's /etc/ssl), and /etc/ssl/certs on the host
+       is a symlink to "../../var/lib/ca-certificates/pem". bwrap resolves a mount destination INSIDE the sandbox, so it
+       creates the mountpoint at
+       /var/lib/ca-certificates/pem/extra.pem instead — and nothing in the sandbox has that path, so the run dies on bwrap's own
+       "Can't mkdir parents for /var/lib/ca-certificates/pem/extra.pem: No such file or directory", which names neither snug
+       nor this profile.
+       Fix: grant /var/lib/ca-certificates/pem/extra.pem — the path the sandbox really has.
+
+== relocated_lstat_error ==
+profile grantee puts a bind of /irrelevant at /K/d/x, and resolving where it lands reaches the host path
+       /hostK/d, which cannot be examined: lstat /hostK/d: permission denied.
+       snug cannot tell where this destination lands, so it refuses rather than guess.
+
+== relocated_link_budget_exceeded ==
+profile grantee puts a bind of /irrelevant at /K/a/x, and resolving where it lands took more than 40 steps
+       through host symlinks.
+       snug cannot tell where this destination lands, so it refuses rather than guess.
+
+== relocated_after_me ==
+profile grantee puts a bind of /irrelevant at /G/a/b, and resolving where it lands passes through /home/u/x,
+       which profile other's own mount would supply — but that mount is emitted AFTER this one,
+       so it does not exist yet when bwrap creates this mountpoint.
+       snug cannot tell where this destination lands, so it refuses rather than guess.
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 

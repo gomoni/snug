@@ -114,7 +114,7 @@ cost review rounds.
 **Inside the sandbox.** T1–T4 above. Hostile by assumption. Everything in snug is
 aimed here: the empty tmpfs root, the private netns with host loopback closed,
 `--clearenv` plus `cmd.Env = []string{}`, the seccomp filter, `sealInheritedFDs`,
-`safeStdio`, `rejectMasking`, the `/snug/bin` staging rule. A defect on this
+`safeStdio`, `rejectMasking`, `rejectRelocatedGrant`, the `/snug/bin` staging rule. A defect on this
 side is a snug bug and gets a `sev:` label.
 
 **Outside it, writing profiles.** A human. Invariant 3 exists to put the trusted
@@ -624,6 +624,12 @@ This is also why substituting a host binary is done by **PATH precedence, not ov
 
 This turns a runtime `bwrap` abort into a resolve-time error with a readable message, and it is directly unit-testable against a fake `Environ`.
 
+**The HOST's symlinks inside a bound tree divert a mountpoint exactly as `snug`'s own do, and that half is `rejectRelocatedGrant`.** The rule above reads `snug`'s `KindSymlink` grants. It does not read the host content a covering bind supplies for the components *below* it — and `bwrap` does, because it resolves a destination INSIDE the sandbox, one component at a time, against whatever is mounted there at that moment. `guestLanding` walks every non-`Authored` mount's guest path the same way and refuses any whose landing is not its own guest path, naming the link, the link's text, the landing, and `grant <landing> instead`. MEASURED on `bubblewrap 0.12.0` (issue #588): `--ro-bind $S/w/mnt $S/G/sub/mnt`, with a host `$S/cover/sub -> $S/w` inside a cover bound at `$S/G`, created its mountpoint at `$S/w/mnt` and served an earlier profile's `rw` grant read-only — exit 0, no refusal, and `--dry-run` rendering the row at `$S/G/sub/mnt`.
+
+The refusal is what makes **`m.Guest` the landing** for every mount `rejectMasking`, `nearestCovering`, `checkNesting` and the depth sort see, so their lexical comparison of guest paths IS a landing comparison. It also removes what a "lands at" column in `--dry-run` would have disclosed: no policy `snug` will run has a mount whose landing differs from its guest path, so the FILESYSTEM block is true by construction rather than by annotation, and a column that is always empty is one nobody reads when it finally is not.
+
+Two exemptions, both structural. The **final component** is never followed: `bwrap` opens the destination without following it (`Can't mount on symlink destination …`, above), so a symlink there is `bwrap`'s refusal rather than a redirection — which is also why `@target-rw` over `@parent-ro`, one component deeper, never `Lstat`s anything. **`Authored`** mounts are `snug`'s own writing and are judged instead by `rejectGeneratedOntoHost`'s walk, which starts at the covering grant's root and returns a host path; the two walks share exactly one step, `linkLanding`, because the namespace a link's text is read in is the part that was got wrong once (#580).
+
 ### 3.4 Validation
 
 Before emitting anything, `Validate()` checks:
@@ -635,6 +641,7 @@ Before emitting anything, `Validate()` checks:
 - At least one of `/usr` or `/bin` is granted, otherwise nothing can execute — reported as *"no runtime granted; add the `@sys` profile"* rather than a confusing `exec: no such file`.
 - **RULE 4** — nothing but `snug` may put a node at `/proc` or `/dev` (below).
 - **RULE 2** — nesting, judged on the outer mount (below).
+- Relocation (§3.3) — a non-`Authored` grant whose destination lands anywhere other than its own guest path, checked before the two rules above so both may compare guest paths lexically.
 
 `Validate` is the *only* refuser, which is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for a validation failure and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
 

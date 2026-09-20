@@ -1128,6 +1128,16 @@ func TestGoldenRefusals(t *testing.T) {
 		// enough, because a link's landing can be a link.
 		{"generated_through_a_two_hop_link_chain", refusalGeneratedThroughATwoHopLinkChain},
 
+		// issue #588: a grant whose guest destination, resolved the way bwrap
+		// resolves it, lands anywhere other than its own guest path. Five rows,
+		// one per refusal arm — the producers live in relocatedgrant_test.go,
+		// beside the rest of the rule.
+		{"relocated_onto_another_grant", refusalRelocatedOntoAnotherGrant},
+		{"relocated_onto_nothing", refusalRelocatedOntoNothing},
+		{"relocated_lstat_error", refusalRelocatedLstatError},
+		{"relocated_link_budget_exceeded", refusalRelocatedLinkBudgetExceeded},
+		{"relocated_after_me", refusalRelocatedAfterMe},
+
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},
 		{"env_name_equals", refusalEnv(EnvGrants{Set: map[string]string{"PATH=/evil:": "x"}})},
