@@ -30,7 +30,7 @@ import (
 //     `~/.cache/build` produces the identical conflict at a different path. A
 //     rule keyed on p.Home would have been wrong on day one.
 //  2. snug's own /tmp is a tmpfs too, and `snug /tmp/x` is ordinary: `mktemp -d`
-//     targets are how VERIFY.md and the whole integration suite build theirs.
+//     targets are how the whole integration suite builds theirs.
 //     Only tmpfs paths rooted at $HOME count.
 //  3. When the target IS one of those five (`snug ~`), NO builtin selection
 //     works — @target-rw includes @home, so a bind of the target and the tmpfs

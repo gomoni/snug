@@ -309,7 +309,7 @@ func TestTheDesktopSocketClaimIsAboutMountsNotAboutThisHost(t *testing.T) {
 			t.Errorf("%q reached the screen, so the desktop-socket line is being derived from "+
 				"host environment. It must not be: that turns a true host-independent claim "+
 				"into a host-dependent approximation of the same claim, and puts a "+
-				"per-developer value into three golden fixtures and VERIFY.md:\n%s", leak, got)
+				"per-developer value into three golden fixtures:\n%s", leak, got)
 		}
 	}
 }

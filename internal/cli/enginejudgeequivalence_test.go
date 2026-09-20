@@ -91,6 +91,16 @@ func TestScreenRefusalAgreesWithTheRunForEverySpelling(t *testing.T) {
 // is not covered by any grant lexically, so it printed the clearance
 // sentence while the run — which resolves first — refused. Both sides are
 // asserted in the SAME test body so the two cannot drift apart again.
+//
+// EngineToolchain itself was never the bug — it already resolved before
+// judging, on the pre-fix code too — so this exact spelling cannot be
+// reproduced by hand through a real (non-`--dry-run`) invocation: the CLI's
+// own preflightToolchainRoot refuses it first, via its "the resolved engine
+// binary must be INSIDE the named root" containment check, before the
+// writability question this test is about ever gets asked. Calling
+// p.EngineToolchain directly, as this test does, is what bypasses that
+// earlier gate and is where the run-vs-screen equivalence for issue #422 is
+// actually proven.
 func TestContainersScreenAgreesWithTheRunOnASymlinkedToolchainRoot(t *testing.T) {
 	const spelling = "/srv/bundle"                // outside every grant, as spelled
 	const resolvesInto = "/home/u/proj/sub/tools" // inside the rw target once resolved

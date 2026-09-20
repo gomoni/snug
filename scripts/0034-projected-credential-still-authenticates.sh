@@ -2,7 +2,6 @@
 # 0034 — the credential `@claude` projects into the sandbox carries no
 # refresh token, and it still authenticates (issue #58).
 #
-# Migrated from VERIFY.md §6n.
 #
 # ~/.claude/.credentials.json is the one file `@claude` stages that is a
 # CREDENTIAL rather than a configuration, and it used to be copied verbatim —
@@ -20,7 +19,7 @@
 # still WORKS. A shape that merely LOOKS like a valid credential and gets
 # rejected on first use would fail every real run, silently, on whatever turn
 # first touched the network — this is "the measurement the whole change
-# rests on" (VERIFY.md's own words for it), which is why it is a live,
+# rests on", which is why it is a live,
 # authenticated turn and not a shape check alone.
 #
 # SKIP: no snug binary, no python3, no claude on PATH, no

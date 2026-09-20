@@ -4775,7 +4775,7 @@ func TestTmpfsSuperblockSizeReadsTheBoundAndNotTheReadersFilesystem(t *testing.T
 	}
 }
 
-// ── the container's resolv.conf under @net (VERIFY §9f's second half) ──────
+// ── the container's resolv.conf under @net (issue #126's second half) ─────
 
 // resolvNameservers reads the "nameserver X" lines out of a rendered
 // /etc/resolv.conf, in the order they appear — the same extraction
@@ -4792,7 +4792,7 @@ func resolvNameservers(text string) []string {
 }
 
 // TestContainerResolvConfAgreesWithTheSandboxUnderNet is
-// TestContainerGetsGeneratedResolvConfNotTheHosts's other half, VERIFY §9f's
+// TestContainerGetsGeneratedResolvConfNotTheHosts's other half, issue #126's
 // own second paragraph: "Add -p @net and expect the container's resolv.conf
 // to now agree with the SANDBOX's own (pasta's resolver, or the host's
 // routable nameservers relayed through egress) — expected once egress is
@@ -4895,7 +4895,7 @@ print("PROBE-COMPLETE", flush=True)
 // SOURCE TEXT internal/dockerproxy/refusalreason_test.go:
 // TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags reads. Before #182 the
 // engine shared the MACHINE's System V IPC and its UTS namespace — measured,
-// per that section of VERIFY: /proc/<engine>/ns/ipc and /ns/uts were
+// by hand: /proc/<engine>/ns/ipc and /ns/uts were
 // byte-for-byte the host's — which made IpcMode=host/UTSMode=host the only
 // two proxy filters standing between a container and the host's SysV
 // shm/sem/mq and real hostname. #182 gives the engine its own of both,
@@ -4953,9 +4953,9 @@ sleep 300
 	}
 }
 
-// ── the lifecycle verbs against a live engine (VERIFY §23b) ────────────────
+// ── the lifecycle verbs against a live engine (issue #459) ───────────────
 
-// TestContainerLifecycleVerbsWorkAgainstALiveEngine is VERIFY §23b's positive
+// TestContainerLifecycleVerbsWorkAgainstALiveEngine is issue #459's positive
 // half end to end against a REAL engine: create, start, stop, start again on
 // an EXISTING container (the case §23b's own measurement calls out as easy to
 // miss — it sends `detachkeys`, where `run -d`'s own start sends
@@ -5068,7 +5068,7 @@ print("SCRIPT-COMPLETE", flush=True)
 	}
 }
 
-// ── a named volume outlives its container (VERIFY §23c, issue #464) ────────
+// ── a named volume outlives its container (issue #464) ──────────────────
 
 var (
 	volumeprobeBinOnce sync.Once
@@ -5107,7 +5107,7 @@ func volumeprobeBin(t *testing.T) string {
 	return volumeprobeBinPath
 }
 
-// TestANamedVolumeOutlivesItsContainer is VERIFY §23c's positive claim: a
+// TestANamedVolumeOutlivesItsContainer is issue #464's positive claim: a
 // named volume is a reference snug forwards UNRESOLVED — the ENGINE resolves
 // it, in a store keyed on the target directory and persistent across runs —
 // so content one container writes into it is still there for a SECOND,

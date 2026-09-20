@@ -149,7 +149,10 @@ func TestNonInteractiveRunCannotWriteToTheOperatorTerminal(t *testing.T) {
 // is NOT closed, and it is meant to keep passing: when the operator hands the
 // payload their terminal, escape sequences the payload writes reach the
 // emulator. --new-session cannot change that — the pty is on a descriptor the
-// payload holds, and setsid only takes away the /dev/tty spelling.
+// payload holds, and setsid only takes away the /dev/tty spelling. There is no
+// filter over the bytes instead, and there will not be one: a filter is a
+// catalogue of dangerous escape spellings that has to stay complete forever,
+// against a shell the operator chose to share.
 //
 // ONE DESCRIPTOR AT A TIME, WHICH IS THE HALF A REDTEAM ROUND FOUND MISSING.
 // The first version of this test put the pty on all three and so never saw
@@ -194,7 +197,7 @@ func TestKnownOpenResidualPayloadWritesToASharedTerminal(t *testing.T) {
 			// the operator's own pty (bwrap keys its creation on snug's STDOUT
 			// being a terminal, so fd 1 is always the pty in exactly this
 			// shape) — not merely present. `ls -Ll`'s device column ("136, 6")
-			// is the same pair the measured example in the deleted VERIFY.md
+			// is the same pair the measured example in the deleted checklist
 			// used; comparing it against fd 1 is comparing two READINGS of
 			// that rdev, never a name, so a bind that pointed at some other
 			// character device would be caught even though `ls /dev/console`

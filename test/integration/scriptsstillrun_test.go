@@ -15,15 +15,15 @@ import (
 // TestTheNestingScriptStillReadsALiveSandbox runs scripts/payloads/pid-nesting.py
 // against a real run, and it is a SMOKE test on purpose: the property it
 // prints is owned by TestOfflineArmsIntermediateBwrapIsUnaddressableFromThe
-// Payload, and asserting it twice would be two copies of one state, the
-// second of which nobody updates. What has no other owner is whether the
-// script still WORKS — VERIFY.md §21 tells a human to run it, and nothing but
-// a human has ever done so.
+// Payload and TestStagedArmsBwrapIsNotNested, and asserting it twice would be
+// two copies of one state, the second of which nobody updates. What has no
+// other owner is whether the script still WORKS: scripts/README.md lists it as
+// a payload a human runs, and nothing but a human had ever done so.
 //
 // The failure this closes is drift, measured elsewhere in this repo rather
-// than imagined: internal/profile/docexamples_test.go exists because README
-// and VERIFY.md carried a profile that had stopped parsing, and VERIFY.md's
-// §6j exited 77 before its expected-output fence was ever printed.
+// than imagined: internal/profile/docexamples_test.go exists because two
+// documents carried a profile that had stopped parsing, and the by-hand check
+// covering it exited 77 before its expected-output fence was ever printed.
 func TestTheNestingScriptStillReadsALiveSandbox(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
@@ -34,7 +34,7 @@ func TestTheNestingScriptStillReadsALiveSandbox(t *testing.T) {
 	}
 	script := filepath.Join("..", "..", "scripts", "payloads", "pid-nesting.py")
 	if _, err := os.Stat(script); err != nil {
-		t.Fatalf("scripts/payloads/pid-nesting.py is what VERIFY.md §21 tells a human to run: %v", err)
+		t.Fatalf("scripts/payloads/pid-nesting.py is the payload scripts/README.md tells a human to run: %v", err)
 	}
 
 	proj, _ := target(t)

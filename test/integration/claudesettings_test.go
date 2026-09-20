@@ -142,9 +142,10 @@ echo '{}' > "$HOME/.claude/settings.json" && echo WRITE-OK || echo WRITE-FAIL
 	// are absent from the document Claude Code would parse. Whether Claude Code
 	// then honours a hooks block it was never given is Claude Code's contract,
 	// not snug's boundary. The end-to-end arm — run the real binary and watch a
-	// hook fire — needs a live credential and is a by-hand step in VERIFY.md §6b,
-	// where it is written up against the PLUGIN channel (issue #68), which is the
-	// one that is still open and therefore the one worth a human's time.
+	// hook fire — needs a live credential, so it is
+	// scripts/0033-an-unnamed-plugins-hook-does-not-fire.sh, written against the
+	// PLUGIN channel (issue #68), which is the one that is still open and
+	// therefore the one worth the host state it needs.
 
 	// ── 4. The env regression — §4.1, checked in all three places ───────────
 	if strings.Contains(settingsBody, canary) {

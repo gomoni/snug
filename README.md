@@ -267,8 +267,9 @@ filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
 ```
 
 That last line is why there is no `snug stop` and no stale-state file to clean
-up by hand. If you want to check rather than trust, `scripts/VERIFY.md` has the
-by-hand version and the integration suite asserts it on every run.
+up by hand. If you want to check rather than trust, the integration suite
+asserts it on every run — `test/integration/orphan_test.go` sweeps every
+catchable signal at every startup offset on both topologies.
 
 # Interim LLM written documentation
 
@@ -617,7 +618,8 @@ perfectly correct `Host`. The token makes possession of the URL the gate, and
 cross-site page started, so the credential is missing exactly when the initiator
 is one the door refuses anyway.
 
-**The walkthrough and the measured admission matrix are `scripts/VERIFY.md` §20.** They
+**The walkthrough and the measured admission matrix are in
+[`scripts/README.md`](scripts/README.md)'s by-hand section.** They
 live there rather than here because this is not settled yet, and a user guide
 that churns ahead of the code is worse than a pointer.
 
@@ -729,8 +731,8 @@ own tmpfs; a second session cannot read it. Not "cannot be read" — same uid on
 the host, so `/proc/<pid>/root`, `nsenter` and gdb are still yours. The line
 runs between sandboxes, not between you and a process you started. What still
 crosses is the shared target: one sandbox plants `.git/hooks/pre-commit`, the
-other's `git commit` runs it. `scripts/VERIFY.md` §6n-bis is the by-hand check, positive
-control included.
+other's `git commit` runs it. `TestOneSessionsClaudeCredentialIsNotReadableFromAnother`
+(`test/integration`) asserts the two negatives, host positive control included.
 
 ## What snug does not defend against
 
@@ -823,8 +825,11 @@ deliberately does not, and worked prevented/not-prevented examples — live in
 
 ## Verifying the sandbox
 
-[`scripts/VERIFY.md`](scripts/VERIFY.md) constains a set of instructions for humans
-to test the sandbox, beside the checks `make verify` runs.
+[`scripts/README.md`](scripts/README.md) indexes the checks `make verify` runs,
+the payloads, and — in its last section — the procedures a human follows by hand.
+Those are what nothing runs: a claim needing two logged-in accounts, a live
+`gh`, a `sudo truncate`, a real engine host, a browser, or a measurement of one
+machine. Everything else is a Go test or a numbered script.
 
 The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
 job is to escape. It runs before every milestone lands, and it keeps earning its
@@ -868,8 +873,8 @@ confirmed it. A list in prose goes stale; a list with issue numbers does not.
 ## Documentation
 
 [`scripts/`](scripts/) is the checklist: `make verify` walks the numbered checks,
-and [`scripts/VERIFY.md`](scripts/VERIFY.md) is what is left of the by-hand half.
-Run them rather than trusting this file.
+and [`scripts/README.md`](scripts/README.md) indexes them and carries the by-hand
+half. Run them rather than trusting this file.
 
 Design and research material is **not** user documentation — it is the best
 record that exists, written for the people building snug and measured against

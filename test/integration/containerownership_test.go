@@ -16,8 +16,8 @@ package integration
 // # Why two real runs on one target, sequentially
 //
 // The engine's store is keyed on the target directory and persists across
-// runs (ownership.go's own package comment; VERIFY.md §9's "warm start"
-// language). Two runs on the SAME target directory therefore share one
+// runs (ownership.go's own package comment, which is where the "warm start"
+// language lives). Two runs on the SAME target directory therefore share one
 // store, which is the only way to produce "another run's container" at all.
 // The two runs here are SEQUENTIAL — run() blocks until the first snug process
 // has fully exited before the second is even started — because that is the

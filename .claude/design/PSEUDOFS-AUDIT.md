@@ -231,7 +231,8 @@ demote-in-place.
   is reported as absent and never written, because a `sysctl.d` line for a
   knob the kernel lacks fails on every boot. Container preflight P6's `ptrace_scope` refusal
   reads its threshold from the same row, so the report and the refusal cannot
-  disagree about the number. Issue #526; `VERIFY.md` §27.
+  disagree about the number. Issue #526; `internal/cli/hostsysctl_test.go` and
+  `scripts/0020-a-weak-host-warns-and-still-runs.sh`.
 - **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is
   `/proc`, `/dev` or `/sys` — by path, and by the mount table's filesystem name
   for one of the three mounted somewhere else — at any access, and refuses any grant at or
@@ -291,7 +292,7 @@ demote-in-place.
   **Do not filter escape sequences** — a 95%-correct terminal filter is the
   D-Bus-proxy mistake in another costume. The shared-terminal half is stated as
   a non-goal in `THREAT-MODEL.md` §3.6, on `--dry-run`'s TTY block, in
-  `VERIFY.md` and in the injected `~/.claude/CLAUDE.md`, and both halves are
+  the injected `~/.claude/CLAUDE.md`, and both halves are
   pinned by `TestNonInteractiveRunCannotWriteToTheOperatorTerminal` and
   `TestKnownOpenResidualPayloadWritesToASharedTerminal`.
 - **R11 — SHIPPED.** A syscall arriving under a non-native audit arch is
@@ -400,7 +401,7 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
   `NPROC`-shaped env hints — **neither exists**. Reality is *stronger*, but a
   reader will "wire up what's documented," i.e. `ro=["/sys"]`, which is exactly
   Y2/Y3.
-- INDEX §5.2 / VERIFY §77: synthetic `/dev` described as "null, zero, full,
+- INDEX §5.2: synthetic `/dev` described as "null, zero, full,
   random, urandom, tty, plus a private devpts" — also contains `console` (host
   pty), `core → /proc/kcore`, `shm`, `ptmx`, `fd`, `std{in,out,err}`.
 - INDEX §5.3: generated machine-id ⇒ "cannot fingerprint the host" — false (P6).

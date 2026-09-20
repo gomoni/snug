@@ -26,10 +26,18 @@ import (
 // appeared hit it 5 times out of 5. That no longer reproduces: 5 attempts
 // through this helper, 5 through sweeppeer_test.go's own loop, and 3 by-hand
 // kills polling every 2 ms for whichever record landed first all produced a
-// sandbox that died WITH its snug. The retry loop stays, and it SKIPS rather
-// than passing when no orphan can be produced: "the sweep removed nothing"
-// must never be reported as success. What the sweep does to an orphan once
-// there is one is asserted deterministically by
+// sandbox that died WITH its snug. This is not a fluke: this test starts its
+// run on the OFFLINE arm (no `-p @net`), and TestSIGKILLBeforeThePayloadStartsLeavesNoInit's
+// own header records why that arm structurally cannot leak here any more —
+// bwrap is pid 1 of the intermediate namespace `__inpidns` gives it, so the
+// kernel's own zap_pid_ns_processes tears the sandbox init down WITH bwrap the
+// moment snug's SIGKILL lands, before an orphan can exist to sweep. A staged
+// (`-p @net`) run has no such namespace between snug and its bwrap, which is
+// where TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock's
+// planted stand-in lives instead of waiting on this window. The retry loop
+// stays, and it SKIPS rather than passing when no orphan can be produced:
+// "the sweep removed nothing" must never be reported as success. What the
+// sweep does to an orphan once there is one is asserted deterministically by
 // TestTheSweepReapsADeadPeersInitWhileALivePeerHoldsTheTargetLock, which
 // plants the record rather than waiting for this window.
 //

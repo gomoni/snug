@@ -28,9 +28,8 @@ import (
 //
 // It must fail the day someone believes #287 is fully closed. If a future
 // change makes the write below refused or unreachable, that is real news —
-// come here, read why, and update this test (and VERIFY.md §4b, which carries
-// the same residual for a human) rather than leaving an assertion that quietly
-// stopped being able to fail.
+// come here, read why, and update this test rather than leaving an assertion
+// that quietly stopped being able to fail.
 //
 // TWO MARKERS, ONE PER HALF OF THE CLAIM:
 //   - payloadMarker (via run().mustRun) proves the SANDBOX actually started —
@@ -125,7 +124,7 @@ func TestAFifoInAGrantedDirectoryStillReachesTheHost(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatalf("the host never received anything through the FIFO within 20s. If issue #287's "+
 			"residual has genuinely been closed since this test was written, that is real news — "+
-			"update this test AND VERIFY.md §4b together, with the measurement that closed it. Do "+
+			"update this test with the measurement that closed it. Do "+
 			"not leave this assertion unable to fail.\nsandbox output:\n%s", r.out)
 	}
 }

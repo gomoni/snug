@@ -2,7 +2,6 @@
 # 0012 — `snug doctor` names each wrong-host condition with its OWN fix, not
 # another's.
 #
-# Migrated from VERIFY.md §19a.
 #
 # Five conditions that all used to read as "cannot create a user namespace",
 # each now naming its own fix:

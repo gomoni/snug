@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestDryRunExitsZeroWithARefusingToolchainRoot is VERIFY §18's own control on
+// TestDryRunExitsZeroWithARefusingToolchainRoot is the control on
 // issue #422's screen: a $SNUG_PODMAN_ROOT this run's own grants make
 // writable renders "THIS RUN WILL REFUSE" in the CONTAINERS block, and
 // --dry-run still exits 0 — a screen judges what the run WOULD do; it never

@@ -83,32 +83,26 @@ intact. `.claude/design/` holds the design and research material they work from
 (INDEX.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
 There is deliberately **no `docs/` tree**: a generated user guide was tried and
 removed, because the prose churned faster than the code it described and nobody
-was going to keep it honest. `VERIFY.md` was the exception, on the
-grounds that every line is a command with its expected output — and that was
-the claim nothing enforced. `wc -l scripts/VERIFY.md` says how big the unenforced half
-still is, and the only thing that ever checked whether a line of it was true
-was a human reading it. A command plus the output it produced once is a copy of
-state; the count is not written down here for the same reason.
+was going to keep it honest. A by-hand markdown checklist was the exception, on
+the grounds that every line was a command with its expected output — and that
+was exactly the claim nothing enforced. A command plus the output it produced
+once is a copy of state: stale the moment the code moves, and the only thing
+that ever checked whether a line of it was still true was a human reading it.
 
-So the exemption now belongs to `scripts/`, which is executable in the sense
-VERIFY.md claimed — and VERIFY.md now lives there too, because a checklist in
-one directory with its executable form in another is two places a reader has to
-know about: `make verify` walks `scripts/NNNN-slug.sh` in numeric order,
-each prints what it asserted, and 79 is SKIP (**not** 77 — that is snug's own
-`exitPolicy`, so a script ending on an uncaptured refusal would report SKIP).
-`VERIFY.md` shrinks to the prose that is genuinely not executable. Three rules,
-and `scripts/README.md` is the index:
+So the exemption belongs to `scripts/`, which is executable in the sense the
+checklist only claimed to be: `make verify` walks `scripts/NNNN-slug.sh` in
+numeric order, each prints what it asserted, and 79 is SKIP (**not** 77 — that
+is snug's own `exitPolicy`, so a script ending on an uncaptured refusal would
+report SKIP). Two rules, and `scripts/README.md` is the index:
 
-- **Every new check is a script or a Go test. Never a new VERIFY.md section.**
+- **Every new check is a script in `scripts/` or a Go test. Markdown is not
+  somewhere a check can live**, because nothing runs it.
 - **A check CI can run on every push belongs in `test/integration`, not in
   `scripts/`.** A check in both places is a second copy of state, and the copy
   nobody runs is the one that goes stale. `scripts/` keeps what CI cannot run —
   a per-machine answer, state CI structurally lacks, a human's `sudo` — plus
   the payloads under `scripts/payloads/`, which are programs run INSIDE a
   sandbox and have no pass/fail of their own.
-- **A VERIFY.md section is migrated when it is touched, never edited in
-  place** — into a script, into a Go test, or deleted because a Go test already
-  asserts it.
 
 **Every new document starts in `.claude/scratchpad/`, which is in `.gitignore`**
 — not "start it in design/ and remember not to commit it", but somewhere a
@@ -144,8 +138,8 @@ All five, in order. A milestone is not finished until the last one is.
 1. `make gate` green — gofmt, vet, and the full test suite.
 2. `make integration` green (`SNUG_REQUIRE_SANDBOX=1`), with a new named test for
    whatever the milestone added, and `make verify` green. Where the check needs
-   a host CI does not have, it is a `scripts/NNNN-slug.sh` instead — never a new
-   `VERIFY.md` section.
+   a host CI does not have, it is a `scripts/NNNN-slug.sh` instead — never a
+   paragraph of markdown telling a human to run it.
 3. **`redteam` has attacked it.** Not optional, not "if there's time". Every
    milestone that adds a hole gets a run before it lands, and so does any change
    to the policy model, mount generation, the seccomp filter, or a

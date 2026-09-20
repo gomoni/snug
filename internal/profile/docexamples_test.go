@@ -10,14 +10,14 @@ import (
 
 // ── the runnable-example sweep (issue #44 follow-up) ────────────────────────
 //
-// README.md's five-verb example and VERIFY.md's §6j wrote
+// README.md's five-verb example and the by-hand checklist's five-verb check wrote
 // `[profile.mytools.environ.inherit] COLORTERM = true` with no `declare`
 // block. COLORTERM has no roster row (internal/policy/envtypes.go), so once
 // the roster flip landed, the WHOLE profile was refused at parse time — and
-// nothing caught it: VERIFY.md "earns its place by being executable" but
-// nothing runs it except a human, and README's examples are never run at all.
-// VERIFY.md's own §6j exited 77 before its expected-output fence was ever
-// printed. Both documents now carry a `declare` block; this file is what
+// nothing caught it: the checklist "earned its place by being executable" but
+// nothing ran it except a human, and README's examples are never run at all.
+// the checklist's own five-verb check exited 77 before its expected-output
+// fence was ever printed. Both documents now carry a `declare` block; this file is what
 // makes the NEXT such change fail `go test` instead of a human's terminal.
 //
 // THE EXTRACTION RULE, mechanical rather than a hand-maintained list of line
@@ -25,8 +25,9 @@ import (
 // documents themselves, not a hypothetical:
 //
 //  1. Every fenced code block (``` … ```) in the document, whatever its
-//     language tag. README spells its profiles in ```toml fences; VERIFY.md
-//     mostly does not — most of its examples are plain ```bash.
+//     language tag. README spells its profiles in ```toml fences;
+//     scripts/README.md mostly does not — its examples are plain ```bash or
+//     ```console.
 //  2. Within each fenced block, look for shell heredocs: a line matching
 //     `<<-?['"]?WORD['"]?` opens one, a later line that is EXACTLY `WORD`
 //     closes it. If a block contains at least one heredoc, ONLY the heredoc
@@ -34,35 +35,35 @@ import (
 //     delimiter, and any shell that runs afterwards are discarded outright,
 //     because they are not TOML and parsing them as TOML would fail for a
 //     reason that has nothing to do with the profile inside. This is what
-//     pulls VERIFY §6j's `[profile.mytools]` out of a ```bash fence that
-//     also contains `COLORTERM=truecolor … | sed -n …` on the next line.
+//     pulls scripts/README.md's `[profile.acct-a]` out of a fence whose
+//     heredoc is followed by more shell.
 //  3. Of what step 1/2 produced, skip leading blank and `#`-comment lines,
 //     then require the very next line to be a COMPLETE `[profile.NAME]`
 //     table header (nothing after the closing `]` but whitespace). Anything
 //     that fails this is out of scope, and the rule is deliberately blind to
 //     WHY: a bare `[profile.NAME.identity]` sub-table with no top-level
 //     header before it, a `defaults = [...]` config.toml line, a JSON
-//     heredoc (`<<EOF` … a `.claude/settings.json` body), a Python heredoc
-//     (`<<'EOF'` … `probe.py`), and — the case that would otherwise be a
-//     false positive — VERIFY §6h's `one() { … }` shell function, whose
-//     FIRST line is `one() {  # one <name> <toml-body>` even though a later
-//     line inside a single-quoted argument reads `[profile.c]` for one of
-//     its three DELIBERATELY-REFUSED fixtures. All five fail "is the first
-//     substantive line a complete profile header", and for all five that is
-//     the right verdict, not a gap — §6h's fixtures are refused ON PURPOSE
-//     (bad verb, forbidden name) and asserting parse() succeeds on them would
-//     be asserting the wrong thing.
+//     heredoc (`<<EOF` … a `.claude/settings.json` body) and a Python heredoc
+//     (`<<'EOF'` … `probe.py`). Each fails "is the first substantive line a
+//     complete profile header", and for each that is the right verdict rather
+//     than a gap. The sharpest case was a shell function whose first line read
+//     `one() {  # one <name> <toml-body>` while a later line inside a
+//     single-quoted argument read `[profile.c]` for a DELIBERATELY-REFUSED
+//     fixture; asserting parse() succeeds on that would have been asserting the
+//     wrong thing. That fixture is a Go test now, so the rule's blindness to
+//     WHY is what keeps it correct without it.
 //
 // WHAT THIS DELIBERATELY DOES NOT COVER: a profile spelled through
 // `printf '[profile.x]\n...'` rather than a heredoc or a fenced ```toml
-// block — VERIFY.md does this over a dozen times. It is excluded by
+// block — scripts/README.md still does this four times. It is excluded by
 // construction rather than by a special case: the physical line always reads
 // `printf '...' '[profile.x]' ...`, never `[profile.x]` alone, so step 3's
 // exact-header-line test already says no. Reconstructing these would mean
 // interpreting printf's OWN escaping rules — a second parser this sweep would
 // then have to keep correct — for examples that are shell-escaping
 // demonstrations first and profile text second. The two examples this sweep
-// exists to protect (README's five-verb block, VERIFY §6j) are both
+// exists to protect (README's five-verb block, and the five-verb check that
+// is a Go test now) are both
 // heredoc/fenced-block spelled, not printf-spelled.
 //
 // Lives in internal/profile, not internal/cli or internal/policy: `parse` (below)
@@ -213,10 +214,10 @@ func extractProfileExamples(t *testing.T, path string) []docCandidate {
 func TestDocumentedExampleProfilesParse(t *testing.T) {
 	var all []docCandidate
 	all = append(all, extractProfileExamples(t, "../../README.md")...)
-	all = append(all, extractProfileExamples(t, "../../scripts/VERIFY.md")...)
+	all = append(all, extractProfileExamples(t, "../../scripts/README.md")...)
 
-	// NON-VACUITY CONTROL. README and VERIFY.md between them write at least
-	// ten in-scope profile examples today (five apiece); if the extraction
+	// NON-VACUITY CONTROL. the repository README and scripts/README.md between them write
+	// ten in-scope profile examples today — measured, six and four; if the extraction
 	// rule ever stops matching — a doc reformatted to use tildes instead of
 	// backticks, a language-tag change that this rule does not in fact
 	// depend on but a future edit might make it start depending on, or
@@ -226,7 +227,7 @@ func TestDocumentedExampleProfilesParse(t *testing.T) {
 	const floor = 8
 	if len(all) < floor {
 		t.Fatalf("found only %d in-scope profile example(s) across README.md and "+
-			"VERIFY.md, want at least %d; the extraction rule stopped matching "+
+			"scripts/README.md, want at least %d; the extraction rule stopped matching "+
 			"something (see the file comment for what it looks for), or the "+
 			"documents genuinely lost their examples", len(all), floor)
 	}

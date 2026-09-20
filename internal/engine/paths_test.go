@@ -99,7 +99,7 @@ func TestEngineKeyUsesTheCanonicalTarget(t *testing.T) {
 }
 
 // recursiveEntries lists every path under root except root itself, mirroring
-// `find root -mindepth 1` (VERIFY.md's own by-hand check for this).
+// `find root -mindepth 1`.
 func recursiveEntries(t *testing.T, root string) []string {
 	t.Helper()
 	var got []string
@@ -118,8 +118,8 @@ func recursiveEntries(t *testing.T, root string) []string {
 	return got
 }
 
-// TestPlannedPathsCreatesNothing promotes VERIFY.md's by-hand check
-// ("A dry run still creates none of them") into `make gate`. PlannedPaths is
+// TestPlannedPathsCreatesNothing promotes the by-hand check that was written as
+// "a dry run still creates none of them" into `make gate`. PlannedPaths is
 // what --dry-run calls (internal/cli/container.go), and its own doc comment's
 // whole contract is that it is string arithmetic over the environment — no
 // filesystem access at all. A regression here would make --dry-run, the one
@@ -152,7 +152,7 @@ func TestPlannedPathsCreatesNothing(t *testing.T) {
 	for _, root := range []string{dataHome, tmp} {
 		if got := recursiveEntries(t, root); len(got) != 0 {
 			t.Errorf("PlannedPaths left %d entr(y/ies) under %s: %v — a dry run must create "+
-				"nothing (issue #21, VERIFY.md's own check)", len(got), root, got)
+				"nothing (issue #21)", len(got), root, got)
 		}
 	}
 }

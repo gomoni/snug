@@ -70,7 +70,7 @@ func TestASelfSignalledPayloadExitsAt128PlusTheSignal(t *testing.T) {
 
 // TestGroupDeliveredSIGINTTearsDownTheWholeSandboxWithoutForwarding is what a
 // terminal's own Ctrl-C actually does today, and it is NOT what the deleted
-// VERIFY.md's §11-adjacent transcript claimed: that transcript's own expected
+// by-hand checklist's stage transcript claimed: that transcript's own expected
 // output has the payload's `trap 'echo caught-sigint; exit 7' INT` fire and
 // snug exit 7. Measured here, five for five, it does not: SIGINT to the whole
 // process group also reaches snug's own top-level process directly (nothing
@@ -84,8 +84,7 @@ func TestASelfSignalledPayloadExitsAt128PlusTheSignal(t *testing.T) {
 // window opens in exactly the gap a "forward it and wait" design would leave.
 // This is the correct, safety-motivated behaviour to pin — a future change
 // that made snug wait for the payload's own handler would reopen that window
-// — and the VERIFY.md transcript predates it, or was never re-run after it
-// landed.
+// — and that transcript predates it, or was never re-run after it landed.
 //
 // -p @net is deliberate, not incidental: it is the one shape that puts a
 // SECOND long-lived helper (the stage, which owns the netns) between P0 and

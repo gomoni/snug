@@ -1376,8 +1376,8 @@ var envNotes = map[string]envNote{
 	// came from rather than from a list someone remembered.
 	//
 	// That every process in the sandbox can READ them is not a fact about the
-	// client at all — it is /proc, it is measured (VERIFY.md §6b reads
-	// /proc/1/environ), and it holds whatever the consumer does with the value.
+	// client at all — it is /proc, it is measured (TestNoHostEnvironmentViaPid1
+	// reads /proc/1/environ), and it holds whatever the consumer does with the value.
 	// Keeping the two apart matters because the second is what makes the
 	// sentence actionable: the remedy is a credentials FILE, which is what
 	// @claude stages.

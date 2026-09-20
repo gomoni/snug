@@ -34,8 +34,7 @@ import (
 //
 // Every field below carries the MEASUREMENT that put it where it is:
 // captured against a real podman 6.0.2 CLI posting to a unix socket that
-// logs the request and answers it (VERIFY.md §22's method, no engine
-// needed), and cross-checked against a live snug engine
+// logs the request and answers it (no engine needed), and cross-checked against a live snug engine
 // (`@podman-build -p @net`, podman 6.0.2) for the fields that needed a real
 // create+start round trip to be sure of.
 func (p *Proxy) handleLibpodContainerCreate(w http.ResponseWriter, r *http.Request) {
@@ -653,7 +652,7 @@ func judgeLibpodNetworks(raw json.RawMessage) error {
 // device".
 //
 // MEASURED, podman 6.0.2, `podman create <flag> alpine true` posted to a
-// socket that logs the body (VERIFY.md §22's method):
+// socket that logs the body:
 //
 //	no flag              resource_limits absent (null)
 //	--memory 100m        {"memory":{"limit":104857600,"swap":209715200}}

@@ -38,7 +38,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | **DRAFT — nothing built.** Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
 | [`TARGET-LOCK.md`](TARGET-LOCK.md) | The per-target `flock` keyed on `sha256(realpath)` and resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open). A run takes it SHARED: it records that a sandbox is live on the target for `snug proxy` and `snug engine gc`, and refuses nothing. The orphan sweep asks no target-wide question — it judges each run record on its own owner. |
 
-Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../scripts/`](../../scripts/) is the checklist — `make verify` runs the executable half and [`../../scripts/VERIFY.md`](../../scripts/VERIFY.md) is what is left of the by-hand one, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
+Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../scripts/`](../../scripts/) is the checklist — `make verify` runs the executable half and [`../../scripts/README.md`](../../scripts/README.md) indexes it and carries the by-hand one, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
 
 **Status of the verification claims below:** every kernel/tool behaviour marked **VERIFIED** was executed on the development host (openSUSE, kernel 7.1.4, `bubblewrap 0.11.2`, `pasta 20260612`, running *inside* a rootless-podman `distrobox` container) at the time it was written. Age is a risk; `make verify` is the re-runnable form, and `scripts/README.md` says what each check asserts.
 
@@ -1454,7 +1454,7 @@ This paragraph also listed `$XDG_RUNTIME_DIR` for a milestone, and **no profile 
 snug/
 ├── go.mod                          module github.com/gomoni/snug
 ├── Makefile                        build, gate, integration, golden-update
-├── scripts/                        the checklist: `make verify`, plus VERIFY.md,
+├── scripts/                        the checklist: `make verify`, plus README.md,
 │                                what is left of the by-hand half
 ├── .claude/design/INDEX.md         this document
 │
@@ -1737,7 +1737,7 @@ There is no `live` build tag and no `SNUG_LIVE` gate in the tree. The design, ke
 
 1. `snug --dry-run <dir>` — the actual resolved policy and the actual argv, for your host.
 2. `internal/policy/testdata/*.bwrap.txt` — the reviewed goldens, byte-stable against a fake host.
-3. `scripts/` — `make verify` walks `NNNN-slug.sh` in numeric order; each prints what it asserted and exits 79 to SKIP. A check CI can run every push belongs in `test/integration` instead; `scripts/VERIFY.md` beside them keeps only the prose that is not executable.
+3. `scripts/` — `make verify` walks `NNNN-slug.sh` in numeric order; each prints what it asserted and exits 79 to SKIP. A check CI can run every push belongs in `test/integration` instead; `scripts/README.md` indexes them and keeps only the by-hand procedures nothing can run.
 
 The *mechanism* a worked example would illustrate — how the netns gets created and configured before a payload exists, and the teardown chain that ends it — is §4.3, which is where it belongs.
 

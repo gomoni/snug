@@ -148,7 +148,7 @@ func TestTheStagedArgvIsNotPrintedAsSelfContained(t *testing.T) {
 	} {
 		if !strings.Contains(staged, want) {
 			t.Errorf("the bwrap block for a staged netns does not say %q. Run as printed, that\n"+
-				"command has the HOST network namespace, and VERIFY.md's reader reproduces it\n"+
+				"command has the HOST network namespace, and a reader reproduces it by hand\n"+
 				"by hand:\n%s", want, staged)
 		}
 	}

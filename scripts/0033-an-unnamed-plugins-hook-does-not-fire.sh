@@ -2,7 +2,6 @@
 # 0033 — a hook-carrying plugin that `@claude` does not name does not fire
 # inside, even though its tree stays bound read-only (the #68 residual).
 #
-# Migrated from VERIFY.md §6, "The plugin channel, closed by the allowlist".
 #
 # `@claude` still binds `{home}/.claude/plugins` read-only — the plugin's own
 # code, skills and hooks.json are all visible inside — but snug regenerates
@@ -17,7 +16,7 @@
 # `Registered N hooks from M plugins` and one `Loading hooks from plugin:
 # <name>` line per plugin whose hooks.json it read — a real signal, not model
 # behaviour, so this does not depend on an LLM reliably noticing an injected
-# instruction. VERIFY.md already stated no test asserts this by any means;
+# instruction. Nothing asserted this by any means before;
 # this is the first.
 #
 # The debug file is written to a path relative to the target directory, which

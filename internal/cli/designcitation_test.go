@@ -25,7 +25,6 @@ var designDocCitation = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\.md\
 var notADesignDoc = map[string]string{
 	"CLAUDE.md":  ".",
 	"README.md":  ".",
-	"VERIFY.md":  "scripts",
 	"MEMORY.md":  ".",
 	"AGENTS.md":  ".",
 	"LICENSE.md": ".",
