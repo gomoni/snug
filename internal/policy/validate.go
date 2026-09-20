@@ -364,6 +364,10 @@ func (p *Policy) Validate(env Environ) error {
 		return err
 	}
 
+	if err := p.rejectRelocatedGrant(env); err != nil {
+		return err
+	}
+
 	return p.rejectMasking(env)
 }
 
@@ -477,6 +481,25 @@ func endpointNoun(mode fs.FileMode) string {
 // rather than in a loop inside Validate.
 const maxGeneratedDestLinks = 40
 
+// linkLanding reads the host symlink at hostAt and returns where it lands in
+// GUEST terms: absolute text against the sandbox's root, relative text against
+// the directory the link sits in. It is the single step bwrap's resolution and
+// snug's two destination walks have in common, and it is here rather than
+// copied because the namespace is the part that was got wrong once (#580):
+// EvalSymlinks resolves against HOST components, bwrap against GUEST ones, and
+// a path-translating grant makes those different places.
+func linkLanding(env Environ, guestAt, hostAt string) (landing, text string, err error) {
+	text, err = env.Readlink(hostAt)
+	if err != nil {
+		return "", "", err
+	}
+	landing = text
+	if !filepath.IsAbs(text) {
+		landing = filepath.Join(filepath.Dir(guestAt), text)
+	}
+	return filepath.Clean(landing), text, nil
+}
+
 // followToDestination walks from the covering grant's root down to the
 // generated file, resolving every symlink the way BWRAP will — against GUEST
 // components, inside the sandbox's namespace — and returns the host path bwrap
@@ -538,7 +561,7 @@ func (p *Policy) followToDestination(env Environ, m, outer Mount, at, host strin
 					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
 					provenance(outer), outer.Access, at, VisibleText(host), m.Guest, maxGeneratedDestLinks)
 			}
-			text, rerr := env.Readlink(hostAt)
+			landing, text, rerr := linkLanding(env, guestAt, hostAt)
 			if rerr != nil {
 				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
 					"       inside it, but the host symlink %s cannot be read: %v.\n"+
@@ -546,15 +569,6 @@ func (p *Policy) followToDestination(env Environ, m, outer Mount, at, host strin
 					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
 					VisibleText(hostAt), rerr)
 			}
-
-			// The landing, in GUEST terms: an absolute link is read against the
-			// sandbox's root, a relative one against the directory the link
-			// sits in.
-			landing := text
-			if !filepath.IsAbs(text) {
-				landing = filepath.Join(filepath.Dir(guestAt), text)
-			}
-			landing = filepath.Clean(landing)
 
 			if landing != at && !strings.HasPrefix(landing, at+"/") {
 				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s inside it —\n"+
@@ -1282,6 +1296,12 @@ func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 // generates — .claude/design/GIT-CONFIG.md), and @claude's settings.json went
 // the same way in issue #17. Both are still covered by this row; they are just
 // covered as generated content rather than as binds.
+//
+// This function compares guest paths lexically, which is only honest because
+// rejectRelocatedGrant runs first and refuses every non-Authored mount whose
+// destination lands anywhere other than its own guest path (issue #588): by
+// the time this runs, m.Guest IS the landing for every mount it sees, so the
+// lexical comparison below is the landing comparison.
 func (p *Policy) rejectMasking(env Environ) error {
 	for _, m := range p.SortedMounts() {
 		// RULE 3 — authorship, as a field rather than a convention. These are
@@ -1674,6 +1694,211 @@ func (p *Policy) rejectUnboundedTmpfs() error {
 			"       sets. A policy that reaches here was not built by Resolve: set the field, or set\n"+
 			"       tmpfs_size in ~/.config/snug/config.toml and resolve again.",
 			VisibleText(m.Guest))
+	}
+	return nil
+}
+
+// mountEmittedAfter reports whether a is emitted strictly after b in bwrap
+// argv order — SortedMounts' own comparator (types.go:600-606): depth
+// ascending, then guest path lexically.
+func mountEmittedAfter(a, b Mount) bool {
+	da, db := depth(a.Guest), depth(b.Guest)
+	if da != db {
+		return da > db
+	}
+	return a.Guest > b.Guest
+}
+
+// afterMeError explains a walk that would have to read a mount emitted after
+// the one being judged: at is the guest position the walk had reached, and
+// supplier is the mount that would put content there. bwrap has not created it
+// yet when it creates m's mountpoint, so anything read through it describes a
+// sandbox that does not exist at that moment.
+func afterMeError(m, supplier Mount, at string) error {
+	return fmt.Errorf("profile %s puts %s at %s, and resolving where it lands passes through %s,\n"+
+		"       which profile %s's own mount would supply — but that mount is emitted AFTER this one,\n"+
+		"       so it does not exist yet when bwrap creates this mountpoint.\n"+
+		"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+		provenance(m), describeNode(m), m.Guest, VisibleText(at), provenance(supplier))
+}
+
+// guestLanding answers, for a mount snug is about to hand bwrap, where bwrap
+// will really create the mountpoint — in GUEST terms.
+//
+// bwrap resolves a destination path inside the SANDBOX, one component at a
+// time, against whatever is mounted there at that moment. A covering bind
+// supplies host content for those components, so a host symlink inside a bound
+// tree diverts the mountpoint to wherever the SANDBOX has the link's text —
+// which is another grant's tree, or nothing at all. MEASURED in #588 on
+// bubblewrap 0.12.0: a second profile's `--ro-bind $S/w/mnt $S/G/sub/mnt`, with
+// a host `$S/cover/sub -> $S/w` inside the cover bound at $S/G, landed on
+// $S/w/mnt and turned the first profile's rw grant read-only, exit 0, no
+// refusal, and --dry-run rendered the row at $S/G/sub/mnt.
+//
+// via is the guest path of the FIRST symlink that diverted the walk, and text
+// is that link's text, both for the refusal. landing == m.Guest and via == ""
+// is the straight case, which is every mount in the shipped profile set today.
+func (p *Policy) guestLanding(env Environ, m Mount) (landing, via, text string, err error) {
+	comps := strings.Split(strings.Trim(m.Guest, "/"), "/")
+	last, pending := comps[len(comps)-1], comps[:len(comps)-1]
+
+	cur, links := "/", 0
+
+	for _, c := range pending {
+		cur = filepath.Join(cur, c)
+
+		// Re-examine the same position after every jump: a landing can itself
+		// be a link, and following only the first one was the chain bug
+		// followToDestination's own step() records above.
+		for {
+			if mm, ok := p.Mounts[cur]; ok {
+				if mountEmittedAfter(mm, m) {
+					return "", via, text, afterMeError(m, mm, cur)
+				}
+				break // bwrap made cur a directory already; nothing is followed.
+			}
+
+			outer, _, ok := p.nearestCovering(cur)
+			if !ok || outer.Kind != KindBind {
+				break // no host content at this position: a tmpfs is empty, /proc and /dev are kernel's.
+			}
+
+			// The same question the arm above asks, for the mount that SUPPLIES
+			// the host content rather than the one that occupies the position.
+			// A jump can leave the walk under a cover emitted after m, whose
+			// content bwrap does not have yet when it creates this mountpoint,
+			// so reading it here would answer for a sandbox that does not exist
+			// at that moment. Every constructed case is already refused because
+			// the landing differs from m.Guest anyway; this arm is what makes
+			// that a property of the walk rather than a coincidence of the
+			// cases somebody thought of.
+			if mountEmittedAfter(outer, m) {
+				return "", via, text, afterMeError(m, outer, cur)
+			}
+			host := outer.Host
+			if host == "" {
+				host = outer.Guest
+			}
+			hostAt := filepath.Join(host, strings.TrimPrefix(cur, outer.Guest))
+
+			fi, lerr := env.Lstat(hostAt)
+			if errors.Is(lerr, fs.ErrNotExist) {
+				break
+			}
+			if lerr != nil {
+				return "", via, text, fmt.Errorf("profile %s puts %s at %s, and resolving where it "+
+					"lands reaches the host path\n"+
+					"       %s, which cannot be examined: %v.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(m), describeNode(m), m.Guest, VisibleText(hostAt), lerr)
+			}
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				break
+			}
+
+			landingHere, linkText, rerr := linkLanding(env, cur, hostAt)
+			if rerr != nil {
+				return "", via, text, fmt.Errorf("profile %s puts %s at %s, and resolving where it "+
+					"lands reaches the host symlink\n"+
+					"       %s, which cannot be read: %v.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(m), describeNode(m), m.Guest, VisibleText(hostAt), rerr)
+			}
+			if via == "" {
+				via, text = cur, linkText
+			}
+			if links++; links > maxGeneratedDestLinks {
+				return "", via, text, fmt.Errorf("profile %s puts %s at %s, and resolving where it "+
+					"lands took more than %d steps\n"+
+					"       through host symlinks.\n"+
+					"       snug cannot tell where this destination lands, so it refuses rather than guess.",
+					provenance(m), describeNode(m), m.Guest, maxGeneratedDestLinks)
+			}
+			cur = landingHere
+		}
+	}
+
+	// The final component is never followed: bwrap opens the destination
+	// without following it (measured: `Can't mount on symlink destination
+	// …`; INDEX §3.3), so a symlink there is not a redirection.
+	return filepath.Join(cur, last), via, text, nil
+}
+
+// relocatedError explains a non-Authored mount whose guest path is not where
+// bwrap really creates the mountpoint (issue #588): a host symlink inside a
+// covering bind diverted the walk. via is the guest path of the symlink that
+// did it and text is the link's own, unresolved text; landing is where the
+// walk actually ends.
+func relocatedError(p *Policy, m Mount, via, text, landing string) error {
+	outer, at, _ := p.nearestCovering(via)
+	host := outer.Host
+	if host == "" {
+		host = outer.Guest
+	}
+	hostVia := filepath.Join(host, strings.TrimPrefix(via, at))
+
+	tail := "on top of whatever grant has that path, named by no line of --dry-run.\n" +
+		"       Measured that way (issue #588): a second profile's rw grant became read-only, snug\n" +
+		"       exit 0, no refusal."
+	_, exact := p.Mounts[landing]
+	cover, _, covered := p.nearestCovering(landing)
+	switch {
+	case !exact && !covered:
+		tail = fmt.Sprintf("and nothing in the sandbox has that path, so the run dies on bwrap's own\n"+
+			"       \"Can't mkdir parents for %s: No such file or directory\", which names neither snug\n"+
+			"       nor this profile.", VisibleText(landing))
+	case !exact && cover.Kind == KindTmpfs:
+		// Say what it IS rather than the downgrade sentence above, which would
+		// be a measurement this policy does not carry: a tmpfs exposes nothing
+		// and dies with the sandbox, so nothing is shadowed and no access
+		// changes. The grant simply takes effect nowhere a profile named.
+		tail = fmt.Sprintf("inside %s, an ephemeral tmpfs that dies with the sandbox — so\n"+
+			"       the grant takes effect at no path any profile named, and nothing says so.",
+			VisibleText(cover.Guest))
+	}
+
+	return fmt.Errorf("profile %s puts %s at %s, but that is\n"+
+		"       not where it lands.\n"+
+		"       profile %s grants %s on %s (the host's %s), and %s on the host\n"+
+		"       is a symlink to %q. bwrap resolves a mount destination INSIDE the sandbox, so it\n"+
+		"       creates the mountpoint at\n"+
+		"       %s instead — %s\n"+
+		"       Fix: grant %s — the path the sandbox really has.",
+		provenance(m), describeNode(m), VisibleText(m.Guest),
+		provenance(outer), outer.Access, at, VisibleText(host),
+		VisibleText(hostVia), VisibleText(text),
+		VisibleText(landing), tail,
+		VisibleText(landing))
+}
+
+// rejectRelocatedGrant refuses a non-Authored mount whose guest destination,
+// resolved the way bwrap resolves it — component by component, inside the
+// sandbox, through the host symlinks a covering bind carries — lands anywhere
+// other than its own guest path (issue #588). Without it, a second profile
+// can steer a third grant's mountpoint through a host symlink inside its own
+// bound tree and land it on top of an earlier profile's grant, changing that
+// grant's access with no refusal and no line of --dry-run naming it.
+//
+// It is the precondition rejectMasking's own doc comment now names: once
+// every non-Authored mount has passed here or been refused, m.Guest IS the
+// landing for every mount rejectMasking, nearestCovering and checkNesting
+// see, so their lexical comparison of guest paths is the landing comparison.
+//
+// Authored mounts are snug's own writing, judged by rejectGeneratedOntoHost's
+// own walk instead.
+func (p *Policy) rejectRelocatedGrant(env Environ) error {
+	for _, m := range p.SortedMounts() {
+		if m.Authored {
+			continue
+		}
+		landing, via, text, err := p.guestLanding(env, m)
+		if err != nil {
+			return err
+		}
+		if landing == m.Guest {
+			continue
+		}
+		return relocatedError(p, m, via, text, landing)
 	}
 	return nil
 }
