@@ -26,22 +26,25 @@
 # SKIP: a host that cannot create an unprivileged user namespace, or cannot
 # mount inside one — there is no weak host to fabricate.
 
-# CONTROL — THE FABRICATION HAS TO BE THE ONLY THING THAT CHANGED.
+# TWO CONTROLS, BECAUSE THE FABRICATION CAN COST DOCTOR A PROBE THIS CHECK IS
+# NOT ABOUT — and "warn, never fail" graded against a host that fails for an
+# unrelated reason is a check that cannot PASS.
 #
-# `unshare -Urm` is a NESTED user namespace, and whether bwrap can build a
-# sandbox inside one is a per-host answer. Where it cannot, doctor prints a ❌
-# for a probe this check is not about and exits 69 — MEASURED on GitHub
-# Actions' ubuntu runner (bubblewrap 0.9.0, CI run 35505315762):
+# Binding a file over /proc/sys/kernel/<knob> gives this mount namespace's
+# /proc a submount, and a kernel enforcing mount_too_revealing() then refuses a
+# NEW procfs instance inside the user namespace — which is bwrap's `--proc
+# /proc`. MEASURED on GitHub Actions' ubuntu runner (run 35505557677,
+# bubblewrap 0.9.0), where the nested namespace ALONE is clean and the
+# fabricated one is not:
 #
 #     ❌ bwrap cannot start a sandbox here, and the reason is not one this probe recognises
 #        💬 bwrap said: bwrap: Can't mount proc on /newroot/proc: Operation not permitted
 #
-# So ask doctor the same question with NOTHING bound. A ❌ there belongs to the
-# host and not to the knobs, and the check SKIPs naming it. A clean control is
-# what makes the ❌ this check refuses attributable to the fabrication — without
-# one, "warn, never fail" would be graded against a host that fails for an
-# unrelated reason, which is a check that cannot pass rather than one that
-# cannot fail.
+# So: ask doctor the same question with NOTHING bound (below, before anything
+# is asserted), and then, under the fabrication, look for a ❌ that names no
+# knob. The first says the namespace is usable at all; the second says this
+# kernel lets the fabrication stand. Neither can hide the property under test,
+# because a ❌ that DOES name a knob is the property failing and is a FAIL.
 set -eu
 
 SNUG=${SNUG:-./bin/snug}
@@ -98,6 +101,18 @@ echo "asserted: all 4 zeroed knobs reported ⚠️ with the value wanted"
 printf '%s\n' "$report" | grep -q '✅ kernel.yama.ptrace_scope' \
 	|| fail "doctor did not tick kernel.yama.ptrace_scope, which this fabricated host left alone"
 echo "asserted: the knob that IS set is still ticked"
+
+# The second control (see the head of this file). A ❌ naming no knob is the
+# fabrication's own cost on this kernel, not doctor's verdict on the knobs, and
+# nothing on such a host can grade warn-never-fail. The knob rows above were
+# graded before this point and stand.
+if printf '%s\n' "$report" | grep '❌' | grep -qv 'kernel\.'; then
+	echo "SKIP: this kernel refuses bwrap's own /proc mount once /proc carries the" >&2
+	echo "SKIP: submounts that fabricate the weak host, so the ❌ below is the" >&2
+	echo "SKIP: fabrication's and not the knobs'. warn-never-fail cannot be graded here:" >&2
+	printf '%s\n' "$report" | grep '❌' >&2
+	exit $skip
+fi
 
 printf '%s\n' "$report" | grep -q '🎉 This host can run snug.' \
 	|| fail "doctor refused a host missing four knobs; it must warn, never fail (key feature 3)"
