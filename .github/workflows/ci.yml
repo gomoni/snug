@@ -315,13 +315,22 @@ jobs:
       # SNUG_VERIFY_FLOOR IS 1 HERE, AND THAT NUMBER IS A REASONED MINIMUM
       # RATHER THAN A MEASUREMENT. Exactly one check — 0010, which needs only
       # the built binary — cannot skip on any host that got this far. The other
-      # three fabricate a weak host inside an unprivileged user namespace, and
+      # three fabricate a host inside an unprivileged user namespace, and
       # whether this runner grants one is what the step above
       # (`kernel.apparmor_restrict_unprivileged_userns=0`) is for; it is
-      # best-effort and `|| true`. Raise this to the count the first green run
-      # reports, the way SNUG_ENGINE_FLOOR was set — a floor is a MINIMUM OVER
-      # RUNS, never one run's count, and taking a lucky reading builds a floor
-      # that cannot be cleared.
+      # best-effort and `|| true`.
+      #
+      # MEASURED on this runner (run 35505315762, bubblewrap 0.9.0): the
+      # namespace is granted and 0011 passes, but `snug doctor` inside a NESTED
+      # user namespace refuses with
+      # `bwrap: Can't mount proc on /newroot/proc: Operation not permitted`, so
+      # 0020 and 0021 SKIP on their own control rather than grading "warn,
+      # never fail" against a host that fails for an unrelated reason.
+      #
+      # Raise this to the count the first green run reports, the way
+      # SNUG_ENGINE_FLOOR was set — a floor is a MINIMUM OVER RUNS, never one
+      # run's count, and taking a lucky reading builds a floor that cannot be
+      # cleared.
       #
       # SNUG_REQUIRE_SANDBOX is deliberately NOT exported to this step. It would
       # turn every SKIP into a failure, which is right for the Go suite — whose

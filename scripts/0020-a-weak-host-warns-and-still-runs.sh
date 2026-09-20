@@ -25,6 +25,23 @@
 #
 # SKIP: a host that cannot create an unprivileged user namespace, or cannot
 # mount inside one — there is no weak host to fabricate.
+
+# CONTROL — THE FABRICATION HAS TO BE THE ONLY THING THAT CHANGED.
+#
+# `unshare -Urm` is a NESTED user namespace, and whether bwrap can build a
+# sandbox inside one is a per-host answer. Where it cannot, doctor prints a ❌
+# for a probe this check is not about and exits 69 — MEASURED on GitHub
+# Actions' ubuntu runner (bubblewrap 0.9.0, CI run 35505315762):
+#
+#     ❌ bwrap cannot start a sandbox here, and the reason is not one this probe recognises
+#        💬 bwrap said: bwrap: Can't mount proc on /newroot/proc: Operation not permitted
+#
+# So ask doctor the same question with NOTHING bound. A ❌ there belongs to the
+# host and not to the knobs, and the check SKIPs naming it. A clean control is
+# what makes the ❌ this check refuses attributable to the fabrication — without
+# one, "warn, never fail" would be graded against a host that fails for an
+# unrelated reason, which is a check that cannot pass rather than one that
+# cannot fail.
 set -eu
 
 SNUG=${SNUG:-./bin/snug}
@@ -51,6 +68,22 @@ weak() {   # run "$@" on the fabricated host
 weak true || {
 	echo "SKIP: cannot bind over /proc/sys/kernel in an unprivileged user namespace here" >&2
 	exit $skip; }
+
+plain() {  # the same nested namespace, with nothing fabricated in it
+	unshare -Urm --propagation private sh -c "$*"
+}
+
+control=$(plain "$SNUG doctor 2>&1; echo doctor-exit=\$?")
+case $control in
+*doctor-exit=0*) ;;
+*)
+	echo "SKIP: snug doctor already refuses a nested user namespace on this host, with" >&2
+	echo "SKIP: nothing fabricated in it — so a ❌ under the fabrication would not be" >&2
+	echo "SKIP: the knobs'. The row it refused on:" >&2
+	printf '%s\n' "$control" | grep '❌' >&2 || true
+	exit $skip ;;
+esac
+echo "asserted: control — doctor is clean in a nested namespace with nothing fabricated"
 
 # ── doctor discloses all four and still runs ────────────────────────────────
 report=$(weak "$SNUG doctor 2>&1; echo doctor-exit=\$?")
