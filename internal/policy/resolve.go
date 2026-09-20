@@ -1005,6 +1005,10 @@ var retiredProfiles = map[ProfileName]string{
 	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
+	"tmp-shared": "there is no @tmp-shared profile: it allocated a per-project host " +
+		"directory under os.TempDir() and bound it as the sandbox's /tmp. It and the " +
+		"{host_tmpdir} variable behind it were removed with no replacement: name the " +
+		"host directory yourself, rw = [\"/path/on/host:/tmp\"]",
 }
 
 // UnknownProfile is the error for a name nothing defines. It exists rather than

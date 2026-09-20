@@ -136,6 +136,12 @@ func TestGoldenDryRunJSON(t *testing.T) {
 		// "executable" is true, which is the fact behind the human column's
 		// "exec" word.
 		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false, "", engine.SignaturePolicySummary{}, ""},
+		// The network object's own axis: an EGRESS selection, so a consumer
+		// reading mode/egress/host_loopback/abstract_sockets off this document
+		// has a pinned row for the case that is not "isolated" — before this,
+		// json.defaults.json pinned only the isolated network, and nothing
+		// caught a change to what @net's grant renders as facts.
+		{"net", []policy.ProfileName{"@sys", "@target-rw", "@net"}, false, "", engine.SignaturePolicySummary{}, ""},
 		// A REFUSED policy still writes a complete document, and exits 77
 		// separately. `snug --dry-run --json x > policy.json` yielding a
 		// parseable file on a refusal is the property this format is designed

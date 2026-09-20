@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/profile"
 )
 
 // ── issue #223: a profile can take over /tmp and nothing said so ────────────
@@ -113,5 +114,89 @@ func TestAnUnrelatedRowIsNotMarked(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("an ordinary /usr row was marked (%q):\n%s", unwanted, got)
 		}
+	}
+}
+
+// countReadOnlyAndWritable mirrors explainFilesystem's own counting rule
+// (KindData excluded, everything else split by Access) so the test below
+// reads the same fact --explain would print, without depending on the exact
+// sentence around it.
+func countReadOnlyAndWritable(p *policy.Policy) (ro, rw int) {
+	for _, m := range p.SortedMounts() {
+		switch {
+		case m.Kind == policy.KindData:
+			continue
+		case m.Access == policy.AccessRW:
+			rw++
+		default:
+			ro++
+		}
+	}
+	return ro, rw
+}
+
+// TestTheTmpTakeoverCostsOneWritablePath is issue #223's guarantee stated as a
+// DELTA rather than as absolute counts, which is what the comment on this
+// file's own countReadOnlyAndWritable warns a golden cannot do: every
+// dry-run fixture in this package targets a synthetic path outside /tmp, so a
+// golden here would need its OWN fixture, and the moment that fixture's
+// ancestry changed depth (issue #553's anchor mounts) the pinned numbers would
+// go stale while every existing golden stayed green. Absolute counts are
+// exactly the shape CLAUDE.md's own "eight paths" claim went stale in.
+//
+// The fact this fails if it stops holding: @parent-ro on a target whose
+// PARENT is /tmp displaces snug's own private tmpfs at /tmp with the host's
+// real one, read-only (issue #223) — so the run ends up with one FEWER
+// writable path and one MORE read-only path than the identical target
+// resolved without the profile, never zero, and never any other number.
+func TestTheTmpTakeoverCostsOneWritablePath(t *testing.T) {
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newEnvFakeEnv()
+	env.dirs["/tmp"] = true
+	env.dirs["/tmp/proj"] = true
+	ctx := policy.Context{
+		Target: "/tmp/proj", Home: "/home/u", Shell: "/usr/bin/bash", Command: []string{"/bin/sh"},
+	}
+
+	without, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@home", "@target-rw"}, ctx, env)
+	if err != nil {
+		t.Fatalf("Resolve(without @parent-ro): %v", err)
+	}
+	with, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@parent-ro"}, ctx, env)
+	if err != nil {
+		t.Fatalf("Resolve(with @parent-ro): %v", err)
+	}
+
+	// CONTROL: an ordinary target (this package's own fixture home, nowhere
+	// near /tmp) gets no mark and no takeover at all — @parent-ro granting a
+	// parent that is NOT /tmp must not move these counts, or the delta below
+	// would be measuring "a profile was added", not "the target's parent
+	// happens to be /tmp".
+	ordinaryCtx := envGoldenCtx()
+	ordinary, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@home", "@target-rw"}, ordinaryCtx, newEnvFakeEnv())
+	if err != nil {
+		t.Fatalf("Resolve(ordinary target): %v", err)
+	}
+	if m, ok := ordinary.Mounts["/tmp"]; !ok || m.Kind != policy.KindTmpfs || !m.Authored {
+		t.Fatalf("control: an ordinary target's /tmp is not snug's own authored tmpfs (%+v, ok=%v) — "+
+			"this fixture no longer shows the state the takeover is a departure FROM", m, ok)
+	}
+
+	roWithout, rwWithout := countReadOnlyAndWritable(without)
+	roWith, rwWith := countReadOnlyAndWritable(with)
+
+	if got, want := roWith-roWithout, 1; got != want {
+		t.Errorf("read-only count moved by %d granting @parent-ro on a /tmp target, want %d "+
+			"(without=%d, with=%d)", got, want, roWithout, roWith)
+	}
+	if got, want := rwWith-rwWithout, -1; got != want {
+		t.Errorf("writable count moved by %d granting @parent-ro on a /tmp target, want %d "+
+			"(without=%d, with=%d)", got, want, rwWithout, rwWith)
 	}
 }

@@ -308,6 +308,29 @@ jobs:
       - name: doctor
         run: ./bin/snug doctor
 
+      # `make verify` IS DELIBERATELY NOT A STEP HERE, and its absence is the
+      # rule in scripts/README.md holding rather than a gap in this file.
+      #
+      # That rule: a check CI can run on every push belongs in
+      # test/integration, so what is left in scripts/ is by construction what
+      # CI cannot run — a per-machine kernel answer, a `claude` binary, a live
+      # credential, a human's sudo. A step walking them could therefore only
+      # ever SKIP, and SNUG_VERIFY_FLOOR would have to be 0 to let it pass,
+      # which is a step that cannot fail — the shape every other floor in this
+      # file exists to refuse.
+      #
+      # MEASURED before removing it (run 35505849557, ubuntu runner, bubblewrap
+      # 0.9.0): 3 passed, 1 skipped. All three that passed — 0010, 0011, 0021 —
+      # are now Go tests, which is what makes the remainder unrunnable here
+      # rather than merely unlucky. The one that skipped, 0020, skipped on its
+      # own control: `snug doctor` inside a NESTED user namespace refuses with
+      # `bwrap: Can't mount proc on /newroot/proc: Operation not permitted`.
+      #
+      # What grades scripts/ on every push instead is test/guard/scripts_test.go
+      # in the `gofmt, vet, unit tests` job: duplicate numbers, a file that is
+      # not executable, a check missing from the index, a script spelling SKIP
+      # as 77. None of those is visible to a green `make verify`.
+
       - name: ${{ matrix.label }}
         env:
           # The harness SKIPS where the host cannot create namespaces, so a

@@ -4,7 +4,7 @@ BIN := bin/snug
 FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
 
 
-.PHONY: all build test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine golden clean install
+.PHONY: all build test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
 
 all: build
 
@@ -110,7 +110,7 @@ gate:
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
-# is the automated half of VERIFY.md — the by-hand checklist stays, because
+# is the automated half of scripts/VERIFY.md — the by-hand checklist stays, because
 # it carries the reasoning; this is the ratchet.
 #
 # Build-tagged, so it is excluded from `make gate` by construction: it needs
@@ -401,6 +401,73 @@ integration-hostless:
 # SNUG_ENGINE_IMAGE or SNUG_ENGINE_STORE; the script names what each is for.
 integration-engine:
 	./test/engine-container.sh
+
+# ── the executable half of the by-hand checklist ────────────────────────────
+#
+# `scripts/NNNN-slug.sh` is a CHECK: it prints what it asserted and exits
+# non-zero when the assertion fails. `scripts/payloads/` holds the other kind —
+# programs run INSIDE a sandbox, which have no pass/fail of their own and are
+# not walked here.
+#
+# WHAT BELONGS HERE rather than in test/integration: a check CI cannot run,
+# because its answer is per-machine (this host's kernel knobs, this host's
+# doctor report) or because it needs state CI structurally lacks. Anything CI
+# can assert on every push belongs in Go, under the integration tag — a check
+# living in both places is a second copy of state, and the copy nobody runs is
+# the one that goes stale.
+#
+# NNNN is an ALLOCATION SEQUENCE, not a VERIFY.md section number. Sections
+# carry suffixes (9a, 9c-bis, 9c-quater, 23b) that no numeric prefix can
+# express, and one section is frequently several independent checks. A number
+# is allocated on creation and never reused, so a reference to 0011 means one
+# thing forever.
+#
+# EXIT 79 IS SKIP, and it is 79 rather than the conventional 77 because snug's
+# own exitPolicy IS 77 (internal/cli/main.go). A script that ended on an
+# uncaptured `snug` refusal would otherwise report SKIP — a check that cannot
+# fail, which is the shape every floor in this file exists to refuse. 79 is
+# outside sysexits' 64-78 range entirely, so it cannot be one of snug's.
+#
+# SNUG_VERIFY_FLOOR is the same guard as SNUG_HOSTLESS_FLOOR and
+# SNUG_ENGINE_FLOOR: a minimum number of scripts that must actually PASS. Every
+# script skipping is a green run that proved nothing, and that is the failure
+# this target exists to make impossible. It is a FLOOR, not the count — adding
+# checks keeps it true, deleting them all makes it fail.
+#
+# 1, AND IT IS A DIFFERENT KIND OF NUMBER FROM THE OTHER TWO FLOORS. CI does not
+# run this target at all (see .github/workflows/ci.yml, where its absence is
+# argued), because scripts/ holds by construction only what CI cannot run. So
+# this floor is a promise about the MAINTAINER'S OWN host and nothing else: on
+# the machine the checks were written for, at least one of them must still be
+# able to pass. Raising it means claiming another check runs unattended on a
+# second machine, which nobody has measured.
+#
+# SNUG_REQUIRE_SANDBOX=1 turns every SKIP into a failure, exactly as it does for
+# the Go suite, for the same reason: a run must not go green having measured
+# nothing.
+SNUG_VERIFY_FLOOR ?= 1
+
+verify: build
+	@pass=0; skip=0; failed=0; \
+	for s in scripts/[0-9][0-9][0-9][0-9]-*; do \
+		[ -x "$$s" ] || { echo "ERROR: $$s is not executable"; failed=$$((failed+1)); continue; }; \
+		echo "── $$s ─────────────────────────────────────────────────"; \
+		"./$$s" && rc=0 || rc=$$?; \
+		if [ "$$rc" -eq 0 ]; then pass=$$((pass+1)); \
+		elif [ "$$rc" -eq 79 ]; then \
+			if [ -n "$$SNUG_REQUIRE_SANDBOX" ]; then \
+				echo "ERROR: $$s SKIPped and SNUG_REQUIRE_SANDBOX is set"; failed=$$((failed+1)); \
+			else skip=$$((skip+1)); fi; \
+		else echo "ERROR: $$s exited $$rc"; failed=$$((failed+1)); fi; \
+	done; \
+	echo "verify: $$pass passed, $$skip skipped, $$failed failed (floor $(SNUG_VERIFY_FLOOR))"; \
+	if [ "$$failed" -gt 0 ]; then exit 1; fi; \
+	if [ "$$pass" -lt "$(SNUG_VERIFY_FLOOR)" ]; then \
+		echo "ERROR: only $$pass script(s) passed, below the floor of $(SNUG_VERIFY_FLOOR)."; \
+		echo "ERROR: Either this host cannot run them — each SKIP names why — or the"; \
+		echo "ERROR: checks have gone. Both are worth a look."; \
+		exit 1; \
+	fi
 
 golden:
 	go test ./internal/policy -update

@@ -14,7 +14,7 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 
 1. Where a section links to a topic document, that document wins. Do not re-derive from the paragraph here.
 2. Where a section is marked **DESIGNED, NOT BUILT**, no code implements it. Those markers are load-bearing: this file previously described unbuilt machinery in the present tense and that cost a milestone (§4.4).
-3. Where this file and the code disagree, the code wins and this file is wrong — say so in a commit rather than leaving it. `internal/policy/types.go`, `internal/profile/profiles/base.toml`, `VERIFY.md` and the goldens under `internal/policy/testdata/` are the executable statements of most of what is described here.
+3. Where this file and the code disagree, the code wins and this file is wrong — say so in a commit rather than leaving it. `internal/policy/types.go`, `internal/profile/profiles/base.toml`, `scripts/` and the goldens under `internal/policy/testdata/` are the executable statements of most of what is described here.
 
 **Section numbers are frozen.** Code comments and other documents cite `INDEX §4.2`, `§3.3`, `§2.7` and a dozen more by number. Sections may be emptied out into a pointer; they are not renumbered.
 
@@ -38,9 +38,9 @@ This was `DESIGN.md`, a single 1768-line document written **before most of the c
 | [`PARAMETERISED-PROFILES.md`](PARAMETERISED-PROFILES.md) | **DRAFT — nothing built.** Profiles that take arguments — postponed by decision, with the reasoning kept so it is not re-derived. |
 | [`TARGET-LOCK.md`](TARGET-LOCK.md) | The per-target `flock` keyed on `sha256(realpath)` and resolved from the uid alone (never `$XDG_RUNTIME_DIR` — that split was the #122 fail-open). A run takes it SHARED: it records that a sandbox is live on the target for `snug proxy` and `snug engine gc`, and refuses nothing. The orphan sweep asks no target-wide question — it judges each run record on its own owner. |
 
-Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../VERIFY.md`](../../VERIFY.md) is the executable by-hand checklist, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
+Outside this directory: [`../../CLAUDE.md`](../../CLAUDE.md) is the working agreement and the list of expensive environment facts, [`../../scripts/`](../../scripts/) is the checklist — `make verify` runs the executable half and [`../../scripts/VERIFY.md`](../../scripts/VERIFY.md) is what is left of the by-hand one, and the [GitHub issues](https://github.com/gomoni/snug/issues) are the live list of known gaps and deferred work — each carries a severity label and the measurement that confirmed it.
 
-**Status of the verification claims below:** every kernel/tool behaviour marked **VERIFIED** was executed on the development host (openSUSE, kernel 7.1.4, `bubblewrap 0.11.2`, `pasta 20260612`, running *inside* a rootless-podman `distrobox` container) at the time it was written. Age is a risk; `VERIFY.md` is the re-runnable form.
+**Status of the verification claims below:** every kernel/tool behaviour marked **VERIFIED** was executed on the development host (openSUSE, kernel 7.1.4, `bubblewrap 0.11.2`, `pasta 20260612`, running *inside* a rootless-podman `distrobox` container) at the time it was written. Age is a risk; `make verify` is the re-runnable form, and `scripts/README.md` says what each check asserts.
 
 ---
 
@@ -1442,9 +1442,9 @@ A tmpfs, because: it must be writable (every tool expects to write dotfiles), an
 
 **VERIFIED**: `--tmpfs /home/u` combined with `--remount-ro /` gives a writable `$HOME` on a read-only skeleton, and the ordering (tmpfs at depth 2 emitted before binds at depth 3+) falls out of the depth sort with no special case.
 
-**The writable surface is eight paths, not one.** The target bind is the only one that *persists*; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local/state`, `$HOME/.local/share` and `/dev/shm` are all writable tmpfs that die with the sandbox. `/dev`'s own root is read-only — bwrap.go's KindDev arm remounts it immediately after creating it, so `/dev/shm` is the one writable path on that superblock, not the whole tree (issue #281). Say "the only writable thing that persists", never "the only writable thing".
+**The writable surface is nine paths, not one.** The target bind is the only one that *persists*; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`, `$HOME/.local`, `$HOME/.local/state`, `$HOME/.local/share` and `/dev/shm` are all writable tmpfs that die with the sandbox. `$HOME/.local` is nobody's grant: `@home` names only its two children, and `InstallAnchors` (§3.4, issue #553) puts an empty writable tmpfs at every ancestor whose deepest cover is itself a tmpfs — so the anchor mechanism adds to the writable surface, and a list written by reading `base.toml` will always be one short. `/dev`'s own root is read-only — bwrap.go's KindDev arm remounts it immediately after creating it, so `/dev/shm` is the one writable path on that superblock, not the whole tree (issue #281). Say "the only writable thing that persists", never "the only writable thing".
 
-This paragraph also listed `$XDG_RUNTIME_DIR` for a milestone, and **no profile grants it** — measured, the variable is unset inside and `/run/user/$(id -u)` does not exist. Two errors in one sentence, in opposite directions: a real tmpfs missing (`$HOME/.local/share`, added to `@home` in PR #10) and an imaginary one present. Enumerate rather than assert — `VERIFY.md` §3 carries the probe that reads `/proc/self/mounts`.
+This paragraph also listed `$XDG_RUNTIME_DIR` for a milestone, and **no profile grants it** — measured, the variable is unset inside and `/run/user/$(id -u)` does not exist. Two errors in one sentence, in opposite directions: a real tmpfs missing (`$HOME/.local/share`, added to `@home` in PR #10) and an imaginary one present. **Three errors in one sentence now, and the third was found the same way as the first two**: this paragraph said EIGHT until `test/integration/writablesurface_test.go` enumerated `/proc/self/mounts` inside a real sandbox and returned nine. Enumerate rather than assert — that test is the probe, and it runs on every push.
 
 ---
 
@@ -1454,7 +1454,8 @@ This paragraph also listed `$XDG_RUNTIME_DIR` for a milestone, and **no profile 
 snug/
 ├── go.mod                          module github.com/gomoni/snug
 ├── Makefile                        build, gate, integration, golden-update
-├── VERIFY.md                       the executable by-hand checklist
+├── scripts/                        the checklist: `make verify`, plus VERIFY.md,
+│                                what is left of the by-hand half
 ├── .claude/design/INDEX.md         this document
 │
 ├── cmd/snug/
@@ -1736,7 +1737,7 @@ There is no `live` build tag and no `SNUG_LIVE` gate in the tree. The design, ke
 
 1. `snug --dry-run <dir>` — the actual resolved policy and the actual argv, for your host.
 2. `internal/policy/testdata/*.bwrap.txt` — the reviewed goldens, byte-stable against a fake host.
-3. `VERIFY.md` — every line a command with its expected output, including the observations the old §13 step 5 listed (siblings absent, `touch` refused on the parent and on `/`, host loopback refused, `/sys` ENOENT).
+3. `scripts/` — `make verify` walks `NNNN-slug.sh` in numeric order; each prints what it asserted and exits 79 to SKIP. A check CI can run every push belongs in `test/integration` instead; `scripts/VERIFY.md` beside them keeps only the prose that is not executable.
 
 The *mechanism* a worked example would illustrate — how the netns gets created and configured before a payload exists, and the teardown chain that ends it — is §4.3, which is where it belongs.
 

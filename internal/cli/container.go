@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/gomoni/snug/internal/dockerproxy"
 	"github.com/gomoni/snug/internal/engine"
@@ -85,6 +86,33 @@ type containerRun struct {
 // file's own doc comment for why, and what covers it instead (__inengine's
 // own mount call, which still refuses loudly, just one step later than the
 // design's own probe would).
+// resolvConfBindNotice is P7's aside, pulled out of startContainers so its
+// exact wording is reachable from a test with no container engine and no host
+// probe.
+//
+// Empty when there is nothing to say: err is nil (the probe bound the file
+// fine), or the probe itself could not RUN on this host at all — errors.As
+// matches *probeUnavailableError — which is a fact about this environment,
+// not evidence that the bind will fail for a real container run. A non-nil,
+// non-probeUnavailable err is P7 actually answering "no", and every word past
+// "Containers are NOT affected" exists so a human skimming this line does not
+// read it as a refusal: nothing here stops the run.
+func resolvConfBindNotice(err error) string {
+	var probeUnavailable *probeUnavailableError
+	if err == nil || errors.As(err, &probeUnavailable) {
+		return ""
+	}
+	return fmt.Sprintf("snug: this host cannot bind a file over /etc/resolv.conf, so the "+
+		"container engine will keep the host's own resolver configuration.\n"+
+		"      Containers are NOT affected: their DNS comes from snug's generated "+
+		"containers.conf.\n"+
+		"      What is affected is the ENGINE's own name resolution: offline, it will try "+
+		"the host's resolvers and time out slowly instead of failing fast.\n"+
+		"      Probe said: %v\n"+
+		"      Common cause: /etc/resolv.conf is itself a bind mount over a deleted inode "+
+		"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
+}
+
 func startContainers(env policy.Environ, pol *policy.Policy, n *notes, verbose, dryRun bool) (containerRun, error) {
 	if pol.Podman == policy.PodmanOff {
 		return containerRun{cleanup: func() {}}, nil
@@ -215,17 +243,8 @@ func startContainers(env policy.Environ, pol *policy.Policy, n *notes, verbose, 
 	// generated containers.conf decides without needing any mount at all
 	// (issue #126). Not a refusal: nothing leaks, so refusing would be
 	// refusing over lost ergonomics.
-	var probeUnavailable *probeUnavailableError
-	if err := pf.ResolvConfBind; err != nil && !errors.As(err, &probeUnavailable) {
-		n.aside("snug: this host cannot bind a file over /etc/resolv.conf, so the "+
-			"container engine will keep the host's own resolver configuration.\n"+
-			"      Containers are NOT affected: their DNS comes from snug's generated "+
-			"containers.conf.\n"+
-			"      What is affected is the ENGINE's own name resolution: offline, it will try "+
-			"the host's resolvers and time out slowly instead of failing fast.\n"+
-			"      Probe said: %v\n"+
-			"      Common cause: /etc/resolv.conf is itself a bind mount over a deleted inode "+
-			"(issue #128); restarting the container or VM snug runs in repairs it.\n", err)
+	if msg := resolvConfBindNotice(pf.ResolvConfBind); msg != "" {
+		n.aside("%s", msg)
 	}
 
 	eng, err := engine.New(pol)

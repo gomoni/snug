@@ -1,0 +1,901 @@
+{
+  "snug": {
+    "format": 2,
+    "outcome": "ok",
+    "lossy": false,
+    "exit_code": 0,
+    "policy_resolved": true
+  },
+  "target": "/home/u/proj/sub",
+  "home": "/home/u",
+  "chdir": "/home/u/proj/sub",
+  "profiles": {
+    "selected": [
+      "@sys",
+      "@target-rw",
+      "@net"
+    ],
+    "implied": [
+      "@home"
+    ]
+  },
+  "mounts": [
+    {
+      "guest": "/bin",
+      "host": "usr/bin",
+      "kind": "link",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/dev",
+      "host": "",
+      "kind": "dev",
+      "access": "rw",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/lib",
+      "host": "usr/lib",
+      "kind": "link",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/lib64",
+      "host": "usr/lib64",
+      "kind": "link",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/proc",
+      "host": "",
+      "kind": "proc",
+      "access": "rw",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/sbin",
+      "host": "usr/sbin",
+      "kind": "link",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/tmp",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/usr",
+      "host": "/usr",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/group",
+      "host": "/etc/group",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/ld.so.cache",
+      "host": "/etc/ld.so.cache",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/ld.so.conf",
+      "host": "/etc/ld.so.conf",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/nsswitch.conf",
+      "host": "/etc/nsswitch.conf",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": true,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/passwd",
+      "host": "/etc/passwd",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "@sys"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/etc/resolv.conf",
+      "host": "",
+      "kind": "data",
+      "access": "ro",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "@home"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/proc/config.gz",
+      "host": "",
+      "kind": "data",
+      "access": "ro",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the complete host kernel config — an exploit-selection oracle",
+      "run_scoped": false
+    },
+    {
+      "guest": "/proc/key-users",
+      "host": "",
+      "kind": "data",
+      "access": "ro",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's keyring accounting",
+      "run_scoped": false
+    },
+    {
+      "guest": "/proc/keys",
+      "host": "",
+      "kind": "data",
+      "access": "ro",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "replaced with an EMPTY file — the host's copy is the host user's live keyring (keyctl is already seccomp-denied)",
+      "run_scoped": false
+    },
+    {
+      "guest": "/proc/sys",
+      "host": "/proc/sys",
+      "kind": "bind",
+      "access": "ro",
+      "from": [
+        "(snug)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "procfs_replacement": "read-only: the write side is snug's own mount now, not a capability check snug does not own. Reads are unchanged, and namespace-scoped values are still this sandbox's",
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/.cache",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "@home"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/.config",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "@home"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/.local",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "(snug anchor)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/proj",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "(snug anchor)"
+      ],
+      "optional": false,
+      "authored": true,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/.local/share",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "@home"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/.local/state",
+      "host": "",
+      "kind": "tmpfs",
+      "access": "rw",
+      "from": [
+        "@home"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "size_bytes": 1073741824,
+      "run_scoped": false
+    },
+    {
+      "guest": "/home/u/proj/sub",
+      "host": "/home/u/proj/sub",
+      "kind": "bind",
+      "access": "rw",
+      "from": [
+        "@target-rw"
+      ],
+      "optional": false,
+      "authored": false,
+      "executable": false,
+      "yielded": false,
+      "run_scoped": false
+    }
+  ],
+  "grafts": [],
+  "not_granted": {
+    "lines": [
+      "/sys  /tmp/.X11-unix",
+      "snug mounts no desktop socket — no Wayland, no session D-Bus.",
+      "  (a claim about what snug mounts, not a probe of this host. A profile granting",
+      "   the directory one of these sockets sits in would make it false, and nothing",
+      "   here would notice.)"
+    ]
+  },
+  "network": {
+    "mode": "egress",
+    "egress": true,
+    "host_loopback": false,
+    "abstract_sockets": false,
+    "dns": null,
+    "dns_forwarded": false,
+    "dns_host": "",
+    "host_addresses_sealed": true
+  },
+  "topology": {
+    "processes": [
+      "snug",
+      "stage (P1)",
+      "pasta",
+      "bwrap"
+    ],
+    "needs_stage": true,
+    "netns": "stage",
+    "subuid": "none",
+    "stage_cap_drop": [
+      "CAP_SYS_PTRACE"
+    ],
+    "procfs_closures_skipped": false
+  },
+  "containers": null,
+  "environment": [
+    {
+      "name": "HOME",
+      "entries": [
+        {
+          "value": "/home/u",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "LOGNAME",
+      "entries": [
+        {
+          "value": "u",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "PATH",
+      "entries": [
+        {
+          "value": "/usr/bin",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        },
+        {
+          "value": "/bin",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        },
+        {
+          "value": "/usr/sbin",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        },
+        {
+          "value": "/sbin",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "base",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "PS1",
+      "entries": [
+        {
+          "value": "🔒 snug:\\w\\$ ",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "SHELL",
+      "entries": [
+        {
+          "value": "/usr/bin/bash",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "SNUG",
+      "entries": [
+        {
+          "value": "1",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "SNUG_PROFILES",
+      "entries": [
+        {
+          "value": "@home,@net,@sys,@target-rw",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "SNUG_TARGET",
+      "entries": [
+        {
+          "value": "/home/u/proj/sub",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "TMPDIR",
+      "entries": [
+        {
+          "value": "/tmp",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "USER",
+      "entries": [
+        {
+          "value": "u",
+          "verb": "(snug)",
+          "from": null,
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "XDG_CACHE_HOME",
+      "entries": [
+        {
+          "value": "/home/u/.cache",
+          "verb": "set",
+          "from": [
+            "@home"
+          ],
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "XDG_CONFIG_HOME",
+      "entries": [
+        {
+          "value": "/home/u/.config",
+          "verb": "set",
+          "from": [
+            "@home"
+          ],
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "XDG_DATA_HOME",
+      "entries": [
+        {
+          "value": "/home/u/.local/share",
+          "verb": "set",
+          "from": [
+            "@home"
+          ],
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "XDG_STATE_HOME",
+      "entries": [
+        {
+          "value": "/home/u/.local/state",
+          "verb": "set",
+          "from": [
+            "@home"
+          ],
+          "authored_by": "",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    },
+    {
+      "name": "PWD",
+      "entries": [
+        {
+          "value": "/home/u/proj/sub",
+          "verb": "(bwrap)",
+          "from": null,
+          "authored_by": "--chdir",
+          "type_unknown": false,
+          "grant": "",
+          "grants_inside": 0
+        }
+      ]
+    }
+  ],
+  "seccomp": {
+    "requested": true,
+    "installed": true,
+    "reason": "",
+    "error": "",
+    "arch": "GOARCH",
+    "denied": [
+      "golden"
+    ],
+    "compat_arch": ""
+  },
+  "tty": {
+    "new_session": false,
+    "reasons": [],
+    "stdio_terminals": [
+      "stdin",
+      "stdout",
+      "stderr"
+    ]
+  },
+  "bwrap": {
+    "argv": [
+      "bwrap",
+      "--unshare-user",
+      "--unshare-ipc",
+      "--unshare-pid",
+      "--unshare-uts",
+      "--unshare-cgroup-try",
+      "--uid",
+      "0",
+      "--gid",
+      "0",
+      "--hostname",
+      "snug",
+      "--die-with-parent",
+      "--cap-drop",
+      "ALL",
+      "--perms",
+      "0755",
+      "--dir",
+      "/etc",
+      "--perms",
+      "0755",
+      "--dir",
+      "/home",
+      "--symlink",
+      "usr/bin",
+      "/bin",
+      "--dev",
+      "/dev",
+      "--remount-ro",
+      "/dev",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/dev/shm",
+      "--symlink",
+      "usr/lib",
+      "/lib",
+      "--symlink",
+      "usr/lib64",
+      "/lib64",
+      "--proc",
+      "/proc",
+      "--symlink",
+      "usr/sbin",
+      "/sbin",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/tmp",
+      "--ro-bind",
+      "/usr",
+      "/usr",
+      "--ro-bind",
+      "/etc/group",
+      "/etc/group",
+      "--ro-bind",
+      "/etc/ld.so.cache",
+      "/etc/ld.so.cache",
+      "--ro-bind",
+      "/etc/ld.so.conf",
+      "/etc/ld.so.conf",
+      "--ro-bind-try",
+      "/etc/nsswitch.conf",
+      "/etc/nsswitch.conf",
+      "--ro-bind",
+      "/etc/passwd",
+      "/etc/passwd",
+      "--ro-bind-data",
+      "10",
+      "/etc/resolv.conf",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u",
+      "--ro-bind-data",
+      "11",
+      "/proc/config.gz",
+      "--ro-bind-data",
+      "12",
+      "/proc/key-users",
+      "--ro-bind-data",
+      "13",
+      "/proc/keys",
+      "--ro-bind",
+      "/proc/sys",
+      "/proc/sys",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.cache",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.config",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.local",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/proj",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.local/share",
+      "--size",
+      "1073741824",
+      "--tmpfs",
+      "/home/u/.local/state",
+      "--bind",
+      "/home/u/proj/sub",
+      "/home/u/proj/sub",
+      "--remount-ro",
+      "/",
+      "--clearenv",
+      "--setenv",
+      "HOME",
+      "/home/u",
+      "--setenv",
+      "LOGNAME",
+      "u",
+      "--setenv",
+      "PATH",
+      "/usr/bin:/bin:/usr/sbin:/sbin",
+      "--setenv",
+      "PS1",
+      "🔒 snug:\\w\\$ ",
+      "--setenv",
+      "SHELL",
+      "/usr/bin/bash",
+      "--setenv",
+      "SNUG",
+      "1",
+      "--setenv",
+      "SNUG_PROFILES",
+      "@home,@net,@sys,@target-rw",
+      "--setenv",
+      "SNUG_TARGET",
+      "/home/u/proj/sub",
+      "--setenv",
+      "TMPDIR",
+      "/tmp",
+      "--setenv",
+      "USER",
+      "u",
+      "--setenv",
+      "XDG_CACHE_HOME",
+      "/home/u/.cache",
+      "--setenv",
+      "XDG_CONFIG_HOME",
+      "/home/u/.config",
+      "--setenv",
+      "XDG_DATA_HOME",
+      "/home/u/.local/share",
+      "--setenv",
+      "XDG_STATE_HOME",
+      "/home/u/.local/state",
+      "--chdir",
+      "/home/u/proj/sub",
+      "--",
+      "/bin/sh"
+    ],
+    "argv0_resolved": false,
+    "argv0_note": "argv[0] is the bare name \"bwrap\" and snug does not exec that name: it calls exec.LookPath(\"bwrap\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH bwrap runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v bwrap",
+    "incomplete": true,
+    "reason": "the network namespace is not in this argv: the stage created it, pinned it, and a setns shim placed bwrap inside it before bwrap ran, and bwrap has no --netns flag to carry that here. No pasta helper starts if this argv is run standalone, either. Run as printed, this command lands in the CALLER's own network namespace: host loopback and the host's abstract sockets are reachable, contradicting network.host_loopback and network.abstract_sockets elsewhere in this document."
+  },
+  "pasta": {
+    "argv": [
+      "pasta",
+      "--config-net",
+      "--map-host-loopback",
+      "none",
+      "-t",
+      "none",
+      "-u",
+      "none",
+      "-T",
+      "none",
+      "-U",
+      "none",
+      "--ns-ifname",
+      "snug0",
+      "--no-netns-quit",
+      "--quiet",
+      "--foreground",
+      "--netns",
+      "/proc/0/fd/68",
+      "--userns",
+      "/proc/0/ns/user"
+    ],
+    "argv0_resolved": false,
+    "argv0_note": "argv[0] is the bare name \"pasta\" and snug does not exec that name: it calls exec.LookPath(\"pasta\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH pasta runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v pasta",
+    "placeholder": "/proc/0/fd/63 is a placeholder; the real pid is the stage's, and 63 is fdNetnsN (internal/stage/fds.go)"
+  }
+}

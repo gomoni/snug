@@ -31,6 +31,11 @@ conflict at /generated: two different generated contents (from gen-a and from ge
 == join_conflict_different_perms ==
 conflict at /generated: mode 0600 (from gen-a) and 0644 (from gen-b)
 
+== kind_conflict_tmpfs_over_sys_bind ==
+conflict at /usr: bind (from @sys) vs tmpfs (from hide-ssl).
+       Two profiles ask for a different kind of node at one path. There is no join
+       between them, so select one of the two, not both.
+
 == grant_at_root_tmpfs ==
 profile takeroot puts an empty tmpfs at /, but the sandbox root is snug's own:
        it is already an empty tmpfs, and the masking rule cannot see inside a grant

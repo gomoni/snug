@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2393,8 +2394,10 @@ func parseCapStatus(t *testing.T, status string) (eff, bnd uint64) {
 //      HOST's real one (issue #126)
 
 // resolvprobeBinOnce/resolvprobeBinPath/resolvprobeBinErr mirror
-// netprobeBinOnce/netprobeBinPath/netprobeBinErr above — same lazy,
-// per-calling-test build, same reasoning.
+// netprobeBinOnce/netprobeBinPath/netprobeBinErr above — same lazy build,
+// shared across every caller in this test binary rather than tied to
+// whichever one runs first (see resolvprobeBin's own comment on why that
+// distinction matters).
 var (
 	resolvprobeBinOnce sync.Once
 	resolvprobeBinPath string
@@ -2404,7 +2407,22 @@ var (
 func resolvprobeBin(t *testing.T) string {
 	t.Helper()
 	resolvprobeBinOnce.Do(func() {
-		dir := t.TempDir()
+		// os.MkdirTemp, NOT t.TempDir() — netprobeBin's own comment above
+		// names the defect exactly: sync.Once runs once for the whole test
+		// BINARY, so a t.TempDir() taken inside it belongs to whichever test
+		// calls this FIRST and is removed on THAT test's own cleanup. This
+		// comment used to claim resolvprobeBin already "mirrors netprobeBin
+		// above", which was false the moment a second caller existed to
+		// check it against: adding
+		// TestContainerResolvConfAgreesWithTheSandboxUnderNet as this
+		// function's second caller reproduced netprobeBin's own #401
+		// exactly — "open .../resolvprobe: no such file or directory" in
+		// whichever test ran second.
+		dir, err := os.MkdirTemp("", "snug-resolvprobe")
+		if err != nil {
+			resolvprobeBinErr = fmt.Errorf("creating a build dir for testdata/resolvprobe: %w", err)
+			return
+		}
 		bin := filepath.Join(dir, "resolvprobe")
 		cmd := exec.Command("go", "build", "-o", bin, "./testdata/resolvprobe")
 		cmd.Dir = "."
@@ -4754,5 +4772,435 @@ func TestTmpfsSuperblockSizeReadsTheBoundAndNotTheReadersFilesystem(t *testing.T
 		if got != tc.want {
 			t.Errorf("tmpfsSuperblockSize(%s) = %d, want %d", tc.guest, got, tc.want)
 		}
+	}
+}
+
+// ── the container's resolv.conf under @net (VERIFY §9f's second half) ──────
+
+// resolvNameservers reads the "nameserver X" lines out of a rendered
+// /etc/resolv.conf, in the order they appear — the same extraction
+// hostRealResolvConfNameservers does for the HOST's own file, applied here to
+// text this test already has in hand.
+func resolvNameservers(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "nameserver "); ok {
+			out = append(out, strings.TrimSpace(v))
+		}
+	}
+	return out
+}
+
+// TestContainerResolvConfAgreesWithTheSandboxUnderNet is
+// TestContainerGetsGeneratedResolvConfNotTheHosts's other half, VERIFY §9f's
+// own second paragraph: "Add -p @net and expect the container's resolv.conf
+// to now agree with the SANDBOX's own (pasta's resolver, or the host's
+// routable nameservers relayed through egress) — expected once egress is
+// granted, and a different fact from the host-LAN-topology leak offline."
+// The sibling test above runs @podman-build alone and only ever exercises
+// the OFFLINE leg (no address this test's host names as a nameserver
+// appears); nothing before this test built a container under @net and read
+// its resolv.conf back to check the positive claim.
+//
+// The comparison is the SET of nameservers, not the raw bytes: podman
+// generates the container's own resolv.conf from the dns_servers/
+// dns_searches/dns_options snug's generated containers.conf names (the same
+// policy.NetPolicy.Resolver() value the sandbox payload's own /etc/resolv.conf
+// is rendered from), but nothing guarantees podman's own writer reproduces
+// snug's exact line order or comment header — the fact this test can actually
+// hold snug to is which nameservers ended up in each.
+func TestContainerResolvConfAgreesWithTheSandboxUnderNet(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(proj, "resolvprobe"), mustRead(t, resolvprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tag := "snugtest-resolvconf-net:1"
+	script := buildScratchResolvProbeImage(tag) + runContainerAndCollectFn + fmt.Sprintf(`
+payload_resolv = open("/etc/resolv.conf").read()
+print("PAYLOAD-RESOLV-BEGIN", flush=True)
+print(payload_resolv, flush=True)
+print("PAYLOAD-RESOLV-END", flush=True)
+if build_scratch_probe():
+    run_and_collect(%q, [], "host")
+print("PROBE-COMPLETE", flush=True)
+`, tag)
+	if err := os.WriteFile(filepath.Join(proj, "resolvconf-net.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// @net on top of @podman-build — the only difference from the offline
+	// sibling test's own selection.
+	r := runEnv(t, env, []string{"-p", "@podman-build", "-p", "@net"}, proj, `python3 resolvconf-net.py`).mustRun(t)
+	if !strings.Contains(r.out, "PROBE-COMPLETE") {
+		t.Fatalf("the resolv.conf probe did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, fmt.Sprintf("BUILD %s: 200", tag)) {
+		t.Fatalf("the from-scratch probe image did not build — this test proves nothing about a "+
+			"container it never ran:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "LOGS-BEGIN") {
+		t.Fatalf("the container never produced logs — it did not actually run:\n%s", r.out)
+	}
+
+	payloadResolv, ok := section(r.out, "PAYLOAD-RESOLV")
+	if !ok {
+		t.Fatalf("the payload never printed its own /etc/resolv.conf:\n%s", r.out)
+	}
+	containerResolv, ok := section(r.out, "RESOLV")
+	if !ok {
+		t.Fatalf("the container never printed a RESOLV section — it did not actually run "+
+			"resolvprobe:\n%s", r.out)
+	}
+
+	// CONTROL: under @net the payload's own resolver is the "no resolver"
+	// placeholder text neither. Without this, a run that silently stayed
+	// offline (@net never took effect) would make every comparison below
+	// pass by naming zero nameservers on both sides.
+	if strings.Contains(payloadResolv, "this sandbox has no resolver") {
+		t.Fatalf("control: the sandbox payload's own /etc/resolv.conf under @net is still the "+
+			"offline placeholder — @net did not actually grant DNS, so this test cannot check "+
+			"what it claims to:\n%s", payloadResolv)
+	}
+	payloadNS := resolvNameservers(payloadResolv)
+	if len(payloadNS) == 0 {
+		t.Fatalf("control: the sandbox payload's own /etc/resolv.conf under @net names no "+
+			"nameserver at all, so \"the container agrees with it\" cannot be checked "+
+			"meaningfully:\n%s", payloadResolv)
+	}
+
+	// THE ASSERTION: the container names the SAME SET of nameservers as the
+	// sandbox payload does — the fact issue #126's fix makes true once egress
+	// is granted, and the fact its own absence (checked offline, in the
+	// sibling test) is the other half of.
+	containerNS := resolvNameservers(containerResolv)
+	gotSorted, wantSorted := append([]string{}, containerNS...), append([]string{}, payloadNS...)
+	sort.Strings(gotSorted)
+	sort.Strings(wantSorted)
+	if !slices.Equal(gotSorted, wantSorted) {
+		t.Errorf("under @net, the container's /etc/resolv.conf names %v; the sandbox's own "+
+			"names %v — they should agree once egress is granted:\ncontainer file:\n%s\n"+
+			"sandbox file:\n%s", containerNS, payloadNS, containerResolv, payloadResolv)
+	}
+}
+
+// ── the engine's own ipc and uts namespaces (issue #182) ───────────────────
+
+// TestEngineHasItsOwnIpcAndUtsNamespaces is issue #182's own claim, checked
+// directly against a running engine rather than against the refusal-reason
+// SOURCE TEXT internal/dockerproxy/refusalreason_test.go:
+// TestIpcAndUtsReasonsMatchTheEnginesActualCloneflags reads. Before #182 the
+// engine shared the MACHINE's System V IPC and its UTS namespace — measured,
+// per that section of VERIFY: /proc/<engine>/ns/ipc and /ns/uts were
+// byte-for-byte the host's — which made IpcMode=host/UTSMode=host the only
+// two proxy filters standing between a container and the host's SysV
+// shm/sem/mq and real hostname. #182 gives the engine its own of both,
+// dropping those refusals to defence-in-depth; this is what makes that
+// demotion safe rather than merely claimed.
+//
+// TestEngineHasItsOwnPidNamespace next door is this same measurement for
+// CLONE_NEWPID; this covers the two namespaces #182 added alongside it.
+func TestEngineHasItsOwnIpcAndUtsNamespaces(t *testing.T) {
+	budget(t, 60*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `
+python3 - <<'EOF'
+import http.client, socket, os
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost"); self.path = path
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(self.path); self.sock = s
+sock = os.environ["CONTAINER_HOST"].replace("unix://", "")
+c = UnixHTTP(sock); c.request("GET", "/v1.41/version"); r = c.getresponse(); r.read()
+print("version: %d" % r.status)
+EOF
+sleep 300
+`)
+	bg.ready(t)
+	bg.waitForState(t)
+
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	// CONTROL: the engine really is running and answering /version, not a
+	// stale pid some unrelated process reused.
+	if out := waitForLogLine(t, bg, "version: 200", 30*time.Second); !strings.Contains(out, "version: 200") {
+		t.Fatalf("control: the engine at pid %d does not answer /version:\n%s", enginePID, out)
+	}
+
+	for _, ns := range []string{"ipc", "uts"} {
+		engineNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/%s", enginePID, ns))
+		if err != nil {
+			t.Fatalf("reading /proc/%d/ns/%s: %v", enginePID, ns, err)
+		}
+		selfNS, err := os.Readlink(fmt.Sprintf("/proc/self/ns/%s", ns))
+		if err != nil {
+			t.Fatalf("reading /proc/self/ns/%s: %v", ns, err)
+		}
+		if engineNS == selfNS {
+			t.Errorf("the engine (pid %d) shares THIS test process's own %s namespace (%s) — "+
+				"pre-#182 behaviour, which made IpcMode=host/UTSMode=host reach the MACHINE's "+
+				"own IPC and hostname rather than defence-in-depth over the engine's own",
+				enginePID, ns, engineNS)
+		}
+	}
+}
+
+// ── the lifecycle verbs against a live engine (VERIFY §23b) ────────────────
+
+// TestContainerLifecycleVerbsWorkAgainstALiveEngine is VERIFY §23b's positive
+// half end to end against a REAL engine: create, start, stop, start again on
+// an EXISTING container (the case §23b's own measurement calls out as easy to
+// miss — it sends `detachkeys`, where `run -d`'s own start sends
+// `recursive=true`, so a route table built from one capture refuses the
+// other), restart, kill and rm -f.
+// internal/dockerproxy/libpodlifecycle_test.go and containerremove_test.go
+// prove each ROUTE is ADMITTED against a fake recorder; nothing before this
+// test drove the whole chain against a real podman and read back the
+// container's own state after each verb.
+func TestContainerLifecycleVerbsWorkAgainstALiveEngine(t *testing.T) {
+	budget(t, 180*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	if err := os.WriteFile(filepath.Join(proj, "holder"), mustRead(t, holderBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := "snugtest-lifecycle:1"
+	token := "snuglifecycle" + orphanToken()
+	script := buildScratchProbeImageFor(tag, "holder") + fmt.Sprintf(`
+import time
+
+def inspect(cid):
+    status, body = req("GET", "/v1.41/containers/%%s/json" %% cid)
+    if status != 200:
+        return status, None
+    return status, json.loads(body)
+
+def running(cid):
+    status, info = inspect(cid)
+    return status == 200 and info is not None and info.get("State", {}).get("Running") is True
+
+results = []
+def check(label, ok):
+    results.append("%%s=%%s" %% (label, "OK" if ok else "FAIL"))
+
+if build_scratch_probe():
+    body = json.dumps({"Image": "localhost/%[1]s", "Cmd": [%[2]q], "Tty": True,
+                        "HostConfig": {"NetworkMode": "host"}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
+    cid = json.loads(resp)["Id"] if status == 201 else None
+    check("create", status == 201)
+
+    if cid:
+        status, _ = req("POST", "/v1.41/containers/%%s/start" %% cid)
+        print("START: %%d" %% status, flush=True)
+        time.sleep(1)
+        check("running-after-start", running(cid))
+
+        status, _ = req("POST", "/v1.41/containers/%%s/stop?timeout=1" %% cid)
+        print("STOP: %%d" %% status, flush=True)
+        time.sleep(1)
+        check("stopped-after-stop", not running(cid))
+
+        # "podman start" on an EXISTING container: sends detachkeys, where
+        # "run -d"'s own start (above) sends recursive=true.
+        status, _ = req("POST", "/v1.41/containers/%%s/start?detachkeys=ctrl-p%%%%2Cctrl-q" %% cid)
+        print("START-AGAIN: %%d" %% status, flush=True)
+        time.sleep(1)
+        check("running-after-second-start", running(cid))
+
+        status, _ = req("POST", "/v1.41/containers/%%s/restart?timeout=1" %% cid)
+        print("RESTART: %%d" %% status, flush=True)
+        time.sleep(1)
+        check("running-after-restart", running(cid))
+
+        status, _ = req("POST", "/v1.41/containers/%%s/kill?signal=SIGKILL" %% cid)
+        print("KILL: %%d" %% status, flush=True)
+        time.sleep(1)
+        check("stopped-after-kill", not running(cid))
+
+        status, _ = req("DELETE", "/v1.41/containers/%%s?force=1" %% cid)
+        print("RM: %%d" %% status, flush=True)
+        status, _ = inspect(cid)
+        # 404 would be the ENGINE's own answer for an id that never existed;
+        # 403 is what this proxy actually gives, because inspecting an id it
+        # cannot find is indistinguishable, from here, from asking about a
+        # container this run never owned — ownership.go's inspectContainer
+        # fails closed on either. Both mean the same thing for this test:
+        # the container is gone and unreachable through this route.
+        check("gone-after-rm", status in (403, 404))
+
+for r in results:
+    print("RESULT " + r, flush=True)
+print("SCRIPT-COMPLETE", flush=True)
+`, tag, token)
+	if err := os.WriteFile(filepath.Join(proj, "lifecycle.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 lifecycle.py`).mustRun(t)
+	if !strings.Contains(r.out, "SCRIPT-COMPLETE") {
+		t.Fatalf("the lifecycle script did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "CREATE: 201") {
+		t.Fatalf("the container was never created, so every verb below proves nothing:\n%s", r.out)
+	}
+
+	for _, label := range []string{
+		"create", "running-after-start", "stopped-after-stop",
+		"running-after-second-start", "running-after-restart",
+		"stopped-after-kill", "gone-after-rm",
+	} {
+		want := "RESULT " + label + "=OK"
+		if !strings.Contains(r.out, want) {
+			t.Errorf("missing or failed: %s\n%s", want, r.out)
+		}
+	}
+}
+
+// ── a named volume outlives its container (VERIFY §23c, issue #464) ────────
+
+var (
+	volumeprobeBinOnce sync.Once
+	volumeprobeBinPath string
+	volumeprobeBinErr  error
+)
+
+// volumeprobeBin builds testdata/volumeprobe for the host architecture, the
+// same shape resolvprobeBin already uses.
+func volumeprobeBin(t *testing.T) string {
+	t.Helper()
+	volumeprobeBinOnce.Do(func() {
+		// os.MkdirTemp, not t.TempDir(): see resolvprobeBin's own comment for
+		// the defect a t.TempDir() here would reproduce the moment a second
+		// caller existed (issue #401).
+		dir, err := os.MkdirTemp("", "snug-volumeprobe")
+		if err != nil {
+			volumeprobeBinErr = fmt.Errorf("creating a build dir for testdata/volumeprobe: %w", err)
+			return
+		}
+		bin := filepath.Join(dir, "volumeprobe")
+		cmd := exec.Command("go", "build", "-o", bin, "./testdata/volumeprobe")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			volumeprobeBinErr = fmt.Errorf("building test/integration/testdata/volumeprobe: %w: %s", err, out.String())
+			return
+		}
+		volumeprobeBinPath = bin
+	})
+	if volumeprobeBinErr != nil {
+		t.Fatal(volumeprobeBinErr)
+	}
+	return volumeprobeBinPath
+}
+
+// TestANamedVolumeOutlivesItsContainer is VERIFY §23c's positive claim: a
+// named volume is a reference snug forwards UNRESOLVED — the ENGINE resolves
+// it, in a store keyed on the target directory and persistent across runs —
+// so content one container writes into it is still there for a SECOND,
+// unrelated container that mounts the same name after the first is removed.
+// TestAHostBindVolumeIsRefusedByName and TestTheVolumeGateFailsClosed
+// (internal/dockerproxy/namedvolume_test.go) prove the NEGATIVE half — a
+// volume whose engine-side options describe a host bind is refused — against
+// a fake recorder; nothing before this test drove a real volume create,
+// write, remove-the-writer, and read-back against a live engine.
+func TestANamedVolumeOutlivesItsContainer(t *testing.T) {
+	budget(t, 120*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	if err := os.WriteFile(filepath.Join(proj, "volumeprobe"), mustRead(t, volumeprobeBin(t)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := "snugtest-volume:1"
+	volume := "snugtestvol" + orphanToken()
+	script := buildScratchProbeImageFor(tag, "volumeprobe") + fmt.Sprintf(`
+def make_and_collect(cmd):
+    body = json.dumps({"Image": "localhost/%[1]s", "Cmd": cmd, "Tty": True,
+                        "HostConfig": {"NetworkMode": "host", "Binds": ["%[2]s:/data"]}}).encode()
+    status, resp = req("POST", "/v1.41/containers/create", body, {"Content-Type": "application/json"})
+    print("CREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
+    if status != 201:
+        return
+    cid = json.loads(resp)["Id"]
+    status, _ = req("POST", "/v1.41/containers/%%s/start" %% cid)
+    print("START: %%d" %% status, flush=True)
+    status, w = req("POST", "/v1.41/containers/%%s/wait" %% cid)
+    print("WAIT: %%d %%s" %% (status, w.decode(errors="replace")), flush=True)
+    status, logs = req("GET", "/v1.41/containers/%%s/logs?stdout=1&stderr=1" %% cid)
+    print("LOGS-BEGIN", flush=True)
+    print(logs.decode(errors="replace"), flush=True)
+    print("LOGS-END", flush=True)
+    req("DELETE", "/v1.41/containers/%%s?force=1" %% cid)
+
+status, resp = req("POST", "/v1.41/volumes/create", json.dumps({"Name": %[2]q}).encode(),
+                    {"Content-Type": "application/json"})
+print("VOLCREATE: %%d %%s" %% (status, resp.decode(errors="replace")[:300]), flush=True)
+
+if build_scratch_probe():
+    make_and_collect(["write", "/data/f", "hi-from-the-first-container"])
+    make_and_collect(["read", "/data/f"])
+
+status, _ = req("DELETE", "/v1.41/volumes/%[2]s")
+print("VOLRM: %%d" %% status, flush=True)
+print("SCRIPT-COMPLETE", flush=True)
+`, tag, volume)
+	if err := os.WriteFile(filepath.Join(proj, "volume.py"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runEnv(t, env, []string{"-p", "@podman-build"}, proj, `python3 volume.py`).mustRun(t)
+	if !strings.Contains(r.out, "SCRIPT-COMPLETE") {
+		t.Fatalf("the volume script did not run to the end:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "VOLCREATE: 201") {
+		t.Fatalf("the named volume was never created — every assertion below would be about a "+
+			"volume that does not exist:\n%s", r.out)
+	}
+	// "\nCREATE: 201", newline-anchored: a bare "CREATE: 201" also matches
+	// inside "VOLCREATE: 201" two lines above, which is a different line
+	// entirely — measured, first run of this test counted 3.
+	if n := strings.Count(r.out, "\nCREATE: 201"); n != 2 {
+		t.Fatalf("want 2 containers created (a writer and a reader), got %d:\n%s", n, r.out)
+	}
+
+	// The writer's own logs are empty (`write` prints nothing but
+	// VOLUME-WRITE-OK on success); the READER's logs are what carries the
+	// content. Both LOGS sections are in program order, so the second one is
+	// the reader's.
+	sections := strings.Split(r.out, "LOGS-BEGIN")
+	if len(sections) != 3 {
+		t.Fatalf("want 2 LOGS-BEGIN markers (one writer, one reader), got %d:\n%s", len(sections)-1, r.out)
+	}
+	readerLogs := sections[2]
+
+	if !strings.Contains(readerLogs, "VOLUME-CONTENT-BEGIN") {
+		t.Fatalf("the reader container never printed VOLUME-CONTENT-BEGIN — it did not actually "+
+			"run volumeprobe's own read path:\n%s", r.out)
+	}
+	if strings.Contains(readerLogs, "VOLUME-READ-ERROR") {
+		t.Errorf("the second container could not read the file the first one wrote into the same "+
+			"named volume:\n%s", readerLogs)
+	}
+	// THE ASSERTION: the content the FIRST container wrote is what the SECOND,
+	// unrelated container reads back — the volume outlived the container that
+	// wrote it, which is the whole claim.
+	if !strings.Contains(readerLogs, "hi-from-the-first-container") {
+		t.Errorf("the second container's own read of the shared volume does not contain the "+
+			"first container's content — the volume did not outlive its writer:\n%s", readerLogs)
 	}
 }

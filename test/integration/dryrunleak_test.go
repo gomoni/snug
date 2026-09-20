@@ -169,3 +169,54 @@ func containsSuffix(entries []string, suffix string) bool {
 	}
 	return false
 }
+
+// TestADryRunWithAPodmanSocketProfileCreatesNoEngineDirectories is issue
+// #21's rule applied to the four host-tree engine grafts issue #252 put on
+// screen (store, runroot, sock, conf): --dry-run computes their paths through
+// engine.PlannedPaths and never creates them, because the preflight that
+// would (engine.New) does not run under --dry-run at all.
+// enginegraftscreen_test.go's own TestDryRunNamesTheEnginesHostTreeGrafts only
+// t.Logf's a stray store directory rather than failing on one, because a
+// PRIOR real run on the same target may have created it (issue #276: the
+// store is keyed on the target alone, so any earlier run on this same
+// directory would leave one). This drives a FRESH $TMPDIR and
+// $XDG_DATA_HOME instead, so nothing but this run's own --dry-run could have
+// put anything under either, and asserts both are empty.
+func TestADryRunWithAPodmanSocketProfileCreatesNoEngineDirectories(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+
+	td, err := os.MkdirTemp("", "snug-enginedry-tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(td) })
+	dh, err := os.MkdirTemp("", "snug-enginedry-data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dh) })
+
+	env := baseEnv("TMPDIR="+td, "XDG_DATA_HOME="+dh)
+	out, code := cli(t, env, "--dry-run", "-p", "@podman-socket", proj)
+	if code != 0 {
+		t.Fatalf("snug --dry-run exited %d:\n%s", code, out)
+	}
+	// CONTROL: the screen actually reached the engine-view grafts this test is
+	// about — without it, an empty $TMPDIR/$XDG_DATA_HOME could mean "nothing
+	// leaked" just as easily as "the run never got this far".
+	if !strings.Contains(out, "ENGINE VIEW") || !strings.Contains(out, "/snug/engine/store") {
+		t.Fatalf("--dry-run -p @podman-socket did not render the ENGINE VIEW block naming the "+
+			"store graft, so this test cannot tell a clean dry run from one that never reached "+
+			"engine.PlannedPaths:\n%s", out)
+	}
+
+	if left := entriesUnder(t, td); len(left) != 0 {
+		t.Errorf("snug --dry-run -p @podman-socket created %v under a fresh $TMPDIR (issue #21 "+
+			"applied to the engine's runroot/sock/conf grafts):\n%s", left, out)
+	}
+	if left := entriesUnder(t, dh); len(left) != 0 {
+		t.Errorf("snug --dry-run -p @podman-socket created %v under a fresh $XDG_DATA_HOME "+
+			"(issue #21 applied to the engine's store graft):\n%s", left, out)
+	}
+}
