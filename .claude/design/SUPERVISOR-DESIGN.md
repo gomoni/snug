@@ -1,7 +1,6 @@
 # The supervisor stage — the design, as built
 
-`@net` no longer runs one process. snug forks a second long-lived process, the
-**stage**, whose job is to create the sandbox's network namespace, pin it,
+`@net` runs two processes. snug forks a second long-lived one, the **stage**, whose job is to create the sandbox's network namespace, pin it,
 *leave* it, and fork bwrap back into it. This document is the stage as built and
 why it is shaped that way.
 
@@ -273,7 +272,7 @@ The closing set — `--map-host-loopback none -t none -u none -T none -U none` �
 does not move and is not reformatted. `internal/policy` remains the sole author
 of the pasta argv (invariant 6). The price of that is worth naming: `PastaTargetStage`
 encodes a *stage implementation detail* inside the pure layer, so "policy knows
-nothing about execution" is no longer quite true. It is the right trade, but it
+nothing about execution" is not quite true. It is the right trade, but it
 is a trade.
 
 ### 3.5 Teardown has two mechanisms because they cover different failures

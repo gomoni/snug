@@ -5,9 +5,9 @@ the rule; this document holds the Claude-Code-specific measurements.** The other
 instance is [GIT-CONFIG.md](GIT-CONFIG.md).
 
 **Status: built** (issue
-[#17](https://github.com/gomoni/snug/issues/17)). `@claude` no longer binds
-`~/.claude/settings.json` under `ro` or `optional`; snug reads the host's file as
-data and generates the one the sandbox sees. The filter is
+[#17](https://github.com/gomoni/snug/issues/17)). `@claude` binds
+`~/.claude/settings.json` nowhere, under `ro` or `optional`; snug reads the
+host's file as data and generates the one the sandbox sees. The filter is
 `policy.FilterClaudeSettings` / `policy.ClaudeSettingsJSON`
 (`internal/policy/claudesettings.go`, pure — no filesystem, no `exec`); the host
 read and the stderr lines are `stageClaudeSettings` and
@@ -381,9 +381,9 @@ repository's** `.mcp.json`, which is invariant 3 verbatim — a host key handing
 the sandboxed material an execution channel.
 *Cost, stated:* the human's plugins are not *selected* inside via
 `enabledPlugins`. It is said in the injected guidance so nobody diagnoses it.
-Dropping `enabledPlugins` is no longer the only thing standing between an
-installed plugin and auto-loading — since issue #68 the `plugins` allowlist
-regenerates `installed_plugins.json` so only named plugins load; see §4.4.
+Dropping `enabledPlugins` is not the only thing standing between an installed
+plugin and auto-loading: the `plugins` allowlist regenerates
+`installed_plugins.json` so only named plugins load (issue #68); see §4.4.
 
 **(c) Environment.** `env`.
 *Reason:* "Environment variables to set for Claude Code sessions" — it lands in

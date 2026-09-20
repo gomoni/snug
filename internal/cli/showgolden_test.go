@@ -75,13 +75,12 @@ func TestGoldenProfileShow(t *testing.T) {
 		// `environ.inherit` and `optional`. This is the case that changed
 		// silently and is the reason the file exists.
 		{"@claude", "host:guest relocation, includes, environ.inherit, optional"},
-		// `include` of another builtin. Used to also carry an interim @net
-		// include (guarded by the now-deleted
-		// TestPodmanSocketIncludesNetAsAnInterimHonestyFix); issue #63, Tier B
-		// removed it, since the engine now runs in the sandbox's own netns and
-		// no longer needs @net to be honest about egress. This golden is where
-		// that removal shows up as a diff.
-		{"@podman-socket", "include closure, now WITHOUT the removed interim @net include"},
+		// `include` of another builtin, and the one whose include list must NOT
+		// carry @net: the engine runs in the sandbox's own netns, so
+		// @podman-socket is honest about egress without it
+		// (TestPodmanSocketDoesNotIncludeNet, internal/profile). An @net
+		// include reappearing here is a diff in this golden.
+		{"@podman-socket", "include closure, and no @net in it"},
 		// ISSUE #195. Before this pair existed, every golden here was a
 		// path-only profile, so the nine missing capability rows produced no
 		// diff when they were absent and would have produced none when a tenth

