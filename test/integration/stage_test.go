@@ -66,6 +66,38 @@ func isStageProcess(pid int) bool {
 	return argv[0] == "snug" && strings.HasPrefix(argv[1], "__stage")
 }
 
+// isServingStage is isStageProcess narrowed to the SECOND of the two verbs,
+// and the difference is a race rather than a preference.
+//
+// __stage-setup and __stage-serve are the same process: the first re-execs
+// into the second, so a prefix match on "__stage" answers yes from the
+// instant execve replaces the image. The Go runtime has not run MainSetup at
+// that instant, so reserveParkingFDs has not yet dup3'd anything onto 66, 67
+// or 68 — and a caller that reads /proc/<pid>/fd right then sees fd 3 (which
+// is inherited, so it is always there) and none of the parkings.
+//
+// MEASURED, sampling every `snug __stage*` process a @net run produces and
+// recording whether 66/67/68 were open: 2621 observations of __stage-serve,
+// all parked; 11 of __stage-setup, of which 9 were NOT parked. It is rare
+// enough on an idle host to pass a thousand local runs and common enough to
+// fail on a loaded one — it failed first in the Tumbleweed engine job, run
+// 35530416099, reporting all three of 66, 67 and 68 "not open in the live
+// stage at all" while fd 3 was present.
+//
+// __stage-serve is where the parkings are an INVARIANT rather than a step
+// that may not have happened: serve.go's first instants are requireFD on
+// fdNetSock and fdNetlinkSock and setCloexec on fdNetnsN, so a serving stage
+// missing one of them has already failed. Use it for any assertion ABOUT the
+// parked descriptors; isStageProcess remains right for tests that want P1 in
+// either phase.
+func isServingStage(pid int) bool {
+	argv := cmdlineOf(pid)
+	if len(argv) < 2 {
+		return false
+	}
+	return argv[0] == "snug" && argv[1] == "__stage-serve"
+}
+
 func isComm(name string) func(int) bool {
 	return func(pid int) bool { return commOf(pid) == name }
 }
@@ -1777,9 +1809,15 @@ func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 		_ = cmd.Wait()
 	})
 
-	stagePID, ok := findDescendant(cmd.Process.Pid, isStageProcess, 5*time.Second)
+	// isServingStage, NOT isStageProcess: see that function's own comment for
+	// the measurement. A prefix match on "__stage" also matches __stage-setup
+	// in the window between its execve and reserveParkingFDs, where fd 3 is
+	// open and 66/67/68 are not — which is this test failing for a reason
+	// that has nothing to do with issue #525.
+	stagePID, ok := findDescendant(cmd.Process.Pid, isServingStage, 5*time.Second)
 	if !ok {
-		t.Fatal("PRECONDITION: no stage ('snug') process appeared as a descendant of a @net run")
+		t.Fatal("PRECONDITION: no serving stage ('snug __stage-serve') process appeared as a " +
+			"descendant of a @net run")
 	}
 
 	links := fdLinksOf(t, stagePID)
@@ -1787,7 +1825,8 @@ func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 	// life of the run) is there at all — without it, an empty or partial read
 	// of /proc/<pid>/fd (the stage already exited, or this listing raced it)
 	// would leave every row below vacuously absent rather than genuinely
-	// wrong.
+	// wrong. It does NOT cover the race above: fd 3 is inherited across the
+	// re-exec, so it is open in __stage-setup's very first instant too.
 	if _, ok := links[3]; !ok {
 		t.Fatalf("control: /proc/%d/fd has no entry at fd 3 (fdControl) — either the stage has "+
 			"already exited or this listing did not actually read a live process's descriptors",
