@@ -26,8 +26,8 @@
 //	go test -tags integration ./test/integration/...
 //	make integration
 //
-// scripts/VERIFY.md still exists and is not redundant: what is left in it is
-// what nothing here can run. This is the automated ratchet.
+// scripts/README.md's by-hand section is not redundant with this: what is left
+// there is what nothing here can run. This is the automated ratchet.
 //
 // # Two environment knobs, deliberately separate
 //
@@ -448,7 +448,7 @@ func internetTarget(t *testing.T) string {
 // ── plumbing ────────────────────────────────────────────────────────────────
 
 // target builds a throwaway project directory with a sibling beside it and a
-// secret above it, mirroring the shape VERIFY.md uses.
+// secret above it, mirroring the shape the by-hand checks use.
 //
 //	root/                 (two levels above the target — must be invisible)
 //	  SECRET
@@ -734,7 +734,7 @@ func TestRootSkeletonIsReadOnly(t *testing.T) {
 }
 
 // /dev is writable and that surprises people — it surprised the author, and it
-// was found by running VERIFY.md rather than by review. It is bwrap's own
+// was found by running the by-hand checks rather than by review. It is bwrap's own
 // synthetic device tree on a private tmpfs, so what matters is not that it is
 // read-only (it is not) but that a write there reaches neither the host nor the
 // next sandbox. Say "the only writable thing that PERSISTS", never "the only
@@ -1426,7 +1426,7 @@ echo CHECKED-ALL`).mustRun(t)
 // it" would leave a hostile binary dropped in the target able to shadow a real
 // one the moment anything looks it up through that PATH entry.
 //
-// Same shape as the scripted fixture in scripts/VERIFY.md's now-deleted §6f:
+// Same shape as the scripted fixture in the now-deleted by-hand check for this:
 // a same-named `id` planted in the target, PATH carrying /proc/self/cwd ahead
 // of the real bin directory, environ.sanitise selecting PATH so the filter
 // actually runs on it (no shipped profile does this on its own).
@@ -1571,7 +1571,7 @@ func TestThePayloadNameResolvesAgainstTheSandboxPATH(t *testing.T) {
 // already proves that p.Env["PATH"].Entries[0] is the prepend band's entry, and
 // the argv tests prove the same about the --setenv operand. Neither can prove
 // the thing the band ORDER exists for, which is what the KERNEL does with two
-// same-named binaries at execvp(3) — the objection VERIFY.md raised against
+// same-named binaries at execvp(3) — the objection the by-hand check raised against
 // exactly that shape of coverage ("the screen agreeing with itself proves
 // nothing"). This runs a real sandbox and executes the ambiguous name.
 //
@@ -2985,7 +2985,7 @@ func TestNoLeakedHelpersAfterSIGKILL(t *testing.T) {
 // only covers the STARTUP window, before the payload has even begun running.
 // Neither exercises the SETTLED case — a sandbox that has been running
 // normally for a while, no engine, no @net, just an ordinary payload — which
-// is the shape the deleted VERIFY.md's own "nothing is left behind" recipe
+// is the shape the deleted checklist's own "nothing is left behind" recipe
 // actually ran: start a payload, let it settle, `kill -9` snug, expect bwrap
 // gone. `--die-with-parent` kills the payload even when snug is SIGKILLed and
 // cannot clean up after itself.

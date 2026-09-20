@@ -29,7 +29,7 @@ command was **executed**; everything else is marked as reasoning.
 
 **This section is the canonical write-up of the finding.** Code and prose across
 the repo cite it — `CLAUDE.md`, `base.toml`, `internal/cli/dryrun.go`,
-`internal/profile/file_test.go`, `VERIFY.md`, `.claude/design/SECRETS.md` §6.4.
+`internal/profile/file_test.go`, `.claude/design/SECRETS.md` §6.4.
 If you arrived from one of those, this is the whole story; §5 is what is left to
 do.
 

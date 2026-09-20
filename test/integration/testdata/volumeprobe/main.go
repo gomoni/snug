@@ -1,5 +1,5 @@
 // Command volumeprobe is a from-scratch container's own entrypoint for the
-// named-volume lifecycle claim (issue #464, VERIFY §23c): a volume survives
+// named-volume lifecycle claim (issue #464): a volume survives
 // the container that wrote it, so a SECOND, unrelated container reading the
 // same named volume back sees what the first one left there.
 //

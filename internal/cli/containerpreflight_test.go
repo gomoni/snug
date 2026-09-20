@@ -382,8 +382,8 @@ func TestResolvConfBindNoticeIsSilentOnAHealthyHost(t *testing.T) {
 	}
 }
 
-// TestResolvConfBindNoticeWarnsWithoutRefusing is issue #128's aside (VERIFY's
-// P7): the ONE non-nil, non-probeUnavailable answer the probe can give — the
+// TestResolvConfBindNoticeWarnsWithoutRefusing is issue #128's aside, the
+// preflight's P7 row: the ONE non-nil, non-probeUnavailable answer the probe can give — the
 // host refuses the bind — must read as a warning a human can skim past
 // rather than as a refusal, because nothing about it leaks. The property
 // "the run CONTINUES" is checked structurally rather than by driving the
@@ -416,8 +416,8 @@ func TestResolvConfBindNoticeWarnsWithoutRefusing(t *testing.T) {
 	}
 }
 
-// TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling is VERIFY's
-// §19b contrast rewritten as a check: a relative $SNUG_PODMAN that RESOLVES
+// TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling is the contrast
+// a by-hand check drew, rewritten as one: a relative $SNUG_PODMAN that RESOLVES
 // (TestResolveEngineBinaryRefusesARelativePath, internal/policy) is refused
 // for being relative, but a relative $SNUG_PODMAN that does not exist at all
 // must be refused for THAT reason instead — "does not name a usable file",
@@ -436,7 +436,7 @@ func TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling(t *testing.T) 
 
 	env := policy.OSEnviron{}
 	// A relative path with nothing at it on this test's working directory —
-	// "bin/podman" is VERIFY's own spelling. Read from the REAL filesystem,
+	// "bin/podman" is the spelling a human types. Read from the REAL filesystem,
 	// not envFakeEnv, for the same reason
 	// TestPreflightPodmanBinaryRefusesNonRegularObjects needs one: a fake
 	// Stat cannot answer "is there really nothing here" for a name it was

@@ -337,7 +337,7 @@ listen_names = ["web"]
 	}
 }
 
-// TestTheDoorSocketIsGoneWithTheRun is VERIFY §20d's teardown claim, read off
+// TestTheDoorSocketIsGoneWithTheRun is the door's teardown claim, read off
 // the real binary: after a door run exits, BOTH its own run directory under
 // $XDG_RUNTIME_DIR/snug/run-<pid> AND the door's unix socket are gone — a
 // socket still listening on the host after teardown is a leaked inbound hole
@@ -410,7 +410,7 @@ listen_names = ["web"]
 
 	// The payload (testdata/doorprobe) serves exactly one request and then
 	// exits, so waiting for the run to finish here is a CLEAN exit — the exact
-	// path VERIFY §20d's claim is about, not a kill this test forces.
+	// path that claim is about, not a kill this test forces.
 	killed = true
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("snug exited with an error after serving the door: %v:\n%s", err, out.String())

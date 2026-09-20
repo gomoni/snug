@@ -1578,7 +1578,7 @@ func resolveLinkForEnv(links map[string]string, g string) string {
 // profiles actually made ephemeral.
 //
 // AND NOT ANY TMPFS: only one rooted at $HOME. snug's own /tmp is a tmpfs too,
-// and `snug /tmp/proj` is ordinary — `mktemp -d` targets are how VERIFY.md and
+// and `snug /tmp/proj` is ordinary — `mktemp -d` targets are how
 // the whole integration suite build theirs. Refusing those would break snug's own
 // workflow, and what happens there instead is issue #223's annotation.
 //

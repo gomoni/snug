@@ -58,6 +58,16 @@ import (
 //     with Access == AccessRW covers P; otherwise C_i is anchored and the
 //     walk continues.
 //
+// Case 2 is why the walk cannot stop at guest's own parent: a real bind or
+// tmpfs several components BELOW a swappable name anchors nothing above it.
+// `rename` moves a directory's whole subtree by re-pointing one dentry in the
+// writable parent; every mount nested underneath is attached to ITS OWN
+// dentry, not to a path string, so it moves along for free (measured: with
+// @parent-ro bound at .../x/y/proj and @target-rw at .../x/y/proj/sub, `mv`
+// of the plain, unmounted "x" two levels up still succeeds). The walk visits
+// C_i in increasing depth and returns at the first swappable one, which is
+// exactly the shallowest ancestor a rename could detach.
+//
 // # Anchors satisfy case 3, and they satisfy it MORE than an ordinary bind
 //
 // An anchor (anchor.go, issue #553) is a KindTmpfs snug mounts at an ancestor

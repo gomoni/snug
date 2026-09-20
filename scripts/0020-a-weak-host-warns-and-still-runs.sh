@@ -3,7 +3,6 @@
 # refused, and the drop-in `snug fix sysctl` prints is a function of the table
 # rather than of this boot.
 #
-# Migrated from VERIFY.md §27a (issue #526).
 #
 # The weak host is fabricated, not this machine: a user namespace can bind a
 # file over a /proc/sys entry, so four knobs are made 0 with no root and no

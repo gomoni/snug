@@ -477,3 +477,21 @@ func TestEngineGCAcceptsALegacyKeyNamedOnTheCommandLine(t *testing.T) {
 		t.Errorf("naming the legacy key on the command line did not reclaim it (err=%v)", err)
 	}
 }
+
+// TestParseEngineGCArgsRefusesAKeyShapedLikeNeitherGeneration pins the
+// message a human sees when a positional argument matches neither
+// ReclaimableStoreKey shape (labelled or legacy) — "zzz" rather than a typo'd
+// real key, so a --dry-run listing valid keys is the next thing to try
+// instead of guessing at the shape from the refusal alone.
+func TestParseEngineGCArgsRefusesAKeyShapedLikeNeitherGeneration(t *testing.T) {
+	_, err := parseEngineGCArgs([]string{"zzz"})
+	if err == nil {
+		t.Fatal("parseEngineGCArgs([\"zzz\"]) returned nil error, want a refusal")
+	}
+	want := `zzz is not shaped like a store key ("sha256_" followed by 64 lowercase ` +
+		`hex characters, or a bare 64-character digest for a store written before ` +
+		"that label) — run `snug engine gc --dry-run` to list valid keys"
+	if got := err.Error(); got != want {
+		t.Errorf("parseEngineGCArgs([\"zzz\"]) error =\n%q\nwant\n%q", got, want)
+	}
+}

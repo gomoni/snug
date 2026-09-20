@@ -88,7 +88,7 @@ func assertNameRefusal(t *testing.T, out string, code int, arg, want string) {
 	if code == 0 {
 		t.Fatalf("snug accepted the profile name %q (exit 0):\n%s", arg, out)
 	}
-	// VERIFY's own claim (§9e): this is a USAGE error, exit 64, never the
+	// This is a USAGE error, exit 64, never the
 	// policy exit (77) a resolved-but-refused run would use — the name never
 	// reached the registry at all.
 	if code != exitUsageCode {

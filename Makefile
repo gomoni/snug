@@ -110,8 +110,8 @@ gate:
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
-# is the automated half of scripts/VERIFY.md — the by-hand checklist stays, because
-# it carries the reasoning; this is the ratchet.
+# is the automated half of the checklist; the by-hand half that survives in
+# scripts/README.md is only what this cannot run.
 #
 # Build-tagged, so it is excluded from `make gate` by construction: it needs
 # bubblewrap, user namespaces and pasta, none of which every machine has. Where
@@ -416,7 +416,7 @@ integration-engine:
 # living in both places is a second copy of state, and the copy nobody runs is
 # the one that goes stale.
 #
-# NNNN is an ALLOCATION SEQUENCE, not a VERIFY.md section number. Sections
+# NNNN is an ALLOCATION SEQUENCE, not a checklist section number. Sections
 # carry suffixes (9a, 9c-bis, 9c-quater, 23b) that no numeric prefix can
 # express, and one section is frequently several independent checks. A number
 # is allocated on creation and never reused, so a reference to 0011 means one

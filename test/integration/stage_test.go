@@ -1792,6 +1792,13 @@ func fdLinksOf(t *testing.T, pid int) map[int]string {
 // fixed numbers point to — dup3 onto an occupied descriptor closes it
 // silently and reports success, per fds.go's own doc comment — would pass
 // both of those and still be caught only here.
+//
+// fd 66 is not the first free number after the inherited block: fds.go's
+// fdPremainSlack leaves 62-65 open on purpose, for descriptors the Go runtime
+// opens before main and never gives up — the cgroup CPU limit file
+// (defaultGOMAXPROCSInit) and netpoll's epoll/eventfd pair once a timer is
+// armed early enough — so this test asserting exactly 66/67/68 is checking
+// the reservation lands past that slack, not merely that it exists somewhere.
 func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireSandbox(t)

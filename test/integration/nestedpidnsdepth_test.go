@@ -109,6 +109,67 @@ sleep 60
 	}
 }
 
+// TestStagedArmsBwrapIsNotNested is issue #101's negative claim, for the arm
+// the test above does not cover: under `-p @net` the stage forks bwrap
+// directly, in the HOST's own pid namespace, with no `__inpidns` in between —
+// so bwrap's pid namespace must equal this test's, in contrast to the offline
+// arm's NP.
+//
+// bwrap forks itself a second time to unshare the sandbox's own new pid
+// namespace (Q), so "a process named bwrap somewhere under the stage" matches
+// two processes and only the OUTER one — the stage's direct child — answers
+// this question; the inner one is nested by bwrap's own construction on
+// either arm and would make this test pass for the wrong reason.
+func TestStagedArmsBwrapIsNotNested(t *testing.T) {
+	budget(t, 30*time.Second)
+	requireSandbox(t)
+	requirePasta(t)
+
+	proj, _ := target(t)
+	bg := startBackgroundSnug(t, baseEnv(), proj, "sleep 25", "-p", "@net")
+
+	stagePID, ok := findDescendant(bg.cmd.Process.Pid, isStageProcess, 10*time.Second)
+	if !ok {
+		t.Fatalf("never found a stage process as a descendant of a @net run (pid %d):\n%s",
+			bg.cmd.Process.Pid, bg.output())
+	}
+
+	var bwrapPID int
+	for deadline := time.Now().Add(10 * time.Second); bwrapPID == 0 && time.Now().Before(deadline); {
+		for _, pid := range allPIDs() {
+			if commOf(pid) != "bwrap" {
+				continue
+			}
+			if parent, ok := ppidOf(pid); ok && parent == stagePID {
+				bwrapPID = pid
+				break
+			}
+		}
+		if bwrapPID == 0 {
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	if bwrapPID == 0 {
+		t.Fatalf("never found bwrap as a DIRECT child of the stage (pid %d):\n%s",
+			stagePID, bg.output())
+	}
+
+	selfNS, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bwrapNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", bwrapPID))
+	if err != nil {
+		t.Fatalf("reading bwrap's (pid %d) own pid namespace: %v", bwrapPID, err)
+	}
+	if bwrapNS != selfNS {
+		t.Errorf("the staged arm's bwrap (pid %d, the stage's direct child) is in a different "+
+			"pid namespace (%s) than the host's own (%s) — only the offline arm should nest "+
+			"bwrap into an intermediate namespace (issue #101); the stage forks bwrap directly, "+
+			"with no __inpidns between them", bwrapPID, bwrapNS, selfNS)
+	}
+}
+
 // TestSiblingSandboxProcessesStillShareOneNamespace is the bound on the test
 // above, and it must stay in the suite for as long as that one does: issue
 // #101's namespace buys a place to PUT things, not isolation INSIDE the

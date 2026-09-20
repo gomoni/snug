@@ -148,7 +148,7 @@ echo WRITE-OK
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the host never received anything through the FIFO within 10s. If issue #296's "+
 			"residual has genuinely been closed since this test was written, that is real news — "+
-			"update this test (and VERIFY.md §4b, which carries the same residual for a human) "+
+			"update this test "+
 			"with the measurement that closed it. Do not leave this assertion unable to fail."+
 			"\nsandbox output:\n%s", out)
 	}

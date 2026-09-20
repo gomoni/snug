@@ -238,3 +238,29 @@ func TestTmpfsBoundIsOrderIndependent(t *testing.T) {
 			"the bound depends on profile order", a.TmpfsSizeBytes, b.TmpfsSizeBytes)
 	}
 }
+
+// TestDefaultSelectionEmitsOnlyBoundedTmpfs asks the bounded-tmpfs property at
+// the Resolve boundary, on p.Mounts directly, rather than downstream in the
+// argv the way TestEveryTmpfsInTheArgvCarriesASize does. The count is not
+// asserted — it is a function of base.toml's grants, not of this rule, and
+// pinning it would fail the test the next time a profile gains or drops a
+// tmpfs for an unrelated reason.
+func TestDefaultSelectionEmitsOnlyBoundedTmpfs(t *testing.T) {
+	p := mustResolveDefaults(t)
+
+	count := 0
+	for _, m := range p.Mounts {
+		if m.Kind == KindTmpfs {
+			count++
+		}
+	}
+	// MANDATORY POSITIVE CONTROL: without this, a selection resolving to no
+	// KindTmpfs mount at all would make the assertion below vacuously true.
+	if count == 0 {
+		t.Fatal("default selection resolves no KindTmpfs mount at all; this test cannot fail and proves nothing")
+	}
+	if p.TmpfsSizeBytes == 0 {
+		t.Errorf("default selection carries %d KindTmpfs mount(s) but TmpfsSizeBytes is 0; "+
+			"bwrap would default each one to half of host RAM", count)
+	}
+}

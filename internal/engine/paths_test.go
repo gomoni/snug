@@ -152,7 +152,7 @@ func TestPlannedPathsCreatesNothing(t *testing.T) {
 	for _, root := range []string{dataHome, tmp} {
 		if got := recursiveEntries(t, root); len(got) != 0 {
 			t.Errorf("PlannedPaths left %d entr(y/ies) under %s: %v — a dry run must create "+
-				"nothing (issue #21, VERIFY.md's own check)", len(got), root, got)
+				"nothing (issue #21)", len(got), root, got)
 		}
 	}
 }

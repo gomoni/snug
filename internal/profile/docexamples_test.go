@@ -14,8 +14,8 @@ import (
 // `[profile.mytools.environ.inherit] COLORTERM = true` with no `declare`
 // block. COLORTERM has no roster row (internal/policy/envtypes.go), so once
 // the roster flip landed, the WHOLE profile was refused at parse time — and
-// nothing caught it: VERIFY.md "earns its place by being executable" but
-// nothing runs it except a human, and README's examples are never run at all.
+// nothing caught it: the checklist "earned its place by being executable" but
+// nothing ran it except a human, and README's examples are never run at all.
 // the checklist's own five-verb check exited 77 before its expected-output
 // fence was ever printed. Both documents now carry a `declare` block; this file is what
 // makes the NEXT such change fail `go test` instead of a human's terminal.
@@ -26,7 +26,7 @@ import (
 //
 //  1. Every fenced code block (``` … ```) in the document, whatever its
 //     language tag. README spells its profiles in ```toml fences;
-//     scripts/VERIFY.md mostly does not — its examples are plain ```bash or
+//     scripts/README.md mostly does not — its examples are plain ```bash or
 //     ```console.
 //  2. Within each fenced block, look for shell heredocs: a line matching
 //     `<<-?['"]?WORD['"]?` opens one, a later line that is EXACTLY `WORD`
@@ -35,7 +35,7 @@ import (
 //     delimiter, and any shell that runs afterwards are discarded outright,
 //     because they are not TOML and parsing them as TOML would fail for a
 //     reason that has nothing to do with the profile inside. This is what
-//     pulls scripts/VERIFY.md's `[profile.acct-a]` out of a fence whose
+//     pulls scripts/README.md's `[profile.acct-a]` out of a fence whose
 //     heredoc is followed by more shell.
 //  3. Of what step 1/2 produced, skip leading blank and `#`-comment lines,
 //     then require the very next line to be a COMPLETE `[profile.NAME]`
@@ -55,14 +55,15 @@ import (
 //
 // WHAT THIS DELIBERATELY DOES NOT COVER: a profile spelled through
 // `printf '[profile.x]\n...'` rather than a heredoc or a fenced ```toml
-// block — scripts/VERIFY.md still does this four times. It is excluded by
+// block — scripts/README.md still does this four times. It is excluded by
 // construction rather than by a special case: the physical line always reads
 // `printf '...' '[profile.x]' ...`, never `[profile.x]` alone, so step 3's
 // exact-header-line test already says no. Reconstructing these would mean
 // interpreting printf's OWN escaping rules — a second parser this sweep would
 // then have to keep correct — for examples that are shell-escaping
 // demonstrations first and profile text second. The two examples this sweep
-// exists to protect (README's five-verb block, VERIFY §6j) are both
+// exists to protect (README's five-verb block, and the five-verb check that
+// is a Go test now) are both
 // heredoc/fenced-block spelled, not printf-spelled.
 //
 // Lives in internal/profile, not internal/cli or internal/policy: `parse` (below)
@@ -213,9 +214,9 @@ func extractProfileExamples(t *testing.T, path string) []docCandidate {
 func TestDocumentedExampleProfilesParse(t *testing.T) {
 	var all []docCandidate
 	all = append(all, extractProfileExamples(t, "../../README.md")...)
-	all = append(all, extractProfileExamples(t, "../../scripts/VERIFY.md")...)
+	all = append(all, extractProfileExamples(t, "../../scripts/README.md")...)
 
-	// NON-VACUITY CONTROL. README.md and scripts/VERIFY.md between them write
+	// NON-VACUITY CONTROL. the repository README and scripts/README.md between them write
 	// ten in-scope profile examples today — measured, six and four; if the extraction
 	// rule ever stops matching — a doc reformatted to use tildes instead of
 	// backticks, a language-tag change that this rule does not in fact
@@ -226,7 +227,7 @@ func TestDocumentedExampleProfilesParse(t *testing.T) {
 	const floor = 8
 	if len(all) < floor {
 		t.Fatalf("found only %d in-scope profile example(s) across README.md and "+
-			"VERIFY.md, want at least %d; the extraction rule stopped matching "+
+			"scripts/README.md, want at least %d; the extraction rule stopped matching "+
 			"something (see the file comment for what it looks for), or the "+
 			"documents genuinely lost their examples", len(all), floor)
 	}

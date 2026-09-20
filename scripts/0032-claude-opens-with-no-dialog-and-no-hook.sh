@@ -2,7 +2,6 @@
 # 0032 — Claude Code opens on `@claude` straight on its prompt, and a
 # hostile repo's own hooks do not run to make that true.
 #
-# Migrated from VERIFY.md §6m.
 #
 # ~/.claude.json, ~/.claude/settings.json and the plugin manifest are
 # GENERATED for the one directory on the command line, never bound — so the

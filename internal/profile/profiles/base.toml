@@ -434,7 +434,8 @@ dns = true
 # sandbox then acts as one account through BOTH channels — gh and git-over-ssh —
 # and cannot act as the other. Selecting both at once is a hard error naming
 # them, because an identity is a pin and two pins are a contradiction rather
-# than a union. VERIFY.md §13 is the by-hand check, negatives included.
+# than a union. scripts/README.md's by-hand section carries the two-account
+# check, negatives included.
 #
 # The gh binary must be INSIDE for the staged token to be usable, and it is not
 # always under /usr — a tarball in ~/bin is common, and then @sys does not carry

@@ -58,7 +58,7 @@ func runSplit(t *testing.T, env []string, args ...string) (stdout, stderr string
 	return outBuf.String(), errBuf.String(), 0
 }
 
-// TestQuietRunsAreQuiet is the deleted VERIFY.md's "starts nothing" promise
+// TestQuietRunsAreQuiet is the deleted checklist's "starts nothing" promise
 // (§2a) read off stderr rather than off prose: an ordinary
 // `snug -p @podman-socket <dir> -- /bin/true`, with no -v, writes NOTHING to
 // stderr, and --dry-run -p @podman-socket renders no NOTES block at all while

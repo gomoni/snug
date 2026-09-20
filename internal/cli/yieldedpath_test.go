@@ -24,7 +24,7 @@ import (
 // subject exactly.
 //
 // SAID RATHER THAN REFUSED, deliberately: `snug /tmp/x` is ordinary — `mktemp -d`
-// targets are how VERIFY.md and the whole integration suite build theirs — so a
+// targets are how the whole integration suite builds theirs — so a
 // refusal would break snug's own workflow unless it could tell "the yield was
 // asked for" from "the yield happened by accident", and this layer cannot.
 //

@@ -275,7 +275,10 @@ func spawnAndReapOwner(t *testing.T) (pid int, starttime uint64) {
 
 // procStarttime is /proc/<pid>/stat field 22, read the way snug reads it: from
 // the LAST ')', because the comm field is parenthesised and may itself contain
-// spaces.
+// spaces. This is the pid-reuse guard the sweep checks a record's start time
+// against: a number recycled since the record was written names a task with a
+// different start time, so the sweep leaves it alone rather than killing a
+// stranger.
 func procStarttime(pid int) (uint64, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {

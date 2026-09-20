@@ -7,8 +7,9 @@
     # terminal 2, within 20s — the host
     python3 scripts/pid-nesting.py host
 
-It reads like `snug doctor`: a ✅ or ❌ per claim, the evidence under it.
-VERIFY.md §21 carries the expected output of both.
+It reads like `snug doctor`: a ✅ or ❌ per claim, the evidence under it. The
+property it prints is owned by TestOfflineArmsIntermediateBwrapIsUnaddressableFromThePayload
+and TestStagedArmsBwrapIsNotNested; this script is how a human sees it.
 
 WHY BOTH SIDES, AND WHY THE HOST SIDE IS THE ONE THAT PROVES ANYTHING. snug's
 offline arm forks bwrap into a pid namespace of its own (NP), and bwrap's own

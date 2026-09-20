@@ -80,7 +80,7 @@ func TestEveryCheckScriptIsExecutable(t *testing.T) {
 
 // A check that is not in the index is a check nobody finds. scripts/README.md is
 // what the migration rule points a reader at, so an unlisted script is the index
-// going stale — the exact failure that made VERIFY.md worth converting.
+// going stale — the exact failure that made the by-hand checklist worth converting.
 func TestEveryCheckScriptIsInTheIndex(t *testing.T) {
 	index, err := os.ReadFile(filepath.Join("..", "..", "scripts", "README.md"))
 	if err != nil {
@@ -117,7 +117,7 @@ func TestNoCheckScriptSpellsSkipAs77(t *testing.T) {
 
 // A check that never says what it asserted leaves a human reading `make verify`
 // output with nothing but an exit code — which is the readable half of what
-// replaced VERIFY.md's transcripts.
+// replaced the checklist's transcripts.
 func TestEveryCheckScriptSaysWhatItAsserted(t *testing.T) {
 	for name, body := range checkScripts(t) {
 		if !strings.Contains(body, "asserted:") {

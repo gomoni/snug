@@ -2754,8 +2754,7 @@ func graftDestinationNote(p *policy.Policy, gr policy.Graft) string {
 // the screen said the command was incomplete.
 //
 // That is not a cosmetic defect, and the reader it costs is a specific one:
-// VERIFY.md's whole style is "every line is a command with its expected
-// output", so a reviewer checking the netns guarantee by hand reproduces this
+// a reviewer checking the netns guarantee by hand reproduces this
 // argv, gets host loopback and the host's abstract sockets, and concludes
 // either that snug is broken or — worse — that the guarantee is weaker than it
 // is, and writes that down.
@@ -2969,8 +2968,8 @@ func notGranted(p *policy.Policy) []string {
 	// which is a `unix:path=...,guid=...` string that also takes `abstract=`,
 	// `tcp:` and a semicolon-separated list of alternatives — would convert a
 	// true host-independent statement into a host-dependent approximation of the
-	// same statement, and put a per-developer value into three golden fixtures
-	// and VERIFY.md. That is the cost #320 refused when it declined to stat-gate
+	// same statement, and put a per-developer value into three golden fixtures.
+	// That is the cost #320 refused when it declined to stat-gate
 	// /sys and /tmp/.X11-unix, for a strictly stronger reason than this one.
 	//
 	// The residual is printed HERE, in plain words and without issue numbers,
@@ -3254,7 +3253,7 @@ func partialLines(name string, beneath int, generated bool) []string {
 // invariant 5's whole subject, and the guarantee changed silently.
 //
 // This says it rather than refusing it, which was a deliberate call: `snug
-// /tmp/x` is ordinary — `mktemp -d` targets are how VERIFY.md and the whole
+// /tmp/x` is ordinary — `mktemp -d` targets are how the whole
 // integration suite build theirs — so a refusal would break snug's own workflow
 // unless it could distinguish "the yield was asked for" from "the yield happened
 // by accident", and this layer cannot. --dry-run being honest is the mechanism

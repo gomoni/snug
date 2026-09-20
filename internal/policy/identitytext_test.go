@@ -74,7 +74,7 @@ func TestIdentityFieldsRefuseControlCharacters(t *testing.T) {
 func TestOrdinaryIdentityFieldsStillResolve(t *testing.T) {
 	// The control. A rule that refuses every identity would pass the table above
 	// and break the feature — and the fields below are exactly what the
-	// two-account setup in VERIFY.md §13 writes.
+	// two-account setup in scripts/README.md's by-hand section writes.
 	reg := testRegistry()
 	reg["pinned"] = &Profile{Name: "pinned", Identity: &Identity{
 		SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub"},

@@ -28,6 +28,15 @@ import (
 // lucky. If a future bwrap changes that shape, internal/stage's fallback would
 // silently name the wrong process and put it in a record internal/cli's
 // killOrphanInit later SIGKILLs off — so this fails loudly instead.
+//
+// WHAT THIS WALK STILL CANNOT REACH: on this arm the stage forks bwrap
+// directly, so there is no P0 pid to walk children from before bwrap answers
+// --info-fd — an init parked in read() on one of bwrap's OWN eventfds (its
+// uid-map sync), pre-execve, has no pid anywhere yet for a record to name.
+// That is upstream's window (internal/cli/orphansweep.go). A GATED run's
+// payload parked on snug's own --block-fd afterward is a different thing and
+// IS reached: its init has already answered --info-fd and been recorded by
+// the time it parks, and a pipe is what tells the two apart from outside.
 func TestTheStagedInitIsTheForeignUsernsChildOfItsBwrap(t *testing.T) {
 	budget(t, 90*time.Second)
 	requireSandbox(t)

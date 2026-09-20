@@ -989,7 +989,13 @@ func engineGrafts(pol *policy.Policy) []stage.EngineGraft {
 //     resolv.conf bind alone because the bind is best-effort: it needs a
 //     mount over the engine's /etc/resolv.conf to succeed, which issue #128
 //     measured can fail on a perfectly ordinary host, and a container must
-//     not learn host DNS just because a mount did not take.
+//     not learn host DNS just because a mount did not take. base_hosts_file
+//     is the stronger of the two guarantees for the same reason on the other
+//     side: podman's compat API — the only surface the container proxy
+//     exposes — SYNTHESIZES /etc/hosts rather than copying the host's, so
+//     this key makes the guarantee STRUCTURAL rather than resting on it being
+//     set correctly here. Podman's separate CLI path does copy the host file,
+//     but nothing inside a snug sandbox can reach that path.
 //
 //  3. The keys a host containers.conf would otherwise have supplied (issue
 //     #132) — mounts/volumes inject host PATHS, devices injects a host device
@@ -1721,7 +1727,7 @@ func (e *Engine) DialLifeline() error {
 // process's own keepalive (step 2) and returning is what actually fells
 // them: the engine dies once nothing holds it open, and the pid namespace
 // collapse takes its containers with it. What this still does beyond that is
-// VERIFY (step 3) — "the collapse should have killed them" is not evidence
+// CONFIRM (step 3) — "the collapse should have killed them" is not evidence
 // that it did — never a graceful stop of its own; issue #167 removed the
 // host-side attempt at one (step 1's own comment says why).
 func (e *Engine) Stop() {
