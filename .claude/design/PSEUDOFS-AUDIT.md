@@ -231,7 +231,8 @@ demote-in-place.
   is reported as absent and never written, because a `sysctl.d` line for a
   knob the kernel lacks fails on every boot. Container preflight P6's `ptrace_scope` refusal
   reads its threshold from the same row, so the report and the refusal cannot
-  disagree about the number. Issue #526; `VERIFY.md` §27.
+  disagree about the number. Issue #526; `internal/cli/hostsysctl_test.go` and
+  `scripts/0020-a-weak-host-warns-and-still-runs.sh`.
 - **R6 — SHIPPED.** `Validate` refuses any non-authored bind whose HOST end is
   `/proc`, `/dev` or `/sys` — by path, and by the mount table's filesystem name
   for one of the three mounted somewhere else — at any access, and refuses any grant at or

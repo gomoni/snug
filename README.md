@@ -267,8 +267,9 @@ filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
 ```
 
 That last line is why there is no `snug stop` and no stale-state file to clean
-up by hand. If you want to check rather than trust, `scripts/VERIFY.md` has the
-by-hand version and the integration suite asserts it on every run.
+up by hand. If you want to check rather than trust, the integration suite
+asserts it on every run — `test/integration/orphan_test.go` sweeps every
+catchable signal at every startup offset on both topologies.
 
 # Interim LLM written documentation
 
@@ -823,8 +824,11 @@ deliberately does not, and worked prevented/not-prevented examples — live in
 
 ## Verifying the sandbox
 
-[`scripts/VERIFY.md`](scripts/VERIFY.md) constains a set of instructions for humans
-to test the sandbox, beside the checks `make verify` runs.
+[`scripts/VERIFY.md`](scripts/VERIFY.md) contains instructions for humans to
+test the sandbox by hand, beside the checks `make verify` runs. What is left in
+it is what nothing runs — a claim needing two logged-in accounts, a live `gh`, a
+`sudo truncate`, a real engine host, or a measurement of one machine. Everything
+else became a Go test or a numbered script.
 
 The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
 job is to escape. It runs before every milestone lands, and it keeps earning its

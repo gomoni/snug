@@ -59,7 +59,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 	t.Run("settings.json filter and credentials exercised", func(t *testing.T) {
 		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true, false)
 	})
-	// VERIFY.md §6g-ter's "project" line has to read differently in the two
+	// The "project" line has to read differently in the two
 	// states a target can be in, and only the absent arm (claude-block.txt)
 	// was ever pinned — a wording change to the projecting arm could ship with
 	// no golden diff at all.

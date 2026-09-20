@@ -26,8 +26,8 @@
 //	go test -tags integration ./test/integration/...
 //	make integration
 //
-// VERIFY.md still exists and is not redundant: it is for a human checking
-// by hand, with the reasoning inline. This is the automated ratchet.
+// scripts/VERIFY.md still exists and is not redundant: what is left in it is
+// what nothing here can run. This is the automated ratchet.
 //
 // # Two environment knobs, deliberately separate
 //
@@ -1058,7 +1058,7 @@ func TestSeccompDeniesTheHardeningSyscalls(t *testing.T) {
 	requirePython(t)
 	proj, _ := target(t)
 
-	// x86_64 syscall numbers, as in VERIFY.md §6c. userfaultfd is
+	// x86_64 syscall numbers. userfaultfd is
 	// deliberately absent: many kernels already refuse it via
 	// vm.unprivileged_userfaultfd, so it cannot distinguish our filter from the
 	// host's default.

@@ -22,7 +22,7 @@ asserted; the expected output lives in its assertions, not in prose beside it.
 | [`0034-projected-credential-still-authenticates.sh`](0034-projected-credential-still-authenticates.sh) | the staged `~/.claude/.credentials.json` carries exactly five fields, never a refresh token, and a live turn on it still authenticates (issue #58) |
 
 **`NNNN` is an allocation sequence, not a VERIFY.md section number.** Sections
-carry suffixes (`9a`, `9c-bis`, `9c-quater`, `23b`) that no numeric prefix can
+carry suffixes (`9a`, `9c-ter`, `9c-quater`, `23b`) that no numeric prefix can
 express, and one section is frequently several independent checks. A number is
 allocated on creation and never reused, **including by a check that has since
 left this directory**: `0010`, `0011`, `0021`, `0030` and `0031` became Go tests
@@ -94,12 +94,18 @@ So:
 - **Every new check is a script here or a Go test. Never a new VERIFY.md
   section.**
 - **A VERIFY.md section is migrated when it is touched, never edited in
-  place.** Migrated means one of three things, and the third is common: it
-  becomes a script here, it becomes a Go integration test, or it is deleted
-  because a Go test already asserts it.
-- What survives in `VERIFY.md` is the prose that is genuinely not executable —
-  §2 "Read before you run", §16 "What can this run destroy?", "Where the
-  reasoning is thinnest". Reasoning, not readings.
+  place**, and migrated means DELETED from that file in the same change.
+  Migrated means one of three things, and the third is the common one: it
+  becomes a script here, it becomes a Go integration test, or it becomes
+  nothing at all because a Go test already asserts it. A section left standing
+  beside the test that replaced it is the copy-of-state failure again, one
+  indirection further along.
+- What survives in `VERIFY.md` is what nothing runs: a claim needing two
+  logged-in accounts, a live `gh`, a `sudo truncate`, a real engine host, or a
+  measurement of one machine. Each surviving section says in its first
+  paragraph which tests cover the rest of its subject and which claim of its
+  own has no owner — a section that cannot write that sentence does not belong
+  there.
 
 That rule is what stops this from becoming a chore list with a row per
 unmigrated section: those sections are in `VERIFY.md`, which is where a reader

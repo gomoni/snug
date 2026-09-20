@@ -12,7 +12,7 @@ import (
 // POST /libpod/containers/create body, read against libpodcreate.go's
 // catalogue. Every body below is either the MEASURED plain-run baseline
 // (captured against a real podman 6.0.2 CLI posting to a logging unix
-// socket, VERIFY.md §22's method) or that baseline with one field changed to
+// socket) or that baseline with one field changed to
 // the value the SAME CLI was measured sending for the named flag.
 
 // libpodPlainRunBody is `podman run --rm docker.io/library/alpine:3.20 true`

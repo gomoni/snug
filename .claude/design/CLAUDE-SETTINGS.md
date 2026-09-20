@@ -1036,8 +1036,7 @@ how the last three findings happened.
 
 1. **It collapses a two-armed claim into one true sentence.** An `optional`
    bind forces every consumer to branch on whether the host has a settings file
-   — `describeClaude`, `claudeGuidance` and `VERIFY.md` §6b would each carry the
-   arm. With snug always authoring the file,
+   — `describeClaude` and `claudeGuidance` would each carry the arm. With snug always authoring the file,
    "`~/.claude/settings.json` is snug's, generated from an allowlist, and dies
    with the session" is true on every host, and no `claudeSettingsBound`
    predicate is needed.
