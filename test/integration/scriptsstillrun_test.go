@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// TestTheNestingScriptStillReadsALiveSandbox runs scripts/pid-nesting.py
+// TestTheNestingScriptStillReadsALiveSandbox runs scripts/payloads/pid-nesting.py
 // against a real run, and it is a SMOKE test on purpose: the property it
 // prints is owned by TestOfflineArmsIntermediateBwrapIsUnaddressableFromThe
 // Payload, and asserting it twice would be two copies of one state, the
@@ -30,11 +30,11 @@ func TestTheNestingScriptStillReadsALiveSandbox(t *testing.T) {
 
 	python, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("no python3 on this host, so scripts/pid-nesting.py cannot be run: " + err.Error())
+		t.Skip("no python3 on this host, so scripts/payloads/pid-nesting.py cannot be run: " + err.Error())
 	}
-	script := filepath.Join("..", "..", "scripts", "pid-nesting.py")
+	script := filepath.Join("..", "..", "scripts", "payloads", "pid-nesting.py")
 	if _, err := os.Stat(script); err != nil {
-		t.Fatalf("scripts/pid-nesting.py is what VERIFY.md §21 tells a human to run: %v", err)
+		t.Fatalf("scripts/payloads/pid-nesting.py is what VERIFY.md §21 tells a human to run: %v", err)
 	}
 
 	proj, _ := target(t)
@@ -54,7 +54,7 @@ func TestTheNestingScriptStillReadsALiveSandbox(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	got := string(out)
 	if err != nil {
-		t.Fatalf("scripts/pid-nesting.py host exited %v:\n%s", err, got)
+		t.Fatalf("scripts/payloads/pid-nesting.py host exited %v:\n%s", err, got)
 	}
 
 	// The verdict SENTENCE, not the namespace ids: the ids differ every run,

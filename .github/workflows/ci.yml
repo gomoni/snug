@@ -308,6 +308,32 @@ jobs:
       - name: doctor
         run: ./bin/snug doctor
 
+      # The executable half of VERIFY.md (issue #589). Only on the sandbox leg:
+      # the signals leg is the same runner with the same host, so running the
+      # checks twice would measure one host twice.
+      #
+      # SNUG_VERIFY_FLOOR IS 1 HERE, AND THAT NUMBER IS A REASONED MINIMUM
+      # RATHER THAN A MEASUREMENT. Exactly one check — 0010, which needs only
+      # the built binary — cannot skip on any host that got this far. The other
+      # three fabricate a weak host inside an unprivileged user namespace, and
+      # whether this runner grants one is what the step above
+      # (`kernel.apparmor_restrict_unprivileged_userns=0`) is for; it is
+      # best-effort and `|| true`. Raise this to the count the first green run
+      # reports, the way SNUG_ENGINE_FLOOR was set — a floor is a MINIMUM OVER
+      # RUNS, never one run's count, and taking a lucky reading builds a floor
+      # that cannot be cleared.
+      #
+      # SNUG_REQUIRE_SANDBOX is deliberately NOT exported to this step. It would
+      # turn every SKIP into a failure, which is right for the Go suite — whose
+      # skips mean "this host lacks bwrap" — and wrong here, where a skip means
+      # "this host cannot be made weak in the specific way this check needs" and
+      # the floor is what stops the step passing having run nothing.
+      - name: verify (executable checklist)
+        if: matrix.suite == 'integration-sandbox'
+        env:
+          SNUG_VERIFY_FLOOR: '1'
+        run: make verify
+
       - name: ${{ matrix.label }}
         env:
           # The harness SKIPS where the host cannot create namespaces, so a

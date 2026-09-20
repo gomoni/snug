@@ -83,8 +83,30 @@ intact. `.claude/design/` holds the design and research material they work from
 (INDEX.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
 There is deliberately **no `docs/` tree**: a generated user guide was tried and
 removed, because the prose churned faster than the code it described and nobody
-was going to keep it honest. `VERIFY.md` at the root is the exception, and it
-earns it by being executable — every line is a command with its expected output.
+was going to keep it honest. `VERIFY.md` at the root was the exception, on the
+grounds that every line is a command with its expected output — and that was
+the claim nothing enforced. `wc -l VERIFY.md` says how big the unenforced half
+still is, and the only thing that ever checked whether a line of it was true
+was a human reading it. A command plus the output it produced once is a copy of
+state; the count is not written down here for the same reason.
+
+So the exemption now belongs to `scripts/`, which is executable in the sense
+VERIFY.md claimed: `make verify` walks `scripts/NNNN-slug.sh` in numeric order,
+each prints what it asserted, and 79 is SKIP (**not** 77 — that is snug's own
+`exitPolicy`, so a script ending on an uncaptured refusal would report SKIP).
+`VERIFY.md` shrinks to the prose that is genuinely not executable. Three rules,
+and `scripts/README.md` is the index:
+
+- **Every new check is a script or a Go test. Never a new VERIFY.md section.**
+- **A check CI can run on every push belongs in `test/integration`, not in
+  `scripts/`.** A check in both places is a second copy of state, and the copy
+  nobody runs is the one that goes stale. `scripts/` keeps what CI cannot run —
+  a per-machine answer, state CI structurally lacks, a human's `sudo` — plus
+  the payloads under `scripts/payloads/`, which are programs run INSIDE a
+  sandbox and have no pass/fail of their own.
+- **A VERIFY.md section is migrated when it is touched, never edited in
+  place** — into a script, into a Go test, or deleted because a Go test already
+  asserts it.
 
 **Every new document starts in `.claude/scratchpad/`, which is in `.gitignore`**
 — not "start it in design/ and remember not to commit it", but somewhere a
@@ -119,9 +141,9 @@ All five, in order. A milestone is not finished until the last one is.
 
 1. `make gate` green — gofmt, vet, and the full test suite.
 2. `make integration` green (`SNUG_REQUIRE_SANDBOX=1`), with a new named test for
-   whatever the milestone added. `VERIFY.md` gets the human-readable
-   equivalent — it is the by-hand checklist and is not made redundant by the
-   automated one.
+   whatever the milestone added, and `make verify` green. Where the check needs
+   a host CI does not have, it is a `scripts/NNNN-slug.sh` instead — never a new
+   `VERIFY.md` section.
 3. **`redteam` has attacked it.** Not optional, not "if there's time". Every
    milestone that adds a hole gets a run before it lands, and so does any change
    to the policy model, mount generation, the seccomp filter, or a

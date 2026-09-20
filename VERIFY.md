@@ -6,6 +6,24 @@ on someone's word. This is the checklist for not doing that.
 Every command below was run on the development host and produced the output
 shown. If yours differs, that is a finding — see [If a check fails](#if-a-check-fails).
 
+**This file is being converted into executable checks, and it is shrinking.**
+The claim that earned it its exemption from the no-`docs/` rule — every line is
+a command with its expected output — was the claim nothing enforced: a command
+plus the output it produced once is a copy of state, stale the moment the code
+moves, and the staleness is found by whoever finally walks it. So:
+
+- **Every new check is a script in [`scripts/`](scripts/) or a Go test in
+  `test/integration`. Never a new section here.** A check CI can run on every
+  push belongs in Go; what belongs in `scripts/` is what CI cannot run, because
+  the answer is per-machine or it needs state CI structurally lacks.
+- **A section is migrated when it is touched, never edited in place** — into a
+  script, into a Go test, or deleted because a Go test already asserts it.
+  [`scripts/README.md`](scripts/README.md) is the index.
+- What is left here in the end is the prose that is genuinely not executable:
+  §2 below, §16, and *Where the reasoning is thinnest*. Reasoning, not readings.
+
+Run the migrated half with `make verify`.
+
 What it checks is that **the sandbox holds**, which is not the same question as
 whether your profiles are safe. snug does not second-guess a profile: `rw
 ["{home}"]` and `environ.set EDITOR = "/tmp/evil"` are holes you opened, they are
@@ -42,19 +60,16 @@ that is deliberate, so the security-critical parts are checkable anywhere.
 ## 1. Can this host run it at all
 
 ```bash
-./bin/snug doctor
+make verify
 ```
 
-Expect ✅ on bubblewrap, user namespaces, and a private network namespace. A ❌
-names the exact sysctl or package to fix. Running inside distrobox/podman is
-reported and supported.
+Runs the numbered checks in [`scripts/`](scripts/), which is where this
+question now lives — `0010` and `0011` are what §1 used to be. A check prints
+what it asserted; a SKIP names the precondition your host did not meet.
 
-Some lines are ⚠️ rather than ❌ and deliberately leave the exit code alone,
-because each gates ONE capability and not snug — pasta, the podman client,
-podman's helper binaries, and the container engine's delegated subuid/subgid
-range. To see the last one say no; the condition it exists for is a fresh
-distrobox, where `/etc/subuid` is part of the image and goes away on every
-rebuild:
+The one arm not migrated, because emptying a live host's `/etc/subuid` is not a
+thing to do unattended: to watch the delegated-range ⚠️ say no, and to check
+that a ⚠️ leaves the exit code alone,
 
 ```bash
 sudo cp /etc/subuid /etc/subuid.bak && sudo truncate -s 0 /etc/subuid
@@ -64,77 +79,8 @@ sudo cp /etc/subuid.bak /etc/subuid
 
 Expect `⚠️  no delegated subuid/subgid range — container profiles will refuse
 to start`, **`exit=0`**, and a 🔧 line naming a range this namespace can
-actually map. The 🔧 lines below are MEASURED — the real report run against
-this development host's `/proc/self/uid_map` (`0→1 ×1000`, `1000→0 ×1`,
-`1001→1001 ×64535`) with only the checker's verdict stubbed, because emptying
-a live `/etc/subuid` is not a thing to do to a working box:
-
-```
-     🔧 run `sudo snug fix subuid -w`, which appends michal:1001:64535 to
-        /etc/subuid and /etc/subgid. Without -w it prints and changes nothing.
-        (not the conventional 100000 — this namespace's uid_map cannot map it)
-     📦 /etc/subuid is part of this container's image, so it goes away on every
-        rebuild. Put `snug fix subuid <user> -w` in a distrobox init_hook to
-        have it reapplied — it exits 0 when there is nothing to do, so a hook
-        calling it can never be why the box fails to start.
-```
-
-`snug fix subuid` is that same derivation as a command, and **`snug doctor` is
-its dry run** — both read `/proc/self/uid_map` and call the same
-`subuidSuggestion`, so there is one preview rather than two to keep in step.
-Check it says nothing on a host that is already configured, which is this one:
-
-```bash
-./bin/snug fix subuid; echo "exit=$?"
-```
-
-Expect **no stdout at all**, the reason on stderr, and `exit=0`:
-
-```
-snug: michal already has a range in /etc/subuid and /etc/subgid; nothing to do
-exit=0
-```
-
-That exit status is the contract, not a detail: the command exists to be called
-from a `distrobox` `init_hook`, and `distrobox-init` runs hooks under
-`set -o errexit`, so a nonzero exit would not report a problem — it would stop
-the box from coming up at all.
-
-And it refuses rather than naming the wrong account, which is the trap the
-obvious implementation falls into (under `sudo`, `os.Getuid()` is 0):
-
-```bash
-./bin/snug fix subuid nosuchuser42; echo "exit=$?"
-```
-
-```
-snug: no such user nosuchuser42 on this host: user: unknown user nosuchuser42
-exit=64
-```
-
-The conventional `100000:65536` — which `subuid(5)`, `useradd` and the
-checker's own error all name — maps nothing inside a keep-id box: the uid_map
-ends at 65535. Before issue #483 doctor said nothing at all here and finished
-with `🎉 This host can run snug`, and the refusal arrived later from container
-preflight P2, fatally, in a different command.
-
-**The user-namespace line is measured, not inferred from an exit code**
-(issue #98). To see it answer a host it cannot serve — and to check that the
-line can say no at all, which is the half a green tick never proves:
-
-```bash
-unshare --user --map-root-user -- sh -c '
-  echo 0 > /proc/sys/user/max_user_namespaces
-  unshare --user --map-root-user -- /bin/true      # positive control
-  ./bin/snug doctor; echo "exit=$?"'
-```
-
-Expect the control to fail with `unshare failed: No space left on device` — the
-proof that namespace creation really is blocked — and then `snug doctor` to
-print `❌ cannot create a user namespace here`, quoting bwrap's own ENOSPC, and
-exit 69. It must **never** print `✅ unprivileged user namespaces work` there.
-It did until #98: the probe passed `--unshare-all`, whose `-try` spellings skip
-silently and exit 0, and the check read the exit code alone.
+actually map — not the conventional `100000`, which maps nothing inside a
+keep-id box because the uid_map ends at 65535.
 
 ## 2. Read before you run
 
@@ -6585,12 +6531,12 @@ sandbox where nothing ever accepts.
 ### 20a. Serving something real, and what the server has to be
 
 The server must ACCEPT on the descriptor rather than bind a port.
-`scripts/http-door-server.py` is a working one; `python3 -m http.server` cannot
+`scripts/payloads/http-door-server.py` is a working one; `python3 -m http.server` cannot
 be used at all, and servers you cannot edit (Java, .NET, anything in a container)
 need the adapter in issue #476.
 
 ```bash
-cp scripts/http-door-server.py $SC/proj/sub/serve.py
+cp scripts/payloads/http-door-server.py $SC/proj/sub/serve.py
 echo '<!doctype html><link rel="stylesheet" href="/style.css"><h1>hello</h1>' > $SC/proj/sub/index.html
 echo 'body{color:red}' > $SC/proj/sub/style.css
 XDG_CONFIG_HOME=$X ./bin/snug -p mydev $SC/proj/sub -- python3 serve.py
@@ -6683,7 +6629,7 @@ leaked inbound hole and rates with a policy leak, not with litter.
 **`BrokenPipeError` in the payload is ROUTINE**, not a bug: the door closes the
 backend connection when the human stops `snug proxy`, when its round-trip
 deadline passes, or when the browser goes away. Stock `socketserver` prints a
-full traceback for it; `scripts/http-door-server.py` handles it, and MEASURED —
+full traceback for it; `scripts/payloads/http-door-server.py` handles it, and MEASURED —
 interrupting `snug proxy` mid-transfer produced the traceback before that
 handling and produces nothing after it, with the payload still serving.
 
@@ -6697,12 +6643,12 @@ the whole run, plus the initiator checks above.
 
 ## 21. The offline arm's bwrap is pid 1 of a namespace of its own (issue #101)
 
-`scripts/pid-nesting.py` reads this from both sides and reports it the way
+`scripts/payloads/pid-nesting.py` reads this from both sides and reports it the way
 `snug doctor` does — one ✅ or ❌ per claim, the evidence under it. Copy it into
 the target first, because the sandbox cannot see this repository:
 
 ```bash
-cp scripts/pid-nesting.py $SC/proj/sub/
+cp scripts/payloads/pid-nesting.py $SC/proj/sub/
 cd $SC/proj/sub && ./bin/snug . -- python3 pid-nesting.py inside
 ```
 
@@ -6710,7 +6656,7 @@ It waits up to 20s for the host side, which names bwrap and writes its pid where
 the payload polls (`BWRAP_PID` in the sandbox's own working directory):
 
 ```bash
-python3 scripts/pid-nesting.py host
+python3 scripts/payloads/pid-nesting.py host
 ```
 
 Expect, on the host side:
@@ -6797,7 +6743,7 @@ host's pid namespace:
 
 ```bash
 ./bin/snug -p @net . -- sleep 20 &
-python3 scripts/pid-nesting.py host
+python3 scripts/payloads/pid-nesting.py host
 ```
 
 ```
@@ -7594,109 +7540,22 @@ now.
 **No stdout at all** from `fix`, and `exit=0` — the same contract `snug fix
 subuid` states above, for the same `distrobox` `init_hook` reason.
 
-### 27a. The weak host, WITHOUT touching this machine's sysctls
-
-A user namespace can bind a file over a `/proc/sys` entry, so the report is
-checked against a fabricated weak host with no root and no change to the real
-one. Four knobs are made 0 and `ptrace_scope` is left alone:
+### 27a–27b. The weak host, and the knob this kernel does not have
 
 ```bash
-echo 0 > /tmp/zero
-unshare -Urm --propagation private sh -c '
-  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
-    mount --bind /tmp/zero /proc/sys/kernel/$k
-  done
-  ./bin/snug doctor; echo "exit=$?"'
+make verify
 ```
 
-Expect the four named with their value and the value wanted, `ptrace_scope`
-still ticked, and — the property that matters — **`🎉 This host can run snug.`
-with `exit=0`**:
+`scripts/0020-a-weak-host-warns-and-still-runs.sh` and
+`scripts/0021-a-missing-knob-is-not-an-unset-one.sh`. Both fabricate the host
+they need — a user namespace can bind a file over a `/proc/sys` entry — so
+neither needs root and neither touches this machine.
 
-```
-  ⚠️  this host does not set every kernel knob snug's threat model inherits
-     ℹ️  snug does not provide these and cannot: they are the host's, and the
-        sandbox is weaker than the design describes where they are off
-     ⚠️  kernel.kptr_restrict = 0, want 1 or stricter
-        💬 the sandbox's /proc/kallsyms and /proc/modules carry REAL kernel symbol addresses — a KASLR base leak snug does not mask (audit P4). At 1 they read as zeros for the payload.
-     ⚠️  kernel.dmesg_restrict = 0, want 1 or stricter
-     ⚠️  kernel.perf_event_paranoid = 0, want 2 or stricter
-     ✅ kernel.yama.ptrace_scope = 1
-     ⚠️  kernel.unprivileged_bpf_disabled = 0, want 1 or stricter
-     🔧 `snug fix sysctl` prints what this host is missing and changes nothing;
-        `sudo snug fix sysctl -w` applies it and makes it survive a reboot
-```
-
-(💬 lines elided for the middle three; each carries what that knob costs.)
-
-WARN, never fail, is deliberate: key feature 3 says snug must work inside a
-container, and a container is exactly where `/proc/sys` is read-only and these
-values are the host's anyway. Refusing would make snug unusable on the hosts
-`.claude/design/PSEUDOFS-AUDIT.md` was written about.
-
-The same fabricated host, asked for the fix:
-
-```bash
-unshare -Urm --propagation private sh -c '
-  for k in kptr_restrict dmesg_restrict perf_event_paranoid unprivileged_bpf_disabled; do
-    mount --bind /tmp/zero /proc/sys/kernel/$k
-  done
-  ./bin/snug fix sysctl'
-```
-
-stdout is the file and nothing else — `snug fix sysctl > 00-snug.conf` does what
-it looks like — with every word of explanation on stderr:
-
-```
-# Written by `snug fix sysctl -w`.
-# The kernel hardening snug's threat model inherits from this host;
-# `snug doctor` reports it. 00- so a deliberate host file later in
-# sysctl.d's order overrides this one; snug raises a floor.
-kernel.kptr_restrict = 1
-kernel.dmesg_restrict = 1
-kernel.perf_event_paranoid = 2
-kernel.yama.ptrace_scope = 1
-kernel.unprivileged_bpf_disabled = 1
-```
-
-```
-snug: nothing was changed — `sudo snug fix sysctl -w` applies the 4 setting(s) below to the running kernel and writes /etc/sysctl.d/00-snug.conf
-snug: kernel.kptr_restrict = 0 — the sandbox's /proc/kallsyms and /proc/modules carry REAL kernel symbol addresses — a KASLR base leak snug does not mask (audit P4). At 1 they read as zeros for the payload.
-...
-```
-
-**Four** settings are applied and **five** lines are written:
-`kernel.yama.ptrace_scope` is already at 1 on this fabricated host so there is
-nothing to apply for it, and it is in the file because the file's job is the
-next boot. §27d is why that distinction is the whole design.
-
-### 27b. A knob this kernel does not have is not a knob the host failed to set
-
-`kernel.yama.ptrace_scope` does not exist without the Yama LSM.
-
-```bash
-mkdir -p /tmp/empty
-unshare -Urm --propagation private sh -c '
-  mount --bind /tmp/empty /proc/sys/kernel/yama
-  ./bin/snug doctor | grep -A1 "could not be read"
-  ./bin/snug fix sysctl; echo "exit=$?"'
-```
-
-```
-  ⚠️  1 of the 5 kernel knobs snug's threat model inherits have no usable value here
-     ℹ️  snug does not provide these and cannot: they are the host's, and the
-snug: kernel.yama.ptrace_scope this kernel does not have it — not fixable, and no line for it will be written
-exit=0
-```
-
-Never `= 0`, and never a line in the drop-in: a `sysctl.d` file naming a knob
-the kernel does not have fails on every boot, and it would be a file snug left
-behind.
-
-Three states, three sentences, because they send a reader to three different
-places: **this kernel does not have it** (ENOENT, above), **could not be read**
-(it is there and the read failed), and **holds "…", which is not a number**.
-All three used to print as the single phrase "not readable".
+`0020` is the one that matters: a host missing four of the five knobs must
+finish `🎉 This host can run snug.` with `exit=0`. WARN, never fail, is
+deliberate — key feature 3 says snug must work inside a container, and a
+container is exactly where `/proc/sys` is read-only and these values are the
+host's anyway.
 
 ### 27d. The drop-in is a function of the TABLE, not of this boot
 
