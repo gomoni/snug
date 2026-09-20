@@ -50,14 +50,21 @@ import (
 // condition is also asserted directly below, so a swap cannot pass by accident.
 func TestGoldenClaudeBlock(t *testing.T) {
 	t.Run("nothing carried into settings.json", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block.txt", false, false)
+		goldenClaudeBlock(t, "claude-block.txt", false, false, false)
 	})
 	// The second golden no longer differs in the TRUST arm — since issue #460 the
 	// trust entry is unconditional and there is one arm — but it still exercises
 	// the settings.json filter and the credentials block, which is what the two
 	// goldens are for now.
 	t.Run("settings.json filter and credentials exercised", func(t *testing.T) {
-		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true)
+		goldenClaudeBlock(t, "claude-block-trusted.txt", true, true, false)
+	})
+	// VERIFY.md §6g-ter's "project" line has to read differently in the two
+	// states a target can be in, and only the absent arm (claude-block.txt)
+	// was ever pinned — a wording change to the projecting arm could ship with
+	// no golden diff at all.
+	t.Run("target ships settings.json, so it is projected", func(t *testing.T) {
+		goldenClaudeBlock(t, "claude-block-project-settings.txt", false, false, true)
 	})
 
 	t.Run("no @claude, no block", func(t *testing.T) {
@@ -82,7 +89,7 @@ func TestGoldenClaudeBlock(t *testing.T) {
 	})
 }
 
-func goldenClaudeBlock(t *testing.T, name string, exerciseSettingsFilter, stageCredentials bool) {
+func goldenClaudeBlock(t *testing.T, name string, exerciseSettingsFilter, stageCredentials, projectSettings bool) {
 	t.Helper()
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -161,6 +168,32 @@ func goldenClaudeBlock(t *testing.T, name string, exerciseSettingsFilter, stageC
 			Access: policy.AccessRW, Content: policy.Secret(policy.ClaudeSettingsJSON(carried)),
 			Perms: &perm, From: []string{"@claude"},
 		})
+	}
+
+	if projectSettings {
+		// The same shape stageProjectClaudeSettings would produce for a target
+		// whose .claude/settings.json exists — built by hand rather than
+		// through the real disk read, for the same reason the trust and
+		// filter arms above build theirs by hand: the fixture's Target is
+		// "/home/u/proj/sub", which exists on no machine running this test,
+		// so an os.Lstat-gated staging function would always take the absent
+		// branch here regardless of what this case is named for.
+		perm := uint32(0o600)
+		p.Replace(policy.Mount{
+			Guest: filepath.Join(ctx.Target, ".claude", "settings.json"), Kind: policy.KindData,
+			Access: policy.AccessRO, Content: policy.Secret(policy.ClaudeSettingsJSON(nil)),
+			Perms: &perm, From: []string{"@claude"}, HostDestExists: true,
+		})
+	}
+	// CONTROL: the block's "project" line is driven by projectedTargetSettings
+	// reading the resolved mounts, not by this case's name — so confirm the
+	// mount above actually put the target in the state the case claims. A
+	// bug that left the mount unset, or set with the wrong Kind or
+	// HostDestExists, would otherwise golden the ABSENT wording under this
+	// case's name and the diff below would never catch it.
+	if got := len(projectedTargetSettings(p)) > 0; got != projectSettings {
+		t.Fatalf("control: projectedTargetSettings reports %v files projected, want non-empty = %v — "+
+			"this golden is not pinning the arm its name claims", projectedTargetSettings(p), projectSettings)
 	}
 
 	if stageCredentials {

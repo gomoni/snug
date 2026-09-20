@@ -434,10 +434,18 @@ integration-engine:
 # this target exists to make impossible. It is a FLOOR, not the count — adding
 # checks keeps it true, deleting them all makes it fail.
 #
+# 1, AND IT IS A DIFFERENT KIND OF NUMBER FROM THE OTHER TWO FLOORS. CI does not
+# run this target at all (see .github/workflows/ci.yml, where its absence is
+# argued), because scripts/ holds by construction only what CI cannot run. So
+# this floor is a promise about the MAINTAINER'S OWN host and nothing else: on
+# the machine the checks were written for, at least one of them must still be
+# able to pass. Raising it means claiming another check runs unattended on a
+# second machine, which nobody has measured.
+#
 # SNUG_REQUIRE_SANDBOX=1 turns every SKIP into a failure, exactly as it does for
-# the Go suite, for the same reason: CI must not go green having measured
+# the Go suite, for the same reason: a run must not go green having measured
 # nothing.
-SNUG_VERIFY_FLOOR ?= 4
+SNUG_VERIFY_FLOOR ?= 1
 
 verify: build
 	@pass=0; skip=0; failed=0; \

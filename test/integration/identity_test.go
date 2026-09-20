@@ -1010,6 +1010,14 @@ git init -q
 git commit -S --allow-empty -m "signed by the sandbox"
 echo "commit-exit=[$?]"
 git log -1 --show-signature 2>&1 | head -5
+echo "FORMAT-G-BEGIN"
+git log -1 --format=%G?
+echo "FORMAT-G-END"
+git verify-commit HEAD >/dev/null 2>&1
+echo "verify-exit=[$?]"
+echo "ALLOWED-SIGNERS-BEGIN"
+cat ~/.config/git/allowed_signers
+echo "ALLOWED-SIGNERS-END"
 `).mustRun(t)
 
 	if r.code != 0 {
@@ -1020,5 +1028,53 @@ git log -1 --show-signature 2>&1 | head -5
 	}
 	if strings.Contains(r.out, "No private key found") || strings.Contains(r.out, "gpgsm") {
 		t.Errorf("git fell back to a failure shape gpgsign is supposed to prevent:\n%s", r.out)
+	}
+
+	// Issue #576's headline: before it, this exact sequence printed `N`, an
+	// empty %GK, and `error: gpg.ssh.allowedSignersFile needs to be
+	// configured and exist for ssh signature verification` from
+	// verify-commit — while `git log --show-signature` still printed "No
+	// signature" and exited 0. A commit reading as UNSIGNED, successfully, is
+	// what the three checks below rule out: `git commit -S` exiting 0 (already
+	// asserted above) is not by itself evidence that verification works, only
+	// that signing was attempted.
+	formatG, ok := section(r.out, "FORMAT-G")
+	if !ok {
+		t.Fatalf("the payload never printed its FORMAT-G section:\n%s", r.out)
+	}
+	if got := strings.TrimSpace(formatG); got != "G" {
+		t.Errorf("git log --format=%%G? reports %q inside the sandbox, want \"G\" — a commit "+
+			"this sandbox itself signed must verify as GOOD against its own generated "+
+			"allowed_signers (issue #576):\n%s", got, r.out)
+	}
+	if !strings.Contains(r.out, "verify-exit=[0]") {
+		t.Errorf("`git verify-commit HEAD` did not exit 0 inside the sandbox — issue #576's own "+
+			"headline is a signed commit that reads as unsigned while exiting 0 from "+
+			"show-signature; verify-commit is the command that must not repeat that:\n%s", r.out)
+	}
+
+	// The generated allowed_signers itself: exactly one line, the pinned
+	// email as principal, the staged signing .pub as the key, `namespaces="git"`,
+	// no comment field. Read from INSIDE the sandbox — the host has no such
+	// file at all, since it is snug's own generated content.
+	allowedSigners, ok := section(r.out, "ALLOWED-SIGNERS")
+	if !ok {
+		t.Fatalf("the payload never printed its ALLOWED-SIGNERS section:\n%s", r.out)
+	}
+	lines := strings.Split(strings.TrimRight(allowedSigners, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("~/.config/git/allowed_signers inside the sandbox has %d line(s), want exactly "+
+			"1 — a list of other people's keys is a trust decision no grant named:\n%q",
+			len(lines), allowedSigners)
+	}
+	line := lines[0]
+	if !strings.HasPrefix(line, "snug-signing-integration@example.invalid ") {
+		t.Errorf("allowed_signers' principal is not the pinned identity.git.email: %q", line)
+	}
+	if !strings.Contains(line, `namespaces="git"`) {
+		t.Errorf("allowed_signers does not restrict the namespace to \"git\": %q", line)
+	}
+	if !strings.Contains(line, "ssh-ed25519 ") {
+		t.Errorf("allowed_signers does not carry the staged signing key's public half: %q", line)
 	}
 }

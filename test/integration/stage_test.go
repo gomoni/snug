@@ -1719,3 +1719,101 @@ func TestAFrozenStageTreeStillDiesWithSnug(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// fdLinksOf reads every entry of /proc/<pid>/fd and returns the descriptor
+// number and its readlink target — for a LIVE process this test's own caller
+// still holds open. A process that has already exited answers ENOENT for the
+// whole directory, which the fd-3 positive control below exists to catch,
+// distinguishing "already gone" from "genuinely reads this way".
+func fdLinksOf(t *testing.T, pid int) map[int]string {
+	t.Helper()
+	dir := "/proc/" + strconv.Itoa(pid) + "/fd"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	links := make(map[int]string, len(entries))
+	for _, e := range entries {
+		n, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		target, err := os.Readlink(dir + "/" + e.Name())
+		if err != nil {
+			continue
+		}
+		links[n] = target
+	}
+	return links
+}
+
+// TestTheThreeParkedDescriptorsOnALiveStage is issue #525 read off a RUNNING
+// process rather than off setup.go's own source text or a pinned constant
+// table: fds.go's reserveParkingFDs dup3's fdNetSock (66, an AF_INET socket
+// created inside N), fdNetlinkSock (67, an AF_NETLINK/NETLINK_ROUTE socket
+// created in N alongside it) and stage.NetnsFD (68, the pinned network
+// namespace) onto three fixed numbers before P1 forks bwrap.
+// internal/stage/fds_test.go:TestEveryParkedDescriptorIsGuarded reads that
+// dup3 sequence out of setup.go's SOURCE TEXT; TestGoldenStageSpec pins the
+// three numbers as constants. Neither one has ever looked at a stage that is
+// actually running, so a kernel or Go-runtime change that moved what those
+// fixed numbers point to — dup3 onto an occupied descriptor closes it
+// silently and reports success, per fds.go's own doc comment — would pass
+// both of those and still be caught only here.
+func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireSandbox(t)
+	requirePasta(t)
+	proj, _ := target(t)
+
+	cmd := exec.Command(snugBin, "-p", "@net", proj, "--", "/bin/sleep", "25")
+	cmd.Env = baseEnv()
+	cmd.WaitDelay = waitDelay
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	stagePID, ok := findDescendant(cmd.Process.Pid, isStageProcess, 5*time.Second)
+	if !ok {
+		t.Fatal("PRECONDITION: no stage ('snug') process appeared as a descendant of a @net run")
+	}
+
+	links := fdLinksOf(t, stagePID)
+	// POSITIVE CONTROL: fd 3 (fdControl, the socketpair P1 keeps open for the
+	// life of the run) is there at all — without it, an empty or partial read
+	// of /proc/<pid>/fd (the stage already exited, or this listing raced it)
+	// would leave every row below vacuously absent rather than genuinely
+	// wrong.
+	if _, ok := links[3]; !ok {
+		t.Fatalf("control: /proc/%d/fd has no entry at fd 3 (fdControl) — either the stage has "+
+			"already exited or this listing did not actually read a live process's descriptors",
+			stagePID)
+	}
+
+	for _, want := range []struct {
+		fd   int
+		kind string
+		name string
+	}{
+		{66, "socket:", "fdNetSock, the AF_INET socket created inside N"},
+		{67, "socket:", "fdNetlinkSock, the AF_NETLINK/NETLINK_ROUTE socket created in N"},
+		{68, "net:", "the pinned network namespace (stage.NetnsFD)"},
+	} {
+		got, ok := links[want.fd]
+		if !ok {
+			t.Errorf("fd %d (%s) is not open in the live stage at all", want.fd, want.name)
+			continue
+		}
+		if !strings.HasPrefix(got, want.kind) {
+			t.Errorf("fd %d (%s) links to %q, want a %q target — reserveParkingFDs parks a "+
+				"socket or a namespace there, and a different KIND of object at this fixed "+
+				"number means something else claimed it first (issue #525's own hazard: dup3 "+
+				"onto an occupied descriptor closes it and reports success)",
+				want.fd, want.name, got, want.kind)
+		}
+	}
+}

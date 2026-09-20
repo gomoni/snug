@@ -659,6 +659,57 @@ func TestResolveEngineBinaryCatchesAPathEntrySymlinkedIntoTheTarget(t *testing.T
 	}
 }
 
+// TestResolveEngineBinaryTwoHopChainCrossesUnseen pins the "NOTE THE LIMIT"
+// paragraph on the selection arm's own refusal (engineexec.go) as BEHAVIOUR,
+// not merely as text a byte golden happens to also carry. The paragraph says
+// the check resolves a name to its host fixed point in ONE step, so it sees
+// the first name in a chain and the last, never a middle one — a host-owned
+// symlink pointing at a payload-writable name that is ITSELF a symlink to
+// clean bytes crosses unseen.
+//
+// ResolveExistingHostPath (graft.go) is the one step: it calls
+// Environ.EvalSymlinks on the WHOLE asGiven string exactly once and returns
+// whatever comes back as the answer, with no second call to examine that
+// answer further — TestResolveEngineBinaryCatchesAPathEntrySymlinkedIntoThe
+// Target's own comment measures the same collapse ("ResolveExistingHostPath
+// walks the WHOLE asGiven string in one call and lands on the exact writable
+// bytes"). A real multi-hop chain collapses to exactly one such answer at the
+// kernel level, so this fixture's one-hop link IS the two-hop chain's
+// resolution — from ResolveEngineBinary's side the two are indistinguishable,
+// which is the paragraph's whole substance.
+func TestResolveEngineBinaryTwoHopChainCrossesUnseen(t *testing.T) {
+	p := resolveDefaults(t)
+
+	// POSITIVE CONTROL: the WOULD-BE middle of the chain, named directly, is
+	// caught (TestResolveEngineBinaryJudgesTheNameNotOnlyTheTarget's own
+	// fixture) — proving the middle name is genuinely a writable one and not
+	// merely absent from every grant, which is what would make the accepted
+	// case below prove nothing at all.
+	middle := newFakeEnv()
+	middle.links["/home/u/proj/sub/podman"] = "/usr/bin/podman"
+	middle.files["/usr/bin/podman"] = true
+	if _, err := p.ResolveEngineBinary(middle, "/home/u/proj/sub/podman"); err == nil {
+		t.Fatal("control: naming the writable middle name directly was accepted; the fixture " +
+			"carries no writable node at all, so the chained case below would prove nothing")
+	}
+
+	// THE BLIND SPOT: a host-owned name (/opt is @sys's own read-only grant,
+	// never writable) whose one-call resolution reaches the SAME clean bytes —
+	// standing in for a real chain /opt/outer -> /home/u/proj/sub/podman ->
+	// /usr/bin/podman, where the middle name above is the writable one a
+	// hop-by-hop resolver would have to visit separately to catch, and this
+	// one never does.
+	chained := newFakeEnv()
+	chained.links["/opt/outer"] = "/usr/bin/podman"
+	chained.files["/usr/bin/podman"] = true
+	if _, err := p.ResolveEngineBinary(chained, "/opt/outer"); err != nil {
+		t.Fatalf("a two-hop chain through a writable waypoint was refused: %v — either the "+
+			"declared limit no longer holds and the NOTE THE LIMIT paragraph (engineexec.go) "+
+			"should shrink to match, or this fixture stopped modelling the collapse it claims to",
+			err)
+	}
+}
+
 // TestResolveEngineBinaryRefusesARelativePath: a relative $SNUG_PODMAN makes
 // every lexical check in this file vacuous rather than wrong-answered
 // (HostPathVisible compares against canonical, absolute grant Hosts, so a

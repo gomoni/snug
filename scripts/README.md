@@ -15,16 +15,20 @@ asserted; the expected output lives in its assertions, not in prose beside it.
 
 | script | asserts |
 |---|---|
-| [`0010-doctor-exit-follows-its-own-rows.sh`](0010-doctor-exit-follows-its-own-rows.sh) | `snug doctor`'s exit code agrees with the rows it printed — a ❌ is fatal, a ⚠️ is not — and `snug fix subuid` is safe to call from an `errexit` init_hook |
-| [`0011-the-userns-row-can-say-no.sh`](0011-the-userns-row-can-say-no.sh) | the user-namespace row is measured, not inferred from an exit code: on a fabricated host where namespace creation is blocked it says ❌ and exits 69 (issue #98) |
+| [`0012-doctor-names-each-wrong-host.sh`](0012-doctor-names-each-wrong-host.sh) | five wrong-host conditions each get doctor's own headline and fix, not another's: `apparmor_restrict_unprivileged_userns=1`, a container masking `/proc`, no `/dev/net/tun`, runc-without-crun under disabled cgroups, and no `/etc/subuid` line |
 | [`0020-a-weak-host-warns-and-still-runs.sh`](0020-a-weak-host-warns-and-still-runs.sh) | the five inherited kernel knobs are disclosed and never refused, and the drop-in is a function of the table rather than of this boot — 4 applied, 5 written (issue #526) |
-| [`0021-a-missing-knob-is-not-an-unset-one.sh`](0021-a-missing-knob-is-not-an-unset-one.sh) | a knob this kernel does not HAVE is never reported as one the host failed to set, and never gets a line in the drop-in (issue #526) |
+| [`0032-claude-opens-with-no-dialog-and-no-hook.sh`](0032-claude-opens-with-no-dialog-and-no-hook.sh) | the trust dialog is pre-answered and a hostile repo's `.claude/settings.json` hooks and `.mcp.json` servers are reinterpreted away before Claude Code reads either — with the same fixture's hook firing on the bare host as the control |
+| [`0033-an-unnamed-plugins-hook-does-not-fire.sh`](0033-an-unnamed-plugins-hook-does-not-fire.sh) | an installed plugin's `hooks.json` is not even read inside when `@claude`'s allowlist does not name it, though its tree stays bound read-only (issue #68) |
+| [`0034-projected-credential-still-authenticates.sh`](0034-projected-credential-still-authenticates.sh) | the staged `~/.claude/.credentials.json` carries exactly five fields, never a refresh token, and a live turn on it still authenticates (issue #58) |
 
 **`NNNN` is an allocation sequence, not a VERIFY.md section number.** Sections
 carry suffixes (`9a`, `9c-bis`, `9c-quater`, `23b`) that no numeric prefix can
 express, and one section is frequently several independent checks. A number is
-allocated on creation and never reused, so a reference to `0011` means one thing
-forever. The gaps are deliberate: related checks share a decade.
+allocated on creation and never reused, **including by a check that has since
+left this directory**: `0010`, `0011`, `0021`, `0030` and `0031` became Go tests
+and their numbers stay retired, so a reference to `0011` in a commit message or
+an issue means one thing forever. The gaps are deliberate: related checks share
+a decade.
 
 **Exit 79 is SKIP**, and it is 79 rather than the conventional 77 because snug's
 own `exitPolicy` IS 77 (`internal/cli/main.go`). A script that ended on an
@@ -55,10 +59,27 @@ check living in both places is a second copy of state, and the copy nobody runs
 is the one that goes stale.
 
 What is left for this directory is what CI genuinely cannot run: a check whose
-answer is per-machine (this host's kernel knobs, this host's `doctor` report),
-one that needs state CI structurally lacks (two live accounts, a loaded
-ssh-agent), or one that needs a human's `sudo`. Plus the payloads, which are
+answer is per-machine (this host's kernel knobs), one that needs state CI
+structurally lacks (a `claude` binary, a live authenticated credential, two
+accounts), or one that needs a human's `sudo`. Plus the payloads, which are
 programs rather than assertions.
+
+**So CI does not run `make verify`, and that is the rule holding rather than a
+gap.** The rule says every check here is one CI cannot run; a CI step walking
+them could therefore only ever SKIP, and a step that can only skip is exactly
+the shape the floors in this repository exist to refuse. What CI grades instead
+is `test/guard/scripts_test.go`, which grades the DIRECTORY — duplicate numbers,
+a file that is not executable, a check missing from this index, a script
+spelling SKIP as 77 — none of which running the checks would catch. Five checks
+went the other way and are named in the retirement paragraph above:
+
+| was | is now |
+|---|---|
+| `0010` | `TestDoctorsExitCodeFollowsTheRowsItPrinted`, `TestFixSubuidIsSafeToCallFromAnErrexitInitHook` (`test/integration`) |
+| `0011` | `TestDoctorSaysNoOnAHostWhereUserNamespacesDoNotWork` (`test/integration`) |
+| `0021` | `TestAnAbsentKnobIsReportedAsAbsentAndIsNeverFixed`, `TestTheThreeWaysAKnobHasNoValueAreToldApart` (`internal/cli`) — already there, so the script was the second copy |
+| `0030` | `TestEngineGCSeesEveryGenerationOfStoreName` (`internal/cli`) |
+| `0031` | `TestClaudeInheritsAPagerAndNeitherEditorVariable` (`test/integration`) |
 
 ## The migration rule
 

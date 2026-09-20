@@ -1304,6 +1304,73 @@ func TestRetiredGitRoNamesGit(t *testing.T) {
 	}
 }
 
+// @tmp-shared allocated a per-project host directory under os.TempDir() and
+// bound it as the sandbox's /tmp (issue #399). It was removed with no
+// replacement — unlike @cwd-rw and @git-ro, there is no new name to point
+// at — and until this test it was missing from retiredProfiles entirely, so
+// `-p @tmp-shared` fell through to the generic "unknown profile" while its
+// own variable, {host_tmpdir}, got a full retirement notice naming
+// @tmp-shared and "no replacement". Fails if @tmp-shared is ever dropped from
+// the table again, which would put the two answers out of step with each
+// other for no reason a user could guess.
+func TestRetiredTmpSharedNamesNoReplacement(t *testing.T) {
+	_, err := Resolve(testRegistry(), append(append([]ProfileName{}, testDefaults...), "@tmp-shared"), testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("-p @tmp-shared was accepted; there is no @tmp-shared profile any more")
+	}
+	if !strings.Contains(err.Error(), "no replacement") {
+		t.Errorf("the error should say there is no replacement, got: %v", err)
+	}
+
+	err = UnknownProfile(testRegistry(), "@tmp-shared")
+	if err == nil || !strings.Contains(err.Error(), "no replacement") {
+		t.Errorf("UnknownProfile(@tmp-shared), the route `snug profile show @tmp-shared` "+
+			"takes, should say there is no replacement, got: %v", err)
+	}
+
+	// CONTROL, same shape as the other retired names: `tmp-shared` is a legal
+	// name for a profile a USER defines, and the retired table must not
+	// preempt it.
+	reg := testRegistry()
+	reg["tmp-shared"] = &Profile{Name: "tmp-shared"}
+	if err := UnknownProfile(reg, "tmp-shared"); err == nil {
+		t.Error("a user's own tmp-shared resolved through UnknownProfile, which only " +
+			"runs on a miss — fixture wrong")
+	} else if strings.Contains(err.Error(), "no replacement") {
+		t.Errorf("a user's OWN tmp-shared was answered with snug's retirement notice: %v", err)
+	}
+}
+
+// UnknownProfile's bare-name branch: `sys` is the natural slip for `@sys`,
+// and the error has to say so rather than send the reader to `snug profile
+// list` to guess. This is the branch resolve.go:1034 writes
+// ("...so you probably meant %q") — TestRetiredNullProfileNamesTheFix and its
+// two siblings above cover the RETIRED-name and the CutMark branches, and
+// until this test nothing exercised this one.
+func TestUnknownProfileSuggestsTheMarkedSpelling(t *testing.T) {
+	err := UnknownProfile(testRegistry(), "sys")
+	if err == nil {
+		t.Fatal("expected an error for the bare name of a profile snug ships marked")
+	}
+	if !strings.Contains(err.Error(), "you probably meant") {
+		t.Errorf("the error should suggest the marked spelling, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "@sys") {
+		t.Errorf("the error should name @sys specifically, got: %v", err)
+	}
+
+	// CONTROL: a bare name with no marked counterpart in the registry at all
+	// must NOT get this suggestion — otherwise this branch could be firing on
+	// every miss rather than only when reg[name.Marked()] actually exists.
+	err = UnknownProfile(testRegistry(), "zzz-not-a-real-profile")
+	if err == nil {
+		t.Fatal("expected an error for a genuinely unknown profile")
+	}
+	if strings.Contains(err.Error(), "you probably meant") {
+		t.Errorf("a name with no marked counterpart got the suggestion anyway: %v", err)
+	}
+}
+
 // ── Positive controls for the nesting rules ─────────────────────────────────
 //
 // The rules Validate now enforces (RULE 2, RULE 4) are permissive in three
@@ -1629,5 +1696,110 @@ func TestASymlinkTargetExpandsVariablesLikeEveryOtherField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "@tmp-shared") {
 		t.Errorf("the symlink-target refusal does not name the removal: %v", err)
+	}
+}
+
+// TestEveryProfileStringSinkExpandsVariables sweeps every sink expandVars is
+// documented to run over — ro, rw, tmpfs, optional, the three environ list/
+// scalar verbs, identity.ssh.key, and a grant reached only through `include`
+// — the same set the symlink test above found ONE hole in (the target half of
+// a two-key table) by checking only that table's two keys. A sink added to
+// this list tomorrow and wired to nothing is silently uncovered by every test
+// that came before this one, which is why each case here is a marker value —
+// {unexpanded-marker}, a name expandVars has no row for — rather than
+// {host_tmpdir}: an unexpanded sink fails a DIFFERENT way (a literal
+// "{unexpanded-marker}" is not an absolute path, so splitSpec's own "must be
+// absolute" refusal fires, or the raw brace text is accepted verbatim into a
+// scalar) and neither of those mentions "unexpanded-marker", so the case
+// below cannot pass for the wrong reason.
+//
+// Table-driven rather than reflected over Profile's fields on purpose:
+// Profile carries []string fields that must NOT expand (Plugins, ListenNames
+// name allowlisted values, never paths), and nothing in this package tags a
+// field as "this one is a variable sink" the way identityFields tags a path
+// leaf of Identity — reflection here would have to reinvent that tag to know
+// which fields to skip, which is exactly the repetition this test is trying
+// not to add.
+func TestEveryProfileStringSinkExpandsVariables(t *testing.T) {
+	const marker = "unexpanded-marker"
+	unexpanded := "{" + marker + "}"
+
+	cases := []struct {
+		name     string
+		registry func() (map[ProfileName]*Profile, []ProfileName)
+	}{
+		{"ro", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", RO: []string{unexpanded}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"rw", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", RW: []string{unexpanded}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"tmpfs", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Tmpfs: []string{unexpanded}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"optional", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Optional: []string{unexpanded}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"environ.set", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Environ: EnvGrants{
+				Set: map[string]string{"MY_TOOL_MODE": unexpanded}}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"environ.merge", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Environ: EnvGrants{
+				Merge: map[string][]string{"PATH": {unexpanded}}}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"environ.prepend", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Environ: EnvGrants{
+				Prepend: map[string][]string{"PATH": {unexpanded}}}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		{"identity.ssh.key", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["sink"] = &Profile{Name: "sink", Identity: &Identity{
+				SSH: IdentitySSH{Key: unexpanded}}}
+			return reg, []ProfileName{"@sys", "@target-rw", "sink"}
+		}},
+		// Through `include`: the marker sits in a profile that is never
+		// selected directly, only pulled in by one that includes it — proving
+		// the sweep runs over the CLOSURE, not merely over what a human typed
+		// on the command line.
+		{"through include", func() (map[ProfileName]*Profile, []ProfileName) {
+			reg := testRegistry()
+			reg["leaf"] = &Profile{Name: "leaf", Tmpfs: []string{unexpanded}}
+			reg["outer"] = &Profile{Name: "outer", Include: []ProfileName{"leaf"}}
+			return reg, []ProfileName{"@sys", "@target-rw", "outer"}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, selected := tc.registry()
+			_, err := Resolve(reg, selected, testCtx(), newFakeEnv())
+			if err == nil {
+				t.Fatalf("%q with an unknown {%s} resolved cleanly — this sink never reaches "+
+					"expandVars, so a real profile variable written there would render "+
+					"verbatim rather than expanding or refusing", tc.name, marker)
+			}
+			if !strings.Contains(err.Error(), marker) {
+				t.Errorf("%q refused, but not for the reason expected: %v\n"+
+					"       (want the error to name %q, expandVars's own wording for an "+
+					"unknown variable — a different refusal here means the raw, unexpanded "+
+					"text took some OTHER path to a fatal error instead of reaching "+
+					"expandVars at all)", tc.name, err, marker)
+			}
+		})
 	}
 }

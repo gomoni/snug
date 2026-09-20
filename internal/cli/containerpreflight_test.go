@@ -364,3 +364,105 @@ func TestPreflightPodmanBinaryRefusesNonRegularObjects(t *testing.T) {
 		})
 	}
 }
+
+// TestResolvConfBindNoticeIsSilentOnAHealthyHost fails if P7's aside starts
+// printing anything for either shape of "nothing to warn about": the probe
+// answering that the bind works (nil), or the probe being unable to run on
+// this host at all (*probeUnavailableError) — the third outcome
+// TestPreflightResolvConfBindAsksTheHostAndAnswersByName's own doc comment
+// names, which is a fact about this environment rather than the host's
+// answer and must not be reported as one.
+func TestResolvConfBindNoticeIsSilentOnAHealthyHost(t *testing.T) {
+	if got := resolvConfBindNotice(nil); got != "" {
+		t.Errorf("resolvConfBindNotice(nil) = %q, want \"\" — a working host has nothing to warn about", got)
+	}
+	if got := resolvConfBindNotice(&probeUnavailableError{err: errors.New("fork/exec: permission denied")}); got != "" {
+		t.Errorf("resolvConfBindNotice(probeUnavailable) = %q, want \"\" — the probe never asked, "+
+			"so there is no host answer to report", got)
+	}
+}
+
+// TestResolvConfBindNoticeWarnsWithoutRefusing is issue #128's aside (VERIFY's
+// P7): the ONE non-nil, non-probeUnavailable answer the probe can give — the
+// host refuses the bind — must read as a warning a human can skim past
+// rather than as a refusal, because nothing about it leaks. The property
+// "the run CONTINUES" is checked structurally rather than by driving the
+// whole of startContainers against a real engine: resolvConfBindNotice
+// returns a string, not an error, so nothing its caller does with the
+// result can abort the run — there is no error value here for a caller to
+// propagate.
+func TestResolvConfBindNoticeWarnsWithoutRefusing(t *testing.T) {
+	probeErr := errors.New("mounting a file over /etc/resolv.conf: read-only file system")
+	got := resolvConfBindNotice(probeErr)
+	if got == "" {
+		t.Fatal("resolvConfBindNotice(a real probe failure) = \"\", want a warning — a broken " +
+			"host's answer must reach the human")
+	}
+	for _, want := range []string{
+		"/etc/resolv.conf",
+		"Containers are NOT affected",
+		// The ENGINE's own resolution is what is actually at risk — offline,
+		// it retries the host's resolvers instead of failing fast.
+		"time out slowly",
+		probeErr.Error(),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resolvConfBindNotice does not say %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(strings.ToLower(got), "refus") {
+		t.Errorf("resolvConfBindNotice reads as a REFUSAL — nothing leaks from this failure, so "+
+			"refusing the run would be refusing over lost ergonomics:\n%s", got)
+	}
+}
+
+// TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling is VERIFY's
+// §19b contrast rewritten as a check: a relative $SNUG_PODMAN that RESOLVES
+// (TestResolveEngineBinaryRefusesARelativePath, internal/policy) is refused
+// for being relative, but a relative $SNUG_PODMAN that does not exist at all
+// must be refused for THAT reason instead — "does not name a usable file",
+// never "not an absolute path" — because the existence check runs first and
+// there is nothing on disk yet for the absolute-path rule to have an opinion
+// about. containerpreflight.go:483 had no test site of any kind before this.
+func TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	pol, err := policy.Resolve(reg,
+		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("building the fixture policy: %v", err)
+	}
+
+	env := policy.OSEnviron{}
+	// A relative path with nothing at it on this test's working directory —
+	// "bin/podman" is VERIFY's own spelling. Read from the REAL filesystem,
+	// not envFakeEnv, for the same reason
+	// TestPreflightPodmanBinaryRefusesNonRegularObjects needs one: a fake
+	// Stat cannot answer "is there really nothing here" for a name it was
+	// never told about, only "not in my map", which happens to agree here
+	// but is not the same question.
+	t.Setenv("SNUG_PODMAN", "bin/podman")
+	if _, statErr := os.Stat("bin/podman"); statErr == nil {
+		t.Fatal("fixture: bin/podman exists relative to this test's working directory, so this " +
+			"case no longer exercises the nonexistent spelling it is named for")
+	}
+
+	_, gotErr := preflightPodmanBinary(env, pol)
+	if gotErr == nil {
+		t.Fatal("preflightPodmanBinary(SNUG_PODMAN=bin/podman) = nil, want a refusal")
+	}
+	const want = "$SNUG_PODMAN=bin/podman does not name a usable file"
+	if gotErr.Error() != want {
+		t.Errorf("preflightPodmanBinary(SNUG_PODMAN=bin/podman) = %q, want %q", gotErr.Error(), want)
+	}
+	// CONTROL: this must be the EXISTENCE message, never the endpoint-naming
+	// message a resolvable relative path gets (ResolveEngineBinary's "it is
+	// not an absolute path") — the two are easy to conflate because both
+	// arise from "the path was relative", and #19b's whole point is that
+	// they are reached in a different order depending on what is on disk.
+	if strings.Contains(gotErr.Error(), "absolute path") {
+		t.Errorf("preflightPodmanBinary answered with the ENDPOINT refusal for a path that does "+
+			"not exist at all — the existence check must run first: %v", gotErr)
+	}
+}

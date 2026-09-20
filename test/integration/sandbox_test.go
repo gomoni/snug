@@ -1416,6 +1416,64 @@ echo CHECKED-ALL`).mustRun(t)
 	}
 }
 
+// internal/policy/envresolve_test.go's TestSanitiseResolvesProcSelfCwdOutOfPathAndArgv
+// already proves /proc/self/cwd is absent from p.Env["PATH"] and from the
+// --setenv PATH operand. Neither proves the finding that made keepHostElement
+// look through /proc's magic symlinks in the first place: the KERNEL resolves
+// /proc/self/cwd to wherever the reading process's cwd actually is, which
+// inside a sandbox is the TARGET — a real, persistent bind, not a copy — so a
+// lexical-only PATH filter that stopped at "/proc is a KindProc mount, keep
+// it" would leave a hostile binary dropped in the target able to shadow a real
+// one the moment anything looks it up through that PATH entry.
+//
+// Same shape as the scripted fixture in scripts/VERIFY.md's now-deleted §6f:
+// a same-named `id` planted in the target, PATH carrying /proc/self/cwd ahead
+// of the real bin directory, environ.sanitise selecting PATH so the filter
+// actually runs on it (no shipped profile does this on its own).
+func TestPseudoFSPathDropHoldsAgainstTheKernelsOwnResolution(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Fatal(err) // requireSandbox already proved it is installed
+	}
+	granted := filepath.Join(proj, "hostbin")
+	if err := os.MkdirAll(granted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bwrap, filepath.Join(granted, "bwrap")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The hostile binary a shadow would reach: same name as the real coreutils
+	// tool, planted directly in the writable target, the way a compromised
+	// dependency-install hook or a previous agent turn could leave one.
+	writeScript(t, filepath.Join(proj, "id"), "SHADOWED-ID-RAN-VIA-PROC-CWD")
+
+	hostPath := "/proc/self/cwd:" + granted
+	env := envProfileLayer(t, "sanpath.toml",
+		"[profile.sanpath]\n"+
+			"description = \"copy the host PATH, keep only what policy grants\"\n"+
+			"\n[profile.sanpath.environ.sanitise]\nPATH = true\n",
+		hostPath)
+
+	r := runEnv(t, env, []string{"--no-defaults", "-p", "@sys", "-p", "@target-rw", "-p", "sanpath"},
+		proj, `id`).mustRun(t)
+
+	if strings.Contains(r.out, "SHADOWED-ID-RAN-VIA-PROC-CWD") {
+		t.Fatalf("the payload's own `id` — reached only through /proc/self/cwd, which the "+
+			"kernel resolves to the target — ran instead of the real one:\n%s", r.out)
+	}
+	// THE POSITIVE CONTROL. Without it, "the shadow didn't run" is equally true
+	// of `id` failing to run at all.
+	if !strings.Contains(r.out, "uid=") || !strings.Contains(r.out, "gid=") {
+		t.Fatalf("the real /usr/bin/id never ran either, so the refusal above proves "+
+			"nothing:\n%s", r.out)
+	}
+}
+
 // 2026-08-10. §4.1's untested precondition: `snug . -- podman` resolves against
 // the SANDBOX's PATH, not the host's. Measured true and, until this test,
 // asserted nowhere — which matters because it is what makes the whole ordering
@@ -1509,6 +1567,57 @@ func TestThePayloadNameResolvesAgainstTheSandboxPATH(t *testing.T) {
 	}
 }
 
+// internal/policy/envresolve_test.go's TestDuplicateEntriesCollapseToTheEarliestBand
+// already proves that p.Env["PATH"].Entries[0] is the prepend band's entry, and
+// the argv tests prove the same about the --setenv operand. Neither can prove
+// the thing the band ORDER exists for, which is what the KERNEL does with two
+// same-named binaries at execvp(3) — the objection VERIFY.md raised against
+// exactly that shape of coverage ("the screen agreeing with itself proves
+// nothing"). This runs a real sandbox and executes the ambiguous name.
+//
+// mergeband is selected FIRST on the command line and prependband second, so a
+// regression that collapsed band order into SELECTION order — the profile
+// named last on argv winning, rather than prepend always outranking merge —
+// would flip this test's answer without changing either profile's own file.
+func TestPrependBandOutranksMergeBandInTheKernelsOwnLookup(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Fatal(err) // requireSandbox already proved it is installed
+	}
+
+	prependDir, mergeDir := t.TempDir(), t.TempDir()
+	writeScript(t, filepath.Join(prependDir, "bandmarker"), "PREPEND-WON")
+	writeScript(t, filepath.Join(mergeDir, "bandmarker"), "MERGE-WON")
+
+	env := envProfileLayer(t, "bands.toml",
+		"[profile.prependband]\n"+
+			"description = \"takes the front of PATH\"\n"+
+			"ro = [\""+prependDir+"\"]\n"+
+			"\n[profile.prependband.environ.prepend]\nPATH = [\""+prependDir+"\"]\n"+
+			"\n[profile.mergeband]\n"+
+			"description = \"merges into PATH alongside the base bands\"\n"+
+			"ro = [\""+mergeDir+"\"]\n"+
+			"\n[profile.mergeband.environ.merge]\nPATH = [\""+mergeDir+"\"]\n",
+		filepath.Dir(bwrap))
+
+	r := runEnv(t, env, []string{"-p", "mergeband", "-p", "prependband"}, proj,
+		`echo "PATH=$PATH"; bandmarker`).mustRun(t)
+
+	if !strings.Contains(r.out, "PREPEND-WON") {
+		t.Errorf("bandmarker did not resolve to the prepend band's copy, or did not run at "+
+			"all:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "MERGE-WON") {
+		t.Errorf("bandmarker resolved to the MERGE band's copy even though a prepend band "+
+			"was also selected — band order is supposed to put prepend ahead of merge "+
+			"regardless of which profile was named on the command line last:\n%s", r.out)
+	}
+}
+
 // Nothing snug puts on PATH ahead of /usr/bin may be writable from inside.
 //
 // The permanent regression test for the shadow slot @claude shipped for a
@@ -1599,6 +1708,64 @@ func TestSnugStagesNoCommandInAWritableDirectory(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "CONTROL-WROTE") {
 		t.Fatalf("the control could not write to /tmp, so the probe above cannot "+
 			"distinguish 'refused' from 'never tried' (exit %d):\n%s", code, out)
+	}
+}
+
+// TestSnugStagesNoCommandInAWritableDirectory proves /snug/bin is unwritable.
+// It does not prove the other half of @claude's promise: that `claude`, typed
+// by NAME, actually resolves to the staged binary rather than merely that the
+// directory holding it is safe. This runs a FAKE $HOME so it never depends on
+// this host (or CI) actually having Claude Code installed, and plants the
+// fake claude at {home}/.local/bin/claude — the exact host path @claude's
+// `optional` bind names — so the real bind mechanism runs unmodified.
+func TestCommandVClaudeResolvesToTheStagedBinary(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(home, ".local", "bin", "claude"), "CLAUDE-RAN")
+
+	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+echo "PATH=[$PATH]"
+echo "CMDV=[$(command -v claude)]"
+claude
+touch /snug/bin/git && echo TOUCH-SUCCEEDED || echo "touch REFUSED"
+echo x > /snug/bin/git && echo REDIRECT-SUCCEEDED || echo "redirect REFUSED"`).mustRun(t)
+
+	if !strings.Contains(r.out, "PATH=[/snug/bin:") {
+		t.Errorf("/snug/bin is not first on PATH:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "CMDV=[/snug/bin/claude]") {
+		t.Errorf("`command -v claude` did not answer /snug/bin/claude:\n%s", r.out)
+	}
+	// THE POSITIVE CONTROL for the line above: the name did not just happen to
+	// print the right string, it is genuinely executable AND is the staged
+	// bind of the file this test planted, not some other claude found by
+	// accident.
+	if !strings.Contains(r.out, "CLAUDE-RAN") {
+		t.Errorf("running `claude` by name did not execute the staged binary this test "+
+			"planted, so the resolved path above is not known to be genuinely runnable:\n%s", r.out)
+	}
+
+	// touch and a shell redirect are different syscall paths (open(2) with
+	// O_CREAT vs the shell's own open for O_WRONLY|O_CREAT|O_TRUNC); a check of
+	// one is not a check of the other.
+	if strings.Contains(r.out, "TOUCH-SUCCEEDED") {
+		t.Errorf("touch created a file in /snug/bin, which fronts every command a hostile "+
+			"payload sees ahead of the real ones:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "touch REFUSED") {
+		t.Errorf("touch was not even attempted, so the refusal above is unproven:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "REDIRECT-SUCCEEDED") {
+		t.Errorf("a shell redirect created a file in /snug/bin:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "redirect REFUSED") {
+		t.Errorf("the redirect was not even attempted, so the refusal above is unproven:\n%s", r.out)
 	}
 }
 
@@ -2808,6 +2975,86 @@ func TestNoLeakedHelpersAfterSIGKILL(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("network helper(s) %v survived snug being SIGKILLed", left)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestNoLeakedHelpersAfterSIGKILL asserts only that pasta is gone; it says
+// nothing about bwrap itself, and TestSIGKILLBeforeThePayloadStartsLeavesNoInit
+// only covers the STARTUP window, before the payload has even begun running.
+// Neither exercises the SETTLED case — a sandbox that has been running
+// normally for a while, no engine, no @net, just an ordinary payload — which
+// is the shape the deleted VERIFY.md's own "nothing is left behind" recipe
+// actually ran: start a payload, let it settle, `kill -9` snug, expect bwrap
+// gone. `--die-with-parent` kills the payload even when snug is SIGKILLed and
+// cannot clean up after itself.
+func TestNoBwrapSurvivesSIGKILLOnceSettled(t *testing.T) {
+	budget(t, 20*time.Second)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	cmd := exec.Command(snugBin, proj, "--", "/bin/sleep", "30")
+	cmd.Env = baseEnv()
+	cmd.WaitDelay = waitDelay
+	log, err := os.CreateTemp(t.TempDir(), "snug-sigkill-settled-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { log.Close() })
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	})
+
+	// PRECONDITION: catch this run's own bwrap pid(s) while they are known-good
+	// descendants of THIS snug's own process tree — never a host-wide comm
+	// sweep, which this suite's own development host makes far too noisy to
+	// use as a signal (ambient bwrap traffic from other terminals, other
+	// sandboxes). No -p @net here, so the OFFLINE topology applies and bwrap
+	// is P0's own direct child — there is no separate stage process to find
+	// first, unlike TestKillingOnlyBwrapLeavesAReleasableInit's @podman-socket
+	// shape.
+	bwrapPIDs, ok := waitForBwrapDescendants(cmd.Process.Pid, 15*time.Second)
+	if !ok {
+		t.Fatalf("PRECONDITION: no bwrap-comm descendant of snug ever appeared, so this test "+
+			"would measure nothing:\n%s", readAll(log.Name()))
+	}
+
+	// Settle: let the sandbox run normally for a moment, unlike the
+	// startup-window test, so the assertion below is about the ordinary
+	// running case rather than the early-abort window.
+	time.Sleep(500 * time.Millisecond)
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	killed = true
+
+	// Poll rather than sleep: Pdeathsig delivery is asynchronous.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var stillAlive []int
+		for _, pid := range bwrapPIDs {
+			if commOf(pid) == "bwrap" {
+				stillAlive = append(stillAlive, pid)
+			}
+		}
+		if len(stillAlive) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of this run's own bwrap pid(s) (%v), captured while running, are "+
+				"still alive as \"bwrap\" %s after snug itself was SIGKILLed", len(stillAlive),
+				bwrapPIDs, 5*time.Second)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

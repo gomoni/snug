@@ -720,19 +720,21 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 	}
 }
 
-// `@home`'s tmpfs list is quoted, by hand, in four documents: CLAUDE.md's
-// "the writable surface is eight paths" bullet, VERIFY.md §3's table,
-// .claude/design/INDEX.md §9, and .claude/agents/sandbox-policy.md's shadow-slot
-// rule. When the list grew a fifth entry ({home}/.local/share, PR #10) all four
-// kept saying seven, for a milestone, and nothing could fail — a count in prose
-// is a copy of state held here, with no link back to its source.
+// `@home`'s tmpfs list is quoted, by hand, in two documents:
+// .claude/design/INDEX.md §9's writable-surface paragraph and
+// .claude/agents/sandbox-policy.md's shadow-slot rule. When the list grew a
+// fifth entry ({home}/.local/share, PR #10) both kept saying seven, for a
+// milestone, and nothing could fail — a count in prose is a copy of state held
+// here, with no link back to its source.
 //
-// This is that link. It pins `@home`, and ONLY `@home`: /tmp, /dev and the
+// This is that link. It pins `@home`, and ONLY `@home`: /tmp, /dev/shm and the
 // target bind come from elsewhere, so a writable grant added to a different
 // profile still slips past this test. It converts one silent drift into a
 // failing test with an instruction attached; it does not verify the writable
-// surface. VERIFY.md §3's probe does that, by enumeration, inside a live
-// sandbox.
+// surface. TestTheWritableSurfaceIsExactlyTheseNinePaths
+// (test/integration/writablesurface_test.go) does that, by enumeration, inside
+// a live sandbox — and it is what caught the SECOND drift, both documents
+// having settled on eight while {home}/.local was already in the surface.
 func TestHomeTmpfsListIsPinnedToTheDocumentsQuotingIt(t *testing.T) {
 	reg, err := Builtins()
 	if err != nil {
@@ -751,10 +753,10 @@ func TestHomeTmpfsListIsPinnedToTheDocumentsQuotingIt(t *testing.T) {
 	}
 	if !slices.Equal(p.Tmpfs, want) {
 		t.Errorf("@home's tmpfs list changed:\n got %q\nwant %q\n\n"+
-			"That list is quoted by hand in CLAUDE.md (the writable-surface bullet), "+
-			"VERIFY.md §3 (the table AND the expected output of the enumeration probe), "+
-			".claude/design/INDEX.md §9, and .claude/agents/sandbox-policy.md. "+
-			"Update all four and this test together, or the count in prose goes stale "+
+			"That list is quoted by hand in .claude/design/INDEX.md §9 and "+
+			".claude/agents/sandbox-policy.md, and enumerated for real by "+
+			"test/integration/writablesurface_test.go:TestTheWritableSurfaceIsExactlyTheseNinePaths. "+
+			"Update both documents and this test together, or the count in prose goes stale "+
 			"again with nothing to catch it.", p.Tmpfs, want)
 	}
 }

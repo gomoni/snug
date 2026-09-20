@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -170,6 +172,74 @@ func setenvNames(screen string) map[string]bool {
 		}
 	}
 	return names
+}
+
+// TestAnAuthoredScalarDoesNotTakeTheHostsValue is the value-level half of
+// issue #84's `set` decision: XDG_CONFIG_HOME is `set`, not `inherit`, to
+// "{home}/.config" (internal/profile/profiles/base.toml), so its value is
+// computed from the SANDBOX's own $HOME and never read off the invoking
+// process's environment at all. TestGoldenEnvironment pins that against a
+// fake host that never sets XDG_CONFIG_HOME to anything, so the two can never
+// disagree there; TestDryRunEnvironmentBlockAccountsForEveryNameInside
+// compares NAMES between the screen and a real sandbox, never values. Neither
+// can catch a `set` that quietly became an `inherit`, or a template that
+// quietly started reading the host's copy — both would leave every existing
+// assertion green while every sandboxed tool started writing into the real
+// XDG_CONFIG_HOME the human uses.
+//
+// baseEnv() already gives the host process a XDG_CONFIG_HOME distinct from
+// {home}/.config on every run of this suite (emptyConfig, so snug finds no
+// profiles.d of its own) — this test names that value explicitly instead of
+// relying on it being merely "whatever baseEnv happened to set", so a
+// refactor of baseEnv's own default cannot quietly delete the coverage. It is
+// passed as baseEnv's OWN trailing argument, not via t.Setenv: baseEnv
+// unconditionally appends its own "XDG_CONFIG_HOME="+emptyConfig, so a
+// t.Setenv on the outer process's environment — which cli() only consults
+// through os.Environ() when env is nil — would be shadowed by that later
+// entry the moment cli() fell back to baseEnv() itself; passing it as an
+// extra is the one construction (documented on baseEnv itself) that survives
+// os/exec's last-duplicate-wins rule.
+func TestAnAuthoredScalarDoesNotTakeTheHostsValue(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	const weird = "/weird-xdg-config-home-that-does-not-exist"
+	env := baseEnv("XDG_CONFIG_HOME=" + weird)
+
+	out, code := cli(t, env, "--no-defaults", "-p", "@sys", "-p", "@home", "-p", "@target-rw",
+		proj, "--", "/usr/bin/env")
+	if code != 0 {
+		t.Fatalf("running /usr/bin/env inside exited %d:\n%s", code, out)
+	}
+
+	var got string
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "XDG_CONFIG_HOME="); ok {
+			got, found = v, true
+		}
+	}
+	if !found {
+		t.Fatalf("XDG_CONFIG_HOME is not set inside at all, so the value check below proves "+
+			"nothing:\n%s", out)
+	}
+
+	home, err := filepath.EvalSymlinks(os.Getenv("HOME"))
+	if err != nil {
+		t.Fatalf("resolving $HOME: %v", err)
+	}
+	want := home + "/.config"
+
+	if got == weird {
+		t.Fatalf("XDG_CONFIG_HOME inside is the HOST's value (%q) — the `set` verb read the "+
+			"host's own environment instead of computing {home}/.config, which points every "+
+			"tool in the sandbox at a real, credential-bearing directory the sandbox does not "+
+			"even have mounted", got)
+	}
+	if got != want {
+		t.Errorf("XDG_CONFIG_HOME inside = %q, want %q (the sandbox's own {home}/.config)", got, want)
+	}
 }
 
 // diff returns the names in a that are not in b, sorted so a failure message is

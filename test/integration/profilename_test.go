@@ -77,17 +77,39 @@ func TestAnIllegalProfileNameIsRefusedBeforeAnythingRuns(t *testing.T) {
 	}
 }
 
-// assertNameRefusal is the shared verdict: snug must exit non-zero, explain
-// which byte it refused, never emit that byte raw, and never have got as far as
-// the resolver's "unknown profile".
+// assertNameRefusal is the shared verdict: snug must exit exactly 64 (a USAGE
+// error — the name never got as far as the resolver, so this is not a policy
+// refusal), explain which byte it refused, print the flag help that follows
+// every usage error, never emit the offending byte raw, never have reached the
+// resolver's "unknown profile", and never render the FILESYSTEM block a run
+// that actually resolved a policy would print.
 func assertNameRefusal(t *testing.T, out string, code int, arg, want string) {
 	t.Helper()
 	if code == 0 {
 		t.Fatalf("snug accepted the profile name %q (exit 0):\n%s", arg, out)
 	}
+	// VERIFY's own claim (§9e): this is a USAGE error, exit 64, never the
+	// policy exit (77) a resolved-but-refused run would use — the name never
+	// reached the registry at all.
+	if code != exitUsageCode {
+		t.Errorf("the refusal of %q exited %d, want %d (a usage error, per policy.NewProfileName "+
+			"firing before parseArgs even returns):\n%s", arg, code, exitUsageCode, out)
+	}
 	if !strings.Contains(out, want) {
 		t.Errorf("the refusal of %q does not contain %q, so it does not say what is wrong "+
 			"with the name:\n%s", arg, want, out)
+	}
+	// usage() is what main.go prints alongside every exitUsage — "flags:" is a
+	// line only it emits, so this fails if a refusal path ever stops calling it.
+	if !strings.Contains(out, "flags:") || !strings.Contains(out, "-p, --profile NAME") {
+		t.Errorf("the refusal of %q is not followed by the flag help:\n%s", arg, out)
+	}
+	// FILESYSTEM only ever renders once a policy has been resolved — a usage
+	// error must never get that far, or the screen would read as "it ran
+	// anyway, mostly".
+	if strings.Contains(out, "FILESYSTEM") {
+		t.Errorf("the refusal of %q also rendered a FILESYSTEM block, so this was not the usage "+
+			"error it claims to be:\n%s", arg, out)
 	}
 	if strings.Contains(out, "unknown profile") {
 		t.Errorf("the refusal of %q reads as `unknown profile`, which is a different claim: "+
@@ -99,6 +121,11 @@ func assertNameRefusal(t *testing.T, out string, code int, arg, want string) {
 			"reports the refusal:\n%s", arg, strings.ReplaceAll(out, "\x1b", "<ESC>"))
 	}
 }
+
+// exitUsageCode mirrors internal/cli's unexported exitUsage (64), the same way
+// exitPolicyCode already mirrors exitPolicy (sandbox_test.go) — this package
+// drives the real binary and cannot import internal/cli's own constant.
+const exitUsageCode = 64
 
 // The `defaults` setting is the third door, and it is the one with a silent
 // downgrade available: continuing with the built-in four after refusing a name
@@ -140,10 +167,64 @@ func TestAnIllegalNameInDefaultsIsFatalRatherThanIgnored(t *testing.T) {
 			"to the built-in list would silently widen the sandbox past what the file "+
 			"asked for:\n%s", out)
 	}
+	// Exactly the POLICY exit, not merely non-zero: this name resolved as far
+	// as being READ from a config file that snug DOES trust — a different
+	// failure from the usage errors above, which never get that far.
+	if code != exitPolicyCode {
+		t.Errorf("`snug config` with an illegal `defaults` entry exited %d, want %d:\n%s",
+			code, exitPolicyCode, out)
+	}
 	if !strings.Contains(out, "entry 2") {
 		t.Errorf("the refusal does not say WHICH entry is wrong:\n%s", out)
 	}
 	if !strings.Contains(out, "config.toml") {
 		t.Errorf("the refusal does not name the file it came from:\n%s", out)
+	}
+}
+
+// TestAnAtNamedProfilesDEntryIsRefusedEndToEnd is the wiring
+// internal/profile/namegrammar_test.go:TestNameGrammarIsEnforcedByParse never
+// reached: that test drives parse() directly and stops at "this file did not
+// parse". Nothing before this test ran the REAL BINARY against a profiles.d
+// file carrying an @-marked table key and checked its exit code — grepping
+// this suite and internal/cli for a profile named "@x" finds nothing. Writing
+// [profile."@x"] into a user's own profiles.d is exactly the file
+// refuseBadFiles (internal/cli/badfiles.go) exists to make fatal for a real
+// run: the bad file might be the one granting what this run asked for, so a
+// sandbox assembled from whatever else loaded would be a silent downgrade
+// (invariant 5).
+func TestAnAtNamedProfilesDEntryIsRefusedEndToEnd(t *testing.T) {
+	budget(t)
+	proj, _ := target(t)
+	env := envProfileLayer(t, "atnamed.toml", "[profile.\"@x\"]\nro = [\"/usr\"]\n", os.Getenv("PATH"))
+
+	out, code := cli(t, env, "--dry-run", proj)
+	if code == 0 {
+		t.Fatalf("snug --dry-run started despite a profiles.d file carrying an @-marked table "+
+			"key (exit 0):\n%s", out)
+	}
+	if code != exitPolicyCode {
+		t.Errorf("want exit %d, got %d:\n%s", exitPolicyCode, code, out)
+	}
+	if !strings.Contains(out, "did not load") {
+		t.Errorf("the refusal does not say the file failed to load:\n%s", out)
+	}
+	if strings.Contains(out, "FILESYSTEM") {
+		t.Errorf("a --dry-run that refuses to start must not also render the FILESYSTEM block — "+
+			"a screen naming grants alongside a fatal refusal reads as \"it ran anyway\":\n%s", out)
+	}
+
+	// POSITIVE CONTROL: `snug profile list`, the diagnostic command, still
+	// reports a builtin — proving this file was isolated as ONE bad file
+	// rather than having taken the whole registry down with it, which would
+	// make the refusal above prove nothing about THIS file specifically.
+	listOut, listCode := cli(t, env, "profile", "list")
+	if listCode != exitPolicyCode {
+		t.Errorf("`snug profile list` exited %d, want %d — it must still carry a non-zero exit "+
+			"for the bad file even though it reports what did load:\n%s", listCode, exitPolicyCode, listOut)
+	}
+	if !strings.Contains(listOut, "@sys") {
+		t.Errorf("`snug profile list` did not list a builtin profile, so the bad @-named file "+
+			"took the whole registry down with it rather than being isolated:\n%s", listOut)
 	}
 }

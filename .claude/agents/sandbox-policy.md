@@ -182,14 +182,20 @@ Measured, not recalled. Each one changed a design decision.
   test that RUNS the tool, too: `ssh -G <host>` parses the whole config chain and
   needs no network, and a generator suite cannot fail on a consumer that refuses
   its output.
-- **The writable surface is eight paths, not one.** The target bind is the only
+- **The writable surface is nine paths, not one.** The target bind is the only
   one that *persists*; `/tmp`, `$HOME`, `$HOME/.cache`, `$HOME/.config`,
-  `$HOME/.local/state`, `$HOME/.local/share` and `/dev` are writable tmpfs that
-  die with the sandbox. `/dev` is bwrap's own synthetic device tree and is easy
-  to forget. Say "the only writable thing that persists", never "the only
-  writable thing" — and read the count from
-  `internal/profile/profiles/base.toml`, `[profile.home]`, because it has already
-  drifted once. Prefer a probe that enumerates over a sentence that asserts.
+  `$HOME/.local`, `$HOME/.local/state`, `$HOME/.local/share` and `/dev/shm` are
+  writable tmpfs that die with the sandbox. `/dev` itself is NOT one of them:
+  bwrap.go's KindDev arm remounts its root read-only immediately after creating
+  it, so `/dev/shm` is the one writable path on that superblock (issue #281).
+  `$HOME/.local` is nobody's grant — `InstallAnchors` (issue #553) puts an empty
+  writable tmpfs at every ancestor whose deepest cover is itself a tmpfs, which
+  is why a count read off `base.toml` is always one short. Say "the only
+  writable thing that persists", never "the only writable thing" — and do not
+  read the count off any document, including this one: it has drifted twice,
+  seven to eight to nine. `test/integration/writablesurface_test.go` enumerates
+  `/proc/self/mounts` inside a live sandbox, and that enumeration is the
+  answer.
 - **`git` merges its global config from TWO files.** `~/.gitconfig` AND
   `$XDG_CONFIG_HOME/git/config`. Generating the first is not enough; setting
   `GIT_CONFIG_GLOBAL` replaces both outright, which is why snug sets it whenever

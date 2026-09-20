@@ -928,7 +928,9 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 				"development host as hooks.json running bash/sh/python3 (issue #68)"))
 	}
 	if p.MTU != 0 {
-		show("mtu", []string{strconv.Itoa(p.MTU)})
+		show("mtu", capRows(strconv.Itoa(p.MTU),
+			"changes how the sandbox's network stack segments packets, never what it can "+
+				"reach — a pasta cosmetic, exposed for pathological networks"))
 	}
 	if p.Podman != "" {
 		show("podman", capRows(p.Podman,

@@ -46,6 +46,19 @@ func homeWithDirs(t *testing.T, rel ...string) string {
 	return home
 }
 
+// dataMount builds a KindData mount carrying a Host value, which no KindData
+// mount snug itself ever generates — every producer in resolve.go sets only
+// Guest, Kind, Access and Content, never Host, because there is no host FILE
+// behind generated content to name. It exists so a test can put a Host under
+// a coverage candidate's path without that candidate coinciding with a real
+// bind by accident: coverageOf's `m.Kind != policy.KindBind` guard is what
+// excludes it, and a fixture whose only KindData entry carries an empty Host
+// could not tell that guard apart from an entry that simply had nothing to
+// contribute.
+func dataMount(guest, host string) policy.Mount {
+	return policy.Mount{Kind: policy.KindData, Host: host, Guest: guest, From: []string{"@test"}}
+}
+
 // Mounts is keyed by guest path, so a fixture builds the map rather than a
 // slice; the guest side is irrelevant to coverageOf, which walks Host.
 func binds(hosts ...string) map[string]policy.Mount {
@@ -137,6 +150,9 @@ func TestCoverageOfWalksBothDirections(t *testing.T) {
 	// load-bearing. Without it, dropping the "/" from HasPrefix(m.Host, host+"/")
 	// changed no test: every mount either matched both ways or neither.
 	p := &policy.Policy{Mounts: binds("/h/a/b", "/h/c", "/h/ab/c")}
+	// A KindData mount whose Host sits BENEATH /h/e — snug generates its own
+	// content here, so it must count toward neither PARTIAL nor FULL.
+	p.Mounts["/g/data"] = dataMount("/g/data", "/h/e/x")
 	for _, tc := range []struct {
 		path string
 		want coverage
@@ -152,6 +168,12 @@ func TestCoverageOfWalksBothDirections(t *testing.T) {
 		// The boundary that a naive HasPrefix gets wrong in both directions.
 		{"/h/ab", coveragePartial, 1, "/h/ab/c is beneath it; /h/a/b is not"},
 		{"/h/cc", coverageNone, 0, "/h/c must not match /h/cc"},
+		// issue #59's PARTIAL count, asked about a KindData mount rather than
+		// a bind: a generated file beneath the candidate must not turn it
+		// PARTIAL — "snug generates its own content here" is a statement
+		// about a bind, and a data mount is not one.
+		{"/h/e", coverageNone, 0, "a KindData mount is beneath it, not a bind — snug " +
+			"generates its own content there, so it must count as neither PARTIAL nor FULL"},
 	} {
 		got, n := coverageOf(p, tc.path)
 		if got != tc.want || n != tc.n {

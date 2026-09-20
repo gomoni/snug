@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // TestDryRunNamesTheEnginesHostTreeGrafts is issue #252's second half, and the
@@ -244,6 +246,85 @@ func mountSourceFor(t *testing.T, mountinfo, guest string) string {
 	}
 	t.Fatalf("the live engine has no mount at %s:\n%s", guest, mountinfo)
 	return ""
+}
+
+// TestARealRunWithAnEngineOutsideEveryGrantMakesFiveGrafts is
+// TestDryRunNamesTheEnginesHostTreeGrafts's other half, and the half
+// TestGoldenEngineViewPlannedPaths (internal/cli/plannedgraft_test.go)
+// deliberately does NOT cover: --dry-run runs no preflight, so it never
+// resolves $SNUG_PODMAN_ROOT and always names four grafts — that test
+// FATALS if its fixture policy ever carries a non-empty EngineToolchainRoot,
+// precisely so nobody absorbs a fifth row into that golden by accident. A
+// REAL run is different: when the engine binary sits outside every grant of
+// the sandbox, $SNUG_PODMAN_ROOT (G4's third source) names a toolchain root,
+// and the run mounts a FIFTH graft — policy.EngineToolchainGuest — so the
+// engine can see its own binary at all.
+//
+// This drives that real run rather than trusting a screen, using the exact
+// fixture containerengine_test.go's own engineWithHome helper builds for the
+// same reason: a t.TempDir() wrapper is outside every grant this sandbox
+// selects, so G4's first two disjuncts (an @sys-visible /usr/bin, a
+// payload-writable root) cannot satisfy it and only $SNUG_PODMAN_ROOT can.
+func TestARealRunWithAnEngineOutsideEveryGrantMakesFiveGrafts(t *testing.T) {
+	budget(t, 90*time.Second)
+	env, _ := containerEngineEnv(t)
+	requireRealEngine(t, env)
+	proj, _ := target(t)
+
+	wrapper, root := engineWithHome(t, t.TempDir())
+	env = append(append([]string{}, env...), "SNUG_PODMAN="+wrapper, "SNUG_PODMAN_ROOT="+root)
+
+	bg := startBgSandbox(t, env, []string{"-p", "@podman-socket"}, proj, `sleep 60`)
+	bg.ready(t)
+	bg.waitForState(t)
+	enginePID := findEnginePID(t, os.Getuid(), bg.pid())
+
+	mi, err := os.ReadFile(filepath.Join("/proc", itoa(enginePID), "mountinfo"))
+	if err != nil {
+		t.Fatalf("reading the engine's own mountinfo: %v", err)
+	}
+	dump := string(mi)
+
+	// The four grafts that are there either way, checked first as the
+	// CONTROL: without them, "five grafts" could mean "one graft, mistakenly
+	// counted five times" just as easily as the real claim.
+	for _, guest := range []string{
+		policy.EngineStoreGuest, policy.EngineRunrootGuest,
+		policy.EngineSockGuest, policy.EngineConfGuest,
+	} {
+		if _, ok := mountSourceForOK(dump, guest); !ok {
+			t.Fatalf("control: the live engine's own mountinfo has no mount at %s, so the "+
+				"toolchain assertion below cannot mean \"five instead of four\":\n%s", guest, dump)
+		}
+	}
+
+	// THE FIFTH GRAFT.
+	toolchainSrc, ok := mountSourceForOK(dump, policy.EngineToolchainGuest)
+	if !ok {
+		t.Fatalf("the live engine's own mountinfo has no mount at %s (issue: a real run with "+
+			"$SNUG_PODMAN_ROOT set must graft the toolchain root so the engine can see its own "+
+			"binary), while it does have the other four:\n%s", policy.EngineToolchainGuest, dump)
+	}
+	tail := keyTail(root)
+	if !strings.HasSuffix(toolchainSrc, tail) && toolchainSrc != root {
+		t.Errorf("the toolchain graft at %s is sourced from %q; this run's own $SNUG_PODMAN_ROOT "+
+			"is %q, and the live engine should be seeing THAT directory, not some other one",
+			policy.EngineToolchainGuest, toolchainSrc, root)
+	}
+}
+
+// mountSourceForOK is mountSourceFor without the t.Fatal — for a caller
+// checking PRESENCE across several guests before deciding which failure to
+// report, rather than aborting on the first miss.
+func mountSourceForOK(mountinfo, guest string) (string, bool) {
+	for _, line := range strings.Split(mountinfo, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || f[4] != guest {
+			continue
+		}
+		return f[3], true
+	}
+	return "", false
 }
 
 func itoa(n int) string {

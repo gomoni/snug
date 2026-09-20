@@ -167,6 +167,41 @@ func TestProfileShowRendersEveryProfileField(t *testing.T) {
 	}
 }
 
+// TestProfileShowCapabilityRowsCarryTheirConsequence fails if any capability
+// row ever goes back to rendering a bare label and value with nothing under
+// it. Every other check on this screen — loaded, present, under 80 columns —
+// passes for a row shaped exactly like that: `mtu` rendered as `mtu  1428`
+// and nothing else until this test existed, one line away from `podman` and
+// `git`, whose whole point is that "socket" and "extract" are words and the
+// sentence below each is the thing being agreed to.
+func TestProfileShowCapabilityRowsCarryTheirConsequence(t *testing.T) {
+	got := showProbe(t)
+
+	const indent = "                   " // capRows' own continuation indent
+	lines := strings.Split(got, "\n")
+	seen := map[string]bool{}
+	for i, line := range lines {
+		if strings.HasPrefix(line, indent) || !strings.HasPrefix(line, "  ") {
+			continue // a continuation row, or not a label row at all
+		}
+		label := strings.Fields(line)[0]
+		if !capabilityLabels[label] {
+			continue
+		}
+		seen[label] = true
+		if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], indent) {
+			t.Errorf("capability row %q has no continuation line under it — it names a value "+
+				"with no consequence:\n%q", label, line)
+		}
+	}
+	// Without this the loop could check zero rows — a fixture that renders no
+	// capability at all — and pass having asserted nothing.
+	if len(seen) != len(capabilityLabels) {
+		t.Fatalf("found %d of %d capability labels on the probe screen, want all of them checked:\n%s",
+			len(seen), len(capabilityLabels), got)
+	}
+}
+
 // The consequence sentences are wrapped by hand (capRows), so the wrap width is
 // a claim that can rot. A row running past 80 columns wraps wherever the
 // terminal decides, in the middle of a sentence a human is being asked to weigh.

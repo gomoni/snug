@@ -337,6 +337,95 @@ listen_names = ["web"]
 	}
 }
 
+// TestTheDoorSocketIsGoneWithTheRun is VERIFY §20d's teardown claim, read off
+// the real binary: after a door run exits, BOTH its own run directory under
+// $XDG_RUNTIME_DIR/snug/run-<pid> AND the door's unix socket are gone — a
+// socket still listening on the host after teardown is a leaked inbound hole
+// and rates with a policy leak, not with litter. The sibling test above
+// (TestTheHTTPDoorDescriptorReachesThePayload) already checks the socket
+// alone; nothing checks the run directory it lives under, and
+// runtimedir_test.go only ever sweeps a STALE directory a LATER, unrelated
+// run cleans up — never one a door run removes on its own way out.
+func TestTheDoorSocketIsGoneWithTheRun(t *testing.T) {
+	probe := buildDoorProbe(t) // before budget(t); see the sibling test's own note
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+	env := envProfileLayer(t, "door.toml", fmt.Sprintf(`[profile.doortest]
+description = "one http door, and the probe that answers on it"
+ro = ["%s:/doorprobe"]
+listen_names = ["web"]
+`, probe), os.Getenv("PATH"))
+	// A runtime directory THIS test controls, so the run-<pid> directory below
+	// is one only this run could have created — envProfileLayer's own baseEnv
+	// otherwise inherits the ambient $XDG_RUNTIME_DIR, which other processes on
+	// the same host may also be writing under.
+	runtimeDir := shortRuntimeDir(t)
+	env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, snugBin, "-p", "doortest", proj, "--", "/doorprobe")
+	cmd.Env = env
+	cmd.WaitDelay = waitDelay
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting snug: %v", err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	runDir := filepath.Join(runtimeDir, "snug", fmt.Sprintf("run-%d", cmd.Process.Pid))
+	// POSITIVE CONTROL 1: the run directory exists at all, under THIS test's
+	// own $XDG_RUNTIME_DIR — without it, "gone after teardown" could pass on a
+	// run that never created one here in the first place.
+	waitForLockFile(t, runDir)
+
+	found := awaitDoorProbe(t, proj)
+	sock := found["SOCKET"]
+	if sock == "" {
+		t.Fatal("the payload never reported its own socket path, so there is nothing for " +
+			"teardown to remove")
+	}
+	// POSITIVE CONTROL 2: the socket really exists and answers, before this
+	// test's own negative can mean anything.
+	c, err := net.DialTimeout("unix", sock, 10*time.Second)
+	if err != nil {
+		t.Fatalf("control: cannot connect to the door socket at %s before teardown: %v", sock, err)
+	}
+	if _, err := io.WriteString(c, "GET / HTTP/1.1\r\nHost: doortest\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("control: writing to the door socket: %v", err)
+	}
+	body, err := io.ReadAll(c)
+	c.Close()
+	if err != nil || !strings.Contains(string(body), "served-by-the-payload") {
+		t.Fatalf("control: the door did not answer before teardown (err=%v):\n%s", err, body)
+	}
+
+	// The payload (testdata/doorprobe) serves exactly one request and then
+	// exits, so waiting for the run to finish here is a CLEAN exit — the exact
+	// path VERIFY §20d's claim is about, not a kill this test forces.
+	killed = true
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("snug exited with an error after serving the door: %v:\n%s", err, out.String())
+	}
+
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("the door socket %s still exists after the run exited (stat err=%v) — a leaked "+
+			"inbound hole, which rates with a policy leak rather than with litter", sock, err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("the run directory %s still exists after the run exited (stat err=%v) — the "+
+			"socket lives under it, so a survivor here is the same leak either way", runDir, err)
+	}
+}
+
 // awaitDoorProbe waits for the probe's report FILE to say READY and returns what
 // it found, keyed by the part before the "=".
 //

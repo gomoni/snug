@@ -25,6 +25,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -189,6 +190,32 @@ func TestKnownOpenResidualPayloadWritesToASharedTerminal(t *testing.T) {
 			// the run holds a terminal, so no reason for --new-session
 			// applies. `ls` proves which shape this is from the inside.
 			script := `ls /dev/console >/dev/tty 2>/dev/tty; printf '%s' ` + osc52Marker + ` > /dev/tty`
+			// Where /dev/console exists, it is claimed to be the SAME device as
+			// the operator's own pty (bwrap keys its creation on snug's STDOUT
+			// being a terminal, so fd 1 is always the pty in exactly this
+			// shape) — not merely present. `ls -Ll`'s device column ("136, 6")
+			// is the same pair the measured example in the deleted VERIFY.md
+			// used; comparing it against fd 1 is comparing two READINGS of
+			// that rdev, never a name, so a bind that pointed at some other
+			// character device would be caught even though `ls /dev/console`
+			// alone would still say it exists.
+			//
+			// `exec 9>&1` duplicates the ORIGINAL fd 1 onto fd 9 before
+			// anything below can redirect it. This is load-bearing, not
+			// decoration: the probe that reads /proc/self/fd/N has to run as
+			// ITS OWN command with `> /dev/tty` on it (there is no other
+			// channel back to the operator), and that redirection changes
+			// fd 1 for the DURATION of that one command — measured directly,
+			// `stat`/`ls` on /proc/self/fd/1 from inside such a command reads
+			// /dev/tty's own alias device, not the pty snug actually handed
+			// the payload, which is a different rdev (5:0, the generic
+			// controlling-terminal alias) or 0 outright depending on the
+			// tool. fd 9 is never a redirection target, so it still names the
+			// original descriptor when read.
+			if tc.wantConsole {
+				script += `; exec 9>&1; printf 'RDEV[%s][%s]' ` +
+					`"$(ls -Ll /dev/console 2>&1)" "$(ls -Ll /proc/self/fd/9 2>&1)" > /dev/tty`
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, snugBin, proj, "--", "/bin/sh", "-c", script)
@@ -235,6 +262,50 @@ func TestKnownOpenResidualPayloadWritesToASharedTerminal(t *testing.T) {
 					"being a terminal, and --dry-run's TTY block says so per shape. "+
 					"Terminal saw: %q", gotConsole, tc.wantConsole, seen)
 			}
+
+			if tc.wantConsole {
+				_, rest, ok := bytes.Cut(seen, []byte("RDEV["))
+				if !ok {
+					t.Fatalf("the payload never printed its RDEV probe, so the device check "+
+						"below cannot run:\n%s", seen)
+				}
+				pair, _, ok := bytes.Cut(rest, []byte("]["))
+				if !ok {
+					t.Fatalf("could not parse the RDEV probe's first field:\n%s", seen)
+				}
+				_, rest2, _ := bytes.Cut(rest, []byte("]["))
+				fdLine, _, ok := bytes.Cut(rest2, []byte("]"))
+				if !ok {
+					t.Fatalf("could not parse the RDEV probe's second field:\n%s", seen)
+				}
+				consoleDev := deviceColumn(t, string(pair))
+				fdDev := deviceColumn(t, string(fdLine))
+				if consoleDev != fdDev {
+					t.Errorf("/dev/console's device (%s) is not the same device as fd 1 (%s) — "+
+						"/dev/console is supposed to be the operator's own pty, not merely a "+
+						"file that happens to exist at that name. `ls -Ll` lines: %q / %q",
+						consoleDev, fdDev, pair, fdLine)
+				}
+			}
 		})
 	}
+}
+
+// deviceRdevPattern matches ls -l's device column for a char/block special
+// file — "136, 6" in the transcript this test's own doc comment measured —
+// which is the one place in that output a bare "NUM, NUM" reliably appears.
+var deviceRdevPattern = regexp.MustCompile(`\b(\d+),\s*(\d+)\b`)
+
+// deviceColumn pulls the "major, minor" pair out of one line of `ls -Ll`
+// output. Fails the test rather than returning a zero value on no match: an
+// unparsed line is a defect in the probe, never evidence that the devices
+// disagree.
+func deviceColumn(t *testing.T, lsLine string) string {
+	t.Helper()
+	m := deviceRdevPattern.FindStringSubmatch(lsLine)
+	if m == nil {
+		t.Fatalf("no \"major, minor\" device column found in `ls -Ll` line %q — it did not "+
+			"read as a character special file at all", lsLine)
+	}
+	return m[1] + "," + m[2]
 }

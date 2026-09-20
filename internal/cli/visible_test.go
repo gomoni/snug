@@ -704,3 +704,189 @@ func TestExplainSaysWhatIsNotThere(t *testing.T) {
 		}
 	}
 }
+
+// explainInversionEnv extends the shared fixture host with exactly the paths
+// TestExplainInvertsEverySentenceWhenTheCapabilityIsGranted needs: the X11
+// socket directory, the system D-Bus socket, and a HOST symlink filed under an
+// unrelated guest name that leads to the real ~/.ssh.
+func explainInversionEnv() *envFakeEnv {
+	env := newEnvFakeEnv()
+	env.dirs["/tmp"] = true
+	env.dirs["/tmp/.X11-unix"] = true
+	env.dirs["/run/dbus/system_bus_socket"] = true
+	env.links["/home/u/keys"] = "/home/u/.ssh"
+	return env
+}
+
+// explainInversionRegistry adds one profile per capability --explain claims is
+// absent, so each can be granted on its own and the sentence naming it checked
+// for the inverted form.
+func explainInversionRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
+	t.Helper()
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[policy.ProfileName]*policy.Profile(reg)
+	m["gui-direct"] = &policy.Profile{Name: "gui-direct", RO: []string{"/tmp/.X11-unix"}}
+	// Names only the ANCESTOR of the socket, never the socket itself — a
+	// containment check that only matched the exact path would answer "not
+	// granted" for the widest grant there is.
+	m["gui-ancestor"] = &policy.Profile{Name: "gui-ancestor", RO: []string{"/tmp"}}
+	m["bus-direct"] = &policy.Profile{Name: "bus-direct", RO: []string{"/run/dbus/system_bus_socket"}}
+	// The GUEST name says nothing about ssh; the HOST side (resolved through
+	// explainInversionEnv's symlink) is the real ~/.ssh, mirroring the shape
+	// the redteam pass used.
+	m["ssh-via-symlink"] = &policy.Profile{Name: "ssh-via-symlink", RO: []string{"{home}/keys"}}
+	return m
+}
+
+// TestExplainInvertsEverySentenceWhenTheCapabilityIsGranted fails if any WHAT
+// IS NOT IN HERE sentence keeps its absence wording once the capability it
+// names is actually granted.
+//
+// The first version of this section printed four of its five sentences as
+// constants, and a red-team pass opened the host X server from inside a
+// sandbox whose screen still read "nothing inside can read your keystrokes".
+// The fifth (~/.ssh) was conditional and still wrong, because it matched only
+// the GUEST path: a profile granting an unrelated guest name that was, on the
+// host, a symlink to the real ~/.ssh read the private key under a screen
+// calling the keys "not in this filesystem at all". Every case below checks
+// the rendered text after the grant, not the predicate in isolation, so a fix
+// that satisfies coversPath but never reaches explainAbsent's call sites would
+// still fail here — and the ssh case grants through a host-side symlink under
+// a guest name that says nothing about ssh, and the X11 case is granted twice,
+// once by naming the socket directly and once by naming only its ancestor, so
+// a containment check that works in one direction, or on one side, only,
+// cannot pass unnoticed.
+func TestExplainInvertsEverySentenceWhenTheCapabilityIsGranted(t *testing.T) {
+	reg := explainInversionRegistry(t)
+	env := explainInversionEnv()
+
+	render := func(t *testing.T, extra policy.ProfileName) string {
+		t.Helper()
+		sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), extra)
+		p, err := policy.Resolve(reg, sel, envGoldenCtx(), env)
+		if err != nil {
+			t.Fatalf("Resolve(%v): %v", sel, err)
+		}
+		var buf bytes.Buffer
+		if err := explain(env, &buf, p, p.BwrapArgs(0, 0), config{}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	cases := []struct {
+		name    string
+		profile policy.ProfileName
+		absent  string   // the absence sentence that must have inverted, so must be GONE
+		present []string // what the inverted sentence must say instead
+	}{
+		{
+			name:    "x11 granted by naming the socket directly",
+			profile: "gui-direct",
+			absent:  "No X11 and no Wayland",
+			present: []string{"X11 or Wayland IS reachable", "    /tmp/.X11-unix\n", "sandbox escape"},
+		},
+		{
+			name:    "x11 granted by naming only an ancestor of the socket",
+			profile: "gui-ancestor",
+			absent:  "No X11 and no Wayland",
+			present: []string{"X11 or Wayland IS reachable", "    /tmp\n", "sandbox escape"},
+		},
+		{
+			name:    "D-Bus granted by naming the system bus socket",
+			profile: "bus-direct",
+			absent:  "No D-Bus",
+			present: []string{"A D-Bus socket IS granted", "    /run/dbus/system_bus_socket\n"},
+		},
+		{
+			name:    "ssh granted through a host-side symlink filed under an unrelated guest name",
+			profile: "ssh-via-symlink",
+			absent:  "No ~/.ssh",
+			present: []string{"~/.ssh IS in this filesystem", "    /home/u/keys\n", "read every private key"},
+		},
+	}
+
+	// The other four absence sentences, unchanged. A case that grants one
+	// capability is checked against all five, because a predicate that
+	// over-matches — flips a sentence it was never granted — is exactly as
+	// wrong as one that never fires at all.
+	allAbsences := []string{
+		"No X11 and no Wayland", "No D-Bus", "No host loopback", "No ~/.ssh", "No root, no setuid",
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render(t, tc.profile)
+			if strings.Contains(got, tc.absent) {
+				t.Errorf("%q still reads the ABSENT form after granting %s:\n%s", tc.absent, tc.profile, got)
+			}
+			for _, want := range tc.present {
+				if !strings.Contains(got, want) {
+					t.Errorf("granting %s did not make --explain say %q:\n%s", tc.profile, want, got)
+				}
+			}
+			for _, other := range allAbsences {
+				if other == tc.absent {
+					continue
+				}
+				if !strings.Contains(got, other) {
+					t.Errorf("granting %s also flipped unrelated sentence %q, which should still read the "+
+						"absent form:\n%s", tc.profile, other, got)
+				}
+			}
+		})
+	}
+}
+
+// TestHostExposingMountsExcludesGeneratedAndTmpfsMounts fails if
+// hostExposingMounts, and therefore every grantedXPaths predicate built on it,
+// ever starts treating a tmpfs ancestor or a snug-generated KindData file as
+// evidence that the HOST's directory at that path is reachable.
+//
+// Both were measured producing exactly this false positive on the plain
+// defaults: @home's tmpfs sits at $HOME, an ancestor of $HOME/.ssh, and an
+// identity pin's generated $HOME/.ssh/config is a descendant of it — coversPath
+// matches an ancestor grant in EITHER direction, so without the Kind filter
+// either mount alone would make grantedSSHPaths report the user's real ~/.ssh
+// as granted when nothing put it there. The positive control below (the last
+// case) swaps the same two mounts to KindBind and shows the same policy DOES
+// trip the predicate once a real bind is behind them, so the two negative
+// cases are not passing because nothing here could ever match.
+func TestHostExposingMountsExcludesGeneratedAndTmpfsMounts(t *testing.T) {
+	home := "/home/u"
+	base := func(kind policy.Kind) *policy.Policy {
+		return &policy.Policy{
+			Home: home,
+			Mounts: map[string]policy.Mount{
+				// The ancestor: covers home+"/.ssh" by containment alone.
+				home: {Guest: home, Kind: policy.KindTmpfs, Access: policy.AccessRW},
+				// The descendant: covers home+"/.ssh" the same way, from below.
+				home + "/.ssh/config": {Guest: home + "/.ssh/config", Kind: kind, Access: policy.AccessRO},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name        string
+		p           *policy.Policy
+		wantGranted bool
+	}{
+		{"tmpfs ancestor and generated descendant name nothing", base(policy.KindData), false},
+		// The control: the SAME two paths, but the descendant is now a real
+		// bind of a host directory — which is what grantedSSHPaths exists to
+		// catch, and proves the two cases above are not vacuous.
+		{"a real bind at the same path is caught", base(policy.KindBind), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := len(hostExposingMounts(tc.p)) > 0; got != tc.wantGranted {
+				t.Errorf("hostExposingMounts = %v, want len>0 = %v", hostExposingMounts(tc.p), tc.wantGranted)
+			}
+			if got := len(grantedSSHPaths(tc.p)) > 0; got != tc.wantGranted {
+				t.Errorf("grantedSSHPaths = %v, want len>0 = %v", grantedSSHPaths(tc.p), tc.wantGranted)
+			}
+		})
+	}
+}

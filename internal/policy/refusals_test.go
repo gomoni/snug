@@ -310,6 +310,45 @@ func TestJoinRefusesDifferingPermsAtSamePath(t *testing.T) {
 	}
 }
 
+// refusalKindConflictTmpfsOverSysBind: a user profile's `tmpfs` at the SAME
+// guest path @sys already binds is a KIND conflict — join's `old.Kind !=
+// m.Kind` arm — and not the "profiles may only ever grant" NESTING refusal
+// the mask-misc/hide-profiled fixtures above exercise. The two read very
+// differently (one names two node kinds and says "select one of the two",
+// the other says a profile hides what another already exposes), and until
+// this row existed nothing distinguished "same path, different kind" from
+// "one path strictly inside another's grant" in refusals.txt. `/usr` is the
+// path rather than `/etc/ssl`: this package's fake @sys binds `/usr` outright
+// (testRegistry), so no fixture edit is needed to reach an EXACT match —
+// real base.toml's own hide-ssl arm (`tmpfs = ["/etc/ssl"]` against @sys's
+// enumerated `/etc/ssl` entry) is the same shape at a different path.
+func refusalKindConflictTmpfsOverSysBind(t testing.TB) error {
+	reg := testRegistry()
+	reg["hide-ssl"] = &Profile{Name: "hide-ssl", Tmpfs: []string{"/usr"}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "hide-ssl"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func TestKindConflictTmpfsOverSysBindIsFatal(t *testing.T) {
+	err := refusalKindConflictTmpfsOverSysBind(t)
+	if err == nil {
+		t.Fatal("a tmpfs at the exact path @sys binds resolved cleanly; a profile displaced " +
+			"another profile's grant with an empty directory")
+	}
+	for _, want := range []string{"/usr", "bind", "tmpfs", "@sys", "hide-ssl"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	// CONTROL: this is the KIND arm, not the NESTING arm — a message from the
+	// wrong refusal would pass every Contains check above by accident (both
+	// name the profiles and the path) while asserting the wrong rule entirely.
+	if strings.Contains(err.Error(), "may only ever grant") {
+		t.Errorf("error %q reads as the NESTING refusal (hide-profiled's shape), not the "+
+			"same-path KIND conflict this fixture is built to hit", err)
+	}
+}
+
 // refusalGrantAtExactlyProcOrDev: RULE 4. A profile grant at exactly /proc or
 // /dev used to silently DISPLACE snug's own mount there — `ro = ["/proc"]`
 // handed the sandbox the HOST's procfs instead of one bound to its own pid
@@ -819,6 +858,91 @@ func refusalSetVsInherit(t testing.TB) error {
 	return err
 }
 
+// TestEnvConflictRefusalIsCommutative fails if a single-valued-slot conflict's
+// text ever comes to depend on the ORDER a selection is given in. envresolve.go
+// sorts every claim list before rendering one (sortClaims/claimantList) so the
+// message does not become a fold artifact — the defect §2.7's own comment
+// warns about, where the alphabetically-last agreeing profile got named and
+// the first one never did — but nothing exercised more than the ONE selection
+// order refusalTwoSets and refusalPrependOrder are written with, and
+// TestGoldenRefusals runs every one of its rows in exactly one fixed order too.
+// This permutes the conflicting profiles' own position in the selection and
+// requires err.Error() to be byte-IDENTICAL across every permutation —
+// commutativity, asked of a refusal rather than of a successful Resolve,
+// which is the shape TestResolveIsCommutative already covers.
+func TestEnvConflictRefusalIsCommutative(t *testing.T) {
+	cases := []struct {
+		name string
+		reg  map[ProfileName]*Profile
+		tail []ProfileName
+	}{
+		// refusalTwoSets's own fixture: three profiles, two of which agree.
+		{"two_sets_disagree", func() map[ProfileName]*Profile {
+			reg := testRegistry()
+			reg["seta"] = &Profile{Name: "seta", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+			reg["setb"] = &Profile{Name: "setb", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "emacs"}}}
+			reg["setc"] = &Profile{Name: "setc", Environ: EnvGrants{Set: map[string]string{"MY_EDITOR": "vim"}}}
+			return reg
+		}(), []ProfileName{"seta", "setb", "setc"}},
+		// refusalPrependOrder's own fixture: same two directories, opposite order.
+		{"prepend_order_disagreement", func() map[ProfileName]*Profile {
+			reg := testRegistry()
+			reg["ordera"] = &Profile{Name: "ordera", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
+				Prepend: map[string][]string{"PATH": {"/opt/a", "/opt/b"}}}}
+			reg["orderb"] = &Profile{Name: "orderb", RO: []string{"/opt/a", "/opt/b"}, Environ: EnvGrants{
+				Prepend: map[string][]string{"PATH": {"/opt/b", "/opt/a"}}}}
+			return reg
+		}(), []ProfileName{"ordera", "orderb"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := []ProfileName{"@sys", "@target-rw"}
+			_, wantErr := Resolve(tc.reg, append(append([]ProfileName{}, base...), tc.tail...), testCtx(), newFakeEnv())
+			if wantErr == nil {
+				t.Fatal("fixture resolved cleanly; it is no longer a conflict, so no permutation " +
+					"below can prove anything about one")
+			}
+			want := wantErr.Error()
+
+			perms := permuteProfileNames(tc.tail)
+			if len(perms) < 2 {
+				t.Fatalf("only one permutation of %v — the fixture cannot exercise order at all", tc.tail)
+			}
+			for _, perm := range perms {
+				selected := append(append([]ProfileName{}, base...), perm...)
+				_, err := Resolve(tc.reg, selected, testCtx(), newFakeEnv())
+				if err == nil {
+					t.Fatalf("order %v resolved cleanly; a permutation changed WHETHER this "+
+						"refuses, not merely how", perm)
+				}
+				if err.Error() != want {
+					t.Errorf("order %v changed the refusal text:\n--- got\n%s\n--- want\n%s",
+						perm, err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// permuteProfileNames returns every permutation of names, including the
+// input's own order.
+func permuteProfileNames(names []ProfileName) [][]ProfileName {
+	if len(names) <= 1 {
+		return [][]ProfileName{append([]ProfileName{}, names...)}
+	}
+	var out [][]ProfileName
+	for i := range names {
+		rest := make([]ProfileName, 0, len(names)-1)
+		rest = append(rest, names[:i]...)
+		rest = append(rest, names[i+1:]...)
+		for _, p := range permuteProfileNames(rest) {
+			out = append(out, append([]ProfileName{names[i]}, p...))
+		}
+	}
+	return out
+}
+
 // ── the environment: the grant-coupling rule (§2.5, §2.7 case 4) ─────────────
 //
 // Resolve-time rather than parse-time, because it needs {target} and {home}
@@ -963,6 +1087,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"identity_key_dangling_symlink_carries_a_forging_rune", refusalIdentityKeyDanglingSymlinkCarriesAForgingRune},
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
+		{"kind_conflict_tmpfs_over_sys_bind", refusalKindConflictTmpfsOverSysBind},
 		{"grant_at_root_tmpfs", func(t testing.TB) error { return refusalGrantAtRoot(t, "tmpfs") }},
 		{"grant_at_root_ro", func(t testing.TB) error { return refusalGrantAtRoot(t, "ro") }},
 		{"grant_at_exactly_proc", func(t testing.TB) error { return refusalGrantAtExactly(t, "/proc") }},
