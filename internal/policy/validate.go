@@ -441,12 +441,37 @@ func (p *Policy) rejectHostHomeBind() error {
 		// covers(), not a hand-rolled HasPrefix: the root is the case a
 		// hand-rolled one gets wrong, because m.Guest+"/" is "//" and no path
 		// starts with that. Found by the /-bind fixture in the test beside this.
+		//
+		// BOTH SIDES, and the host side is the half issue #220's rule missed
+		// for a milestone (issue #601). add() canonicalises the HOST path and
+		// leaves the GUEST as the profile wrote it, so one colon moves the
+		// guest out from under {home} while the grant stays exactly as large:
+		// `ro = ["/home/u:/mnt/h"]` bound the whole home and started without a
+		// word — measured, the payload read $HOME/.secret and exited 0. The
+		// direct spelling was refused on that host by the @home tmpfs
+		// collision, which is a different rule and one the translated spelling
+		// sidesteps for the same reason.
+		//
+		// Comparing the CANONICAL host against p.Home (itself EvalSymlinks of
+		// $HOME) also closes the ancestor spelling a symlinked home gives for
+		// free: `ro = ["/home"]` on a /home -> /var/home layout.
+		coveredBy := m.Guest
 		if !covers(m.Guest, p.Home) {
+			coveredBy = m.Host
+		}
+		if !covers(coveredBy, p.Home) {
 			continue
 		}
 		what := "your home directory"
-		if m.Guest != p.Home {
+		if coveredBy != p.Home {
 			what = "an ancestor of your home directory"
+		}
+		// Name BOTH ends when they differ. A message quoting only the guest
+		// would print "/mnt/h, which is your home directory", which reads as a
+		// bug in snug rather than as the grant the profile wrote.
+		where := VisibleText(m.Guest)
+		if m.Host != "" && m.Host != m.Guest {
+			where = fmt.Sprintf("the host's %s at %s", VisibleText(m.Host), VisibleText(m.Guest))
 		}
 		return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
 			"       That is the largest grant snug can emit: every credential under it is\n"+
@@ -458,7 +483,7 @@ func (p *Policy) rejectHostHomeBind() error {
 			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
 			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
 			"       the project one level down (~/src/myproject) or select without it.",
-			provenance(m), VisibleText(m.Guest), what, m.Access)
+			provenance(m), where, what, m.Access)
 	}
 	return nil
 }

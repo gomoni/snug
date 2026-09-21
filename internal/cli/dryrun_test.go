@@ -71,6 +71,24 @@ func loadTestRegistry(t *testing.T) profile.Registry {
 // criterion rather than an assertion after the fact: a candidate that lands
 // under one of snug's own mounts is removed and the next one tried, so a
 // checkout under /tmp degrades to $HOME instead of failing the suite.
+// runtimeOnlyDir is the fresh empty directory the "runtime-only" fixture binds
+// at /bin to satisfy Validate's OS-runtime requirement without coincidentally
+// covering an ssh_config path the way @sys would.
+//
+// It is a CHILD of the fixture home rather than the home itself, and that is
+// issue #601 rather than tidiness: rejectHostHomeBind reads the host side of a
+// bind as well as the guest, so `RO: {home + ":/bin"}` — which this fixture used
+// — is now refused as the largest grant snug can emit. The fixture never wanted
+// the home; it wanted an empty directory that is not /usr.
+func runtimeOnlyDir(t *testing.T, home string) string {
+	t.Helper()
+	d := filepath.Join(home, "runtime-only")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 func testTree(t *testing.T) (home, target string) {
 	t.Helper()
 
@@ -840,7 +858,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	// requires, deliberately bound at /bin from a fresh empty directory rather
 	// than from /usr, so it cannot coincidentally cover an ssh_config path the
 	// way selecting @sys would.
-	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{home + ":/bin"}}
+	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{runtimeOnlyDir(t, home) + ":/bin"}}
 	plain, err := policy.Resolve(reg, []policy.ProfileName{"@target-rw", "runtime-only"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -873,7 +891,7 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/usr/local/etc/ssh"}}
-	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{home + ":/bin"}}
+	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{runtimeOnlyDir(t, home) + ":/bin"}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostSSHConfigs: []string{guest}}
