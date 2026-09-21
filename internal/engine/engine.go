@@ -87,12 +87,14 @@
 //     LEFT IN PLACE deliberately: removing a teardown mechanism is a
 //     maintainer's call, not a side effect of correcting a comment, and this
 //     one costs nothing on the clean path (Stop tells it to stand down).
+//
 //   - reap.go's host-/proc sweep is UNAFFECTED and still correct. A nested pid
 //     namespace does not hide its members from an ancestor's procfs: every
 //     process in the engine's namespace is still enumerable under
 //     /proc/<host-pid>/ with a readable cmdline, which is all the sweep needs.
 //     Measured: one process named this run's socket path while the engine was
 //     live, zero after it died.
+//
 //   - FIXED by issue #167, not merely noted: the runroot's recorded
 //     conmon.pid and pidfile are pids in the ENGINE's pid namespace now, not
 //     the host's — measured on the same container in both eras: pre-C0 they
@@ -101,12 +103,16 @@
 //     stop` reading those numbers reads numbers meaningless in its own
 //     numbering, so stopLocked's step 1 and reaperScript's identical
 //     invocation are DELETED rather than translated — see stopLocked's own
-//     comment on step 1 for why translating them was rejected. The ORDERING
-//     argument this used to rest on ("stop containers before anything
-//     touches the engine, for a graceful stop instead of the kernel's
-//     SIGKILL") no longer has a first step to order: dropping this run's
-//     keepalive (step 2) is what now starts teardown, and the namespace
-//     collapse is the only mechanism that stops a container at all.
+//     comment on step 1 for why translating them was rejected. Teardown here
+//     starts with dropping this run's keepalive, and the namespace collapse
+//     is what fells a container that is still running when it does.
+//
+//     The graceful stop that ordering argument was originally about is not
+//     in this package at all: it goes through the engine's OWN socket, where
+//     the recorded pids are numbered in the namespace doing the killing, and
+//     it runs in the STAGE — the process whose exit Pdeathsigs the engine —
+//     between the payload's reap and the exit report (internal/runstop,
+//     internal/stage/serve.go, issue #174).
 package engine
 
 import (
@@ -122,6 +128,7 @@ import (
 	"time"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/runstop"
 	"github.com/gomoni/snug/internal/stage"
 	"github.com/gomoni/snug/internal/vdir"
 )
@@ -149,19 +156,6 @@ const quietBudget = 2 * time.Second
 // itself. Anything still here has ignored two SIGKILLs — the cascade's and
 // ours — and is named to the user rather than waited for.
 const killBudget = 3 * time.Second
-
-// RunLabelKey is the container label snug stamps every container it creates
-// with, so the PROXY can tell this run's containers from an earlier run's.
-//
-// Its reader is internal/dockerproxy/ownership.go, which refuses a removal
-// naming a container that carries anyone else's label (issue #339). NOT
-// teardown: teardown is pid-namespace collapse and filters on nothing. The
-// Engine literal in New() states the same thing at length.
-//
-// A dotted, namespaced key rather than a bare word: labels are a flat namespace
-// shared with whatever the image and the user set, and `run` alone would be a
-// plausible thing for someone else to mean.
-const RunLabelKey = "snug.run"
 
 type Engine struct {
 	// dirs holds this run's own directory as a verified handle plus its
@@ -462,7 +456,7 @@ func New(pol *policy.Policy) (*Engine, error) {
 		// (paths.go), so they share the store while it is being written, and
 		// the pid in this label is the only thing that tells one live run's
 		// containers from its peer's.
-		runLabel: fmt.Sprintf("%s=%d", RunLabelKey, pid),
+		runLabel: runstop.For(pid),
 
 		store:   planned.Store,
 		dirs:    dirs,
@@ -933,6 +927,10 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 		Grafts:          engineGrafts(pol),
 		RunSizeBytes:    runSize,
 		VarTmpSizeBytes: varTmpSize,
+		// The stage stops this run's containers on a clean exit and needs the
+		// label to scope that to THIS run (issue #174). It travels from here
+		// so the label keeps one author: this Engine stamped it at New.
+		RunLabel: e.runLabel,
 	}, nil
 }
 
@@ -1818,12 +1816,13 @@ func (e *Engine) stopLocked() {
 	//    low pids to the invoking uid (checked on this development host:
 	//    the specific pids read here did not exist, so nothing was
 	//    signalled — that is this host's absence of the risk, not a general
-	//    proof it cannot happen). What is knowingly given up is a
-	//    best-effort graceful SIGTERM on the clean path, for workloads that
-	//    handle one — restorable later, if wanted, by issuing a stop
-	//    through the engine's OWN socket, where the recorded pids are
-	//    numbered in the namespace doing the killing, never by reading a
-	//    host-side CLI against host-numbered pids again.
+	//    proof it cannot happen). The best-effort graceful SIGTERM this
+	//    deletion gave up on the clean path is back, and by the route named
+	//    here as the acceptable one: a stop through the engine's OWN socket,
+	//    where the recorded pids are numbered in the namespace doing the
+	//    killing. It is not issued from this package or this process —
+	//    internal/runstop, called by the stage before it reports the
+	//    payload's exit (issue #174).
 
 	// 2. Drop the keepalive, if payload exit did not already (Detach). From
 	//    here the engine is on its own idle timeout even if it somehow

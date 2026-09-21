@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/gomoni/snug/internal/runstop"
 	"strings"
 	"testing"
 
@@ -42,9 +43,9 @@ func TestEngineRunLabelIsNeverEmpty(t *testing.T) {
 		t.Fatalf("RunLabel() = %q, which is not key=value; the proxy cannot split it into "+
 			"a label name and the value it compares against", got)
 	}
-	if key != RunLabelKey {
+	if key != runstop.Key {
 		t.Errorf("RunLabel() key = %q, want %q — the proxy looks the container's label up "+
-			"under the key it finds here, so the two cannot disagree", key, RunLabelKey)
+			"under the key it finds here, so the two cannot disagree", key, runstop.Key)
 	}
 	if strings.TrimSpace(value) == "" {
 		t.Errorf("RunLabel() = %q has an empty value; every container would carry a label "+

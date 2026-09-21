@@ -123,6 +123,17 @@ type request struct {
 	// rather than defaulting to half of host RAM (issue #281).
 	EngineRunSizeBytes    uint64 `json:"engine_run_size_bytes,omitempty"`
 	EngineVarTmpSizeBytes uint64 `json:"engine_var_tmp_size_bytes,omitempty"`
+	// EngineRunLabel is the `key=value` this run's containers are stamped
+	// with (runstop.For, from P0's own pid), and P1 needs it because P1 is
+	// where the graceful stop runs (issue #174): the payload has been reaped,
+	// the engine is still alive because P1 has not exited yet, and this label
+	// is the only thing separating this run's containers from a peer run's in
+	// a store they share.
+	//
+	// P1 does not derive it. It could compute `snug.run=<getppid()>`, and that
+	// is exactly the second author invariant 6 refuses — spelled, on top of
+	// that, in terms of a value that stops being P0 the moment P0 dies.
+	EngineRunLabel string `json:"engine_run_label,omitempty"`
 }
 
 // event is a P1 -> P0 message. Six shapes: "needmap", sent at most once,
@@ -187,6 +198,28 @@ type event struct {
 	// every one of those because P0 does the same thing with all of them:
 	// refuses the run.
 	Err string `json:"err,omitempty"`
+
+	// "exited" only, and only on a run that had an engine: what P1's graceful
+	// stop did (issue #174). SCALARS PLUS ONE CAPPED SENTENCE, on purpose.
+	// encode refuses a message over maxMessage, and a refused "exited" is a P0
+	// blocked forever on the one control-socket read with no deadline
+	// (stage.go's Wait) — so this report must not be able to grow with what a
+	// payload named its containers. StopNote is snug's own sentence, truncated
+	// in P1 by runstop, never an engine string interpolated whole.
+	//
+	// It travels here rather than on P1's stderr because P1's stderr IS the
+	// payload's stderr (exec.go hands the run's own stderr to stage.Config),
+	// so a line printed there is unsanitised, ungated by -v and
+	// indistinguishable from payload output. P0 renders these through the
+	// audit sink it already had, which is both.
+	//
+	// StopRan is what makes the ordering claim checkable from the side that
+	// did not write it: on a run with an engine, an "exited" without it means
+	// the stop did not run before the exit was reported.
+	StopRan     bool   `json:"stop_ran,omitempty"`
+	StopAsked   int    `json:"stop_asked,omitempty"`
+	StopStopped int    `json:"stop_stopped,omitempty"`
+	StopNote    string `json:"stop_note,omitempty"`
 }
 
 // encode marshals v and refuses anything too large for one SEQPACKET write to

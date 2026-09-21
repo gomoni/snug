@@ -1199,6 +1199,27 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         cgroups disabled, and only crun implements that mode: the run REFUSES\n")
 	fmt.Fprintf(out, "         before starting the engine if crun is absent, rather than serving a\n")
 	fmt.Fprintf(out, "         container API that fails at 'create'.\n")
+	// PER PATH, NEVER AS A CAPABILITY (issue #174, invariant 5). A line saying
+	// "graceful container shutdown: on" would be a guarantee snug keeps on one
+	// of three exits and cannot keep on the other two: on a catchable signal
+	// confirmTeardown pidfd-SIGKILLs the stage before it reaches the stop, and
+	// on a SIGKILL no Go code runs anywhere. The measurement
+	// this line is worth stating for is that the graceful case is real —
+	// 134ms for a container whose pid 1 handles the signal — and the reason the
+	// other two cannot be fixed is the pid namespace collapsing, which is the
+	// same fact that makes the containment strong. WHO asks is part of the
+	// claim rather than detail: the same sentence with "snug asks" was shipped
+	// while the asker was P0, and P0 measured `connect: connection refused`
+	// 4/4 because the stage had already exited and taken the engine with it.
+	fmt.Fprintf(out, "         When the PAYLOAD exits normally, the stage \u2014 the process that\n")
+	fmt.Fprintf(out, "         reaped it, and whose own exit is what collapses the engine \u2014 asks\n")
+	fmt.Fprintf(out, "         the engine to stop this run's containers BEFORE it reports the\n")
+	fmt.Fprintf(out, "         exit, bounded at 1s: a container that handles its stop signal gets\n")
+	fmt.Fprintf(out, "         to flush, and snug's own exit waits for that second. On any other\n")
+	fmt.Fprintf(out, "         exit it does not \u2014 snug killed by a signal SIGKILLs the stage\n")
+	fmt.Fprintf(out, "         before it can ask, and snug SIGKILLed runs no code at all. In both\n")
+	fmt.Fprintf(out, "         of those the kernel fells every container with the engine's pid\n")
+	fmt.Fprintf(out, "         namespace, unsignalled.\n")
 	describeImageProvenance(out, c)
 }
 

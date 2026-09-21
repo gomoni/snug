@@ -44,6 +44,15 @@ CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
          cgroups disabled, and only crun implements that mode: the run REFUSES
          before starting the engine if crun is absent, rather than serving a
          container API that fails at 'create'.
+         When the PAYLOAD exits normally, the stage — the process that
+         reaped it, and whose own exit is what collapses the engine — asks
+         the engine to stop this run's containers BEFORE it reports the
+         exit, bounded at 1s: a container that handles its stop signal gets
+         to flush, and snug's own exit waits for that second. On any other
+         exit it does not — snug killed by a signal SIGKILLs the stage
+         before it can ask, and snug SIGKILLed runs no code at all. In both
+         of those the kernel fells every container with the engine's pid
+         namespace, unsignalled.
 IMAGES   provenance is snug's, not this host's (issue #137)
          search      docker.io and nothing else — no mirror, no rewrite, no
                      insecure registry. A generated registries.conf, pointed

@@ -126,7 +126,7 @@ func TestTheStageReadsNoRequestAfterStart(t *testing.T) {
 	}
 	done := make(chan waitResult, 1)
 	go func() {
-		ws, err := st.Wait()
+		ws, _, err := st.Wait()
 		if err != nil {
 			done <- waitResult{err: err}
 			return

@@ -902,9 +902,10 @@ func run(cfg config) int {
 		// stage and the engine with it. Verification belongs where the
 		// engine is expected DEAD; the socket being reachable here is no
 		// longer wanted by anything.
-		EngineSpec:    ctr.spec,
-		OnEngineReady: ctr.onEngineReady,
-		OnPayloadExit: ctr.onPayloadExit,
+		EngineSpec:     ctr.spec,
+		OnEngineReady:  ctr.onEngineReady,
+		OnPayloadExit:  ctr.onPayloadExit,
+		OnGracefulStop: ctr.onGracefulStop,
 		// The container reaper is deliberately NOT swept up by the
 		// signalled-teardown guard: it is the one helper meant to outlive
 		// snug (issue #113).

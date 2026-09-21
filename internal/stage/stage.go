@@ -444,6 +444,7 @@ func (s *Stage) StartSandbox(bwrapPath string, argv []string, spec *EngineSpec, 
 		req.EngineArgv = spec.Argv
 		req.EngineEnv = spec.Env
 		req.EngineSock = spec.Sock
+		req.EngineRunLabel = spec.RunLabel
 		req.EngineGrafts = spec.Grafts
 		req.EngineRunSizeBytes = spec.RunSizeBytes
 		req.EngineVarTmpSizeBytes = spec.VarTmpSizeBytes
@@ -527,6 +528,28 @@ type EngineSpec struct {
 	// EnterEngine if zero or unparseable on the wire.
 	RunSizeBytes    uint64
 	VarTmpSizeBytes uint64
+
+	// RunLabel is the `key=value` every container this run creates is stamped
+	// with (internal/engine's own runLabel, which is runstop.For(P0's pid)).
+	// P1 needs it because P1 is where the graceful stop runs — see request's
+	// own EngineRunLabel field and internal/runstop's package comment for why
+	// the stop cannot run in P0.
+	RunLabel string
+}
+
+// StopReport is what P1's graceful stop did, carried back on the "exited"
+// event. It is scalars and one already-truncated sentence: see proto.go's
+// fields for why nothing here may grow with what a payload named its
+// containers.
+//
+// Ran is what makes the ordering checkable by the side that did not write it:
+// on a run with an engine, an exit reported without it is an exit that
+// overtook the stop.
+type StopReport struct {
+	Ran     bool
+	Asked   int
+	Stopped int
+	Note    string
 }
 
 // Wait blocks until the payload exits and returns its raw wait status, so
@@ -563,10 +586,10 @@ type EngineSpec struct {
 // same-uid host process to cause, which is out of the threat model by the same
 // rule as everything same-uid, and the operator's own SIGINT still ends the
 // run — P1's Pdeathsig then collapses the tree.
-func (s *Stage) Wait() (syscall.WaitStatus, error) {
+func (s *Stage) Wait() (syscall.WaitStatus, StopReport, error) {
 	ev, err := recvEvent(s.control)
 	if err != nil {
-		return 0, fmt.Errorf("stage: the stage (pid %d) closed the control channel without "+
+		return 0, StopReport{}, fmt.Errorf("stage: the stage (pid %d) closed the control channel without "+
 			"reporting the payload's exit: %w\n"+
 			"  The payload's own exit status is lost with it — the stage is what reaps bwrap.\n"+
 			"  Check dmesg for an OOM kill of pid %d, and `snug --dry-run` for the topology "+
@@ -574,12 +597,18 @@ func (s *Stage) Wait() (syscall.WaitStatus, error) {
 	}
 	s.waited = true
 	if ev.Op != "exited" {
-		return 0, fmt.Errorf("stage: expected an \"exited\" event, got %q", ev.Op)
+		return 0, StopReport{}, fmt.Errorf("stage: expected an \"exited\" event, got %q", ev.Op)
 	}
 	if ev.Err != "" {
-		return 0, fmt.Errorf("stage: %s", ev.Err)
+		return 0, StopReport{}, fmt.Errorf("stage: %s", ev.Err)
 	}
-	return syscall.WaitStatus(ev.WaitStatus), nil
+	rep := StopReport{
+		Ran:     ev.StopRan,
+		Asked:   ev.StopAsked,
+		Stopped: ev.StopStopped,
+		Note:    ev.StopNote,
+	}
+	return syscall.WaitStatus(ev.WaitStatus), rep, nil
 }
 
 // Close drops the lifeline: P1 reads EOF and tears down, whatever it was

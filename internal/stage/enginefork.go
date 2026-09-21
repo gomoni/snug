@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gomoni/snug/internal/fdseal"
+	"github.com/gomoni/snug/internal/runstop"
 )
 
 // engineSocketWaitTimeout bounds how long P1 waits for podman's own socket to
@@ -72,9 +73,57 @@ func buildEnterEngineArgv(req request) []string {
 // background goroutine so it never sits as a zombie under P1 for the
 // (possibly long) remainder of this run; teardown's own verification is by
 // socket path (internal/engine/reap.go), not by this reap.
-func startEngine(netnsN *os.File, initPID int, req request) error {
+func startEngine(netnsN *os.File, initPID int, req request, p0 int) error {
 	if req.EngineSock == "" {
 		return fmt.Errorf("__stage-serve: malformed start request: an engine with no socket path to wait for")
+	}
+	// The label the graceful stop will scope itself by (issue #174), refused
+	// HERE rather than at the reap. A refusal at the reap would be useless:
+	// the run has already happened and its containers were never stoppable.
+	// Invariant 5 wants a run that cannot keep a capability to say so before
+	// it starts, not to lose it quietly at the end.
+	//
+	// Split's own comment carries the sharp half — an empty VALUE matches
+	// every container carrying no such label at all, because the answer-side
+	// check is a Go map lookup and a missing key yields "".
+	key, value, err := runstop.Split(req.EngineRunLabel)
+	if err != nil {
+		return fmt.Errorf("__stage-serve: malformed start request: %w", err)
+	}
+	// AND IT MUST BE THIS RUN'S LABEL, which is the same shape of check as
+	// the one runOneSandbox applies to req.Bwrap and for the same stated
+	// reason: P0 and P1 are different trust positions, and the door should not
+	// be wider than the room. After it, a P0 that is confused or taken over
+	// can still decide WHETHER this stage stops its own containers; it cannot
+	// point the stop at a peer sandbox's.
+	//
+	// BE HONEST ABOUT THE SIZE OF IT. req.Bwrap's check removes the step from
+	// that premise to "P1 execve's an arbitrary program as root-in-U". This
+	// one removes the step to "P1 stops a container belonging to another run
+	// of the same uid" — a same-uid denial of service against a store that uid
+	// already owns, with no namespace crossed, and a P0 in that state has
+	// worse options one field over. It is cheap because the stage already
+	// knows both halves: runstop.Key is the only key snug stamps, and p0 was
+	// read from getppid() at the top of MainServe.
+	if key != runstop.Key || value != strconv.Itoa(p0) {
+		return fmt.Errorf("__stage-serve: refusing a \"start\" whose run label is %q: this stage "+
+			"stops the containers of the run that forked it, which is %s=%d — a label naming "+
+			"anything else is a caller bug or a confused client, and acting on it would let one "+
+			"run reach into another's containers",
+			req.EngineRunLabel, runstop.Key, p0)
+	}
+	// An engine implies a GATED run, structurally: internal/sandbox/exec.go
+	// creates the --block-fd/--sync-fd pipe only when an EngineSpec is
+	// present, and passes release != nil as gated. That implication is what
+	// makes "the abort paths need no graceful stop" true — every abort is
+	// reached before "enginestarted", so P0 never wrote the release byte, so
+	// bwrap's init is still parked and no payload has run, so no container
+	// this run created can exist. Checked rather than assumed, because the
+	// whole of issue #174 is what happens when an ordering argument is left
+	// as prose.
+	if !req.Gated {
+		return fmt.Errorf("__stage-serve: malformed start request: an engine on an ungated run, " +
+			"which would leave this stage's abort paths with containers they cannot account for")
 	}
 	if len(req.EngineGrafts) == 0 {
 		// Fatal, not a silent fallback (invariant 5). Since Tier C the

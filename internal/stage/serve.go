@@ -16,6 +16,7 @@ import (
 	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/initwalk"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/runstop"
 )
 
 // MainServe is __stage-serve: P1 after the move — same pid, same mount/user/cgroup
@@ -43,6 +44,16 @@ import (
 //     request and no way back, and the loop is not re-entered once a sandbox
 //     exists.
 func MainServe() error {
+	// P0's pid, read HERE and nowhere later: P1 is P0's direct child across
+	// every exec in this chain, so os.Getppid() is P0 — until P0 dies, after
+	// which this process is reparented and the same call answers something
+	// else. Read once, at the top, before anything can have happened.
+	//
+	// Its one consumer is startEngine's run-label check (issue #174): the
+	// label P0 sends must be this run's, and this run is the one that forked
+	// this stage.
+	p0 := os.Getppid()
+
 	requireFD(fdControl, "control")
 	requireFD(fdLife, "lifeline")
 	// bwrap's --info-fd read end (issue #125): P1 reads it, P0 no longer holds
@@ -206,7 +217,7 @@ func MainServe() error {
 				_ = sendEvent(control, event{Op: "enginestarted", Err: err.Error()})
 				return err
 			}
-			return runOneSandbox(control, netnsN, infoR, req)
+			return runOneSandbox(control, netnsN, infoR, req, p0)
 		default:
 			return fmt.Errorf("__stage-serve: unknown control op %q", req.Op)
 		}
@@ -341,7 +352,7 @@ const bwrapInfoTimeout = 10 * time.Second
 // Every failure in 1-4 kills bwrap AND the init and reports the error, so the
 // payload never existed rather than existing briefly on a run that was already
 // doomed.
-func runOneSandbox(control, netnsN, infoR *os.File, req request) error {
+func runOneSandbox(control, netnsN, infoR *os.File, req request, p0 int) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -618,7 +629,7 @@ awaitInfo:
 		if err := waitForSandboxMounts(info.InitPID, sandboxMountsTimeout); err != nil {
 			return abort(err)
 		}
-		if err := startEngine(netnsN, info.InitPID, req); err != nil {
+		if err := startEngine(netnsN, info.InitPID, req, p0); err != nil {
 			return abort(err)
 		}
 	}
@@ -661,7 +672,36 @@ awaitInfo:
 			ws = s
 		}
 	}
+	// THE GRACEFUL STOP (issue #174), and this is the only place it can be.
+	//
+	// It runs HERE — after the reap, after disarm, and strictly BEFORE the
+	// "exited" event leaves — because P0's Stage.Wait returns on the ARRIVAL
+	// of those bytes, and what P0 does next is return from runStaged and drop
+	// the lifeline, which exits this process and Pdeathsigs the engine. The
+	// previous shape put the stop in P0 at that moment and MEASURED
+	// `connect: connection refused` 4/4 on a clean exit: P1 had already gone.
+	// Here the engine is alive because THIS process, whose exit kills it, is
+	// the one asking. Nothing waits for anything and no ack is added; what
+	// changes is who holds the window.
+	//
+	// After parked.disarm() on purpose. disarm's own comment bounds a
+	// pid-reuse window that opens at the reap — until it runs, the record
+	// still holds a bwrap pid that now names nothing, and parked.kill()'s
+	// initFD < 0 fallback compares against it. Nothing here needs the parked
+	// record, so the slow step goes after the record is dropped.
+	//
+	// A signal to snug during the budget is not a loss: confirmTeardown
+	// pidfd-SIGKILLs this process, the in-flight request dies with the
+	// socket, and the pid-namespace collapse fells every container — which is
+	// the guarantee that was always underneath this.
 	ev := event{Op: "exited", WaitStatus: uint32(ws)}
+	if req.EnginePodman != "" {
+		rep := runstop.Stop(req.EngineSock, req.EngineRunLabel)
+		ev.StopRan = rep.Ran
+		ev.StopAsked = rep.Asked
+		ev.StopStopped = rep.Stopped
+		ev.StopNote = rep.Note
+	}
 	if waitErr != nil {
 		if _, ok := waitErr.(*exec.ExitError); !ok {
 			// A genuine failure to reap (not just a non-zero exit), which

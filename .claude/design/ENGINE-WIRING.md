@@ -434,18 +434,26 @@ host-side invocation reads numbers meaningless in its own numbering — whether
 the engine is still alive or already collapsed. Translating them through the
 engine's namespace was rejected: it is new machinery to make a mechanism land
 on namespace-local numbers, for an outcome the kernel already delivers faster.
-The cost, stated: no best-effort graceful `SIGTERM` for a workload that handles
-one. Restorable through the engine's OWN socket if wanted, never by reading
-host-numbered pids. `internal/engine`'s package comment and `stopLocked` carry
-the argument.
+`internal/engine`'s package comment and `stopLocked` carry the argument.
+
+**The graceful `SIGTERM` a workload can handle comes through the engine's OWN
+socket, and it runs in the STAGE.** `internal/runstop` lists this run's running
+containers by label and stops each with `t=1`, concurrently, inside one
+one-second budget; `internal/stage`'s `runOneSandbox` calls it after it has
+reaped the payload and before it sends `"exited"`. It cannot run in P0: `Stage.Wait`
+returns when those bytes ARRIVE, and P1 is already exiting as it sends them,
+Pdeathsig'ing the engine — a stop issued from P0 measured `connect: connection
+refused` 4/4 on a clean exit. In the stage the engine is alive because the
+process that kills it is the one doing the asking. The pids never leave the
+engine's own namespace, which is the rule this section is about.
 
 Two mechanisms:
 
-- **Clean path:** `sandbox.Options.OnPayloadExit` (§12 item 1) fires after
-  `st.Wait()` and before the deferred `st.Close()`, and calls `Engine.Stop`:
-  drop the keepalive, verify by the socket-path sweep, tear down the reaper.
-  Bookkeeping only — nothing in it depends on the engine still being
-  reachable.
+- **Clean path:** the stage's own stop above, and then
+  `sandbox.Options.OnPayloadExit` (§12 item 1), which fires after `st.Wait()`
+  and before the deferred `st.Close()` and calls `Engine.Detach`: drop the
+  keepalive. Bookkeeping only — nothing in it depends on the engine still
+  being reachable, which is what the measurement above proved it is not.
 - **SIGKILL path:** the pipe-triggered reaper (`internal/engine/reaper.go`)
   stays: P0 holds a pipe; on EOF a detached `/bin/sh` removes the run
   directory (containers.conf, registries.conf, auth.json, resolv.conf, the

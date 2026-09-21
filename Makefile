@@ -107,6 +107,20 @@ gate:
 	# directory, which is why the list exists; adding to the list is part of
 	# adding a probe.
 	go vet ./test/integration/testdata/ptraceregainprobe
+	# testdata/termtrapprobe (issue #174) is the twelfth: a `FROM scratch`
+	# entrypoint that installs a SIGTERM handler and drops a flag file when it
+	# runs, telling apart "the container exited" from "the container received
+	# a graceful stop" — a distinction holder's own no-handler design cannot
+	# make. Built lazily by containerengine_test.go's termtrapprobeBin. Same
+	# fix, same reasoning as the eleven above.
+	go vet ./test/integration/testdata/termtrapprobe
+	# testdata/ignoresterm (issue #174, red-team F5) is the thirteenth, and it
+	# exists because holder does NOT ignore SIGTERM: the Go runtime installs a
+	# handler for every signal at startup and its own table dies on SIGTERM,
+	# so "a Go binary with no signal code" is not the pathological case the
+	# budget is sized for. This one calls signal.Ignore explicitly. Same fix,
+	# same reasoning as the twelve above.
+	go vet ./test/integration/testdata/ignoresterm
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
