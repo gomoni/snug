@@ -455,12 +455,19 @@ func (p *Policy) rejectHostHomeBind() error {
 		// Comparing the CANONICAL host against p.Home (itself EvalSymlinks of
 		// $HOME) also closes the ancestor spelling a symlinked home gives for
 		// free: `ro = ["/home"]` on a /home -> /var/home layout.
-		coveredBy := m.Guest
-		if !covers(m.Guest, p.Home) {
-			coveredBy = m.Host
-		}
-		if !covers(coveredBy, p.Home) {
+		// hostCovers is spelled out rather than inlined because covers("", x)
+		// is TRUE — the empty outer trims to "" and every absolute path starts
+		// with the "/" that leaves. add() always sets Host for a KindBind, so
+		// this is unreachable from a profile; a hand-built Policy in a test is
+		// what would otherwise get a refusal naming an empty path.
+		hostCovers := m.Host != "" && covers(m.Host, p.Home)
+		guestCovers := covers(m.Guest, p.Home)
+		if !guestCovers && !hostCovers {
 			continue
+		}
+		coveredBy := m.Guest
+		if !guestCovers {
+			coveredBy = m.Host
 		}
 		what := "your home directory"
 		if coveredBy != p.Home {
@@ -472,6 +479,27 @@ func (p *Policy) rejectHostHomeBind() error {
 		where := VisibleText(m.Guest)
 		if m.Host != "" && m.Host != m.Guest {
 			where = fmt.Sprintf("the host's %s at %s", VisibleText(m.Host), VisibleText(m.Guest))
+		}
+		// TWO BODIES, because only one of the two shapes is the credential
+		// disaster below and a refusal that says otherwise is a false claim on
+		// the one screen a human reads to decide whether to trust snug.
+		//
+		// `ro = ["/etc:{home}"]` covers the home on its GUEST side and is
+		// refused — correctly, {home} is not a profile's to claim — but it
+		// exposes nothing of the host's home, so "every credential under it is
+		// readable" is simply untrue of it. The round that graded issue #601
+		// found the sentence already wrong for this input before the change and
+		// newly explicit about it after, because `where` now names /etc out
+		// loud.
+		if !hostCovers {
+			return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
+				"       Nothing of your home is handed to the sandbox by this one — its source\n"+
+				"       is elsewhere — but {home} inside is snug's own: @home puts an ephemeral\n"+
+				"       tmpfs there, and the generated .gitconfig, .ssh/config and .claude files\n"+
+				"       are written into it. A bind at that path takes it from them.\n"+
+				"       Pick a guest path that is not your home or above it, e.g.\n"+
+				"       ro = [\"%s:/mnt/...\"] in your own profile.",
+				provenance(m), where, what, m.Access, VisibleText(m.Host))
 		}
 		return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
 			"       That is the largest grant snug can emit: every credential under it is\n"+

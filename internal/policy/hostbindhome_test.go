@@ -142,6 +142,50 @@ func TestTheHomeBindRuleIsNarrow(t *testing.T) {
 	}
 }
 
+// TestABindAtTheHomeDoesNotClaimTheHomeWasHandedOver is the OTHER shape this
+// rule refuses, and the two are not the same hazard.
+//
+// `ro = ["/etc:{home}"]` covers the home on its GUEST side. Refusing it is
+// right — {home} inside is snug's own, and @home's ephemeral tmpfs and the
+// generated .gitconfig, .ssh/config and .claude files live there — but it hands
+// the sandbox nothing of the HOST's home, so the credential paragraph the other
+// arm prints is simply untrue of it. The round that graded issue #601 found the
+// sentence already wrong for this input BEFORE the change and newly explicit
+// about it after, because the message now names /etc out loud.
+//
+// It is asserted here rather than as a refusals.txt row because Resolve cannot
+// reach it: @sys pulls in @home, whose tmpfs at {home} makes the bind a KIND
+// CONFLICT that is refused first ("conflict at /home/u: tmpfs (from @home) vs
+// bind"). Measured, not assumed — a golden through Resolve pinned that other
+// message instead.
+func TestABindAtTheHomeDoesNotClaimTheHomeWasHandedOver(t *testing.T) {
+	p := translatedHomePolicy(t, "/etc", "/home/u", KindBind)
+	err := p.rejectHostHomeBind()
+	if err == nil {
+		t.Fatal("a bind AT {home} was accepted; that path is snug's own")
+	}
+	for _, want := range []string{"/etc", "/home/u"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q:\n%v", want, err)
+		}
+	}
+	// THE POINT. A refusal that overstates is a false claim on the one artifact
+	// a human reads to decide whether to trust snug, and this input exposes no
+	// credential at all.
+	for _, never := range []string{"every credential under it is", "agent socket"} {
+		if strings.Contains(err.Error(), never) {
+			t.Errorf("the refusal for a NON-home source claims %q, which is untrue of it:\n%v",
+				never, err)
+		}
+	}
+	// CONTROL: the arm that IS about the host's home must still say it, or the
+	// assertion above is satisfied by a rule that stopped warning anybody.
+	real := translatedHomePolicy(t, "/home/u", "/mnt/h", KindBind).rejectHostHomeBind()
+	if real == nil || !strings.Contains(real.Error(), "every credential under it is") {
+		t.Errorf("the host-home arm no longer carries the credential warning:\n%v", real)
+	}
+}
+
 // POSITIVE CONTROLS for the host side (issue #601). Widening a rule to a second
 // field is how a rule stops being narrow, and translation is ordinary: a
 // profile writes `ro = ["<host>:<guest>"]` to put a directory somewhere the
