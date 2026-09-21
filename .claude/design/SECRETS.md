@@ -98,8 +98,14 @@ endpoint is **unmeasured** — settling it would create a real key on the human'
 account — so it is treated as A2-true, because §1.1's rule is not "A2 measured
 true" but "if you cannot write the blast radius in one sentence". Today what
 bounds it is that `@claude` does not include `@net`: a **network** defence, not a
-property of the token. That is worth stating in exactly those words, because a
-profile combination the user is free to write (`-p @claude -p @net`) removes it.
+property of the token. `--dry-run`'s `creds` block says it in those words and
+reads the RESOLVED policy to say which of the two this run is, because a profile
+combination the user is free to write (`-p @claude -p @net`) removes the bound —
+and a bound the reader has to go and check for themselves is one the trust
+artifact did not give them. The same block therefore does not deny minting:
+`TestTheCredsBlockDoesNotClaimTheTokenCannotMint` and
+`TestTheCredsBlockSaysWhetherThisRunStillHasTheNetworkBound` (`internal/cli`)
+hold both halves, each negative-controlled.
 
 **`git` needs no credential.** With `insteadOf` plus the ssh-agent proxy, clone,
 fetch and push work with nothing inside. A credential helper in the sandbox would

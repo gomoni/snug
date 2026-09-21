@@ -1769,10 +1769,41 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 		// than it — so a stolen token still buys its remaining life, which is
 		// hours against a sandbox that often lives for minutes. What is true is
 		// the comparison with what shipped before, and that is what this says.
-		fmt.Fprintf(out, "                    Nothing in here can mint a NEW token, so a stolen copy is\n")
+		//
+		// And RENEWAL is not MINTING, which is the distinction this block used
+		// to collapse: it printed "Nothing in here can mint a NEW token" while
+		// SECRETS.md §A2 says the opposite in as many words — dropping
+		// refreshToken "removed renewal ... It did not remove minting: the
+		// client ships /api/oauth/claude_cli/create_api_key, and an API key
+		// minted there is durable and outlives the sandbox" — and whether THIS
+		// token is accepted at that endpoint is UNMEASURED, so the design
+		// treats it as true. An unmeasured negative is the one claim this
+		// screen exists not to make. Issue #141 asks the same question about
+		// the user:mcp_servers scope and is no more settleable from inside:
+		// projecting the scopes would change nothing, because a scope list
+		// describes a token's authority rather than carrying it
+		// (policy.ClaudeCredentialAllowlist's own comment).
+		//
+		// What actually bounds the mint path is a property of the SELECTION
+		// and not of the token — @claude does not pull in @net — so the screen
+		// reads the resolved policy and says which of the two this run is,
+		// rather than describing the defence and leaving the reader to check
+		// whether they still have it.
+		fmt.Fprintf(out, "                    No refreshToken, so a stolen copy cannot be RENEWED: it is\n")
 		fmt.Fprintf(out, "                    bounded by the expiry above — hours — rather than by the\n")
 		fmt.Fprintf(out, "                    refresh token's, which is weeks. It is a timer, not a\n")
 		fmt.Fprintf(out, "                    kill switch: it can still outlive this sandbox\n")
+		fmt.Fprintf(out, "                    RENEWAL is not MINTING. The client ships an API-key mint\n")
+		fmt.Fprintf(out, "                    endpoint and whether THIS token is accepted there is\n")
+		fmt.Fprintf(out, "                    UNMEASURED, so snug does not claim it cannot mint.\n")
+		if p.Net.Mode == policy.NetEgress {
+			fmt.Fprintf(out, "                    NOTHING IN THIS RUN BOUNDS THAT: '@net' is selected, so a\n")
+			fmt.Fprintf(out, "                    process in here can reach that endpoint\n")
+		} else {
+			fmt.Fprintf(out, "                    What bounds it here is that this run has NO EGRESS — a\n")
+			fmt.Fprintf(out, "                    network defence, not a property of the token. Selecting\n")
+			fmt.Fprintf(out, "                    '@net' alongside '@claude' removes it\n")
+		}
 	} else {
 		// "snug staged nothing at this path", NOT "Claude Code will start
 		// LOGGED OUT". The second is a claim about the SANDBOX where this code
