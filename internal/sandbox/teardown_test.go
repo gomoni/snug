@@ -117,9 +117,9 @@ func TestTheTeardownGuardIsArmedBeforeEveryForkItProtects(t *testing.T) {
 
 	// PRECONDITION: both the guard and both forks must actually be found, or
 	// every "arms before" check below passes on an empty search.
-	arms := indexesOf(text, "armTeardown(opts)")
+	arms := indexesOf(text, "armTeardown(opts, ")
 	if len(arms) != 2 {
-		t.Fatalf("PRECONDITION: expected exactly 2 armTeardown(opts) call sites in exec.go "+
+		t.Fatalf("PRECONDITION: expected exactly 2 armTeardown(opts, ...) call sites in exec.go "+
 			"(one per topology), found %d. If a topology was added, this test needs a case "+
 			"for it — a fork with no guard is issue #13 reopened", len(arms))
 	}
@@ -141,7 +141,7 @@ func TestTheTeardownGuardIsArmedBeforeEveryForkItProtects(t *testing.T) {
 			t.Fatalf("PRECONDITION: %s does not contain %q, so the fork this test is named "+
 				"for has moved elsewhere and is now unchecked", fn.name, fn.fork)
 		}
-		arm := strings.Index(body, "armTeardown(opts)")
+		arm := strings.Index(body, "armTeardown(opts, ")
 		if arm < 0 {
 			t.Errorf("%s forks the sandbox (%s) and never arms the teardown guard. A signal "+
 				"there kills snug outright and leaves the sandbox behind — issue #13",
@@ -650,4 +650,83 @@ func TestExcludeSetDropsPidsThatCouldNotNameAProcess(t *testing.T) {
 		t.Error("excludeSet on an empty Options must be nil — the ordinary run has nothing to " +
 			"spare, and an empty non-nil map is a different thing to read at the call site")
 	}
+}
+
+// TestTheSandboxInitIsPinnedAgainstPidReuse is the regression for a hazard
+// found reviewing relayToPayload rather than by a test failing: the relay
+// picks its targets as the CHILDREN of the init's pid and sends them a
+// CATCHABLE signal, so an init that exits and has its number recycled would
+// have snug SIGTERMing a stranger's children.
+//
+// The assertion is that the pidfd really names the process, read back out of
+// /proc/self/fdinfo — which is the same evidence killPinned's own comment
+// offers for the equivalent claim one level up, and the only way to check a
+// pin without arranging genuine pid recycling.
+//
+// Its positive control is the zero value: an unset sandboxInit must report no
+// pid at all, or "the pin names the right process" would be equally true of a
+// cell that never pinned anything.
+func TestTheSandboxInitIsPinnedAgainstPidReuse(t *testing.T) {
+	var unset sandboxInit
+	if got := unset.get(); got != 0 {
+		t.Fatalf("PRECONDITION: an unset sandboxInit reports pid %d, want 0", got)
+	}
+
+	// A real child to pin. It outlives the assertions and is killed here.
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	var si sandboxInit
+	si.set(cmd.Process.Pid)
+	if got := si.get(); got != cmd.Process.Pid {
+		if got == 0 {
+			t.Skipf("this kernel has no pidfd_open, so the pin (and with it the grace) is " +
+				"deliberately unavailable — see sandboxInit.set")
+		}
+		t.Fatalf("sandboxInit.get() = %d, want the pid it was set to (%d)", got, cmd.Process.Pid)
+	}
+
+	f := si.pinned.Load()
+	if f == nil {
+		t.Fatal("sandboxInit published a pid with no pidfd behind it — the number is then free " +
+			"to be recycled, which is the whole hazard this pin exists for")
+	}
+	data, err := os.ReadFile("/proc/self/fdinfo/" + strconv.Itoa(int(f.Fd())))
+	if err != nil {
+		t.Fatalf("reading the pin's fdinfo: %v", err)
+	}
+	want := "Pid:\t" + strconv.Itoa(cmd.Process.Pid)
+	if !strings.Contains(string(data), want) {
+		t.Errorf("the pidfd held for the sandbox init does not name pid %d — fdinfo says:\n%s",
+			cmd.Process.Pid, data)
+	}
+
+	// A second namer must not leak a descriptor: the CompareAndSwap loses and
+	// the losing pin has to be closed rather than held for the run.
+	before := openFDCount(t)
+	si.set(cmd.Process.Pid)
+	if after := openFDCount(t); after > before {
+		t.Errorf("a losing second call to set leaked %d descriptor(s) (%d -> %d)",
+			after-before, before, after)
+	}
+
+	si.close()
+	if si.pinned.Load() != nil {
+		t.Error("close left the pin in place")
+	}
+}
+
+func openFDCount(t *testing.T) int {
+	t.Helper()
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ents)
 }

@@ -1201,9 +1201,19 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         container API that fails at 'create'.\n")
 	// PER PATH, NEVER AS A CAPABILITY (issue #174, invariant 5). A line saying
 	// "graceful container shutdown: on" would be a guarantee snug keeps on one
-	// of three exits and cannot keep on the other two: on a catchable signal
-	// confirmTeardown pidfd-SIGKILLs the stage before it reaches the stop, and
-	// on a SIGKILL no Go code runs anywhere. The measurement
+	// of three exits and cannot keep on the other two. WHICH exits those are
+	// MOVED with issue #595 and the line moved with them: a catchable signal
+	// now gives the payload a bounded grace, and a payload that exits inside
+	// it exits NORMALLY — st.Wait returns an ordinary status and the stage
+	// reaches the stop, so a Ctrl-C on a container run does stop containers
+	// gracefully. What does not is a payload that IGNORES the signal (the
+	// budget expires, confirmTeardown SIGKILLs the stage) and a SIGKILLed
+	// snug (no Go code runs anywhere).
+	//
+	// The stage is no longer an independent author of either outcome: it
+	// catches and drops SIGINT/TERM/HUP/QUIT (internal/stage's MainServe) so a
+	// group-delivered ^C cannot fell it, which it used to do directly, ahead
+	// of confirmTeardown. The measurement
 	// this line is worth stating for is that the graceful case is real —
 	// 134ms for a container whose pid 1 handles the signal — and the reason the
 	// other two cannot be fixed is the pid namespace collapsing, which is the
@@ -1215,11 +1225,16 @@ func describeContainers(out io.Writer, p *policy.Policy, c *reportContainers) {
 	fmt.Fprintf(out, "         reaped it, and whose own exit is what collapses the engine \u2014 asks\n")
 	fmt.Fprintf(out, "         the engine to stop this run's containers BEFORE it reports the\n")
 	fmt.Fprintf(out, "         exit, bounded at 1s: a container that handles its stop signal gets\n")
-	fmt.Fprintf(out, "         to flush, and snug's own exit waits for that second. On any other\n")
-	fmt.Fprintf(out, "         exit it does not \u2014 snug killed by a signal SIGKILLs the stage\n")
-	fmt.Fprintf(out, "         before it can ask, and snug SIGKILLed runs no code at all. In both\n")
-	fmt.Fprintf(out, "         of those the kernel fells every container with the engine's pid\n")
-	fmt.Fprintf(out, "         namespace, unsignalled.\n")
+	fmt.Fprintf(out, "         to flush, and snug's own exit waits for that second.\n")
+	fmt.Fprintf(out, "         \"Exits normally\" now INCLUDES a payload that handled Ctrl-C and\n")
+	fmt.Fprintf(out, "         exited inside the second snug gives it for that (see the payload\n")
+	fmt.Fprintf(out, "         grace below) \u2014 so holding Ctrl-C on a container run can cost both\n")
+	fmt.Fprintf(out, "         budgets, up to ~2s.\n")
+	fmt.Fprintf(out, "         On any other exit it does not: a payload that ignores the signal\n")
+	fmt.Fprintf(out, "         has its grace expire and snug SIGKILLs the stage before it can\n")
+	fmt.Fprintf(out, "         ask, and snug SIGKILLed runs no code at all. In both of those the\n")
+	fmt.Fprintf(out, "         kernel fells every container with the engine's pid namespace,\n")
+	fmt.Fprintf(out, "         unsignalled.\n")
 	describeImageProvenance(out, c)
 }
 
@@ -2224,8 +2239,19 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 	// screen is the shape this project has been bitten by before, which is why
 	// the depth is printed rather than the flag that produces it.
 	if p.Topology.NeedsStage() {
-		fmt.Fprintf(out, "  pid nesting     depth 1 — bwrap is pid 1 of the sandbox's own pid namespace,\n")
-		fmt.Fprintf(out, "                  and bwrap itself runs in the host's.\n")
+		fmt.Fprintf(out, "  pid nesting     depth 2 — the stage forks bwrap into an intermediate pid AND\n")
+		fmt.Fprintf(out, "                  mount namespace, so bwrap is pid 1 THERE and the sandbox's own\n")
+		fmt.Fprintf(out, "                  pid namespace nests below it. No intermediate USER namespace on\n")
+		fmt.Fprintf(out, "                  this arm: the stage is already root in U and holds the\n")
+		fmt.Fprintf(out, "                  CAP_SYS_ADMIN the unshare needs, so it costs no nesting level.\n")
+		fmt.Fprintf(out, "                  snug re-execs itself there as `snug __innetns`, which enters the\n")
+		fmt.Fprintf(out, "                  netns, mounts a procfs of that pid namespace over /proc and then\n")
+		fmt.Fprintf(out, "                  EXECS bwrap — still one process, not two.\n")
+		fmt.Fprintf(out, "                  What it BUYS is that bwrap stops being an independent author of\n")
+		fmt.Fprintf(out, "                  this run's death: pid 1 of a namespace ignores every signal it\n")
+		fmt.Fprintf(out, "                  has no handler for, and bwrap installs none — so a terminal's\n")
+		fmt.Fprintf(out, "                  Ctrl-C, which reaches the whole process group, no longer fells\n")
+		fmt.Fprintf(out, "                  the sandbox before snug has decided anything.\n")
 	} else {
 		fmt.Fprintf(out, "  pid nesting     depth 2 — snug forks bwrap into an intermediate user, pid AND\n")
 		fmt.Fprintf(out, "                  mount namespace of its own making, so bwrap is pid 1 THERE and\n")
@@ -3370,6 +3396,29 @@ func describeTTY(out io.Writer, rep Report) {
 	default:
 		fmt.Fprintf(out, "TTY      shared session — job control works (TIOCSTI is disabled kernel-wide).\n")
 	}
+
+	// WHICH OF THE TWO DELIVERY PATHS THIS RUN HAS, printed per run rather
+	// than as a capability, because it is a function of --new-session above
+	// and of whether snug is the terminal's foreground job — neither of which
+	// any argv shows (issue #595, internal/sandbox/ttydelivery.go). A line
+	// saying "graceful payload shutdown: on" would be a guarantee snug keeps
+	// on one of these paths and cannot keep on a SIGKILL at all.
+	fmt.Fprintf(out, "         SIGNALS: on SIGINT/SIGTERM/SIGHUP the command inside gets up to 1s\n")
+	fmt.Fprintf(out, "         to handle it and exit before snug kills the sandbox, and its own\n")
+	fmt.Fprintf(out, "         exit code is then what snug reports. A second signal cuts that\n")
+	fmt.Fprintf(out, "         short. A payload that ignores the signal is killed when the second\n")
+	fmt.Fprintf(out, "         is up, and snug exits 128+signal as before.\n")
+	if rep.NewSession {
+		fmt.Fprintf(out, "         Your Ctrl-C does NOT reach it directly here — --new-session above\n")
+		fmt.Fprintf(out, "         puts it in its own session — so snug relays the signal inward.\n")
+	} else {
+		fmt.Fprintf(out, "         Your Ctrl-C reaches it directly (shared process group), so snug\n")
+		fmt.Fprintf(out, "         relays nothing and it is never signalled twice. `kill -INT` aimed\n")
+		fmt.Fprintf(out, "         at snug ALONE is the gap: snug cannot tell that from a Ctrl-C, so\n")
+		fmt.Fprintf(out, "         it relays nothing and the command inside never sees that one.\n")
+	}
+	fmt.Fprintf(out, "         SIGKILL gives it nothing, on every path: no code of snug's runs.\n")
+
 	if !rep.StdioTerminals.Any() {
 		return
 	}

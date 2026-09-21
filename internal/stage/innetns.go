@@ -8,6 +8,8 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/fdseal"
+	"github.com/gomoni/snug/internal/nestproc"
+	"github.com/gomoni/snug/internal/sigseal"
 )
 
 // EnterNetns is __innetns: the setns shim that is the only way a child of P1
@@ -53,6 +55,17 @@ func EnterNetns(argv []string) error {
 		return fmt.Errorf("__innetns: closing the netns fd: %w", err)
 	}
 
+	// The procfs bwrap reads its own child out of, now that P1 clones this
+	// process into a pid namespace of its own (serve.go's Cloneflags). AFTER
+	// the setns above rather than before it, so the sequence this function's
+	// header specifies is untouched: the netns move is per-task and has
+	// nothing to do with /proc, and doing the mount last keeps the refusal
+	// closest to the exec it protects. internal/nestproc carries the
+	// measurement and is the single author shared with __inpidns.
+	if err := nestproc.Mount("__innetns"); err != nil {
+		return err
+	}
+
 	// bwrap's own descriptors are the contiguous block 3..fd-1 — P1 put them
 	// there with ExtraFiles and the netns descriptor last, so the shim's own
 	// argument bounds the block and the keep list is DERIVED from the request
@@ -69,6 +82,16 @@ func EnterNetns(argv []string) error {
 		keep = append(keep, i)
 	}
 	if err := fdseal.SealExcept(keep...); err != nil {
+		return fmt.Errorf("__innetns: %w", err)
+	}
+
+	// The same guard for SIGNAL state, on the same exec and for the same
+	// reason: this is the last process that can decide what the payload
+	// inherits, and execve carries an ignored disposition and the thread's
+	// blocked mask straight through it. Unsealed, a `trap … INT` in the
+	// payload of a backgrounded `snug -p @net` was a silent no-op while the
+	// offline arm's was not — see internal/sigseal for both measurements.
+	if err := sigseal.Seal(); err != nil {
 		return fmt.Errorf("__innetns: %w", err)
 	}
 

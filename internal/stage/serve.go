@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -111,6 +112,36 @@ func MainServe() error {
 	if err := requireCapDropped(policy.StageCapDrop); err != nil {
 		return fmt.Errorf("__stage-serve: %w", err)
 	}
+
+	// P1 STOPS BEING AN AUTHOR OF THIS RUN'S DEATH, and that is a correctness
+	// property rather than robustness.
+	//
+	// P1 sits in P0's process group — nothing in the chain calls setpgid — so
+	// a terminal's Ctrl-C is delivered to it DIRECTLY, not only to P0. With
+	// the default disposition it died of that signal, and its death collapses
+	// the sandbox through bwrap's --die-with-parent. MEASURED: SIGINT to P1
+	// alone ends the whole run, with P0 reporting exit 69 and the control
+	// channel closed under it. So the staged tree had three independent
+	// authors of its teardown — P0's sweep, P0's death, and any catchable
+	// signal that reached P1 or bwrap — where the offline tree has one.
+	// Invariant 6 is about one author for one decision, and "is this run
+	// over" is a decision.
+	//
+	// signal.Notify AND NEVER signal.Ignore, which is the whole reason this is
+	// four lines instead of one. Ignore sets SIG_IGN, and SIG_IGN is inherited
+	// across execve — so every child P1 forks, bwrap and the engine included,
+	// would come out unable to be stopped by these signals, which is the
+	// leak internal/sigseal exists to close. A caught-and-dropped signal is
+	// reset to SIG_DFL by execve like any other.
+	//
+	// The membership rule: a signal belongs here if an operator or a terminal
+	// can deliver it to the GROUP meaning "stop the job". Everything else —
+	// including SIGKILL, which is what P0's own confirmTeardown sends and what
+	// P1's Pdeathsig delivers — still ends P1 exactly as before. This weakens
+	// no teardown guarantee: it removes a way for the run to end that snug did
+	// not choose, and adds none.
+	signal.Notify(make(chan os.Signal, 1),
+		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 
 	control := os.NewFile(fdControl, "control")
 	life := os.NewFile(fdLife, "lifeline")
@@ -415,6 +446,33 @@ func runOneSandbox(control, netnsN, infoR *os.File, req request, p0 int) error {
 	cmd.Env = []string{}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
+	// THE INTERMEDIATE PID NAMESPACE, the same construction the offline arm has
+	// carried since issue #101, arriving here for a reason that arm already
+	// demonstrates rather than for symmetry's own sake.
+	//
+	// Cloneflags apply to the process being exec'd, so __innetns — and after
+	// its own exec, BWRAP — becomes pid 1 of this namespace, and bwrap's
+	// unconditional --unshare-pid nests the sandbox's namespace underneath.
+	// What it buys is that bwrap stops being an independent author of this
+	// run's death: pid 1 of a namespace ignores every signal it has no handler
+	// for, and bwrap installs none. MEASURED on this host before this line
+	// existed: a SIGINT to the outer bwrap alone — which is exactly what a
+	// terminal's Ctrl-C does, since the whole tree sits in P0's process group
+	// — collapsed the run, while the same signal to the offline arm's bwrap
+	// was ignored and the payload kept running.
+	//
+	// NO CLONE_NEWUSER here, and that is the difference from exec.go's version
+	// of this clone. unshare(CLONE_NEWPID) needs CAP_SYS_ADMIN, which P0 does
+	// not have and must borrow by creating a user namespace in the same clone;
+	// P1 is already root in U and has it, so asking for a second user
+	// namespace would add a level to the nesting limit for nothing. CLONE_NEWNS
+	// is required for the same reason it is there: nestproc.Mount puts a procfs
+	// of THIS pid namespace on /proc, and that mount must not escape into P1's
+	// own namespace.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
+	}
+
 	// No SysProcAttr{PidFD: ...} here. It used to request one into a local that
 	// went out of scope unread and unclosed, so P1 held two pidfds for its one
 	// child: Go's own (os.Process is pidfd-backed, and every kill and wait
@@ -530,6 +588,28 @@ awaitInfo:
 		select {
 		case r := <-infoCh:
 			info, infoErr = r.info, r.err
+			// TRANSLATED ONCE, HERE, so that everything downstream keeps
+			// meaning a HOST pid: parked.setInit, waitForSandboxMounts'
+			// /proc/<pid>/mountinfo read, startEngine, and the "forked" and
+			// "enginestarted" events P0 records the run by. bwrap reports its
+			// child as bwrap ITSELF sees it, and since P1 now clones bwrap
+			// into a pid namespace of its own the answer is 2 — a number that
+			// on the host names kthreadd. The offline arm has needed this
+			// since issue #101 (internal/sandbox's hostInitPID); this arm
+			// needs it for the first time and for the same reason.
+			//
+			// A failure to translate is NOT fatal here and must not be: the
+			// gated branch below already refuses a run whose init it cannot
+			// name, with a better message, and an ungated run is warn-only by
+			// design. Leaving InitPID at 0 routes both to the checks that
+			// already exist rather than adding a third.
+			if infoErr == nil && info.InitPID > 0 {
+				if hostPID, found, _ := initwalk.ChildWithReportedPID(cmd.Process.Pid, info.InitPID); found {
+					info.InitPID = hostPID
+				} else {
+					info.InitPID = 0
+				}
+			}
 			break awaitInfo
 		case <-waitDone:
 			infoErr = fmt.Errorf("bwrap exited before answering on --info-fd")

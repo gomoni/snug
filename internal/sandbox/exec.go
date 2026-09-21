@@ -445,9 +445,28 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		GidMappingsEnableSetgroups: false,
 	}
 
-	// No Setpgid anywhere in this chain: the tree stays in the terminal's
-	// foreground process group so Ctrl-C reaches the payload and job control
-	// works for an interactive shell inside the sandbox.
+	// No Setpgid anywhere in this chain, so nothing SNUG does takes the
+	// sandbox out of the terminal's foreground process group. That is NOT the
+	// same as "Ctrl-C reaches the payload", which this comment asserted flatly
+	// for several milestones, and the difference is a whole capability:
+	//
+	//   - bwrap's own --new-session calls setsid() and cuts the sandbox out of
+	//     the group. Whether it is passed is policy.NewSession()
+	//     (internal/policy/newsession.go), true when legacy_tiocsti is
+	//     non-zero OR when none of stdio is a terminal. MEASURED both ways on
+	//     this host: with the session shared, a ^C fires the payload's trap;
+	//     with --new-session emitted, a SIGINT to the whole of snug's process
+	//     group does not.
+	//   - `kill -INT <snug>` reaches the payload on NO host, session shared or
+	//     not. Nothing in this package forwards a signal inward.
+	//
+	// And REACHING is still not FINISHING. A signal that arrives here is also
+	// a signal to snug, and teardownGuard's caught-signal branch SIGKILLs the
+	// tree — see teardown.go, which carries what the payload's own handler
+	// does and does not get.
+	//
+	// Job control for an interactive shell inside the sandbox is the same
+	// conditional fact, true on exactly the hosts where --new-session is absent.
 	if err := fdseal.SealFor(cmd); err != nil {
 		return 0, err
 	}
@@ -455,7 +474,13 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// Armed immediately before the fork, never after it: a signal landing
 	// between a live bwrap and an uninstalled handler is issue #13's window,
 	// and the only way to close it is not to have it. See teardown.go.
-	guard := armTeardown(opts)
+	//
+	// si is written by notifyInit below, whichever of this arm's two namers
+	// reaches it first, and read only by the guard's grace. relay is decided
+	// HERE rather than inside the handler because it is a fact about how snug
+	// was started, not about the signal — see terminalWillDeliver.
+	si := &sandboxInit{}
+	guard := armTeardown(opts, si, !terminalWillDeliver(p))
 	defer guard.stop()
 
 	if err := cmd.Start(); err != nil {
@@ -483,7 +508,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// that never gives one (issue #236, see initwatch.go). Both go through
 	// the same reporter, which fires OnInit ONCE — see initReporter for the
 	// measured reason that is not optional.
-	var named initReporter
+	named := initReporter{init: si}
 	bwrapPid := cmd.Process.Pid
 	reportInfo(infoR, opts, &named, func(reported int) (int, bool) {
 		return hostInitPID(bwrapPid, reported, opts)
@@ -563,6 +588,10 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// that must be able to kill bwrap's parked init, and it cannot kill a pid it
 	// was never told. P0 gets the parsed answer back in the "start" event.
 	defer infoR.Close()
+	// Allocated HERE, above stage.Start, and that is what forces it to be a
+	// cell rather than a field on the guard: the closure below is this arm's
+	// writer and it is built before the guard is armed. See sandboxInit.
+	si := &sandboxInit{}
 	st, err := stage.Start(stage.Config{
 		Topology:  p.Topology,
 		Sandbox:   extra,
@@ -572,7 +601,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		// reportInfo, so StartSandbox's "forked" event reaches opts.OnInit
 		// synchronously, before the mount settle and the engine's cold start
 		// "enginestarted" waits out (issue #236).
-		OnSandboxForked: func(pid int) { notifyInit(opts, pid) },
+		OnSandboxForked: func(pid int) { notifyInit(opts, si, pid) },
 	})
 	if err != nil {
 		return 0, err
@@ -643,7 +672,7 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// stage and the engine both carry their own PR_SET_PDEATHSIG and no
 	// payload exists yet), and a guard held across that wait would swallow a
 	// Ctrl-C for as long as fifteen seconds.
-	guard := armTeardown(opts)
+	guard := armTeardown(opts, si, !terminalWillDeliver(p))
 	defer guard.stop()
 	// pasta is a descendant, so confirmTeardown's sweep kills it — and
 	// helper.watch is sitting on exactly that death, ready to report the
@@ -816,10 +845,17 @@ func reportInfo(infoR *os.File, opts Options, named *initReporter, translate fun
 // request — and it is what the walk's foreign-user-namespace guard is for:
 // the only pid it can hand over is a child of this run's own bwrap living in
 // a user namespace of its own.
-type initReporter struct{ once sync.Once }
+type initReporter struct {
+	once sync.Once
+
+	// init is the guard's cell (teardown.go's sandboxInit), carried here so
+	// that report stays the offline arm's single convergence and notifyInit
+	// stays the single writer. Nil in a test that reports with no guard.
+	init *sandboxInit
+}
 
 func (r *initReporter) report(opts Options, pid int) {
-	r.once.Do(func() { notifyInit(opts, pid) })
+	r.once.Do(func() { notifyInit(opts, r.init, pid) })
 }
 
 // notifyInit is the one place both arms of Run turn "bwrap named its init"
@@ -828,8 +864,18 @@ func (r *initReporter) report(opts Options, pid int) {
 // convergence publishInfo already gives opts.OnInfo. pid <= 1 means bwrap
 // never answered or named something that cannot be a host init; OnInit is not
 // called for it, same as publishInfo's own InitPID <= 0 guard.
-func notifyInit(opts Options, pid int) {
-	if opts.OnInit == nil || pid <= 1 {
+// TWO CONSUMERS NOW, and the cell is served FIRST and unconditionally.
+// opts.OnInit is the CALLER's record of the run; si is what a caught signal
+// aims its relay at (issue #595), and that must not become a function of
+// whether the caller happened to want a record — an arm that served one and
+// not the other would give the same run a grace period or not depending on a
+// field internal/cli sets and a test does not.
+func notifyInit(opts Options, si *sandboxInit, pid int) {
+	if pid <= 1 {
+		return
+	}
+	si.set(pid)
+	if opts.OnInit == nil {
 		return
 	}
 	opts.OnInit(pid)

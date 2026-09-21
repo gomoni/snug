@@ -42,7 +42,11 @@ const (
 // it and nothing fails if it never finds anything — reportInfo still names the
 // init from bwrap's own answer through the same reporter.
 func watchForInit(bwrapPid int, opts Options, named *initReporter) {
-	if opts.OnInit == nil {
+	// Nothing consumes the answer. OnInit is the caller's record; named.init
+	// is the cell a caught signal aims its relay at (issue #595), and the walk
+	// is worth running for either. Only when BOTH are absent — a test that
+	// wants neither — is there nothing to do.
+	if opts.OnInit == nil && named.init == nil {
 		return
 	}
 	// BWRAP's user namespace, not snug's: see initwalk's package comment. On

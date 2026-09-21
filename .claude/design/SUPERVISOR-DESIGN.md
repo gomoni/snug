@@ -97,10 +97,13 @@ P0  snug                          host userns, host netns, host mount tree
       │     after it has left N (§7)
       │   NO control socket on any filesystem. NO listener, and none coming (§3.3).
       │
-      ├── snug __innetns <fd> bwrap ...       a setns shim, one execve deep
-      │    │                                  forked FIRST once the network is up;
-      │    └── bwrap (in N)                   THE SANDBOX, unchanged in every respect
-      │         └── bwrap (init, pid 1)
+      ├── snug __innetns <fd> bwrap ...       a setns shim, one execve deep, forked
+      │    │                                  FIRST once the network is up, and
+      │    │                                  forked into a pid+mount namespace of
+      │    │                                  P1's making — so after its execve
+      │    │                                  BWRAP is pid 1 there
+      │    └── bwrap (in N, pid 1 of NP)      THE SANDBOX
+      │         └── bwrap (init, pid 1 of Q)
       │              └── payload              PARKED on --block-fd where an engine
       │                                       is selected, released by P0
       │
@@ -115,7 +118,27 @@ P0  snug                          host userns, host netns, host mount tree
 **Both legs are children of P1, and only where a container engine is selected
 is there a second one.** They are siblings: the engine is not inside the
 sandbox's mount or pid namespace, and the sandbox is not inside the engine's.
-What they share is N and U.
+What they share is N and U. The engine is NOT in the sandbox leg's intermediate
+pid namespace either — it is forked separately, from P1's own.
+
+**Why the sandbox leg is nested at all**, since P1 could fork bwrap directly and
+did until recently: pid 1 of a pid namespace ignores every signal it has no
+handler for, and bwrap installs none. Unnested, bwrap is an ordinary member of
+P0's process group — nothing in the chain calls `setpgid` — so a terminal's
+Ctrl-C killed it directly and collapsed the sandbox before snug decided
+anything. MEASURED: `SIGINT` to the outer bwrap alone ended the run; the same
+signal to the offline arm's already-nested bwrap was ignored and the payload
+kept running. Together with P1 catching and dropping `SIGINT/TERM/HUP/QUIT`
+(`MainServe`), that leaves **snug as the only author of this run's death** — the
+property the offline arm has had since the intermediate namespace landed there.
+It costs no user-namespace nesting level, because P1 is already root in U and
+holds the `CAP_SYS_ADMIN` that `unshare(CLONE_NEWPID)` needs.
+
+The cost is one translation: bwrap reports its init as *it* sees it, which is
+now pid 2 of NP, so `runOneSandbox` converts that to a host pid once
+(`initwalk.ChildWithReportedPID`) before anything downstream — `parked.setInit`,
+the mount settle, the engine, and the `forked` event P0 records the run by —
+consumes it.
 
 **Read the two names as two axes.** `P0/P1` are distinct *processes*.
 `__stage-setup`/`__stage-serve` are successive *exec images of P1* — same pid

@@ -109,18 +109,38 @@ sleep 60
 	}
 }
 
-// TestStagedArmsBwrapIsNotNested is issue #101's negative claim, for the arm
-// the test above does not cover: under `-p @net` the stage forks bwrap
-// directly, in the HOST's own pid namespace, with no `__inpidns` in between —
-// so bwrap's pid namespace must equal this test's, in contrast to the offline
-// arm's NP.
+// TestStagedArmsBwrapIsNestedTooIsTheSingleAuthorProperty is the POSITIVE of
+// what this test asserted for several milestones, and the flip is the point of
+// the change that brought it — not an incidental consequence.
+//
+// It used to read: "under `-p @net` the stage forks bwrap directly, in the
+// HOST's own pid namespace, with no `__inpidns` in between — so bwrap's pid
+// namespace must equal this test's, in contrast to the offline arm's NP." That
+// was true, and it was the defect. bwrap in the host's pid namespace is an
+// ordinary member of snug's process group with the default disposition, so a
+// terminal's Ctrl-C — delivered to the whole group, since nothing in the chain
+// calls setpgid — killed it directly and collapsed the sandbox before snug
+// decided anything. MEASURED before the change: SIGINT to the outer bwrap
+// alone ended the run; the same signal to the offline arm's bwrap was ignored
+// and the payload kept running.
+//
+// So the staged tree had THREE independent authors of its own teardown — P0's
+// sweep, P0's death, and any catchable signal reaching the stage or bwrap —
+// where the offline tree has one. Nesting bwrap here makes it pid 1 of a
+// namespace, which ignores every signal it has no handler for, and bwrap
+// installs none.
+//
+// NO intermediate USER namespace on this arm, unlike exec.go's clone: the
+// stage is already root in U and holds the CAP_SYS_ADMIN that
+// unshare(CLONE_NEWPID) needs, so this costs none of the kernel's 32
+// user-namespace nesting levels.
 //
 // bwrap forks itself a second time to unshare the sandbox's own new pid
 // namespace (Q), so "a process named bwrap somewhere under the stage" matches
 // two processes and only the OUTER one — the stage's direct child — answers
 // this question; the inner one is nested by bwrap's own construction on
 // either arm and would make this test pass for the wrong reason.
-func TestStagedArmsBwrapIsNotNested(t *testing.T) {
+func TestStagedArmsBwrapIsNestedTooIsTheSingleAuthorProperty(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
@@ -162,16 +182,17 @@ func TestStagedArmsBwrapIsNotNested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading bwrap's (pid %d) own pid namespace: %v", bwrapPID, err)
 	}
-	if bwrapNS != selfNS {
-		t.Errorf("the staged arm's bwrap (pid %d, the stage's direct child) is in a different "+
-			"pid namespace (%s) than the host's own (%s) — only the offline arm should nest "+
-			"bwrap into an intermediate namespace (issue #101); the stage forks bwrap directly, "+
-			"with no __inpidns between them", bwrapPID, bwrapNS, selfNS)
+	if bwrapNS == selfNS {
+		t.Errorf("the staged arm's bwrap (pid %d, the stage's direct child) is in the HOST's own "+
+			"pid namespace (%s) — the stage must fork it into an intermediate one, so that pid 1 "+
+			"of that namespace ignores the catchable signals a terminal delivers to the whole "+
+			"process group. Unnested, a Ctrl-C kills this bwrap directly and collapses the "+
+			"sandbox before snug decides anything", bwrapPID, bwrapNS)
 	}
 }
 
-// TestSiblingSandboxProcessesStillShareOneNamespace is the bound on the test
-// above, and it must stay in the suite for as long as that one does: issue
+// TestSiblingSandboxProcessesStillShareOneNamespace is the bound on BOTH tests
+// above, and it must stay in the suite for as long as either does: issue
 // #101's namespace buys a place to PUT things, not isolation INSIDE the
 // sandbox. Two processes bwrap starts are still co-resident in the same pid
 // namespace Q, so a sibling can still open and read another sibling's

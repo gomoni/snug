@@ -811,8 +811,13 @@ without `--sync-fd` on the same pipe (above).
 
 The other half of that finding is separate and predates the stage: a signalled
 `snug` leaving `bwrap`'s init reparented and holding the payload, during the
-~40 ms before `bwrap` arms `--die-with-parent`. `internal/sandbox/teardown.go`'s
-guard covers it, armed around each fork; issue
+window before `bwrap` arms `--die-with-parent`. That window is measured in
+`internal/sandbox/teardown.go`'s own header — 0 leaks at 86–94 ms, 8/8 at
+110–160 ms, against a payload start latency of ~206 ms — and it is a STARTUP
+window: once a payload exists the kernel cascade is armed without `snug`, so a
+`SIGKILL` of `snug` at steady state leaves nothing (measured 0/4, both
+topologies). The guard covers it, armed around each fork, and does not try to
+out-guess the number; issue
 [#13](https://github.com/gomoni/snug/issues/13) carries the measurements and
 issue [#111](https://github.com/gomoni/snug/issues/111) the correction that
 `kill -QUIT` reproduces it.
@@ -830,7 +835,44 @@ issue [#111](https://github.com/gomoni/snug/issues/111) the correction that
 
 **The residual is stated as a rule, not as a list of signal names** — naming them is exactly what went wrong last time. What stays open is every termination that runs no Go signal handler: `SIGKILL`, which never reaches userspace, and a genuine panic or runtime throw inside `snug` itself, which dies on the Go runtime's own crash path. Nothing else. `internal/sandbox/teardown.go` is where that paragraph lives in the code.
 
-`snug` uses no `Setpgid` anywhere in the sandbox chain: the tree must stay in the terminal's foreground process group so `Ctrl-C` reaches every stage and job control works for an interactive shell inside the sandbox. (Lesson carried from `agent-sandbox`.) There is exactly one deliberate exception and it is not in that chain — the container reaper (`internal/engine/reaper.go`) takes its own process group and no `Pdeathsig`, precisely because its job is to **outlive** a `snug` that died without stopping its containers, which is also why it is exempted from the teardown sweep by pid (issue [#113](https://github.com/gomoni/snug/issues/113)).
+`snug` uses no `Setpgid` anywhere in the sandbox chain, so nothing `snug` does takes the tree out of the terminal's foreground process group. (Lesson carried from `agent-sandbox`.) What that buys is narrower than "`Ctrl-C` reaches every stage", which is how this sentence read while being false in both directions.
+
+A `Ctrl-C` reaches the **payload** only where `bwrap` was not passed `--new-session` — see `policy.NewSession()`, true when `legacy_tiocsti` is non-zero or when none of stdio is a terminal. Where it does not, `snug` **relays** the signal inward instead (`internal/sandbox`'s `relayToPayload`), and it relays to the sandbox's own **process group** — the thing a terminal signals — rather than to the payload alone. That is not a detail: a POSIX shell defers a trap until its foreground child returns, so `trap cleanup TERM; some-long-command` gets its handler run only if the CHILD is signalled too. The group id is the init's own pid, which is pidfd-pinned for the run, and both conditions are checked rather than assumed — the init must lead its own group, and that group must not be `snug`'s. Which of the two paths a run has is printed by `--dry-run`, because no argv shows it. `kill -INT <snug>` used to reach the payload on no host at all; it now takes the relay path.
+
+Reaching every *stage* was never a benefit, and the tree is deliberately built so that it does not. `snug` is the **only author of a run's death**: the stage catches and drops `SIGINT/TERM/HUP/QUIT` (`MainServe`), and both arms fork `bwrap` into an intermediate pid namespace so that `bwrap` is pid 1 and ignores them too. Measured before that held on the `@net` arm: `SIGINT` to the stage alone ended the run with `snug` exiting 69, and `SIGINT` to the outer `bwrap` alone ended it with 255, while the offline arm's already-nested `bwrap` ignored the same signal and its payload kept running.
+
+There are exactly **two** deliberate `Setpgid` exceptions, and neither is in the sandbox chain. The container reaper (`internal/engine/reaper.go`) takes its own process group and no `Pdeathsig`, precisely because its job is to **outlive** a `snug` that died without stopping its containers, which is also why it is exempted from the teardown sweep by pid (issue [#113](https://github.com/gomoni/snug/issues/113)). `pasta` takes its own group as well — it keeps its `Pdeathsig` and is still swept as a descendant — so that a terminal's `Ctrl-C` cannot kill the network out from under a payload that is still inside its own shutdown window.
+
+#### What a signal buys the command inside
+
+A signal `snug` catches is not the same thing as a sandbox killed at once. On
+`SIGINT`, `SIGTERM` or `SIGHUP`, once the sandbox init has been named, the
+payload gets **one second** to handle it and exit before the sweep runs, and if
+it exits inside that window its **own exit code** is what `snug` reports rather
+than `128+signal`. A second signal cuts the wait immediately. A payload that
+ignores the signal is killed when the budget expires and still reports
+`128+signal`, so a run that declines the offer is indistinguishable from one
+made before the offer existed.
+
+The budget is `snug`'s number and is not settable: there is no flag and no
+profile key, because a cap the sandboxed material chooses is not a cap. Its
+abuse sentence is the whole cost — *a hostile payload can keep running, with
+what the policy already granted it, for up to a second after the operator asked
+it to stop, and can make that second happen every time by ignoring the signal.*
+Nothing else moves: `confirmTeardown` runs afterwards unchanged, and `SIGKILL`
+of `snug` still gives the payload nothing at all, because no code of `snug`'s
+runs on that path.
+
+**It does not widen issue #13.** That window is a *startup* one — 0 leaks at
+86–94 ms against a ~206 ms payload start latency — and the grace is gated on an
+init having been named, which is the event that ends it. Measured: `SIGKILL` of
+`snug` a second into a running payload leaves nothing on either topology, with
+no Go code involved at all.
+
+One composition worth stating rather than discovering: a payload that exits
+inside its grace exits **normally**, so on a container run the stage reaches its
+own graceful container stop (`ENGINE-WIRING.md` §6). Holding `Ctrl-C` there can cost both
+budgets, about two seconds.
 
 ### 4.4 The engine inside the sandbox's netns
 

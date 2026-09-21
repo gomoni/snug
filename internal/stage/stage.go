@@ -592,8 +592,12 @@ func (s *Stage) Wait() (syscall.WaitStatus, StopReport, error) {
 		return 0, StopReport{}, fmt.Errorf("stage: the stage (pid %d) closed the control channel without "+
 			"reporting the payload's exit: %w\n"+
 			"  The payload's own exit status is lost with it — the stage is what reaps bwrap.\n"+
-			"  Check dmesg for an OOM kill of pid %d, and `snug --dry-run` for the topology "+
-			"this run asked for.", s.pid, err, s.pid)
+			"  The stage does not exit on its own: it catches and drops SIGINT/TERM/HUP/QUIT "+
+			"(see MainServe) precisely so that snug is the only process that ends this run, and "+
+			"it carries a SIGKILL Pdeathsig for snug's own death. So something SIGKILLed it: an "+
+			"OOM kill (check dmesg for pid %d), a cgroup limit, or another process on this host "+
+			"running as you.\n"+
+			"  `snug --dry-run` shows the topology this run asked for.", s.pid, err, s.pid)
 	}
 	s.waited = true
 	if ev.Op != "exited" {
