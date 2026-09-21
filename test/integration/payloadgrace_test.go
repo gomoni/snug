@@ -342,3 +342,104 @@ func descendantsOfPID(root int) []int {
 	}
 	return out
 }
+
+// TestAHandlerBehindALongBlockingChildStillRuns is the red team's finding, and
+// it is the test this file most needed and did not have.
+//
+// A POSIX shell defers a trap until its FOREGROUND CHILD returns. The first
+// test in this file uses a payload whose foreground child is `sleep 0.05`, so
+// the shell returns from it and reaches the trap well inside the budget — and
+// it passed against a relay that signalled the payload ALONE. Put a long child
+// there instead, which is the commonest real shape (`trap cleanup TERM;
+// some-long-command`), and that relay never got the handler run at all:
+// MEASURED at the time, the trap did not fire and the run burned the whole
+// 1.018s before the sweep.
+//
+// So the earlier measurement was true and proved less than it looked — the
+// exact error this branch accuses issue #595's own reproduction of. The relay
+// now signals the sandbox's process GROUP, which is what a terminal does, and
+// the child dies so the shell reaches its trap.
+//
+// The timing assertion is the discriminating half: "the trap eventually ran"
+// would also be true of a payload the sweep killed, so this requires the
+// handler to have run WELL INSIDE the budget rather than at the end of it.
+func TestAHandlerBehindALongBlockingChildStillRuns(t *testing.T) {
+	budget(t, 90*time.Second)
+	requireSandbox(t)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"offline", nil},
+		{"staged-net", []string{"-p", "@net"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "staged-net" {
+				requirePasta(t)
+			}
+			proj, _ := target(t)
+			// `sleep 300` is the point: it outlasts the budget by two orders
+			// of magnitude, so the trap can only run if the CHILD was
+			// signalled too.
+			script := `trap 'echo TRAPPED-BEHIND-CHILD > "$SNUG_TARGET/blocked.flag"; exit 7' TERM
+echo GRACE-READY
+sleep 300`
+			bg := startGraceSandbox(t, proj, script, tc.args...)
+
+			start := time.Now()
+			if err := bg.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatalf("signalling snug: %v", err)
+			}
+			code := waitCode(t, bg)
+			elapsed := time.Since(start)
+
+			flag := filepath.Join(proj, "blocked.flag")
+			if _, err := os.ReadFile(flag); err != nil {
+				t.Fatalf("a payload blocked in `sleep 300` never ran its TERM handler (%v). The "+
+					"relay reached the shell but not its foreground child, so the shell "+
+					"deferred the trap until a child that outlasts the budget returned:\n%s",
+					err, bg.output())
+			}
+			if code != 7 {
+				t.Errorf("snug exited %d, want the payload's own 7:\n%s", code, bg.output())
+			}
+			if elapsed > graceBudget-200*time.Millisecond {
+				t.Errorf("the handler ran, but only after %s of a %s budget — that is the sweep "+
+					"winning and the flag being written on the way out, not the payload being "+
+					"given its window:\n%s", elapsed, graceBudget, bg.output())
+			}
+		})
+	}
+}
+
+// TestASignalledRunCanReportThePayloadsOwnZero pins the contract the red team
+// asked be made explicit, INCLUDING the part an operator may not want.
+//
+// A payload that traps the signal and exits 0 makes a signalled run report 0.
+// A CI harness that deadline-kills snug and gates on $? alone can therefore be
+// shown success for a run it force-stopped. That is the deliberate trade — the
+// payload already chooses the code on every normal exit, and reporting
+// 128+signal over a handler that ran and chose would be snug inventing an
+// outcome — but it is a CHANGE, so it is pinned here rather than left to be
+// discovered. Its companion is the ignoring payload, which still reports
+// 128+signal, and the pair is what a future change would have to break
+// deliberately.
+func TestASignalledRunCanReportThePayloadsOwnZero(t *testing.T) {
+	budget(t, 60*time.Second)
+	requireSandbox(t)
+
+	proj, _ := target(t)
+	script := `trap 'exit 0' TERM
+echo GRACE-READY
+sleep 300`
+	bg := startGraceSandbox(t, proj, script)
+	if err := bg.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signalling snug: %v", err)
+	}
+	if code := waitCode(t, bg); code != 0 {
+		t.Errorf("a payload that trapped SIGTERM and exited 0 made snug exit %d, want 0. If "+
+			"this is now 128+SIGTERM the contract changed and the CI-visibility trade in "+
+			"grace's own comment is stale:\n%s", code, bg.output())
+	}
+}

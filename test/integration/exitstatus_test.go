@@ -68,43 +68,39 @@ func TestASelfSignalledPayloadExitsAt128PlusTheSignal(t *testing.T) {
 	}
 }
 
-// TestGroupDeliveredSIGINTTearsDownTheWholeSandboxWithoutForwarding is what a
-// terminal's own Ctrl-C actually does today, and it is NOT what the deleted
-// by-hand checklist's stage transcript claimed: that transcript's own expected
-// output has the payload's `trap 'echo caught-sigint; exit 7' INT` fire and
-// snug exit 7. Measured here, five for five, it does not: SIGINT to the whole
-// process group also reaches snug's own top-level process directly (nothing
-// in the tree calls setpgid), and internal/sandbox/teardown.go's
-// teardownGuard treats every signal in that position as "an orphan is
-// possible, stop trusting anything downstream" — armTeardown registers SIGINT
-// among teardownSignals, and teardownGuard.wait's caught-signal branch calls
-// confirmTeardown (an immediate SIGKILL of the sandbox's root child) BEFORE
-// reporting 128+signal, never giving whatever is running inside a chance to
-// decide for itself.
+// TestAGroupDeliveredSIGINTLetsThePayloadAnswerItFirst is what a terminal's own
+// Ctrl-C does: the payload's `trap 'echo caught-sigint; exit 7' INT` fires and
+// snug exits 7.
 //
-// WHY IT IS THIS WAY IS NOT WHAT THIS COMMENT USED TO SAY, and the wrong
-// version is worth leaving visible because it is how the behaviour got pinned.
-// It read: "issue #13's orphan window opens in exactly the gap a 'forward it
-// and wait' design would leave. This is the correct, safety-motivated
-// behaviour to pin." MEASURED FALSE. #13's window is a STARTUP window —
-// teardown.go's own table has 0 leaks at 86-94ms and 8/8 at 110-160ms against
-// a ~206ms payload start latency — and once a payload exists the cascade is
-// armed without snug: a SIGKILL of snug at steady state leaves the payload
-// dead 0/4 on BOTH topologies, heartbeat frozen at 0.4s and at 1.4s after
-// snug's death. A wait that opens only once an init is named touches none of
-// #13.
+// THIS TEST ASSERTED THE OPPOSITE FOR A MILESTONE, and the wrong version is
+// left described here because how it got that way is the useful part. It read
+// "TearsDownTheWholeSandboxWithoutForwarding", required the trap NOT to fire
+// and the exit to be 130, and justified that with: "issue #13's orphan window
+// opens in exactly the gap a 'forward it and wait' design would leave. This is
+// the correct, safety-motivated behaviour to pin."
 //
-// What this test actually pins is the behaviour issue #105's guard introduced
-// as a SIDE EFFECT. The stage commit's own by-hand transcript expected the
-// opposite — `trap 'echo caught-sigint; exit 7' INT` firing, snug exiting 7 —
-// and that was the design until the guard landed four days later. Nobody
-// decided the change; a stale transcript became this test.
+// MEASURED FALSE. #13's window is a STARTUP window — teardown.go's own table
+// has 0 leaks at 86-94ms and 8/8 at 110-160ms against a ~206ms payload start
+// latency — and once a payload exists the cascade is armed without snug: a
+// SIGKILL of snug at steady state leaves the payload dead 0/4 on BOTH
+// topologies, heartbeat frozen at 0.4s and at 1.4s after snug's death. A wait
+// that opens only once an init is named touches none of it.
 //
-// So it is pinned as CURRENT BEHAVIOUR, not as a safety property, and a change
-// that gives the payload's handler a bounded window is not required to defeat
-// it — it is required to UPDATE it, with the measurements above as the
-// argument. The one thing that must not change without its own measurement is
-// the negative below: nothing survives.
+// And the expectation it contradicted was the ORIGINAL one. The stage commit's
+// own by-hand transcript expected exactly `caught-sigint` and exit 7; issue
+// #105's guard flipped that four days later as a SIDE EFFECT, and the
+// executable-checklist pass then turned the stale transcript into this test
+// with #13 as its reason. Nobody ever decided the behaviour this pinned.
+//
+// WHY THE PAYLOAD IN PARTICULAR MATTERS HERE: it blocks in `sleep 30`, and a
+// POSIX shell defers a trap until its foreground child returns. So this is the
+// shape that works only when the relay signals the sandbox's process GROUP —
+// what a terminal does — rather than the payload alone. A relay aimed at the
+// payload alone leaves this trap unfired and the budget fully spent (measured,
+// 1.018s), which is how the red team found it.
+//
+// "Nothing survives" is NOT asserted here on purpose: orphan_test.go owns it
+// across every signal and offset, and a second copy is the copy nobody updates.
 //
 // -p @net is deliberate, not incidental: it is the one shape that puts a
 // SECOND long-lived helper (the stage, which owns the netns) between P0 and
@@ -116,7 +112,7 @@ func TestASelfSignalledPayloadExitsAt128PlusTheSignal(t *testing.T) {
 // to -pid reaches snug and everything it forks without ever touching this
 // test binary's own group — the same isolation `timeout` (without
 // --foreground) gives a shell script, done here without shelling out to it.
-func TestGroupDeliveredSIGINTTearsDownTheWholeSandboxWithoutForwarding(t *testing.T) {
+func TestAGroupDeliveredSIGINTLetsThePayloadAnswerItFirst(t *testing.T) {
 	budget(t, 20*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
@@ -168,23 +164,22 @@ func TestGroupDeliveredSIGINTTearsDownTheWholeSandboxWithoutForwarding(t *testin
 	killed = true
 
 	out := readAll(log.Name())
-	if code := cmd.ProcessState.ExitCode(); code != 128+int(syscall.SIGINT) {
-		t.Errorf("snug exited %d, want %d (128+SIGINT) — teardownGuard.wait is supposed to "+
-			"report the conventional signal-death code after confirming the sandbox is gone:\n%s",
-			code, 128+int(syscall.SIGINT), out)
+	if !strings.Contains(out, "caught-sigint") {
+		t.Errorf("the payload's own INT trap never ran. This payload blocks in `sleep 30`, and "+
+			"a POSIX shell defers a trap until its foreground child returns — so this is the "+
+			"shape that only works when the relay signals the sandbox's process GROUP rather "+
+			"than the payload alone (issue #595, relayToPayload):\n%s", out)
 	}
-	if strings.Contains(out, "caught-sigint") {
-		t.Errorf("the payload's own INT trap ran to completion despite the group signal also "+
-			"reaching snug directly — confirmTeardown is supposed to win that race and SIGKILL "+
-			"the sandbox before anything downstream gets to decide for itself:\n%s", out)
+	if code := cmd.ProcessState.ExitCode(); code != 7 {
+		t.Errorf("snug exited %d, want 7 — the payload handled the signal and chose its own "+
+			"code, and teardownGuard.grace reports that rather than 128+signal:\n%s", code, out)
 	}
 
 	// POSITIVE CONTROL, in a plain (non-@net) sandbox with no group signal
 	// involved at all: the SAME trap syntax runs to completion and snug
 	// propagates its exit code unchanged when the payload signals ITSELF.
-	// Without this, "the trap never fired" above would be equally true of a
-	// trap that cannot ever fire inside this sandbox for an unrelated reason,
-	// which would make the negative above vacuous.
+	// Without it, the assertions above would be equally true of a trap that
+	// fires for some reason unrelated to the path under test.
 	r2 := run(t, nil, proj, `trap 'echo caught-sigint; exit 7' INT; kill -INT $$`).mustRun(t)
 	if !strings.Contains(r2.out, "caught-sigint") {
 		t.Fatalf("CONTROL: a payload that trapped and then signalled ITSELF never ran its own "+

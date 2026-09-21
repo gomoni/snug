@@ -372,15 +372,38 @@ func (s *sandboxInit) get() int {
 // does and not something snug enforces; signalling the set is the same answer
 // when the set has one member.
 //
-// DIRECT CHILDREN ONLY, and that is a real difference from the other path
-// rather than an oversight. A terminal signals the whole foreground process
-// GROUP, so a payload's own background jobs get it too; this reaches the
-// command snug was asked to run and nothing under it. That is what
-// `kill <pid>` means everywhere else, and a shell payload's own job control is
-// the thing that decides what its children deserve — snug guessing on its
-// behalf would be snug deciding how somebody else's process tree shuts down.
-// Nothing escapes either way: confirmTeardown sweeps the whole descendant tree
-// when the budget is up.
+// THE SIGNAL GOES TO THE SANDBOX'S PROCESS GROUP, not to the payload alone,
+// and that is what makes the relay behave like the terminal instead of merely
+// reaching the same process.
+//
+// A POSIX shell defers a trap until its FOREGROUND CHILD returns. So a payload
+// of the commonest shape there is — `trap cleanup TERM; some-long-command` —
+// gets its handler run only if that child dies too. A terminal does that for
+// free: ^C is delivered to the whole foreground group, so the child dies and
+// the shell reaches its trap. Signalling the payload alone does not, and the
+// handler then never runs inside the budget. MEASURED, `trap "echo TRAPPED;
+// exit 7" TERM; sleep 30` under `kill -TERM <snug>` with no tty: the trap
+// never fired and the run burned the whole 1.018s before the sweep. The same
+// payload under a real ^C on a pty fires it at once. A grace that only works
+// for payloads with no blocking child is a grace that looks like it works.
+//
+// WHY THE GROUP IS SAFE TO NAME, which is the part that has to be argued
+// rather than assumed. bwrap's init calls setsid() under --new-session, so it
+// LEADS a session and process group containing exactly the sandbox — MEASURED
+// on both arms, init pgrp == init pid, distinct from snug's own:
+//
+//	snug  pid=1076120 pgrp=1076120
+//	  bwrap  pid=1076136 pgrp=1076120        (pid 1 of the intermediate ns)
+//	    bwrap  pid=1076144 pgrp=1076144      <- the init LEADS this group
+//	      sleep pid=1076149 pgrp=1076144
+//
+// The group id is therefore the init's own pid, which sandboxInit already pins
+// with a pidfd — so the number cannot be recycled under us and `kill(-pgid)`
+// cannot come to name a stranger's group. Both conditions are CHECKED, not
+// assumed: the init must lead its own group, and that group must not be
+// snug's. Where either fails — no --new-session, so the sandbox shares snug's
+// group — falling back to the direct children is right anyway, because that is
+// precisely the case where the terminal has already delivered to everyone.
 //
 // Pinned, with the parent re-read THROUGH the pin, for killPinned's reason:
 // the pid you read is not the pid you signal. It matters more here than it
@@ -399,25 +422,62 @@ func relayToPayload(initPID int, sig syscall.Signal, send bool) int {
 	if initPID <= 1 {
 		return 0
 	}
+
+	// Counted first and always, because "is there a payload under this init"
+	// is a different question from "how do I reach it" — see grace.
 	found := 0
+	var direct []int
 	for pid, ppid := range allPPIDs() {
 		if ppid != initPID {
 			continue
 		}
+		if parent, _, ok := readStatus(pid); ok && parent == initPID {
+			found++
+			direct = append(direct, pid)
+		}
+	}
+	if found == 0 || !send {
+		return found
+	}
+
+	if leadsOwnGroup(initPID) {
+		// The whole sandbox, exactly as the terminal would. The group id is
+		// the pinned init's own pid, so this cannot name a recycled number.
+		if unix.Kill(-initPID, sig) == nil {
+			return found
+		}
+		// Fall through on failure rather than reporting a relay that did not
+		// happen: a grace opened on a signal nobody received is a budget spent
+		// for nothing.
+	}
+
+	// One at a time, pinned, with the parent re-read THROUGH the pin — for
+	// killPinned's reason: the pid you read is not the pid you signal.
+	sent := 0
+	for _, pid := range direct {
 		fd, err := unix.PidfdOpen(pid, 0)
 		if err != nil {
 			continue
 		}
 		if parent, _, ok := readStatus(pid); ok && parent == initPID {
-			if !send {
-				found++
-			} else if unix.PidfdSendSignal(fd, sig, nil, 0) == nil {
-				found++
+			if unix.PidfdSendSignal(fd, sig, nil, 0) == nil {
+				sent++
 			}
 		}
 		unix.Close(fd)
 	}
-	return found
+	return sent
+}
+
+// leadsOwnGroup reports whether pid is the leader of a process group that is
+// not this process's own — the two conditions that make kill(-pid) mean "the
+// sandbox" rather than "some of us as well".
+func leadsOwnGroup(pid int) bool {
+	pgid, err := unix.Getpgid(pid)
+	if err != nil || pgid != pid {
+		return false
+	}
+	return pgid != unix.Getpgrp()
 }
 
 var (
@@ -720,6 +780,16 @@ type waitResult struct {
 // was not asked for. A payload that does NOT exit within the budget is
 // reported exactly as before, so a payload ignoring the signal is
 // indistinguishable from today.
+//
+// WHAT THAT COSTS, named because a red-team round asked for it in writing: a
+// payload that traps the signal and exits 0 makes a SIGNALLED run report 0, so
+// a CI harness that deadline-kills snug and gates on $? alone can be shown
+// success for a run it force-stopped. It is a trade rather than a hole —
+// nothing crosses the sandbox boundary, and the payload already picks the code
+// on every ordinary exit — but the new part is that "the operator killed me"
+// can now hide behind a zero. A harness that cares should treat "I sent a
+// kill" as failure independently of $?. TestASignalledRunCanReportThePayloadsOwnZero
+// pins it so a later change cannot flip it silently.
 //
 // A SECOND SIGNAL CUTS IT, immediately and without waiting out the remainder:
 // an operator pressing ^C twice is asking for the sweep. The second signal is
