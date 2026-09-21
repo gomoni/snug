@@ -59,6 +59,11 @@ type containerRun struct {
 	onEngineReady func() error
 	onPayloadExit func()
 
+	// onGracefulStop renders what the STAGE's own graceful stop did (issue
+	// #174). A report, not work: by the time it runs the stop has finished,
+	// inside P1, before P1 reported the payload's exit.
+	onGracefulStop func(stage.StopReport)
+
 	// excludeFromTeardown is the container reaper's host pid — see
 	// sandbox.Options.ExcludeFromTeardown and issue #113. Empty on every path
 	// that did not arm a reaper.
@@ -353,51 +358,53 @@ func startContainers(env policy.Environ, pol *policy.Policy, n *notes, verbose, 
 	started = true
 
 	// VERIFY WHERE THE ENGINE IS EXPECTED DEAD, NEVER WHERE IT IS EXPECTED
-	// ALIVE (issue #344). onPayloadExit runs from inside runStaged, BEFORE its
-	// deferred st.Close(), so the Pdeathsig cascade P1 -> engine has not fired
-	// and the engine is alive by construction: all that can be done there is
-	// drop the keepalive, which is Detach. cleanup is registered by main.go as
+	// ALIVE (issue #344). cleanup is registered by main.go as
 	// `defer ctr.cleanup()` BEFORE it calls sandbox.Run, so it runs strictly
 	// after st.Close() has returned — and st.Close() waits for P1 to be reaped
 	// (Stage.Close ends with cmd.Process.Wait), with the kernel delivering the
 	// engine's pdeathsig in forget_original_parent before that wait wakes. So
 	// Stop's sweep runs against an engine the cascade has already SIGKILLed.
 	//
-	// BE PRECISE ABOUT WHAT THAT BUYS, because a measurement makes the loose
-	// version false. Measured on this branch against a real podman 5.8.4
-	// bundle: wiring Stop at payload exit — what shipped — costs 15ms, exactly
-	// what the fixed wiring costs, because the engine is Pdeathsig'd to P1 and
-	// P1 exits on its own the moment the payload is reaped, waiting for nothing
-	// P0 does. So this is NOT "the shipped wiring stalls every run"; the 15.3s
-	// on issue #344 was measured with a DECOY, which carries no Pdeathsig and
-	// therefore cannot die with P1.
+	// onPayloadExit is the other half, and it is now ONLY a Detach: it drops
+	// the keepalive so snug's own post-payload code does not hold the engine
+	// up. It used to carry the graceful stop too, on the belief that the
+	// engine was still reachable from this side. It is not — issue #174
+	// MEASURED `connect: connection refused` 4/4 on a clean exit, because
+	// Stage.Wait returns when P1's "exited" bytes ARRIVE and P1 is exiting as
+	// it sends them, taking the engine with it by Pdeathsig. The 15ms figure
+	// this comment used to quote for "payload exit to snug exit" is why: the
+	// window is not one an HTTP round-trip fits into.
 	//
-	// What the position actually buys is a GUARANTEE where there was a RACE.
-	// Stage.Wait returns on recvEvent — when the "exited" bytes ARRIVE — not
-	// when P1 exits, so at payload exit P0 and a still-exiting P1 race, and P1
-	// merely happens to win. After st.Close() it cannot lose. The losing side
-	// is the rare one, which is why no wall clock can see this and why
-	// test/integration/enginereapteardown_test.go says so at length.
+	// THE GRACEFUL STOP NOW RUNS IN THE STAGE (internal/stage/serve.go, the
+	// step itself in internal/runstop), between the reap and that event,
+	// where the engine is alive because the process that kills it is the one
+	// doing the asking. What reaches this file is the REPORT, and this file's
+	// job is to render it through `audit` — verbose-gated, and through
+	// policy.VisibleText. That is not a formality: the counts are snug's, but
+	// the containers were the payload's, and P1's own stderr is the payload's
+	// stderr, which is neither gated nor sanitised.
 	//
-	// Both halves still matter. Wiring Stop here and nothing at payload exit
-	// would leave the keepalive held through snug's own post-payload code.
-	//
-	// AND THE GRACEFUL STOP GOES AT PAYLOAD EXIT FOR EXACTLY THE REASON ABOVE
-	// (issue #174): it is the one moment snug's own Go code runs while the
-	// engine is still alive to be asked, so it is the only place a container
-	// can be sent a signal it can handle. It runs BEFORE Detach, because
-	// Detach drops the keepalive and the keepalive is what is holding the
-	// engine up. Order matters here and nothing else enforces it — the two
-	// calls are one closure, in this file, on purpose.
-	//
-	// It is bounded at one second and every failure inside it proceeds anyway:
-	// see dockerproxy.StopRunContainers, which carries the measurements and
-	// the reason the budget is snug's number rather than the payload's.
+	// It is bounded at one second and every failure inside it proceeds
+	// anyway: see internal/runstop, which carries the measurements and the
+	// reason the budget is snug's number rather than the payload's.
 	return containerRun{
 		cleanup:       func() { p.Close(); eng.Stop() },
 		spec:          &spec,
 		onEngineReady: eng.DialLifeline,
-		onPayloadExit: func() { p.StopRunContainers(audit); eng.Detach() },
+		onPayloadExit: eng.Detach,
+		onGracefulStop: func(rep stage.StopReport) {
+			switch {
+			case !rep.Ran:
+				audit("graceful stop: none ran before this run reported its exit")
+			case rep.Note != "":
+				audit("graceful stop: " + rep.Note)
+			case rep.Asked == 0:
+				audit("graceful stop: this run had no running containers")
+			default:
+				audit(fmt.Sprintf("graceful stop: %d of %d container(s) stopped",
+					rep.Stopped, rep.Asked))
+			}
+		},
 		// The reaper is the one helper snug starts that is MEANT to outlive
 		// it, so it is the one thing the signalled-teardown sweep must not
 		// SIGKILL (issue #113). Its pid is already fixed: ArmReaper ran above,

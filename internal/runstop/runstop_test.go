@@ -1,4 +1,4 @@
-package dockerproxy
+package runstop
 
 import (
 	"encoding/json"
@@ -6,19 +6,18 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/gomoni/snug/internal/policy"
 )
 
-// stopRunFixture is a Proxy wired to a fake engine this test drives, with the
-// proxy's own listening socket in a TempDir. handler is the engine.
-func stopRunFixture(t *testing.T, runLabel string, handler http.HandlerFunc) (*Proxy, *[]string, *sync.Mutex) {
+// stopRunFixture stands up a fake engine on a unix socket this test drives and
+// returns that socket's path — which, with the run label, is the whole of what
+// Stop needs. It needs no privileges, which is why this package is a leaf: the
+// tests below are the security-critical half of issue #174 and they run in CI.
+func stopRunFixture(t *testing.T, handler http.HandlerFunc) (sock string, seen *[]string, seenMu *sync.Mutex) {
 	t.Helper()
 	dir := t.TempDir()
 	up := filepath.Join(dir, "engine.sock")
@@ -29,20 +28,15 @@ func stopRunFixture(t *testing.T, runLabel string, handler http.HandlerFunc) (*P
 	t.Cleanup(func() { _ = ln.Close() })
 
 	var mu sync.Mutex
-	var seen []string
+	var saw []string
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		seen = append(seen, r.Method+" "+r.URL.RequestURI())
+		saw = append(saw, r.Method+" "+r.URL.RequestURI())
 		mu.Unlock()
 		handler(w, r)
 	}))
 
-	p, err := New(&policy.Policy{}, up, filepath.Join(dir, "proxy.sock"), runLabel, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(filepath.Join(dir, "proxy.sock")) })
-	return p, &seen, &mu
+	return up, &saw, &mu
 }
 
 // TestStopRunStopsThisRunsContainersAndAsksForNoOthers is issue #174's positive
@@ -59,7 +53,7 @@ func stopRunFixture(t *testing.T, runLabel string, handler http.HandlerFunc) (*P
 func TestStopRunStopsThisRunsContainersAndAsksForNoOthers(t *testing.T) {
 	var stopped []string
 	var mu sync.Mutex
-	p, seen, seenMu := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p, seen, seenMu := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1.41/containers/json":
 			// The engine answers only what the filter asked for, which is what
@@ -95,7 +89,7 @@ func TestStopRunStopsThisRunsContainersAndAsksForNoOthers(t *testing.T) {
 		}
 	})
 
-	p.StopRunContainers(func(string) {})
+	Stop(p, "snug.run=RUN-A")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -128,7 +122,7 @@ func TestStopRunAddressesContainersByIDNeverByName(t *testing.T) {
 	const id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	var paths []string
 	var mu sync.Mutex
-	p, _, _ := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			// A real engine returns both, and the NAME is the trap: a caller
 			// that used it would be resolving a string the payload controls.
@@ -142,7 +136,7 @@ func TestStopRunAddressesContainersByIDNeverByName(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	p.StopRunContainers(func(string) {})
+	Stop(p, "snug.run=RUN-A")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -169,14 +163,14 @@ func TestStopRunAddressesContainersByIDNeverByName(t *testing.T) {
 func TestStopRunDoesNotHangWhenTheEngineNeverAnswers(t *testing.T) {
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	p, _, _ := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		<-block // accept, then never answer
 	})
 
 	done := make(chan time.Duration, 1)
 	go func() {
 		start := time.Now()
-		p.StopRunContainers(func(string) {})
+		Stop(p, "snug.run=RUN-A")
 		done <- time.Since(start)
 	}()
 
@@ -186,7 +180,7 @@ func TestStopRunDoesNotHangWhenTheEngineNeverAnswers(t *testing.T) {
 		// bounded by SNUG's number, not that it is fast.
 		if took > 5*time.Second {
 			t.Errorf("the graceful stop took %s against a %s budget — a wedged engine is "+
-				"holding snug's exit open", took, stopBudget)
+				"holding snug's exit open", took, Budget)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("the graceful stop never returned against an engine that accepts and never " +
@@ -201,36 +195,36 @@ func TestStopRunDoesNotHangWhenTheEngineNeverAnswers(t *testing.T) {
 func TestStopRunAsksNothingWithoutARunLabel(t *testing.T) {
 	var mu sync.Mutex
 	asked := 0
-	p, _, _ := stopRunFixture(t, "", func(w http.ResponseWriter, r *http.Request) {
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		asked++
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	p.StopRunContainers(func(string) {})
+	Stop(p, "")
 
 	mu.Lock()
 	got := asked
 	mu.Unlock()
 	if got != 0 {
-		t.Errorf("the engine saw %d request(s) from a proxy with no run label; with no label "+
+		t.Errorf("the engine saw %d request(s) for a run with no label; with no label "+
 			"there is no way to scope a stop to this run's containers", got)
 	}
 
 	// POSITIVE CONTROL: the same fixture WITH a label does ask, so the zero
 	// above is the label rule and not a broken fixture.
-	p2, _, _ := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p2, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		asked++
 		mu.Unlock()
 		_, _ = w.Write([]byte(`[]`))
 	})
-	p2.StopRunContainers(func(string) {})
+	Stop(p2, "snug.run=RUN-A")
 	mu.Lock()
 	defer mu.Unlock()
 	if asked == 0 {
-		t.Error("control: a proxy WITH a run label asked the engine nothing either, so the " +
+		t.Error("control: a run WITH a label asked the engine nothing either, so the " +
 			"assertion above passes on a fixture that could never reach the engine")
 	}
 }
@@ -258,7 +252,7 @@ func TestStopRunIsBoundedRegardlessOfContainerCount(t *testing.T) {
 	}
 	ids = append(ids, ']')
 
-	p, _, _ := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = w.Write(ids)
 			return
@@ -267,13 +261,13 @@ func TestStopRunIsBoundedRegardlessOfContainerCount(t *testing.T) {
 	})
 
 	start := time.Now()
-	p.StopRunContainers(func(string) {})
+	Stop(p, "snug.run=RUN-A")
 	took := time.Since(start)
 
-	if took > 3*stopBudget {
+	if took > 3*Budget {
 		t.Errorf("stopping %d containers that never answer took %s against a %s budget — "+
 			"the budget is being spent per container, so a payload sets snug's exit time "+
-			"by creating containers", n, took, stopBudget)
+			"by creating containers", n, took, Budget)
 	}
 }
 
@@ -291,7 +285,7 @@ func TestStopRunNeverStopsAnotherRunsContainer(t *testing.T) {
 
 	var mu sync.Mutex
 	var stopped []string
-	p, _, _ := stopRunFixture(t, "snug.run=RUN-A", func(w http.ResponseWriter, r *http.Request) {
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = w.Write([]byte(`[{"Id":"` + mine + `","Labels":{"snug.run":"RUN-A"}},` +
 				`{"Id":"` + theirs + `","Labels":{"snug.run":"RUN-B"}}]`))
@@ -303,7 +297,7 @@ func TestStopRunNeverStopsAnotherRunsContainer(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	p.StopRunContainers(func(string) {})
+	Stop(p, "snug.run=RUN-A")
 
 	mu.Lock()
 	defer mu.Unlock()

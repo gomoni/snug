@@ -99,14 +99,26 @@ type Options struct {
 
 	// OnPayloadExit, if non-nil, runs after the staged payload has been
 	// reaped (st.Wait() returned) and BEFORE the deferred st.Close() collapses
-	// the stage. It is the seam for stopping THIS run's containers, by label,
-	// while the engine's socket is still reachable — internal/sandbox must
-	// not import internal/engine (layering: this package is lower-level), so
-	// the actual "stop --filter label=..." call is supplied by the caller as
-	// a closure. Never called on the unstaged arm of Run, which
-	// has no stage and therefore no engine to have started in the first
-	// place.
+	// the stage. What it is for is DROPPING the engine's keepalive — the work
+	// that needs the engine alive is not here and cannot be: by the time
+	// st.Wait() returns, the stage has already exited or is exiting, and with
+	// it the engine (issue #174's measurement: a stop issued from this
+	// position got `connect: connection refused` 4/4 on a clean exit). The
+	// graceful stop therefore runs INSIDE the stage, before it reports the
+	// exit, and arrives here as OnGracefulStop's report rather than as work
+	// to do. Never called on the unstaged arm of Run, which has no stage and
+	// therefore no engine to have started in the first place.
 	OnPayloadExit func()
+
+	// OnGracefulStop, if non-nil, receives what the stage's own graceful stop
+	// did, as reported on the "exited" event. It is a REPORT and never a
+	// request: the work is already finished by the time this runs, and the
+	// caller's only job is to render it — through a sink that gates on
+	// verbosity and sanitises, because the counts are the stage's but the
+	// containers were the payload's.
+	//
+	// Only on the staged arm, and only for a run with an engine.
+	OnGracefulStop func(stage.StopReport)
 
 	// ExcludeFromTeardown names host pids that the signalled-teardown sweep
 	// must not kill, together with anything reparented under them. It exists
@@ -689,32 +701,34 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// topology's bwrap can, by the same pdeathsig-arming gap, and
 	// confirmTeardown's sweep is what reaches it once the stage is dead.
 	return guard.wait(st.Pid(), func() (int, error) {
-		ws, err := st.Wait()
-		// Run BEFORE the deferred st.Close() above collapses the stage — and
-		// therefore the engine, via its own Pdeathsig cascading from P1 —
-		// while the engine's socket is still reachable. That reachability
-		// used to be the whole point of this position: it let a filtered
-		// `podman stop` run against a still-live engine, before the collapse.
-		// Issue #167 deleted that call (the pids it would stop are numbered
-		// in the engine's own pid namespace, meaningless to a host-side
-		// invocation whether the engine happens to be alive here or already
-		// dead on the SIGKILL path — internal/engine's package comment and
-		// ENGINE-WIRING.md §6/§12 item 1 carry the argument), so THIS SEAM
-		// NOW EXISTS FOR NOTHING SPECIFIC TO ITS POSITION: opts.OnPayloadExit
-		// (Engine.Stop) still drops the keepalive, verifies by the socket-
-		// path sweep and tears down the reaper, and none of those three
-		// needs the engine reachable rather than already collapsed. THAT
-		// SEPARATE DECISION HAS SINCE BEEN MADE (issue #344): the hook here
-		// now only DETACHES the engine, and the verification moved to the
-		// caller's own deferred cleanup, which runs after the st.Close()
-		// above. "Leaving it costs nothing observable" was measured false —
-		// from this position the engine is alive by construction, so a sweep
-		// for it can only go quiet by waiting out the engine's idle timeout,
-		// and the sweep did not notice for a milestone only because it was
-		// matching a socket spelling no process carries. Called whatever
-		// the payload's own outcome, because "did this run have containers
-		// to stop" is a question about opts.EngineSpec, not about how the
-		// payload exited.
+		ws, rep, err := st.Wait()
+		// Runs BEFORE the deferred st.Close() above, and what that buys is
+		// NOT a reachable engine. It used to be described as one: a filtered
+		// `podman stop` ran here against a still-live engine, issue #167
+		// deleted that call (the pids it would stop are numbered in the
+		// engine's own pid namespace, meaningless to a host-side invocation —
+		// internal/engine's package comment and ENGINE-WIRING.md §6/§12 item
+		// 1 carry the argument), and issue #344 reduced the hook to a DETACH.
+		//
+		// "The engine is alive by construction at this point" survived those
+		// two changes as a comment and was MEASURED FALSE by issue #174: a
+		// stop issued from here reported `connect: connection refused` 4/4 on
+		// a clean exit. St.Wait returns when the "exited" BYTES ARRIVE, and
+		// P1 sends them on its way out — P1's exit Pdeathsigs the engine and
+		// wins the race against any round-trip started here. The graceful
+		// stop therefore lives in P1 (internal/stage/serve.go, and
+		// internal/runstop for the step itself), and what arrives here is its
+		// report.
+		//
+		// What this position still is: the last moment before the stage is
+		// collapsed, which is where the keepalive must be dropped so snug's
+		// own post-payload code does not hold the engine up. Called whatever
+		// the payload's outcome, because "did this run have containers" is a
+		// question about opts.EngineSpec and not about how the payload
+		// exited.
+		if opts.OnGracefulStop != nil && opts.EngineSpec != nil {
+			opts.OnGracefulStop(rep)
+		}
 		if opts.OnPayloadExit != nil {
 			opts.OnPayloadExit()
 		}

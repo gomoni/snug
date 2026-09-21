@@ -57,7 +57,7 @@ func TestWaitReturnsWhenTheControlChannelClosesWithoutExited(t *testing.T) {
 	// a regression that hangs must fail THIS test rather than the package.
 	done := make(chan result, 1)
 	go func() {
-		_, err := st.Wait()
+		_, _, err := st.Wait()
 		done <- result{err}
 	}()
 
@@ -103,7 +103,7 @@ func TestWaitReturnsTheStatusWhenExitedArrives(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		ws, err := st.Wait()
+		ws, _, err := st.Wait()
 		done <- result{ws, err}
 	}()
 
