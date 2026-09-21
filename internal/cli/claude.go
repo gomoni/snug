@@ -1279,14 +1279,23 @@ func claudeGuidance(pol *policy.Policy) []byte {
 		b.WriteString("misconfiguration to repair.\n\n")
 		// The third fact worth an agent's turn, and it is phrased per path
 		// because that is the only honest phrasing (issue #174): a container
-		// gets a signal it can handle on exactly one of the three ways a run
-		// ends. An agent told "containers shut down gracefully" would write a
-		// container that depends on it and be wrong two exits out of three.
+		// gets a signal it can handle on some of the ways a run ends and not
+		// others. An agent told "containers shut down gracefully" would write
+		// a container that depends on it and be wrong whenever it is not.
+		//
+		// WHICH paths those are widened with issue #595: a catchable signal
+		// now gives the command a bounded window of its own, and a command
+		// that exits inside it exits NORMALLY — so the clean-path stop is
+		// reached. The wording says "handling Ctrl-C and exiting counts"
+		// rather than "Ctrl-C is graceful", because the second would be read
+		// as a promise that survives ignoring the signal, and it does not.
 		b.WriteString("A container is stopped gracefully only when the command you are running\n")
-		b.WriteString("exits normally, and only for about a second. If this sandbox is signalled\n")
-		b.WriteString("or killed, its containers are killed with it and get no chance to flush —\n")
-		b.WriteString("so a container doing buffered work should be stopped by you, before you\n")
-		b.WriteString("exit, rather than left to teardown.\n\n")
+		b.WriteString("exits normally, and only for about a second. Handling Ctrl-C and exiting\n")
+		b.WriteString("counts as exiting normally — you get about a second for that too — so a\n")
+		b.WriteString("handler that stops its own containers will be reached. Ignore the signal,\n")
+		b.WriteString("or get SIGKILLed, and the containers are killed with the sandbox and get no\n")
+		b.WriteString("chance to flush. A container doing buffered work should still be stopped by\n")
+		b.WriteString("you rather than left to teardown.\n\n")
 	}
 
 	if id := pol.Identity; id != nil && id.SSH.Agent != policy.SSHNone {

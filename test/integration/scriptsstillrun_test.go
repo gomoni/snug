@@ -15,8 +15,9 @@ import (
 // TestTheNestingScriptStillReadsALiveSandbox runs scripts/payloads/pid-nesting.py
 // against a real run, and it is a SMOKE test on purpose: the property it
 // prints is owned by TestOfflineArmsIntermediateBwrapIsUnaddressableFromThe
-// Payload and TestStagedArmsBwrapIsNotNested, and asserting it twice would be
-// two copies of one state, the second of which nobody updates. What has no
+// Payload and TestStagedArmsBwrapIsNestedTooIsTheSingleAuthorProperty, and
+// asserting it twice would be two copies of one state, the second of which
+// nobody updates. What has no
 // other owner is whether the script still WORKS: scripts/README.md lists it as
 // a payload a human runs, and nothing but a human had ever done so.
 //

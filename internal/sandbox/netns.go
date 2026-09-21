@@ -105,9 +105,24 @@ func startPasta(p *policy.Policy, target policy.PastaTarget) (*netHelper, error)
 	cmd.Stderr = &errbuf
 	cmd.Stdout = nil
 
-	// If snug is SIGKILLed, the kernel kills pasta too. Teardown must not
-	// depend on snug getting the chance to clean up.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// Pdeathsig: if snug is SIGKILLed, the kernel kills pasta too. Teardown
+	// must not depend on snug getting the chance to clean up.
+	//
+	// Setpgid: pasta leaves the terminal's foreground process group, and that
+	// is about the GRACE rather than about teardown. pasta is an ordinary
+	// member of that group with the default disposition, so a Ctrl-C killed it
+	// outright — MEASURED, during the payload's own grace window: "snug: the
+	// network helper exited (signal: interrupt); the sandbox now has loopback
+	// only." A payload given a second to flush was losing its egress inside
+	// that second, which makes the second worth much less than it looks.
+	//
+	// It costs nothing that teardown relies on. Pdeathsig above is unchanged,
+	// and confirmTeardown's sweep finds pasta by walking snug's DESCENDANTS,
+	// not by process group, so it is still SIGKILLed with everything else —
+	// the one helper deliberately exempt from that sweep is the container
+	// reaper, and it is exempt by pid (see teardown.go's exclude), not by
+	// being in its own group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting pasta: %w", err)

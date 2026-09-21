@@ -85,7 +85,7 @@ func ignoretermBin(t *testing.T) string {
 // THE POSITIVE CONTROL is the second half of this test: the identical
 // container, under a SIGNALLED run of snug. A signalled run's teardown sweep
 // SIGKILLs the stage before runstop.Stop can ever run (that ordering is
-// TestSignalledRunSendsNoGracefulStop's own subject); the pid namespace then
+// TestASignalledRunWhosePayloadIgnoresItSendsNoGracefulStop's own subject); the pid namespace then
 // collapses and the container dies WITHOUT ever being asked to stop. If the
 // flag file appeared there too, the clean-exit half above would only be
 // proving the container exited, which is true of both paths — the control is
@@ -187,7 +187,16 @@ if build_scratch_probe():
         status, j = req("GET", "/v1.41/containers/%%s/json" %% cid)
         print("RUNNING: %%s" %% json.loads(j).get("State", {}).get("Running"), flush=True)
 print("CONTAINER-RUNNING", flush=True)
-import time
+# IGNORES SIGTERM ON PURPOSE, and that is what makes the assertion below a
+# control rather than a coincidence. Since issue #595 the payload gets a
+# bounded grace on a catchable signal, and a payload that EXITS inside it
+# exits NORMALLY — which reaches the stage's clean-path graceful stop and
+# writes the flag. This half's subject is the other case: a payload that does
+# not take the offer, so the budget expires, confirmTeardown SIGKILLs the
+# stage, and no stop is ever asked for.
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("IGNORING-SIGTERM", flush=True)
 time.sleep(300)
 `, tagSig, tokenSig, proj)
 	if err := os.WriteFile(filepath.Join(proj, "termtrap_sig.py"), []byte(scriptSig), 0o644); err != nil {
@@ -248,18 +257,34 @@ time.sleep(300)
 		time.Sleep(100 * time.Millisecond)
 	}
 	if sigFlagExists {
-		t.Errorf("after a SIGNALLED snug exit, the container's SIGTERM-handler flag %s WAS "+
-			"written — snug's clean-path graceful stop must not run once a signal has "+
-			"reached it (issue #174, TestSignalledRunSendsNoGracefulStop's own subject); "+
-			"without this control the clean-exit flag above would prove only that the "+
-			"container exited, not that it received snug's own stop", sigFlag)
+		t.Errorf("after a SIGNALLED snug exit whose payload IGNORED the signal, the "+
+			"container's SIGTERM-handler flag %s WAS written — once the payload has "+
+			"declined its grace (issue #595) the budget expires and confirmTeardown "+
+			"SIGKILLs the stage, so the clean-path graceful stop must never be reached "+
+			"(issue #174, TestASignalledRunWhosePayloadIgnoresItSendsNoGracefulStop's own "+
+			"subject); without this control the clean-exit flag above would prove only "+
+			"that the container exited, not that it received snug's own stop", sigFlag)
 	}
 }
 
-// TestSignalledRunSendsNoGracefulStop is issue #174's other half of the same
-// claim, checked at the MECHANISM rather than at the container's own
-// behaviour: a snug process that takes a signal must never even attempt the
-// graceful stop, because the graceful stop runs in P1 (internal/stage's own
+// TestASignalledRunWhosePayloadIgnoresItSendsNoGracefulStop is issue #174's
+// other half of the same claim, checked at the MECHANISM rather than at the
+// container's own behaviour.
+//
+// THE NAME CARRIES A CONDITION THAT USED TO BE UNNECESSARY. It read
+// "TestSignalledRunSendsNoGracefulStop", and that was the whole truth while a
+// signalled snug SIGKILLed the sandbox instantly. Since issue #595 a catchable
+// signal gives the payload a bounded grace, and a payload that EXITS inside it
+// exits NORMALLY — so st.Wait returns an ordinary status, the stage reaches
+// its clean-path graceful stop, and this run's containers ARE stopped
+// gracefully. That is a capability, not a leak, and it is the composition
+// stated at payloadGraceBudget: an operator holding Ctrl-C on a container run
+// pays both budgets, up to ~2s.
+//
+// So the payload here IGNORES the signal, which is what leaves the mechanism
+// below as the one that runs: a snug process whose payload declined the grace
+// must never even attempt the graceful stop, because the graceful stop runs
+// in P1 (internal/stage's own
 // runOneSandbox, refs the ordering
 // TestGracefulStopRunsAfterTheReapAndBeforeTheExitedEventLeaves in
 // test/guard/enginereapordering_test.go pins from inside the process), and
@@ -293,7 +318,7 @@ time.sleep(300)
 // "graceful stop: " substring on the signalled path, matching ALL FOUR
 // shapes the audit switch can produce, "none ran" included) is what would
 // catch that line reappearing.
-func TestSignalledRunSendsNoGracefulStop(t *testing.T) {
+func TestASignalledRunWhosePayloadIgnoresItSendsNoGracefulStop(t *testing.T) {
 	budget(t, 180*time.Second)
 	env, _ := containerEngineEnv(t)
 	requireRealEngine(t, env)
@@ -369,7 +394,14 @@ if build_scratch_probe():
         status, _ = req("POST", "/v1.41/containers/%%s/start" %% cid)
         print("START: %%d" %% status, flush=True)
 print("CONTAINER-RUNNING", flush=True)
-import time
+# Declines the grace issue #595 gives it, for the reason the other signalled
+# half states: a payload that EXITS inside the window exits normally, which
+# reaches the stage's clean-path graceful stop. The mechanism this test is
+# about — confirmTeardown SIGKILLing P1 before P1 reaches the stop — is what
+# happens once the budget expires instead.
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("IGNORING-SIGTERM", flush=True)
 time.sleep(300)
 `, tagSig, tokenSig)
 	if err := os.WriteFile(filepath.Join(proj, "nostop_sig.py"), []byte(scriptSig), 0o644); err != nil {

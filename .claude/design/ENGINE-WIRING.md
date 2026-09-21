@@ -440,7 +440,17 @@ on namespace-local numbers, for an outcome the kernel already delivers faster.
 socket, and it runs in the STAGE.** `internal/runstop` lists this run's running
 containers by label and stops each with `t=1`, concurrently, inside one
 one-second budget; `internal/stage`'s `runOneSandbox` calls it after it has
-reaped the payload and before it sends `"exited"`. It cannot run in P0: `Stage.Wait`
+reaped the payload and before it sends `"exited"`.
+
+**"After it has reaped the payload" is the whole condition, and it now covers
+more exits than it used to.** A payload that handles `Ctrl-C` and exits inside
+the second `snug` gives it for that (INDEX.md §4.3, "What a signal buys the
+command inside") has exited *normally* — `Stage.Wait` returns an ordinary
+status — so the stop below runs for it. What does not reach the stop is a
+payload that IGNORES the signal, whose grace expires and whose stage is then
+pidfd-SIGKILLed, and a `SIGKILL`ed `snug`, where no Go code runs anywhere. So
+holding `Ctrl-C` on a container run can cost both budgets, about two seconds,
+and that is stated on the `--dry-run` screen rather than discovered. It cannot run in P0: `Stage.Wait`
 returns when those bytes ARRIVE, and P1 is already exiting as it sends them,
 Pdeathsig'ing the engine — a stop issued from P0 measured `connect: connection
 refused` 4/4 on a clean exit. In the stage the engine is alive because the

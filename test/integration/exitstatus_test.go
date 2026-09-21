@@ -79,12 +79,32 @@ func TestASelfSignalledPayloadExitsAt128PlusTheSignal(t *testing.T) {
 // possible, stop trusting anything downstream" — armTeardown registers SIGINT
 // among teardownSignals, and teardownGuard.wait's caught-signal branch calls
 // confirmTeardown (an immediate SIGKILL of the sandbox's root child) BEFORE
-// reporting 128+signal, deliberately never giving whatever is running inside
-// a chance to decide for itself. That comment names why: issue #13's orphan
-// window opens in exactly the gap a "forward it and wait" design would leave.
-// This is the correct, safety-motivated behaviour to pin — a future change
-// that made snug wait for the payload's own handler would reopen that window
-// — and that transcript predates it, or was never re-run after it landed.
+// reporting 128+signal, never giving whatever is running inside a chance to
+// decide for itself.
+//
+// WHY IT IS THIS WAY IS NOT WHAT THIS COMMENT USED TO SAY, and the wrong
+// version is worth leaving visible because it is how the behaviour got pinned.
+// It read: "issue #13's orphan window opens in exactly the gap a 'forward it
+// and wait' design would leave. This is the correct, safety-motivated
+// behaviour to pin." MEASURED FALSE. #13's window is a STARTUP window —
+// teardown.go's own table has 0 leaks at 86-94ms and 8/8 at 110-160ms against
+// a ~206ms payload start latency — and once a payload exists the cascade is
+// armed without snug: a SIGKILL of snug at steady state leaves the payload
+// dead 0/4 on BOTH topologies, heartbeat frozen at 0.4s and at 1.4s after
+// snug's death. A wait that opens only once an init is named touches none of
+// #13.
+//
+// What this test actually pins is the behaviour issue #105's guard introduced
+// as a SIDE EFFECT. The stage commit's own by-hand transcript expected the
+// opposite — `trap 'echo caught-sigint; exit 7' INT` firing, snug exiting 7 —
+// and that was the design until the guard landed four days later. Nobody
+// decided the change; a stale transcript became this test.
+//
+// So it is pinned as CURRENT BEHAVIOUR, not as a safety property, and a change
+// that gives the payload's handler a bounded window is not required to defeat
+// it — it is required to UPDATE it, with the measurements above as the
+// argument. The one thing that must not change without its own measurement is
+// the negative below: nothing survives.
 //
 // -p @net is deliberate, not incidental: it is the one shape that puts a
 // SECOND long-lived helper (the stage, which owns the netns) between P0 and

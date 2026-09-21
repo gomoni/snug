@@ -22,6 +22,7 @@ asserted; the expected output lives in its assertions, not in prose beside it.
 | [`0032-claude-opens-with-no-dialog-and-no-hook.sh`](0032-claude-opens-with-no-dialog-and-no-hook.sh) | the trust dialog is pre-answered and a hostile repo's `.claude/settings.json` hooks and `.mcp.json` servers are reinterpreted away before Claude Code reads either — with the same fixture's hook firing on the bare host as the control |
 | [`0033-an-unnamed-plugins-hook-does-not-fire.sh`](0033-an-unnamed-plugins-hook-does-not-fire.sh) | an installed plugin's `hooks.json` is not even read inside when `@claude`'s allowlist does not name it, though its tree stays bound read-only (issue #68) |
 | [`0034-projected-credential-still-authenticates.sh`](0034-projected-credential-still-authenticates.sh) | the staged `~/.claude/.credentials.json` carries exactly five fields, never a refresh token, and a live turn on it still authenticates (issue #58) |
+| [`0040-a-payloads-handler-finishes-on-ctrl-c.py`](0040-a-payloads-handler-finishes-on-ctrl-c.py) | a REAL Ctrl-C on a REAL pty reaches the payload exactly ONCE, its own handler finishes 300ms of work inside `payloadGraceBudget`, and snug reports the payload's exit code — both topologies (issue #595). CI cannot run it: with no terminal every Go test takes the RELAY path instead, which `test/integration/payloadgrace_test.go` owns |
 
 **`NNNN` is an allocation sequence, not a checklist section number.** Sections
 carry suffixes (`9a`, `9c-ter`, `9c-quater`, `23b`) that no numeric prefix can
@@ -47,7 +48,7 @@ printed.
 | payload | run it | graded by |
 |---|---|---|
 | [`payloads/http-door-server.py`](payloads/http-door-server.py) | as the payload of a run whose profile declares a `listen_names` door | a human, in *`@http-proxy`: a door only a human can open* below |
-| [`payloads/pid-nesting.py`](payloads/pid-nesting.py) | twice — `inside` as the payload, `host` beside it | `TestOfflineArmsIntermediateBwrapIsUnaddressableFromThePayload` and `TestStagedArmsBwrapIsNotNested` own the property; `TestTheNestingScriptStillReadsALiveSandbox` owns whether the script still works |
+| [`payloads/pid-nesting.py`](payloads/pid-nesting.py) | twice — `inside` as the payload, `host` beside it | `TestOfflineArmsIntermediateBwrapIsUnaddressableFromThePayload` and `TestStagedArmsBwrapIsNestedTooIsTheSingleAuthorProperty` own the property; `TestTheNestingScriptStillReadsALiveSandbox` owns whether the script still works |
 
 `payloads/http-door-server.py` is also the answer to "how do I serve something
 from in here", because `python3 -m http.server` cannot be: snug never forwards a

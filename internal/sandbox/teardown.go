@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -202,6 +203,223 @@ var teardownSignals = []os.Signal{
 	syscall.SIGSEGV, syscall.SIGBUS, syscall.SIGFPE, syscall.SIGILL, syscall.SIGSTKFLT,
 }
 
+// payloadGraceBudget is how long a caught SIGINT, SIGTERM or SIGHUP gives the
+// payload's OWN handler before confirmTeardown starts killing (issue #595).
+//
+// WHY THERE IS ONE. Measured on this host, real pty, ^C 0.5s after the payload
+// printed READY, payload trapping INT to write h-start, do N work of its own,
+// then write h-done:
+//
+//	handler work         h-start   h-done
+//	none                 8/8       3/8
+//	spin 10   (~1.3ms)   8/8       1/8
+//	spin 100  (~1.5ms)   8/8       0/8
+//	sleep 0.05           4/4       0/4
+//
+// The handler always ENTERS; what it never had was time. With snug SIGSTOPped
+// before the ^C, h-done is 4/4 — the control that says the signal path itself
+// was never the problem.
+//
+// ONE SECOND, and it is snug's number rather than the payload's for the same
+// reason issue #174's container budget is: a cap the sandboxed material
+// chooses is not a cap. There is no flag and no profile key, and adding either
+// needs the maintainer.
+//
+// IT IS NOT ISSUE #13'S WINDOW HANDED BACK, which is what issue #595 assumed
+// and what the integration suite asserted in prose for a milestone. #13 is a
+// STARTUP leak: this file's own table above has 0 leaks at 86-94ms and 8/8 at
+// 110-160ms, against a ~206ms payload start latency. By the time a payload
+// exists the kernel cascade is armed and needs no Go code — MEASURED, SIGKILL
+// of snug 1.0s after READY, payload advancing a heartbeat file, heartbeat
+// identical at 0.4s and at 1.4s after snug's death, payload survived 0/4 on
+// the offline arm and 0/4 on the staged arm. And the grace never opens before
+// an init is named (see sandboxInit.get), which is the whole of that window.
+//
+// The abuse sentence, which is what this constant actually costs: a hostile
+// payload can keep running inside the sandbox, with whatever the policy
+// already granted it, for up to this long after the operator asked it to stop
+// — and can make that happen on every signal by ignoring it. Bounded by this
+// constant, by a second signal cutting the wait short, and by confirmTeardown
+// running afterwards unchanged.
+const payloadGraceBudget = time.Second
+
+// graceSignals is the subset of teardownSignals whose arrival gives the
+// payload payloadGraceBudget before the sweep.
+//
+// Its membership rule is the OPPOSITE of teardownSignals' and is argued
+// separately rather than inherited: a signal belongs here if it is a
+// deliberate request to STOP, which a payload can reasonably be given a moment
+// to honour. Everything else teardownSignals carries — QUIT, ABRT, TRAP, SYS,
+// and the five fault-named ones a kill(2) can still deliver — means snug is
+// being killed hard or crashed on purpose, and holding the sweep for a payload
+// is not what that sender asked for.
+//
+// Adding to this map widens payloadGraceBudget's abuse sentence by one more
+// signal. Removing from it costs a payload its handler and NOTHING ELSE: the
+// teardown guarantee rests on teardownSignals, never on this.
+var graceSignals = map[syscall.Signal]bool{
+	syscall.SIGINT:  true,
+	syscall.SIGTERM: true,
+	syscall.SIGHUP:  true,
+}
+
+// sandboxInit is the one cell where "bwrap named its init" (exec.go's
+// notifyInit, which both arms funnel through) meets "a caught signal needs
+// somewhere to relay to" (relayToPayload).
+//
+// A cell rather than a field on teardownGuard because of an ORDER: on the
+// staged arm the closure that learns the pid is stage.Config's
+// OnSandboxForked, built before stage.Start, while the guard is armed after
+// the network is up. The writer exists before the reader does, so each arm of
+// Run allocates this and hands it to both.
+//
+// Write-once, the same trade initReporter makes and for the same reason: the
+// offline arm has two namers, and the later answer cannot be more right than
+// the earlier one about which process this is.
+type sandboxInit struct {
+	pid atomic.Int64
+
+	// pinned is a pidfd on the init, held for the rest of the run, and it is
+	// not an optimisation — it is what makes the number above safe to use.
+	//
+	// THE HAZARD, which is killPinned's "the pid you read is the pid you kill"
+	// one level up. relayToPayload picks its targets as the CHILDREN of this
+	// pid, and it sends a CATCHABLE signal. If the init exits and is reaped —
+	// which is exactly what happens when the payload finishes — the number can
+	// be recycled to an unrelated host process of the same uid, and its
+	// children would then be strangers that snug SIGTERMs. A stranger killed
+	// by SIGKILL is at least obvious; a stranger sent SIGTERM may well take it
+	// for an ordinary shutdown request and exit quietly.
+	//
+	// A pidfd holds a reference to the kernel's struct pid, so the NUMBER
+	// cannot be reused while this is open. The init may die, and then the pid
+	// names a dead process with no children and the relay reaches nothing —
+	// which is correct — but it can never come to name somebody else.
+	//
+	// Opened once, by the same CompareAndSwap that publishes the pid, so the
+	// two cannot disagree. A failure to open leaves the pid unpublished rather
+	// than published unpinned: no grace is worth a signal sent outside this
+	// run.
+	pinned atomic.Pointer[os.File]
+}
+
+func (s *sandboxInit) set(pid int) {
+	if s == nil || pid <= 1 {
+		return
+	}
+	// Pin BEFORE publishing. The window this closes is small and real: between
+	// a published pid and the pidfd that protects it, the init could exit, be
+	// reaped, and be recycled.
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		// No pin, no publication. On a kernel without pidfd_open (before Linux
+		// 5.3) this disables the grace entirely and the sweep behaves exactly
+		// as it did before issue #595 — a capability quietly absent, which is
+		// the one direction invariant 5 permits, because nothing has been
+		// promised on this path that then fails to hold.
+		return
+	}
+	f := os.NewFile(uintptr(fd), "pidfd-sandbox-init")
+	if !s.pid.CompareAndSwap(0, int64(pid)) {
+		// Another namer won. Drop this pin rather than leaking the descriptor
+		// for the life of the run.
+		_ = f.Close()
+		return
+	}
+	s.pinned.Store(f)
+}
+
+// close releases the pin. Called from the guard's own stop, so the descriptor
+// lives exactly as long as the run whose init it names.
+func (s *sandboxInit) close() {
+	if s == nil {
+		return
+	}
+	if f := s.pinned.Swap(nil); f != nil {
+		_ = f.Close()
+	}
+}
+
+// get returns 0 when no init has been named yet. That is a real state and not
+// a failure: a signal arriving before bwrap has forked its init finds no
+// payload to owe anything to, so the grace never opens and the sweep runs
+// exactly as it always did. It is also what keeps payloadGraceBudget clear of
+// issue #13's startup window entirely — the interval a grace could widen is
+// precisely the one where there is nothing to wait for.
+func (s *sandboxInit) get() int {
+	if s == nil {
+		return 0
+	}
+	return int(s.pid.Load())
+}
+
+// relayToPayload sends sig to the payload — the sandbox init's own children,
+// named by HOST pid — and reports how many processes it reached.
+//
+// THE INIT IS NOT THE TARGET, and aiming at it is the mistake this comment
+// exists to prevent. The init is pid 1 of the sandbox's pid namespace, and pid
+// 1 ignores every signal it has no handler for; bwrap installs none. exec.go
+// records the same measurement one level out, for the bwrap that is pid 1 of
+// the intermediate namespace: kill -TERM then -INT leave it alive, -9 kills
+// it. A relay aimed at the init is a relay to nothing.
+//
+// The payload is the init's child, on both arms. MEASURED, this host:
+//
+//	offline  snug -> bwrap (pid 1 of NP) -> bwrap (the init) -> sh
+//	staged   snug -> stage -> bwrap (pid 1 of its own) -> bwrap (the init) -> sh
+//
+// Children plural, because "only child" is an observation about what bwrap
+// does and not something snug enforces; signalling the set is the same answer
+// when the set has one member.
+//
+// DIRECT CHILDREN ONLY, and that is a real difference from the other path
+// rather than an oversight. A terminal signals the whole foreground process
+// GROUP, so a payload's own background jobs get it too; this reaches the
+// command snug was asked to run and nothing under it. That is what
+// `kill <pid>` means everywhere else, and a shell payload's own job control is
+// the thing that decides what its children deserve — snug guessing on its
+// behalf would be snug deciding how somebody else's process tree shuts down.
+// Nothing escapes either way: confirmTeardown sweeps the whole descendant tree
+// when the budget is up.
+//
+// Pinned, with the parent re-read THROUGH the pin, for killPinned's reason:
+// the pid you read is not the pid you signal. It matters more here than it
+// does there, because this sends a CATCHABLE signal — a SIGTERM delivered to a
+// stranger that inherited the number is a process killed outside the sandbox
+// entirely, and unlike a SIGKILL of the same stranger its owner may well
+// mistake it for an ordinary shutdown request.
+// send=false makes this a COUNT and nothing else, which is what the
+// terminal-delivered path needs: there the tty already signalled the payload
+// and relaying would double-deliver, but "is there a payload at all" is still
+// the question that decides whether to spend the budget. On a container run
+// the init exists while its payload is still PARKED on --block-fd and has
+// never been forked — counting zero there is what stops the grace opening on a
+// sandbox that has nothing running inside it.
+func relayToPayload(initPID int, sig syscall.Signal, send bool) int {
+	if initPID <= 1 {
+		return 0
+	}
+	found := 0
+	for pid, ppid := range allPPIDs() {
+		if ppid != initPID {
+			continue
+		}
+		fd, err := unix.PidfdOpen(pid, 0)
+		if err != nil {
+			continue
+		}
+		if parent, _, ok := readStatus(pid); ok && parent == initPID {
+			if !send {
+				found++
+			} else if unix.PidfdSendSignal(fd, sig, nil, 0) == nil {
+				found++
+			}
+		}
+		unix.Close(fd)
+	}
+	return found
+}
+
 var (
 	subreaperOnce sync.Once
 	subreaperErr  error
@@ -349,6 +567,18 @@ type teardownGuard struct {
 	sig  chan os.Signal
 	opts Options
 
+	// init is where the sandbox init's host pid arrives, whenever it arrives,
+	// and it is the only thing grace has to aim at. Never nil in Run; nil in a
+	// test that arms a guard with no sandbox behind it, which sandboxInit's
+	// own methods tolerate for exactly that reason.
+	init *sandboxInit
+
+	// relay is false when the controlling terminal already delivered this
+	// signal to the payload itself — see terminalWillDeliver, which is where
+	// the whole argument lives. Decided once, before the fork, because it is a
+	// fact about how snug was STARTED and cannot change under it.
+	relay bool
+
 	// beforeSweep runs on a caught signal, before confirmTeardown kills
 	// anything, and never on the ordinary path. It is for state that says
 	// "this death was ours" to something watching a helper — the sweep kills
@@ -373,7 +603,7 @@ func (g *teardownGuard) onSignal(fn func()) {
 
 // armTeardown installs the guard. It must be called immediately before the
 // fork whose child it will tear down.
-func armTeardown(opts Options) *teardownGuard {
+func armTeardown(opts Options, init *sandboxInit, relay bool) *teardownGuard {
 	if err := becomeSubreaper(); err != nil {
 		opts.warn(fmt.Sprintf("could not become a child-subreaper (%v). A snug killed by "+
 			"TERM/INT/HUP during startup may still leave an orphaned sandbox behind: an "+
@@ -384,12 +614,15 @@ func armTeardown(opts Options) *teardownGuard {
 			"in whatever started snug is refusing it.", err))
 	}
 
-	g := &teardownGuard{sig: make(chan os.Signal, 1), opts: opts}
+	g := &teardownGuard{sig: make(chan os.Signal, 1), opts: opts, init: init, relay: relay}
 	signal.Notify(g.sig, teardownSignals...)
 	return g
 }
 
-func (g *teardownGuard) stop() { signal.Stop(g.sig) }
+func (g *teardownGuard) stop() {
+	signal.Stop(g.sig)
+	g.init.close()
+}
 
 // wait races `wait` — however a topology blocks until its sandbox is done —
 // against a caught signal.
@@ -424,20 +657,25 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 		defer pinned.Close()
 	}
 
-	type result struct {
-		code int
-		err  error
-	}
-	done := make(chan result, 1)
+	done := make(chan waitResult, 1)
 	go func() {
 		code, err := wait()
-		done <- result{code, err}
+		done <- waitResult{code, err}
 	}()
 
 	select {
 	case r := <-done:
 		return r.code, r.err
 	case sig := <-g.sig:
+		// The payload's own handler gets its moment HERE, before anything
+		// below runs, because everything below is what takes the moment away
+		// (issue #595). Only for graceSignals, and only once there is a
+		// payload to aim at.
+		if s, ok := sig.(syscall.Signal); ok && graceSignals[s] {
+			if r, exited := g.grace(s, done); exited {
+				return r.code, r.err
+			}
+		}
 		// BEFORE the sweep, not after: the sweep is what kills the helpers
 		// these callbacks are claiming responsibility for, and a claim made
 		// afterwards has already lost the race with the watcher goroutine
@@ -453,6 +691,67 @@ func (g *teardownGuard) wait(rootChildPid int, wait func() (int, error)) (int, e
 		// nothing here leaks.
 		<-done
 		return 128 + int(sig.(syscall.Signal)), nil
+	}
+}
+
+// waitResult is whatever the topology's own wait returned — package-level
+// rather than local to teardownGuard.wait because grace is handed the same
+// channel and has to name what comes out of it.
+type waitResult struct {
+	code int
+	err  error
+}
+
+// grace gives the payload's own handler payloadGraceBudget to finish, and
+// reports the payload's own result when it exits inside that window.
+//
+// IT RELAYS ONLY WHERE THE TERMINAL COULD NOT HAVE, which is the half that
+// took two attempts to get right. On an ordinary Ctrl-C the tty has already
+// delivered this signal to the payload directly — the whole tree is in snug's
+// foreground process group — so a relay would be a SECOND SIGINT, and one
+// keypress would read as the two that mean "force quit" to compose, npm,
+// pytest and vite. terminalWillDeliver carries the three conditions and the
+// residual; here it is one bool decided before the fork.
+//
+// THE EXIT CODE IS THE PAYLOAD'S when the payload exits here, not 128+signal,
+// and that is a change to what $? carries. It is what a shell reports for a
+// command that traps INT and exits 3: the process handled the signal and chose
+// a code, and reporting 130 over the top would be snug inventing an outcome it
+// was not asked for. A payload that does NOT exit within the budget is
+// reported exactly as before, so a payload ignoring the signal is
+// indistinguishable from today.
+//
+// A SECOND SIGNAL CUTS IT, immediately and without waiting out the remainder:
+// an operator pressing ^C twice is asking for the sweep. The second signal is
+// CONSUMED here rather than re-raised, and the code still reports the FIRST —
+// the caller is already on its way to confirmTeardown, so a second trip
+// through the same path would change nothing but which number came back.
+//
+// It returns false, having spent nothing, when there is no payload to aim at:
+// no init named yet (the startup window, where the grace must not open — see
+// sandboxInit.get) or nothing answering under the one that was.
+func (g *teardownGuard) grace(sig syscall.Signal, done <-chan waitResult) (waitResult, bool) {
+	init := g.init.get()
+	if init <= 1 {
+		return waitResult{}, false
+	}
+	// ALWAYS asked, whether or not this run relays. "Is there a payload under
+	// this init" decides whether the budget is worth spending, and it is a
+	// different question from "did the terminal already signal it". A parked
+	// container run has an init and no payload; a payload that has already
+	// exited has neither. Neither is owed a second.
+	if relayToPayload(init, sig, g.relay) == 0 {
+		return waitResult{}, false
+	}
+	t := time.NewTimer(payloadGraceBudget)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r, true
+	case <-g.sig:
+		return waitResult{}, false
+	case <-t.C:
+		return waitResult{}, false
 	}
 }
 

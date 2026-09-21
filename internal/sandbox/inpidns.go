@@ -4,41 +4,20 @@ package sandbox
 // on the offline arm, and it is that process only until its own exec — it
 // mounts a procfs and becomes bwrap, so the topology stays two processes.
 //
-// WHY IT EXISTS AT ALL, since the clone that starts it already made the
-// namespaces. bwrap answers --info-fd by reading its CHILD's /proc entry:
-// namespace_ids_read() does openat(proc_fd, "<child-pid>/ns", O_PATH), where
-// proc_fd is the procfs bwrap opened before it unshared anything. With bwrap
-// as pid 1 of NP (exec.go's clone), the child's number is 2 IN NP while
-// proc_fd still belongs to the pid namespace above — so bwrap reads a
-// stranger's /proc/2, or nobody's.
-//
-// MEASURED, same bwrap 0.11.2, same argv, one nesting level apart:
-//
-//	flat            {"child-pid": 10449, "cgroup-namespace": 4026532835, …six ids}
-//	nested          {"child-pid": 2}                    <- every id gone
-//	nested, no /proc/2   bwrap: open /proc/2/ns/ns failed: No such file or directory
-//
-// The middle line is this host, where outer pid 2 is kthreadd: the O_PATH open
-// of a 0511 directory succeeds, every fstatat under it is EACCES because bwrap
-// sits in a foreign user namespace, and bwrap silently reports no namespace
-// ids at all. The third is a container, where pid 2 is whatever ran last and
-// is usually gone — bwrap dies before the sandbox exists, and every test that
-// needs a payload fails with it. That is CI run 33190731691's engine job.
-//
-// So the fix is not to translate the number, it is to make the number TRUE:
-// give the intermediate its own mount namespace and mount a procfs of NP over
-// /proc, and bwrap's /proc/2 is then genuinely its child. MEASURED after:
-// bwrap reports all six ids and they match the payload's own readlinks.
+// WHY IT EXISTS AT ALL, since the clone in exec.go already made the
+// namespaces: bwrap must read its own child out of a procfs that belongs to
+// the namespace it is pid 1 of. internal/nestproc carries that measurement and
+// is the single author of the mount, because the staged verb now needs the
+// identical sequence for the identical reason.
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"syscall"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/gomoni/snug/internal/fdseal"
+	"github.com/gomoni/snug/internal/nestproc"
+	"github.com/gomoni/snug/internal/sigseal"
 )
 
 // EnterPidNS is the whole body of `__inpidns NFDS BWRAP [ARGS...]`. NFDS is
@@ -61,49 +40,10 @@ func EnterPidNS(argv []string) error {
 	}
 	path, rest := argv[1], argv[2:]
 
-	// A pid namespace of our own is the precondition, not an assumption: run
-	// directly from a shell this verb would mount a procfs over the caller's
-	// /proc in whatever mount namespace it inherited.
-	//
-	// os.Getpid() == 1 is what the clone in exec.go produces, and it is NOT
-	// unique to it — a redteam round reached this verb as pid 1 from a host
-	// shell:
-	//
-	//	unshare -Urpf --mount-proc snug __inpidns 0 /bin/echo
-	//
-	// which is harmless and stays harmless for a reason worth stating, because
-	// the earlier version of this comment claimed uniqueness and would have
-	// been the thing a reader trusted: that caller ALREADY holds the privilege
-	// to make the namespaces, so the verb hands it nothing, and the procfs
-	// lands in the throwaway mount namespace `unshare` just made. What the
-	// guard is for is the payload, which has an empty capability bounding set
-	// (bwrap.go's --cap-drop ALL) and cannot create a pid namespace at all —
-	// measured EPERM on unshare -U -r from inside the sandbox — and which has
-	// no snug binary to run in the first place.
-	if os.Getpid() != 1 {
-		return fmt.Errorf("__inpidns: this process is pid %d, not pid 1 — the verb is reachable "+
-			"only through snug's own clone (CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS) and refuses "+
-			"to mount a procfs over an inherited /proc", os.Getpid())
-	}
-
-	// MS_REC|MS_PRIVATE first, and it is not a formality: on a systemd host /
-	// is MS_SHARED, and a mount into a shared peer group PROPAGATES BACK — the
-	// procfs below would appear on the host's own /proc. Measured on this host:
-	// findmnt -o PROPAGATION / says "shared".
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("__inpidns: making the intermediate namespace's mounts private: %w "+
-			"(snug forks bwrap into a mount namespace of its own; without this the procfs "+
-			"below would propagate to the host's /proc)", err)
-	}
-
-	// The procfs bwrap will read its child out of. NOSUID|NODEV|NOEXEC are
-	// what every /proc on the host already carries; nothing here needs more.
-	if err := unix.Mount("proc", "/proc", "proc",
-		unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
-		return fmt.Errorf("__inpidns: mounting a procfs for the intermediate pid namespace "+
-			"on /proc: %w (bwrap resolves its own child's pid against this mount when it "+
-			"answers --info-fd, so the run would either report a stranger's namespace ids or "+
-			"die with \"open /proc/2/ns/ns failed\")", err)
+	// The procfs bwrap reads its own child out of. See internal/nestproc for
+	// the measurement and for why the staged verb calls the same function.
+	if err := nestproc.Mount("__inpidns"); err != nil {
+		return err
 	}
 
 	// Everything outside the ExtraFiles block is sealed before the exec, for
@@ -115,6 +55,16 @@ func EnterPidNS(argv []string) error {
 		keep = append(keep, fd)
 	}
 	if err := fdseal.SealExcept(keep...); err != nil {
+		return fmt.Errorf("__inpidns: %w", err)
+	}
+
+	// The same guard for SIGNAL state, on the same exec. This arm looked clean
+	// only by accident — armTeardown's signal.Notify runs before exec.go's
+	// cmd.Start(), so Go's own child-side reset covered the ignored
+	// dispositions here while the staged arm leaked them. The MASK leaked on
+	// both. See internal/sigseal for the measurements and for why one line in
+	// two verbs beats two behaviours nobody chose.
+	if err := sigseal.Seal(); err != nil {
 		return fmt.Errorf("__inpidns: %w", err)
 	}
 

@@ -259,15 +259,29 @@ filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
 ### What dies when
 
 ```
-    you press Ctrl-C     -> reaches your command directly; snug is not in the way
+    you press Ctrl-C     -> your command gets it, and up to 1s to handle it and
+                            exit. Its own exit code is then what snug reports.
+                            Press again to stop waiting.
+    kill -TERM snug      -> same, and snug relays the signal inward: your
+                            command is in its own session where a terminal
+                            cannot reach it
+    your command ignores -> killed when the second is up; snug exits 128+signal,
+                            exactly as before
     snug exits normally  -> stage, pasta, bwrap, init and your command all go
-    snug is SIGKILLed    -> same: every helper is armed to die with its parent
-                            before it is useful, so there is no window where
-                            killing snug leaves the sandbox behind
+    snug is SIGKILLed    -> same, and your command gets NOTHING: no code of
+                            snug's runs. Every helper is armed to die with its
+                            parent before it is useful, so there is no window
+                            where killing snug leaves the sandbox behind
 ```
 
-That last line is why there is no `snug stop` and no stale-state file to clean
-up by hand. If you want to check rather than trust, the integration suite
+The second is snug's number, not your command's: a command that ignores the
+signal cannot hold teardown open. `snug --dry-run` prints which of the two
+delivery paths this host gives you — whether Ctrl-C reaches your command
+directly depends on `--new-session`, which snug passes when this kernel still
+allows TIOCSTI or when nothing snug was started with is a terminal.
+
+The SIGKILL line is why there is no `snug stop` and no stale-state file to
+clean up by hand. If you want to check rather than trust, the integration suite
 asserts it on every run — `test/integration/orphan_test.go` sweeps every
 catchable signal at every startup offset on both topologies.
 
