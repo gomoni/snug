@@ -3,6 +3,7 @@ package sigseal
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,22 @@ func TestMain(m *testing.M) {
 // mask inherited from whatever started snug, which no shell can set for us —
 // and then either seals or does not before exec'ing the reporter.
 func child() {
+	// LOCKED BEFORE THE MASK IS TOUCHED, and this line is the test's whole
+	// correctness. A signal mask is per-THREAD, and execve preserves the mask
+	// of the thread that CALLS it — so without the lock the Go scheduler is
+	// free to move this goroutine between the block below and the exec at the
+	// bottom, and the child then reports the mask of a thread that never
+	// blocked anything.
+	//
+	// It failed exactly that way: the unsealed control expected SigBlk 0x200
+	// and got 0x0 on CI (run 35636253285) while passing locally, which is the
+	// signature of a race that one scheduler loses and another wins. Seal()
+	// itself has always locked first, for this reason; the test did not, so
+	// the bug was in the control rather than in the thing under test — and a
+	// control that silently reports "nothing was blocked" is one that cannot
+	// fail.
+	runtime.LockOSThread()
+
 	var block unix.Sigset_t
 	// SIGUSR1 is signal 10, bit 9, so 0x200 in the mask words below.
 	block.Val[0] = 1 << (uint(syscall.SIGUSR1) - 1)
