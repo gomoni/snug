@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 570" font-family="sans-serif">
+  <title>snug with @net: four long-lived processes, and the stage owns the network namespace from outside it</title>
+  <defs>
+    <marker id="tn-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+    <marker id="tn-arrow-p" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b8860b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="570" fill="#ffffff"/>
+
+  <!-- P0 -->
+  <rect x="24" y="14" width="470" height="70" rx="8"
+        fill="#fdecea" stroke="#c0392b" stroke-width="2"/>
+  <text x="44" y="42" font-size="20" font-weight="bold" fill="#8c2f22">P0  snug</text>
+  <text x="44" y="68" font-size="15" fill="#8c2f22">no isolation — the host's userns, netns and mounts</text>
+
+  <!-- pasta -->
+  <rect x="740" y="6" width="416" height="92" rx="8"
+        fill="#fdf4e3" stroke="#b8860b" stroke-width="2"/>
+  <text x="760" y="34" font-size="20" font-weight="bold" fill="#7a5a06">pasta</text>
+  <text x="760" y="58" font-size="15" fill="#7a5a06">starts SECOND — nothing is in N yet</text>
+  <text x="760" y="80" font-size="15" fill="#7a5a06">its forwarding side stays outside N</text>
+
+  <line x1="494" y1="49" x2="726" y2="49" stroke="#555" stroke-width="2" marker-end="url(#tn-arrow)"/>
+
+  <!-- U -->
+  <rect x="24" y="104" width="1132" height="416" rx="12"
+        fill="#eaf1fb" stroke="#2f6fb5" stroke-width="2.5"/>
+  <text x="44" y="132" font-size="18" font-weight="bold" fill="#1d4a7d">U — the user namespace P1 created</text>
+
+  <!-- P1 -->
+  <rect x="48" y="146" width="520" height="110" rx="8"
+        fill="#ffffff" stroke="#2f6fb5" stroke-width="2"/>
+  <text x="68" y="174" font-size="19" font-weight="bold" fill="#1d4a7d">P1  snug __stage-setup → __stage-serve</text>
+  <text x="68" y="198" font-size="15" fill="#33475c">made N, pinned it by a descriptor, and LEFT</text>
+  <text x="68" y="220" font-size="15" fill="#33475c">sits in an empty netns of its own</text>
+  <text x="68" y="242" font-size="15" fill="#33475c">catches and drops SIGINT/TERM/HUP/QUIT</text>
+
+  <line x1="470" y1="84" x2="470" y2="140" stroke="#555" stroke-width="2" marker-end="url(#tn-arrow)"/>
+  <text x="482" y="120" font-size="15" font-family="monospace" fill="#555">clone</text>
+
+  <!-- N -->
+  <rect x="48" y="262" width="1084" height="238" rx="10"
+        fill="#e8f3ea" stroke="#3d7a52" stroke-width="2.5"/>
+  <text x="68" y="290" font-size="18" font-weight="bold" fill="#1d4427">N — the sandbox's network namespace</text>
+
+  <!-- bwrap leg, full width: no engine on this arm -->
+  <rect x="72" y="304" width="1036" height="178" rx="8"
+        fill="#cfe7d5" stroke="#2f6b45" stroke-width="2"/>
+  <text x="92" y="330" font-size="17" font-weight="bold" fill="#17402a">snug __innetns → bwrap → init → your command</text>
+  <text x="92" y="358" font-size="15" fill="#17402a">+ intermediate pid ns from P1 — bwrap is pid 1 there</text>
+  <text x="92" y="380" font-size="15" fill="#17402a">+ bwrap's own pid ns — init is pid 1 there</text>
+  <text x="92" y="402" font-size="15" fill="#17402a">+ its own mount ns</text>
+  <text x="92" y="424" font-size="15" fill="#17402a">+ seccomp</text>
+  <text x="92" y="464" font-size="17" font-weight="bold" fill="#17402a">FULL SANDBOX</text>
+
+  <line x1="505" y1="256" x2="505" y2="298" stroke="#555" stroke-width="2" marker-end="url(#tn-arrow)"/>
+  <line x1="1000" y1="98" x2="1000" y2="264" stroke="#b8860b" stroke-width="2"
+        stroke-dasharray="7 6" marker-end="url(#tn-arrow-p)"/>
+
+  <text x="590" y="548" text-anchor="middle" font-size="19" fill="#222">
+    The stage owns N and is <tspan font-weight="bold">not in it</tspan>. Nothing supervises and nothing listens inside N.
+  </text>
+</svg>

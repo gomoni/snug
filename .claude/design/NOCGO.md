@@ -70,13 +70,33 @@ The `__`-prefixed re-exec verbs exist for the OK rows, and their obstacle is a
 different one — `setns(CLONE_NEWNET)` is **per-task**, exactly as `unshare` is,
 so it moves the calling thread and not the process. A goroutine cannot be
 relied on to stay on the thread it moved, and the Go runtime may run any other
-goroutine there afterwards. So the move happens in a fresh process that does
-nothing else: `__innetns` (`internal/stage/innetns.go`) locks the OS thread,
-`setns`es into the sandbox's network namespace, re-reads its own
+goroutine there afterwards. So the move happens in a fresh process whose
+own work is that one move: `__innetns` (`internal/stage/innetns.go`) locks the
+OS thread, `setns`es into the sandbox's network namespace, re-reads its own
 `/proc/self/ns/net` and refuses if it did not move, then `exec`s. `__inengine`
 is the same shape with the engine's confinement attached, and `__inpidns` is
-the pid-namespace equivalent. A verb is one syscall plus a proof it worked, and
-that is the whole technique.
+the pid-namespace equivalent. The move is one syscall plus a proof it worked,
+and that is the whole technique.
+
+**A verb is more than the move, because it is also the LAST process that
+chooses what the program it becomes inherits**, and there is nowhere else to
+put that: after the `exec` the process is bwrap. So the two verbs that become
+bwrap — `__innetns` and `__inpidns` — end with three seals before
+`syscall.Exec`: `internal/nestproc` mounts a procfs of the pid namespace they
+were cloned into, `internal/fdseal` closes every descriptor outside the ones
+being passed on, and `internal/sigseal` clears the inherited signal mask and
+forces ignored dispositions back to default. `__inengine` seals descriptors
+only (with an EMPTY keep list) — it becomes podman rather than bwrap, it builds
+its own derived mount view, and its signal state arrives clean by a different
+route: the stage catches `SIGINT/TERM/HUP/QUIT` itself, so `os/exec` resets
+exactly those on the child. Measured against a live engine: `SigIgn
+0000000000000000`. `sigseal` belongs in this document
+rather than only in its own: execve resets CAUGHT handlers but preserves
+IGNORED ones, and setting `SIG_IGN` from Go means `rt_sigaction` and its
+per-architecture `struct sigaction` — the shape this whole document exists to
+stay out of. It instead calls `signal.Notify` over the signals
+`/proc/self/status` reports as ignored, which makes them CAUGHT, and lets the
+`exec` reset them. One arch-independent line, no cgo.
 
 ### The raw-fork route, retired with its measurements
 

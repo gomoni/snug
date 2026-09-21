@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 570" font-family="sans-serif">
+  <title>snug with a container engine: five long-lived processes, and the engine is a SIBLING of the sandbox</title>
+  <defs>
+    <marker id="te-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+    <marker id="te-arrow-p" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b8860b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="570" fill="#ffffff"/>
+
+  <!-- P0 -->
+  <rect x="24" y="14" width="470" height="70" rx="8"
+        fill="#fdecea" stroke="#c0392b" stroke-width="2"/>
+  <text x="44" y="42" font-size="20" font-weight="bold" fill="#8c2f22">P0  snug</text>
+  <text x="44" y="68" font-size="15" fill="#8c2f22">no isolation — the host's userns, netns and mounts</text>
+
+  <!-- pasta -->
+  <rect x="740" y="6" width="416" height="92" rx="8"
+        fill="#fdf4e3" stroke="#b8860b" stroke-width="2"/>
+  <text x="760" y="34" font-size="20" font-weight="bold" fill="#7a5a06">pasta</text>
+  <text x="760" y="58" font-size="15" fill="#7a5a06">starts SECOND — nothing is in N yet</text>
+  <text x="760" y="80" font-size="15" fill="#7a5a06">only with @net; forwarding side outside N</text>
+
+  <line x1="494" y1="49" x2="726" y2="49" stroke="#555" stroke-width="2" marker-end="url(#te-arrow)"/>
+
+  <!-- U -->
+  <rect x="24" y="104" width="1132" height="416" rx="12"
+        fill="#eaf1fb" stroke="#2f6fb5" stroke-width="2.5"/>
+  <text x="44" y="132" font-size="18" font-weight="bold" fill="#1d4a7d">U — the user namespace P1 created</text>
+
+  <!-- P1 -->
+  <rect x="48" y="146" width="520" height="110" rx="8"
+        fill="#ffffff" stroke="#2f6fb5" stroke-width="2"/>
+  <text x="68" y="174" font-size="19" font-weight="bold" fill="#1d4a7d">P1  snug __stage-setup → __stage-serve</text>
+  <text x="68" y="198" font-size="15" fill="#33475c">made N, pinned it by a descriptor, and LEFT</text>
+  <text x="68" y="220" font-size="15" fill="#33475c">sits in an empty netns of its own</text>
+  <text x="68" y="242" font-size="15" fill="#33475c">catches and drops SIGINT/TERM/HUP/QUIT</text>
+
+  <line x1="470" y1="84" x2="470" y2="140" stroke="#555" stroke-width="2" marker-end="url(#te-arrow)"/>
+  <text x="482" y="120" font-size="15" font-family="monospace" fill="#555">clone</text>
+
+  <!-- N -->
+  <rect x="48" y="262" width="1084" height="238" rx="10"
+        fill="#e8f3ea" stroke="#3d7a52" stroke-width="2.5"/>
+  <text x="68" y="290" font-size="18" font-weight="bold" fill="#1d4427">N — the sandbox's network namespace</text>
+
+  <!-- bwrap leg -->
+  <rect x="72" y="304" width="486" height="178" rx="8"
+        fill="#cfe7d5" stroke="#2f6b45" stroke-width="2"/>
+  <text x="92" y="330" font-size="16" font-weight="bold" fill="#17402a">snug __innetns → bwrap → init → your command</text>
+  <text x="92" y="358" font-size="15" fill="#17402a">+ intermediate pid ns from P1</text>
+  <text x="92" y="380" font-size="15" fill="#17402a">   — bwrap is pid 1 there</text>
+  <text x="92" y="402" font-size="15" fill="#17402a">+ bwrap's own pid ns — init is pid 1</text>
+  <text x="92" y="424" font-size="15" fill="#17402a">+ its own mount ns + seccomp</text>
+  <text x="92" y="464" font-size="17" font-weight="bold" fill="#17402a">FULL SANDBOX</text>
+
+  <!-- engine leg -->
+  <rect x="622" y="304" width="486" height="178" rx="8"
+        fill="#fdf0d5" stroke="#a8791a" stroke-width="2"/>
+  <text x="642" y="330" font-size="16" font-weight="bold" fill="#6b4c06">snug __inengine → podman system service</text>
+  <text x="642" y="358" font-size="15" fill="#6b4c06">in N by setns</text>
+  <text x="642" y="380" font-size="15" fill="#6b4c06">derived mount view, not the host tree</text>
+  <text x="642" y="402" font-size="15" fill="#6b4c06">its own pid, ipc, uts and cgroup ns</text>
+  <text x="642" y="424" font-size="15" fill="#6b4c06">caps → EngineCapBounding</text>
+  <text x="642" y="464" font-size="17" font-weight="bold" fill="#6b4c06">PARTLY ISOLATED</text>
+
+  <!-- siblings -->
+  <line x1="590" y1="316" x2="590" y2="376" stroke="#3d7a52" stroke-width="2" stroke-dasharray="7 6"/>
+  <line x1="590" y1="412" x2="590" y2="472" stroke="#3d7a52" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="586" y="394" text-anchor="middle" font-size="14" fill="#1d4427"
+        transform="rotate(-90 586 394)">siblings — share N and U only</text>
+
+  <line x1="505" y1="256" x2="505" y2="298" stroke="#555" stroke-width="2" marker-end="url(#te-arrow)"/>
+  <polyline points="568,192 860,192 860,298" fill="none" stroke="#555" stroke-width="2" marker-end="url(#te-arrow)"/>
+  <line x1="1000" y1="98" x2="1000" y2="264" stroke="#b8860b" stroke-width="2"
+        stroke-dasharray="7 6" marker-end="url(#te-arrow-p)"/>
+
+  <text x="590" y="548" text-anchor="middle" font-size="19" fill="#222">
+    The engine is <tspan font-weight="bold">not</tspan> in the sandbox's mount or pid namespace. And the sandbox is not in the engine.
+  </text>
+</svg>
