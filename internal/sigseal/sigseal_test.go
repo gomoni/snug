@@ -35,20 +35,10 @@ func TestMain(m *testing.M) {
 // mask inherited from whatever started snug, which no shell can set for us —
 // and then either seals or does not before exec'ing the reporter.
 func child() {
-	// LOCKED BEFORE THE MASK IS TOUCHED, and this line is the test's whole
-	// correctness. A signal mask is per-THREAD, and execve preserves the mask
-	// of the thread that CALLS it — so without the lock the Go scheduler is
-	// free to move this goroutine between the block below and the exec at the
-	// bottom, and the child then reports the mask of a thread that never
-	// blocked anything.
-	//
-	// It failed exactly that way: the unsealed control expected SigBlk 0x200
-	// and got 0x0 on CI (run 35636253285) while passing locally, which is the
-	// signature of a race that one scheduler loses and another wins. Seal()
-	// itself has always locked first, for this reason; the test did not, so
-	// the bug was in the control rather than in the thing under test — and a
-	// control that silently reports "nothing was blocked" is one that cannot
-	// fail.
+	// LOCKED BEFORE THE MASK IS TOUCHED, for the same reason Seal() locks: a
+	// signal mask is per-THREAD and execve preserves the mask of the thread
+	// that CALLS it, so an unlocked goroutine may block on one thread and exec
+	// from another that never blocked anything.
 	runtime.LockOSThread()
 
 	var block unix.Sigset_t
@@ -64,10 +54,38 @@ func child() {
 			os.Exit(2)
 		}
 	}
-	err := syscall.Exec("/bin/sh", []string{"sh", "-c",
-		`grep -E '^Sig(Blk|Ign):' /proc/self/status`}, []string{})
+	// THE REPORTER IS NOT A SHELL, and that is a measurement rather than a
+	// preference. This exec'd `/bin/sh -c 'grep …'` for a milestone and the
+	// unsealed control failed on CI with `SigBlk 0x0, want 0x200` while
+	// passing on the maintainer's host. Both were right: ubuntu-latest's
+	// /bin/sh is dash, and DASH CLEARS THE INHERITED SIGNAL MASK AT STARTUP.
+	// Measured in one ubuntu:24.04 container, same binary, same blocked
+	// SIGUSR1, four reporters: dash -> SigBlk 0; bash -> 0x200; grep with no
+	// shell -> 0x200; cat -> 0x200. The mask under test was never wrong — the
+	// program asked to report it rewrote it first.
+	//
+	// So the reporter must be a program with no opinion about signals. cat is
+	// that; the test parses the Sig lines out of the whole file itself.
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		os.Stderr.WriteString("child: locating cat: " + err.Error() + "\n")
+		os.Exit(2)
+	}
+	err = syscall.Exec(cat, []string{"cat", "/proc/self/status"}, []string{})
 	os.Stderr.WriteString("child: exec: " + err.Error() + "\n")
 	os.Exit(2)
+}
+
+// sigLines keeps a failure message to the two lines it is about: the reporter
+// now prints the whole of /proc/self/status.
+func sigLines(out string) string {
+	var keep []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "Sig") {
+			keep = append(keep, strings.TrimSpace(line))
+		}
+	}
+	return strings.Join(keep, " ")
 }
 
 // TestSealClearsWhatExecveWouldOtherwiseCarry is the whole of this package's
@@ -114,18 +132,18 @@ func TestSealClearsWhatExecveWouldOtherwiseCarry(t *testing.T) {
 
 			if got := ign & wantIgnUnsealed; got != tc.wantIgn {
 				t.Errorf("%s: SigIgn SIGINT bit = %#x, want %#x\n"+
-					"  full output: %s", tc.mode, got, tc.wantIgn, strings.TrimSpace(string(out)))
+					"  reported: %s", tc.mode, got, tc.wantIgn, sigLines(string(out)))
 			}
 			if got := blk & wantBlkUnsealed; got != tc.wantBlkBits {
 				t.Errorf("%s: SigBlk SIGUSR1 bit = %#x, want %#x\n"+
-					"  full output: %s", tc.mode, got, tc.wantBlkBits, strings.TrimSpace(string(out)))
+					"  reported: %s", tc.mode, got, tc.wantBlkBits, sigLines(string(out)))
 			}
 			// The sealed arm clears the WHOLE mask, not only the bit this
 			// test set, because a mask is inherited whole and a seal that
 			// cleared one bit would be a seal in name only.
 			if tc.wantBlkExact && blk != 0 {
 				t.Errorf("%s: SigBlk = %#x, want 0 — Seal clears the whole mask, not one bit\n"+
-					"  full output: %s", tc.mode, blk, strings.TrimSpace(string(out)))
+					"  reported: %s", tc.mode, blk, sigLines(string(out)))
 			}
 		})
 	}
