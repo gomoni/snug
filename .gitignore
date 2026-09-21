@@ -53,7 +53,7 @@ poc/
 snug-dryrun-fixture-*/
 .engine-store/
 
-# scripts/pid-nesting.py's handshake file. It lands in the SANDBOX's working
+# scripts/payloads/pid-nesting.py's handshake file. It lands in the SANDBOX's working
 # directory, which is this checkout whenever the target is the repository
 # itself — the one place a payload can write that the host side can also read.
 BWRAP_PID
