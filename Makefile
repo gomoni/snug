@@ -114,6 +114,13 @@ gate:
 	# make. Built lazily by containerengine_test.go's termtrapprobeBin. Same
 	# fix, same reasoning as the eleven above.
 	go vet ./test/integration/testdata/termtrapprobe
+	# testdata/ignoresterm (issue #174, red-team F5) is the thirteenth, and it
+	# exists because holder does NOT ignore SIGTERM: the Go runtime installs a
+	# handler for every signal at startup and its own table dies on SIGTERM,
+	# so "a Go binary with no signal code" is not the pathological case the
+	# budget is sized for. This one calls signal.Ignore explicitly. Same fix,
+	# same reasoning as the twelve above.
+	go vet ./test/integration/testdata/ignoresterm
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

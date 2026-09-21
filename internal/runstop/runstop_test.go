@@ -313,3 +313,204 @@ func TestStopRunNeverStopsAnotherRunsContainer(t *testing.T) {
 			"fixture that never reached the stop path")
 	}
 }
+
+// TestSplitRefusesARunLabelWithAnEmptyValue pins the rule Split's own doc
+// comment names as the one that matters: a `key=` label with nothing after
+// the `=` must be refused outright, never accepted as a label whose value
+// happens to be "".
+//
+// The positive control is the bare fact Split's refusal exists to keep an
+// empty value away from: a Go map lookup of a key that is not present at all
+// yields "", the exact same string an unrefused empty value would carry. If
+// this equality did not hold, Split's refusal above would be guarding
+// against nothing — every container this run never labelled would otherwise
+// read back as carrying an empty-valued "snug.run" label, and Stop would ask
+// the engine to act on every container with no run label at all rather than
+// this run's own.
+func TestSplitRefusesARunLabelWithAnEmptyValue(t *testing.T) {
+	if _, _, err := Split("snug.run="); err == nil {
+		t.Fatal("Split(\"snug.run=\") returned no error for a label with an empty value")
+	}
+
+	noLabels := map[string]string{"other.key": "other-value"}
+	if noLabels["snug.run"] != "" {
+		t.Fatal("control: a Go map lookup of a missing key did not yield \"\" — Split's " +
+			"empty-value refusal is not guarding against the failure mode its own doc " +
+			"comment describes")
+	}
+}
+
+// TestStopRunKeepsWhatItDecodedWhenTheListExceedsTheLimit is red-team finding
+// F1: containerIDs' 1 MiB body limit bounds the answer, but the SIZE of that
+// answer is partly the payload's own to choose — /v1.41/containers/json
+// echoes container labels verbatim, and dockerproxy's create keeps a
+// client's labels by design, overwriting only snug.run. Two throwaway
+// containers carrying a large enough label push a run's own list past the
+// limit, and a whole-array json.Decode on a body cut mid-stream used to fail
+// with NO ids kept at all — silently suppressing the graceful stop for the
+// ENTIRE run, including a victim container that would otherwise have
+// flushed cleanly, for the cost of two containers the payload did not
+// otherwise care about.
+//
+// This run's own container is listed FIRST and the padding comes AFTER —
+// element-by-element decoding is what makes that ordering matter at all,
+// which TestStopRunStopsEveryContainerWhenTheListIsUnderTheLimit's own
+// unpadded shape stands as the control for: without it, "Asked >= 1" below
+// could pass on a Stop() that stops only ever the first entry regardless of
+// whether the list was cut at all.
+func TestStopRunKeepsWhatItDecodedWhenTheListExceedsTheLimit(t *testing.T) {
+	const mine = "1111111111111111111111111111111111111111111111111111111111111111"
+	const padA = "2222222222222222222222222222222222222222222222222222222222222222"
+	const padB = "3333333333333333333333333333333333333333333333333333333333333333"
+	// Comfortably over the 1 MiB limit once both are in the same JSON array
+	// alongside `mine`'s own small entry.
+	pad := strings.Repeat("A", 700*1024)
+
+	var mu sync.Mutex
+	var stopped []string
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1.41/containers/json" {
+			body := `[{"Id":"` + mine + `","Labels":{"snug.run":"RUN-A"}},` +
+				`{"Id":"` + padA + `","Labels":{"pad":"` + pad + `"}},` +
+				`{"Id":"` + padB + `","Labels":{"pad":"` + pad + `"}}]`
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		mu.Lock()
+		stopped = append(stopped, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	rep := Stop(p, "snug.run=RUN-A")
+
+	if !rep.Ran {
+		t.Fatal("Ran = false")
+	}
+	if rep.Asked < 1 {
+		t.Fatalf("Asked = %d, want at least 1 (this run's own container, which was decoded "+
+			"before the cut)", rep.Asked)
+	}
+	if rep.Stopped < 1 {
+		t.Errorf("Stopped = %d, want at least 1 (note: %q)", rep.Stopped, rep.Note)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, s := range stopped {
+		if strings.Contains(s, mine) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("this run's own container %s was never stopped; stops were %v", mine, stopped)
+	}
+	if !strings.Contains(rep.Note, "exceeded") {
+		t.Errorf("Note does not report the truncation, so a caller reading the audit line has "+
+			"no way to tell a cut list from a fully-processed one: %q", rep.Note)
+	}
+}
+
+// TestStopRunStopsEveryContainerWhenTheListIsUnderTheLimit is the control for
+// TestStopRunKeepsWhatItDecodedWhenTheListExceedsTheLimit above: the SAME
+// shape — this run's own containers, listed together — but comfortably under
+// the 1 MiB limit, must stop every one of them. Without this, "Asked >= 1"
+// in the sibling test could pass on a Stop() that silently drops every entry
+// after the first REGARDLESS of the list's size, which would have nothing to
+// do with the truncation this pair of tests is about.
+func TestStopRunStopsEveryContainerWhenTheListIsUnderTheLimit(t *testing.T) {
+	ids := []string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	}
+	var mu sync.Mutex
+	var stopped []string
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			var b strings.Builder
+			b.WriteByte('[')
+			for i, id := range ids {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(`{"Id":"` + id + `","Labels":{"snug.run":"RUN-A"}}`)
+			}
+			b.WriteByte(']')
+			_, _ = w.Write([]byte(b.String()))
+			return
+		}
+		mu.Lock()
+		stopped = append(stopped, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	rep := Stop(p, "snug.run=RUN-A")
+	if rep.Asked != len(ids) {
+		t.Fatalf("Asked = %d, want %d (note: %q)", rep.Asked, len(ids), rep.Note)
+	}
+	if rep.Stopped != len(ids) {
+		t.Errorf("Stopped = %d, want %d (note: %q)", rep.Stopped, len(ids), rep.Note)
+	}
+	if strings.Contains(rep.Note, "exceeded") {
+		t.Errorf("Note reports a truncation that should not have happened for a list well under "+
+			"the limit: %q", rep.Note)
+	}
+}
+
+// TestNoteEscapesWhatTheEngineSupplied is red-team finding F4: Report.Note is
+// snug's own sentence, but a stop failure interpolates the engine's own
+// container id into it (short(id), stopOne's error path) — and an id is a
+// value that arrives over a socket, not one the engine is trusted to have
+// generated correctly. Against a fake engine answering an id containing an
+// ESC-CSI sequence and a NUL, the note used to carry those bytes verbatim
+// through to whatever eventually printed it; policy.VisibleText in P0's own
+// audit sink was the only thing that actually held that line, a layer away
+// and credited by nothing in this package's own tests.
+func TestNoteEscapesWhatTheEngineSupplied(t *testing.T) {
+	// U+001B (ESC) starting a CSI colour sequence, then a NUL — neither is
+	// printable ASCII, and both are exactly the shape a terminal-forging
+	// payload would reach for.
+	hostile := "\x1b[31mPWNED\x00x"
+	p, _, _ := stopRunFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// json.Marshal, not string concatenation: the hostile id carries
+			// raw control bytes that are not legal unescaped inside a JSON
+			// string, and this fixture must produce a well-formed answer —
+			// exactly as a real engine's own JSON encoder would.
+			list := []map[string]any{{"Id": hostile, "Labels": map[string]string{"snug.run": "RUN-A"}}}
+			_ = json.NewEncoder(w).Encode(list)
+			return
+		}
+		// Every stop fails, so stopOne's error path — the one that
+		// interpolates short(id) — is what populates Note.
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	rep := Stop(p, "snug.run=RUN-A")
+
+	if rep.Note == "" {
+		t.Fatal("Note is empty — this fixture failed to reach the code path under test at all")
+	}
+	if strings.ContainsRune(rep.Note, 0x1b) {
+		t.Errorf("Note carries a raw ESC byte from the engine's own container id: %q", rep.Note)
+	}
+	if strings.ContainsRune(rep.Note, 0x00) {
+		t.Errorf("Note carries a raw NUL byte from the engine's own container id: %q", rep.Note)
+	}
+	for _, r := range rep.Note {
+		if r < 0x20 || r > 0x7e {
+			t.Errorf("Note contains a non-printable-ASCII rune %q: %q", r, rep.Note)
+			break
+		}
+	}
+	// POSITIVE CONTROL: the id's own harmless prefix ("PWNED") survives —
+	// without this, a note() that replaced its ENTIRE argument rather than
+	// filtering rune by rune would pass every assertion above for the wrong
+	// reason.
+	if !strings.Contains(rep.Note, "PWNED") {
+		t.Errorf("control: Note dropped the hostile id's harmless text too, not just its "+
+			"forging bytes: %q", rep.Note)
+	}
+}

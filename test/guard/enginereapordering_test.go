@@ -1,7 +1,7 @@
-// Package guard's engine-reap-ordering sweep is issue #344's second regression:
-// a fact spread across three files and three packages that no compiler, no
-// vet, and no unit test inside any one of those packages can see all of at
-// once.
+// Package guard's engine-reap-ordering sweep guards two DIFFERENT orderings
+// now, #344's and #174's, each spread across files and packages that no
+// compiler, no vet, and no unit test inside any one of those packages can
+// see all of at once.
 //
 // #344 was: the teardown sweep matched the HOST spelling of the engine's
 // socket, a string no process on the machine ever carried, so it verified
@@ -11,21 +11,22 @@
 // TestStopEscalatesToSIGKILLWhenTheEngineOutlivesTheCascade — both in that
 // package, neither in this one.
 //
-// The fix's OTHER half is not a matcher, it is an ORDERING, and it is the one
-// this file guards. `Engine.Stop`'s own sweep can only ever find something to
-// verify — dead or alive — once the kernel has actually acted on the engine:
-// its Pdeathsig is delivered by `forget_original_parent`, which the kernel
-// runs BEFORE `do_notify_parent` wakes a blocked `wait()`. So the sweep must
-// run from a position AFTER something has already waited on the stage (P1),
-// never before. Three edits, each in a different package, all have to agree
-// on that position:
+// #344's OTHER half is not a matcher, it is an ORDERING, and it is the one
+// TestContainerRunWiresStopAtCleanupNotAtPayloadExit below guards.
+// `Engine.Stop`'s own sweep can only ever find something to verify — dead or
+// alive — once the kernel has actually acted on the engine: its Pdeathsig is
+// delivered by `forget_original_parent`, which the kernel runs BEFORE
+// `do_notify_parent` wakes a blocked `wait()`. So the sweep must run from a
+// position AFTER something has already waited on the stage (P1), never
+// before. Three edits, each in a different package, all have to agree on
+// that position:
 //
 //  1. internal/cli/container.go must wire eng.Stop() into the CLEANUP
-//     closure and eng.Detach into onPayloadExit — never the reverse. Wiring
-//     eng.Stop at payload exit is exactly what shipped and is the bug: at
-//     that point runStaged has not yet run its own deferred st.Close(), so
-//     the engine is alive by construction and the sweep can only go quiet by
-//     waiting out the engine's own idle timeout.
+//     closure — never into onPayloadExit. Wiring eng.Stop at payload exit is
+//     exactly what #344 shipped and is the bug: at that point runStaged has
+//     not yet run its own deferred st.Close(), so the engine is alive by
+//     construction and the sweep can only go quiet by waiting out the
+//     engine's own idle timeout.
 //  2. internal/cli/main.go must `defer ctr.cleanup()` TEXTUALLY BEFORE it
 //     calls sandbox.Run — defers run in reverse order, so a defer registered
 //     first fires LAST, after sandbox.Run (and everything sandbox.Run does on
@@ -34,8 +35,8 @@
 //     opts.OnPayloadExit() call — same reasoning, one level down: st.Close()
 //     is what waits for P1 and thereby crosses the point at which the
 //     kernel's Pdeathsig cascade has already been delivered to the engine,
-//     and OnPayloadExit (Detach) must run inside that already-collapsing
-//     window, not before it opens.
+//     and OnPayloadExit (now just Detach) must run inside that
+//     already-collapsing window, not before it opens.
 //
 // Any ONE of these three edits reintroduced by itself silently reopens #344:
 // nothing in internal/engine's own tests would notice, because they exercise
@@ -43,6 +44,20 @@
 // called relative to the stage's collapse. This is why the sweep lives here,
 // outside every package it reads, rather than as a unit test owned by one of
 // them.
+//
+// #174 moved a DIFFERENT stop — the graceful one, asked over the engine's own
+// socket before #344's SIGKILL sweep ever runs — out of P0 entirely, into
+// P1's own runOneSandbox (internal/stage/serve.go). P0's own attempt at it
+// MEASURED `connect: connection refused` 4/4 on a clean exit: P0's Stage.Wait
+// returns the instant the "exited" event's bytes ARRIVE, and P1 is already
+// exiting — taking the engine down by Pdeathsig — as it sends them. So #174
+// has its own ordering, inside ONE function in ONE file, guarded by
+// TestGracefulStopRunsAfterTheReapAndBeforeTheExitedEventLeaves below: the
+// payload must be REAPED (<-waitDone) and the parked-sandbox record DROPPED
+// (parked.disarm()) before the graceful stop asks the engine anything, and
+// the stop itself must run before the "exited" event actually leaves
+// (sendEvent) — that send is what tells P0, and through P0 the lifeline pipe,
+// and through that the kernel's Pdeathsig cascade, that this process is done.
 //
 // EVERY REGEX BELOW IS PROVED TO MATCH TODAY'S SOURCE BEFORE IT IS TRUSTED TO
 // PROVE ANYTHING'S ABSENCE (CLAUDE.md's own warning: a sweep that looks like
@@ -103,22 +118,27 @@ func mustFindOne(t *testing.T, src, rel, label string, re *regexp.Regexp) int {
 
 // TestContainerRunWiresStopAtCleanupNotAtPayloadExit is edit 1 of #344's fix.
 //
-// The PRECONDITION check runs the same two patterns against the pre-fix text
-// (issue #344's own commit message and internal/engine/reap.go's package
-// comment both describe it: "onPayloadExit: eng.Stop" wired at payload exit,
-// the exact bug) and requires it to be caught, before the real source is
+// Issue #174 emptied onPayloadExit down to a bare `eng.Detach` reference — no
+// closure, nothing else runs there — because the graceful stop it used to
+// carry moved into P1 (TestGracefulStopRunsAfterTheReapAndBeforeTheExitedEventLeaves,
+// below, guards that new ordering). What #344 needs guarded is unchanged by
+// that move: eng.Stop() belongs to cleanup, and onPayloadExit — whatever
+// shape it takes — must never be the thing that calls it.
+//
+// The PRECONDITION check runs the buggy-wiring pattern against the pre-#344
+// text (issue #344's own commit message and internal/engine/reap.go's
+// package comment both describe it: "onPayloadExit: eng.Stop" wired at
+// payload exit) and requires it to be caught, before the real source is
 // trusted to be clean by the same sweep.
 func TestContainerRunWiresStopAtCleanupNotAtPayloadExit(t *testing.T) {
 	cleanupCallsStop := regexp.MustCompile(`cleanup:\s*func\(\)\s*\{\s*p\.Close\(\);\s*eng\.Stop\(\)\s*\}`)
-	// onPayloadExit is a CLOSURE since issue #174, and the anchor pins its
-	// whole shape rather than just the Detach: the graceful stop must run
-	// BEFORE the keepalive is dropped, because the keepalive is what holds the
-	// engine up to be asked. Nothing but this ordering enforces that — both
-	// calls compile, run and pass every other test in either order, and the
-	// swapped version fails only against a live engine, in a window measured
-	// in milliseconds. That is exactly the class this file exists for.
-	payloadExitStopsThenDetaches := regexp.MustCompile(
-		`onPayloadExit:\s*func\(\)\s*\{\s*p\.StopRunContainers\([^)]*\);\s*eng\.Detach\(\)\s*\}`)
+	// onPayloadExit is a bare function VALUE since issue #174 — no closure,
+	// because the only thing left to do there is drop the keepalive. A
+	// closure here again would be the shape that let #344's bug hide the
+	// first time: something else running before (or instead of) Detach, with
+	// nothing but a live-engine race to notice which.
+	onPayloadExitIsDetach := regexp.MustCompile(`onPayloadExit:\s*eng\.Detach\b`)
+	onPayloadExitIsAClosure := regexp.MustCompile(`onPayloadExit:\s*func\(\)`)
 	payloadExitCallsStop := regexp.MustCompile(`onPayloadExit:\s*eng\.Stop\b`)
 
 	// Precondition: the sweep must be ABLE to catch the bug it is guarding
@@ -137,38 +157,47 @@ func TestContainerRunWiresStopAtCleanupNotAtPayloadExit(t *testing.T) {
 			"fixture — this sweep cannot be trusted to catch the real regression if it " +
 			"cannot catch a synthetic one")
 	}
+	// Precondition for the closure negative too: a fixture holding #174's OWN
+	// pre-move shape (onPayloadExit as a closure running the stop itself)
+	// must be caught, or that pattern is equally untrustworthy.
+	closureFixture := `onPayloadExit: func() { p.StopRunContainers(rep); eng.Detach() },`
+	if !onPayloadExitIsAClosure.MatchString(closureFixture) {
+		t.Fatalf("PRECONDITION: the closure-shape pattern did not match its own pre-#174-move " +
+			"fixture — this sweep cannot be trusted to catch that shape reappearing if it " +
+			"cannot catch a synthetic one")
+	}
 
 	src := readRepoFile(t, "internal/cli/container.go")
 
 	// Both anchors must exist in the real source, each exactly once, or the
 	// wiring this test guards has been renamed out from under it.
 	mustFindOne(t, src, "internal/cli/container.go", "cleanup calling eng.Stop()", cleanupCallsStop)
-	mustFindOne(t, src, "internal/cli/container.go",
-		"onPayloadExit calling StopRunContainers and THEN eng.Detach", payloadExitStopsThenDetaches)
+	mustFindOne(t, src, "internal/cli/container.go", "onPayloadExit as a bare eng.Detach reference",
+		onPayloadExitIsDetach)
 
-	// The ordering negative, stated as its own pattern so a failure says which
-	// half broke: a closure that detaches first would still match "contains
-	// both calls", and it is the version that dials an engine whose keepalive
-	// snug just dropped.
-	detachThenStop := regexp.MustCompile(
-		`onPayloadExit:\s*func\(\)\s*\{\s*eng\.Detach\(\);\s*p\.StopRunContainers\(`)
-	if detachThenStop.MatchString(src) {
-		t.Error("internal/cli/container.go drops the keepalive BEFORE asking the engine to " +
-			"stop this run's containers. The keepalive is what holds the engine up, so the " +
-			"stop would race a teardown already in progress — issue #174's graceful stop " +
-			"only exists because that one seam has the engine alive by construction.")
-	}
-
-	// The negative: onPayloadExit must never be wired to eng.Stop, in this
-	// file or anywhere the struct literal could reasonably be built. This is
-	// the exact bug #344 was — Stop's own sweep running while the engine is
-	// alive by construction, unable to observe anything but "still running"
-	// until the engine's own idle timeout expires.
+	// The negative #344 is about: onPayloadExit must never be wired to
+	// eng.Stop, in this file or anywhere the struct literal could reasonably
+	// be built. This is the exact bug #344 was — Stop's own sweep running
+	// while the engine is alive by construction, unable to observe anything
+	// but "still running" until the engine's idle timeout expires.
 	if payloadExitCallsStop.MatchString(src) {
 		t.Errorf("internal/cli/container.go wires onPayloadExit to eng.Stop — this is issue " +
 			"#344's own bug: Stop's sweep would run BEFORE the stage's deferred st.Close() " +
 			"has collapsed the engine, so it can only ever observe \"still running\" until " +
 			"the engine's idle timeout expires on its own.")
+	}
+	// The negative #174's move adds: onPayloadExit must never be a closure
+	// again. A closure compiles and passes every test that does not exercise
+	// a live engine whatever it contains, which is exactly how #344's bug
+	// shipped the first time — this refuses the SHAPE, not just the one
+	// symbol #344 named.
+	if onPayloadExitIsAClosure.MatchString(src) {
+		t.Errorf("internal/cli/container.go wires onPayloadExit to a closure again — issue #174 " +
+			"emptied it to a bare eng.Detach reference on purpose, because the graceful stop it " +
+			"used to carry now runs in P1 (internal/stage/serve.go) before P1 ever reports this " +
+			"run's payload as exited. A closure here can silently grow back into doing work " +
+			"issue #174 measured cannot reach a live engine from this position (`connect: " +
+			"connection refused` 4/4 on a clean exit).")
 	}
 }
 
@@ -244,5 +273,83 @@ func TestStClosePrecedesOnPayloadExitInRunStaged(t *testing.T) {
 			"does not change Go's own defer semantics, but it moves a call written to depend "+
 			"on that window to a position no longer inside it as written.",
 			closePos, callPos)
+	}
+}
+
+// TestGracefulStopRunsAfterTheReapAndBeforeTheExitedEventLeaves is issue
+// #174's own ordering, entirely inside internal/stage/serve.go's
+// runOneSandbox — a single function, unlike #344's three-file spread, but
+// no less invisible to a unit test: internal/runstop's own tests drive
+// Stop() directly against an httptest fixture and never touch WHEN
+// runOneSandbox calls it relative to the reap, the parked-record drop, or
+// the "exited" event actually leaving down the control socket.
+//
+// This catches a careless re-ordering edit — swapping two of these four
+// textual anchors, or moving the runstop.Stop( call above the reap or the
+// disarm. It does NOT catch a refactor that moves the call into a helper
+// function serve.go then calls at the right textual position: the anchors
+// below are literal source strings in ONE file, not a call graph, so a
+// helper extraction that preserves the four-anchor ORDER in this file still
+// passes, and one that changes which function the call lives in without
+// changing this file's own textual order is invisible to it either way.
+// That is a real gap, not an oversight: closing it needs the runtime
+// (behavioural) test test/integration/containergracefulstop_test.go already
+// carries, not a wider regex.
+func TestGracefulStopRunsAfterTheReapAndBeforeTheExitedEventLeaves(t *testing.T) {
+	// The reap this run's payload — <-waitDone — and the drop of the
+	// parked-sandbox record — parked.disarm() — that must precede the
+	// graceful stop. Both anchors carry extra context because neither
+	// "<-waitDone" nor "parked.disarm()" alone is unique in this file: each
+	// appears a second time inside takeDown(), the abort path, textually
+	// EARLIER in the same file, which would make an unqualified anchor
+	// falsely report multiple matches (or resolve to the wrong occurrence).
+	waitDoneThenComment := regexp.MustCompile(`<-waitDone\s*\n\s*//\s*bwrap has been reaped`)
+	disarmThenVarWs := regexp.MustCompile(`parked\.disarm\(\)\s*\n\s*var ws syscall\.WaitStatus`)
+	gracefulStopCall := regexp.MustCompile(`runstop\.Stop\(`)
+	exitedEventSend := regexp.MustCompile(`return sendEvent\(control, ev\)`)
+
+	// Precondition: each anchor must be able to catch itself reordered. A
+	// synthetic fixture holding the SWAPPED shape — the graceful stop ahead
+	// of the reap it depends on — proves the disarm/reap anchor is not
+	// accidentally matching the swapped text too.
+	swappedFixture := `
+	rep := runstop.Stop(req.EngineSock, req.EngineRunLabel)
+	<-waitDone
+	// bwrap has been reaped, so its pid names nothing from here on. Dropped
+	parked.disarm()
+	var ws syscall.WaitStatus
+	return sendEvent(control, ev)`
+	if !gracefulStopCall.MatchString(swappedFixture) {
+		t.Fatalf("PRECONDITION: the runstop.Stop( pattern did not match its own reordered " +
+			"fixture — this sweep cannot be trusted to catch the real regression if it cannot " +
+			"catch a synthetic one")
+	}
+	swappedStopPos := gracefulStopCall.FindStringIndex(swappedFixture)[0]
+	swappedWaitPos := waitDoneThenComment.FindStringIndex(swappedFixture)[0]
+	if swappedStopPos >= swappedWaitPos {
+		t.Fatalf("PRECONDITION: the reordered fixture does not actually place runstop.Stop( " +
+			"before <-waitDone — this fixture does not exercise the failure this test guards " +
+			"against, so it proves nothing about whether the real source is clean")
+	}
+
+	src := readRepoFile(t, "internal/stage/serve.go")
+
+	waitPos := mustFindOne(t, src, "internal/stage/serve.go",
+		"<-waitDone followed by the \"bwrap has been reaped\" comment", waitDoneThenComment)
+	disarmPos := mustFindOne(t, src, "internal/stage/serve.go",
+		"parked.disarm() followed by var ws syscall.WaitStatus", disarmThenVarWs)
+	stopPos := mustFindOne(t, src, "internal/stage/serve.go", "the runstop.Stop( call", gracefulStopCall)
+	sendPos := mustFindOne(t, src, "internal/stage/serve.go",
+		"the return sendEvent(control, ev) that actually sends \"exited\"", exitedEventSend)
+
+	if !(waitPos < disarmPos && disarmPos < stopPos && stopPos < sendPos) {
+		t.Errorf("internal/stage/serve.go's runOneSandbox does not order <-waitDone (%d) before "+
+			"parked.disarm() (%d) before the runstop.Stop( call (%d) before the return "+
+			"sendEvent(control, ev) that sends \"exited\" (%d). Issue #174 MEASURED why this "+
+			"order matters: P0's own Stage.Wait returns the instant the \"exited\" event's "+
+			"bytes ARRIVE, and P1 is already exiting — Pdeathsigging the engine — as it sends "+
+			"them, so a graceful stop attempted from any later position, or from P0 itself, "+
+			"reported `connect: connection refused` 4/4 on a clean exit.",
+			waitPos, disarmPos, stopPos, sendPos)
 	}
 }

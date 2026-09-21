@@ -47,15 +47,24 @@
 // cannot do is make the wait longer than Budget.
 //
 // MEASURED against a live podman 6.0.2 over its own socket, an isolated store:
-// a container whose pid 1 installs a TERM handler stops in 134ms; one with no
-// handler, or one ignoring TERM, costs the full default 10.059s and ends in
-// SIGKILL regardless, because pid 1 of a pid namespace discards signals with
-// default dispositions; `kill -s KILL` is 35ms; listing by label with no
-// matches is 27ms. Against an in-tree baseline of "payload exit to snug exit is
-// 15ms" (internal/cli/container.go), a one-second cap is the largest number
-// that keeps the ordinary case — nothing to stop, or a container that handles
-// its signal — inside the noise, and it turns the pathological case from 10s
-// into 1s.
+// a container whose pid 1 installs a TERM handler stops in 134ms; one that
+// does not act on its stop signal costs the full default 10.059s and ends in
+// SIGKILL; `kill -s KILL` is 35ms; listing by label with no matches is 27ms.
+// Against an in-tree baseline of "payload exit to snug exit is 15ms"
+// (internal/cli/container.go), a one-second cap is the largest number that
+// keeps the ordinary case — nothing to stop, or a container that handles its
+// signal — inside the noise, and it turns the pathological case from 10s into
+// 1s.
+//
+// "NO HANDLER" IS NOT THE PATHOLOGICAL CASE, and this comment used to say it
+// was, on the pid-1-discards-signals rule (red-team F5). That rule does not
+// engage for a Go program: the runtime installs a handler for every signal at
+// startup, and its own table dies on SIGTERM while ignoring SIGUSR1. So a Go
+// container with no signal code of its own STOPS on the default signal, and
+// the case that consumes the budget is one that explicitly ignores its stop
+// signal — or one whose StopSignal the payload set to something the runtime
+// ignores. A test whose premise is "this container ignores its stop signal"
+// needs a probe that ignores it on purpose.
 //
 // MEASURED from P1 at the reap, same engine, payload exited with a detached
 // container running: stat of the socket ok, the labelled list 200 in 3ms
@@ -125,9 +134,18 @@ const waitSeconds = "1"
 const noteMax = 256
 
 // Report is what one step did, in a shape that cannot overflow the wire: three
-// scalars and one snug-authored sentence. Nothing an engine or a payload
-// chose is interpolated whole into Note, and Note is truncated here rather
-// than at the reader.
+// scalars and one snug-authored sentence, truncated here rather than at the
+// reader.
+//
+// NOTE IS NOT CLEAN BY AUTHORSHIP, so it is cleaned by code (red-team F4). The
+// sentence is snug's, but a failure interpolates the engine's own container id
+// into it — and an id is a value that arrives over a socket rather than one
+// the engine is trusted to have generated. Against a fake engine answering an
+// Id of "\x1b[31mPWNED\a\x00x" the note carried those bytes verbatim. What
+// held the line was policy.VisibleText in P0's audit sink, a layer away and
+// credited by nothing here. note() now replaces every non-printable and every
+// non-ASCII rune, so the claim this comment makes is true where it is made;
+// the sink remains the second half and the one that faces the terminal.
 type Report struct {
 	Ran     bool
 	Asked   int
@@ -140,7 +158,16 @@ func (r *Report) note(format string, a ...any) {
 	if len(s) > noteMax {
 		s = s[:noteMax]
 	}
-	r.Note = s
+	// Printable ASCII and nothing else: the parts of this sentence that came
+	// off a socket have no business carrying C0, DEL, an escape sequence or a
+	// bidi override toward an operator's terminal. Snug's own wording is
+	// ASCII, so this can only alter what an engine supplied.
+	r.Note = strings.Map(func(ru rune) rune {
+		if ru < 0x20 || ru > 0x7e {
+			return '?'
+		}
+		return ru
+	}, s)
 }
 
 // Split is the validating split of a `key=value` run label, and it is the one
@@ -247,7 +274,7 @@ func Stop(engineSock, runLabel string) (rep Report) {
 	defer cancel()
 
 	rep.Ran = true
-	ids, err := containerIDs(ctx, client, key, value)
+	ids, partial, err := containerIDs(ctx, client, key, value)
 	if err != nil {
 		rep.note("%v", err)
 		return rep
@@ -298,9 +325,12 @@ func Stop(engineSock, runLabel string) (rep Report) {
 	wg.Wait()
 
 	rep.Stopped = stopped
-	if stopped < len(ids) {
+	switch {
+	case stopped < len(ids):
 		rep.note("%d of %d container(s) stopped within %s: %s",
 			stopped, len(ids), Budget, failed)
+	case partial != "":
+		rep.note("%d container(s) stopped, but %s", stopped, partial)
 	}
 	return rep
 }
@@ -312,56 +342,103 @@ func Stop(engineSock, runLabel string) (rep Report) {
 // asking for every container an earlier run of this project left behind (the
 // store is keyed on the target and persists — see dockerproxy/ownership.go's
 // ABUSE note), and this step must not scale with that history.
-func containerIDs(ctx context.Context, client *http.Client, key, value string) ([]string, error) {
+//
+// # Why the answer is decoded ELEMENT BY ELEMENT (red-team F1)
+//
+// The body is bounded at 1 MiB, the same bound and the same reason as
+// dockerproxy's inspect: this engine is snug's own, and a body read with no
+// limit is a hang or an OOM waiting for the first engine that misbehaves. But
+// the size of the answer is PARTLY THE PAYLOAD'S TO CHOOSE — /containers/json
+// echoes container labels, and dockerproxy's create keeps the client's labels
+// by design, overwriting only snug.run. MEASURED: two throwaway containers
+// carrying a ~600 KiB label each push the list past the limit.
+//
+// A whole-array Decode on a truncated body fails, and under the previous
+// shape that failure returned NO ids at all — so a payload could suppress the
+// graceful stop for the entire run, including for a victim container that
+// would have flushed, by starting two containers it did not otherwise care
+// about. Reading the array element by element instead keeps every id that
+// arrived before the cut, so padding the list costs the attacker the
+// containers it pads with and buys nothing.
+//
+// The truncation is REPORTED rather than swallowed: "answer exceeded 1 MiB"
+// and "the engine sent something malformed" are different facts about the
+// engine, and one of them is an attack in progress.
+func containerIDs(ctx context.Context, client *http.Client, key, value string) (ids []string, partial string, err error) {
 	filters, err := json.Marshal(map[string][]string{
 		"label":  {key + "=" + value},
 		"status": {"running"},
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"http://engine/v1.41/containers/json?filters="+url.QueryEscape(string(filters)), nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("asking the engine which containers are this run's: %w", err)
+		return nil, "", fmt.Errorf("asking the engine which containers are this run's: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the engine answered %d when asked which containers are this run's",
+		return nil, "", fmt.Errorf("the engine answered %d when asked which containers are this run's",
 			resp.StatusCode)
 	}
 
-	// 1 MiB, the same bound and the same reason as dockerproxy's inspect: this
-	// engine is snug's own, and a body read with no limit is a hang or an OOM
-	// waiting for the first engine that misbehaves. Two fields and no more:
-	// Names are payload-chosen and this step has no use for them, so they are
-	// not decoded and never logged.
-	var list []struct {
-		ID     string            `json:"Id"`
-		Labels map[string]string `json:"Labels"`
+	counted := &countingReader{r: io.LimitReader(resp.Body, listLimit)}
+	dec := json.NewDecoder(counted)
+	if _, err := dec.Token(); err != nil { // the opening '['
+		return nil, "", fmt.Errorf("reading the engine's container list: %w", err)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&list); err != nil {
-		return nil, fmt.Errorf("reading the engine's container list: %w", err)
-	}
-
-	// THE LABEL IS CHECKED AGAIN HERE, and in P1 the reason is stronger than
-	// it was in P0. P0 saw every create body go past its own filter, so it had
-	// a second handle on whose container a thing was; P1 has none, and the
-	// engine's answer is its only source. Measured cost: one map lookup per
-	// container.
-	ids := make([]string, 0, len(list))
-	for _, c := range list {
+	for dec.More() {
+		// Two fields and no more: Names are payload-chosen and this step has
+		// no use for them, so they are not decoded and never logged.
+		var c struct {
+			ID     string            `json:"Id"`
+			Labels map[string]string `json:"Labels"`
+		}
+		if err := dec.Decode(&c); err != nil {
+			if counted.n >= listLimit {
+				// Everything decoded so far is still this run's and still
+				// worth stopping.
+				return ids, fmt.Sprintf("the engine's container list exceeded %d bytes and was "+
+					"read only that far, so any container past that point was not asked to stop",
+					listLimit), nil
+			}
+			return nil, "", fmt.Errorf("reading the engine's container list: %w", err)
+		}
+		// THE LABEL IS CHECKED AGAIN HERE, and in P1 the reason is stronger
+		// than it was in P0. P0 saw every create body go past its own filter,
+		// so it had a second handle on whose container a thing was; P1 has
+		// none, and the engine's answer is its only source. Measured cost:
+		// one map lookup per container.
 		if c.ID == "" || !Match(c.Labels, key, value) {
 			continue
 		}
 		ids = append(ids, c.ID)
 	}
-	return ids, nil
+	return ids, "", nil
+}
+
+// listLimit bounds the container list. See containerIDs on why the limit is
+// not the whole answer to an oversized list.
+const listLimit = 1 << 20
+
+// countingReader is how containerIDs tells "the answer was cut at the limit"
+// from "the engine sent something malformed": the decoder reports the same
+// unexpected-EOF either way, and only the byte count separates them.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // stopOne sends one stop, addressed by the immutable 64-hex id the list

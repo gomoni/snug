@@ -726,7 +726,16 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		// the payload's outcome, because "did this run have containers" is a
 		// question about opts.EngineSpec and not about how the payload
 		// exited.
-		if opts.OnGracefulStop != nil && opts.EngineSpec != nil {
+		// ONLY WHEN st.Wait ACTUALLY ANSWERED (red-team F2). A failed Wait
+		// returns a ZERO StopReport, and a zero report rendered as fact reads
+		// "graceful stop: none ran" — which on a signalled run, where the
+		// stage was pidfd-SIGKILLed, is a claim about a step nobody reported
+		// on, and on a stage that died mid-budget having already stopped
+		// containers it is simply false. StopRan exists so P0 can tell "P1
+		// said the step did not run" from "P1 said nothing", and passing the
+		// zero value through would have thrown that distinction away at the
+		// first reader.
+		if err == nil && opts.OnGracefulStop != nil && opts.EngineSpec != nil {
 			opts.OnGracefulStop(rep)
 		}
 		if opts.OnPayloadExit != nil {
