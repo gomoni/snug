@@ -579,6 +579,42 @@ func refusalGrantAtRoot(t testing.TB, kind string) error {
 	return err
 }
 
+// refusalHomeBindThroughATranslatedGuest: issue #601, and the reason it is here
+// rather than only beside rejectHostHomeBind is the lesson that file already
+// learnt once — "a rule Validate does not call is a rule that does not exist".
+// The unit tables build a Policy by hand; this drives Resolve, so it fails if
+// the rule is unhooked, if add() stops canonicalising the host side, or if the
+// two sides are ever compared before translation is applied.
+//
+// MEASURED on the real binary before the fix: `ro = ["<home>:/mnt/h"]` bound
+// the whole home, `--dry-run` printed one unremarkable `ro /mnt/h` row and exit
+// 0, and the payload read a file from it. See the issue for the transcript.
+func refusalHomeBindThroughATranslatedGuest(t testing.TB) error {
+	reg := testRegistry()
+	reg["translatehome"] = &Profile{Name: "translatehome", RO: []string{"/home/u:/mnt/h"}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "translatehome"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func TestHomeBindThroughATranslatedGuestIsFatal(t *testing.T) {
+	err := refusalHomeBindThroughATranslatedGuest(t)
+	if err == nil {
+		t.Fatal("ACCEPTED a profile binding the host's home directory at a translated guest.\n" +
+			"One colon moves the guest out from under {home} while the grant stays exactly " +
+			"as large — every credential under $HOME readable, ~/.bashrc and ~/.gitconfig " +
+			"supplied as command tables, any agent socket in it usable unfiltered.\n" +
+			"If rejectHostHomeBind went back to reading only m.Guest, read m.Host too.")
+	}
+	// The RIGHT reason, and both ends named: a message quoting only the guest
+	// reads "/mnt/h, which is your home directory", which looks like a bug in
+	// snug rather than like the grant the profile wrote.
+	for _, want := range []string{"translatehome", "/home/u", "/mnt/h", "home directory", "COMMAND TABLES"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refused, but not as the home-bind rule: %q missing from\n%v", want, err)
+		}
+	}
+}
+
 func TestGrantAtRootIsFatalForEveryKind(t *testing.T) {
 	for _, kind := range []string{"tmpfs", "ro", "rw"} {
 		t.Run(kind, func(t *testing.T) {
@@ -1088,6 +1124,7 @@ func TestGoldenRefusals(t *testing.T) {
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
 		{"kind_conflict_tmpfs_over_sys_bind", refusalKindConflictTmpfsOverSysBind},
+		{"home_bind_through_a_translated_guest", refusalHomeBindThroughATranslatedGuest},
 		{"grant_at_root_tmpfs", func(t testing.TB) error { return refusalGrantAtRoot(t, "tmpfs") }},
 		{"grant_at_root_ro", func(t testing.TB) error { return refusalGrantAtRoot(t, "ro") }},
 		{"grant_at_exactly_proc", func(t testing.TB) error { return refusalGrantAtExactly(t, "/proc") }},
