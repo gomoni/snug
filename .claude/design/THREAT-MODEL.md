@@ -221,6 +221,29 @@ idea and not a plan: it is not scheduled and it is not promised here. Until it
 exists, everything running inside one sandbox is one trust domain. Two payloads
 that must not reach each other need two sandboxes.
 
+**One level out, the same reasoning gives the sandbox's OWNER everything.** A
+process running as the uid that started snug reaches inside with `nsenter`,
+`/proc/<pid>/root` and a debugger, because the kernel gates those by uid and
+snug never added a second gate. The line runs between sandboxes, not between the
+human and a process they started. This is why `state.json` may carry a sandbox's
+init pid and its namespace ids and may not carry a command, an argv, an
+executable path or a host-environment value a profile passed through: the first
+pair is what a same-uid reader already has, the second set would be a secret
+written to disk for their benefit (`internal/cli/runstate.go`,
+`internal/cli/targetstate.go`).
+
+**Going non-dumpable is not a way out of it, in either direction.**
+`PR_SET_DUMPABLE = 0` reassigns the FILES under `/proc/<pid>` to uid 0 while the
+DIRECTORY keeps the real uid, so a non-dumpable process stays visible and stays
+attributable to its owner — measured, and recorded at
+`internal/sandbox/teardown.go` because snug's own teardown sweep depends on it:
+a payload cannot hide from the reap by making itself non-dumpable. The same
+measurement is what makes a same-uid peer's reach unavoidable rather than
+merely unfixed, and issue #61's matrix settled the other half of it — hardening
+a target (`CapEff` 0, `NoNewPrivs` 1, `dumpable` 0) does not stop a peer holding
+`CAP_SYS_PTRACE`; taking that capability away from the PEERS is the gate that
+works, which is what `policy.StageCapDrop` does.
+
 ### 3.6 The operator's terminal
 
 A payload the operator hands their terminal to — the ordinary interactive run,
