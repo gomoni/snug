@@ -168,19 +168,7 @@ implementing a distinct stages of a sandbox itself.
 
 ### The plain shape — no network
 
-```
-    your shell
-      |
-      +-- snug                         <-- the one you typed; stays on the host
-            |
-            +-- bwrap                   the sandbox builder
-                  |
-                +-+------------------------ sandbox boundary -------------+
-                | +-- init (pid 1)     bwrap's reaper, inside the sandbox |
-                |       |                                                |
-                |       +-- your command (pid 2)                         |
-                +--------------------------------------------------------+
-```
+![snug with no network: snug on the host clones an intermediate user, pid and mount namespace; `snug __inpidns` execs bwrap, which is pid 1 there; the sandbox's own pid namespace nests below it with init as pid 1 and your command inside. Two long-lived processes.](docs/img/topology-plain.svg)
 
 ### With `@net` — one more process, and it is the point
 
@@ -189,25 +177,7 @@ needs a network namespace to attach to *before* the sandbox exists, and an
 unprivileged process cannot hand one over after the fact. So snug builds one
 first, in a helper called the **stage**:
 
-```
-    your shell
-      |
-      +-- snug
-            |
-            +-- pasta                  translates sandbox traffic <-> internet
-            |                          (attached to N, from outside)
-            |
-            +-- stage                  makes N, the sandbox's network namespace,
-                  |                    and holds it open by a descriptor
-                  |
-                  +-- bwrap
-                        |
-                      +-+---------------- sandbox boundary ---------------+
-                      | +-- init (pid 1)                                  |
-                      |       |                                           |
-                      |       +-- your command (pid 2)     network = N    |
-                      +---------------------------------------------------+
-```
+![snug with @net: snug on the host, pasta attached to the network namespace N from outside it, and the stage P1 inside the user namespace U it created. P1 made N, pinned it by a descriptor and left, so it sits in an empty netns of its own. Inside N, `snug __innetns` execs bwrap into an intermediate pid namespace from P1, and bwrap's own pid namespace holds init and your command. Four long-lived processes.](docs/img/topology-net.svg)
 
 ### With a container engine — a fourth process, and it is a SIBLING of the sandbox
 
@@ -216,29 +186,7 @@ starts one engine per sandbox and joins it to the sandbox's own network
 namespace. The payload never talks to that engine either — it talks to a
 filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
 
-```
-    your shell
-      |
-      +-- snug                         also serves the filtering proxy the
-            |                          payload's podman client talks to
-            |
-            +-- pasta                  only with @net
-            |
-            +-- stage                  makes N; holds it open by a descriptor
-                  |
-                  +-- bwrap            THE SANDBOX
-                  |     |
-                  |   +-+---------------- sandbox boundary ---------------+
-                  |   | +-- init (pid 1)                                  |
-                  |   |       |                                           |
-                  |   |       +-- your command (pid 2)    network = N     |
-                  |   +---------------------------------------------------+
-                  |
-                  +-- podman           THE ENGINE: also network = N, joined by
-                        |              setns; its own mount view, DERIVED from
-                        +-- container  the sandbox's; 12 capabilities, no
-                                       CAP_NET_ADMIN, no CAP_SYS_PTRACE
-```
+![snug with a container engine: the same shape as @net, with a second child of the stage inside N. The bwrap leg is the full sandbox; `snug __inengine` execs podman system service, which joins N by setns and has a derived mount view, its own pid, ipc, uts and cgroup namespaces and capabilities dropped to EngineCapBounding. They are siblings sharing only N and U.](docs/img/topology-engine.svg)
 
 - **A container's network IS the sandbox's.** There is no per-container bridge
   and no `podman run -p`. With `@net` a container reaches the internet; without
@@ -867,13 +815,7 @@ refined in the near future.
 
 ## Drafts — designed, not built
 
-One design is written down and deliberately unimplemented. It is kept because
-the reasoning is expensive to re-derive, not because the work is scheduled:
-
- * [`PARAMETERISED-PROFILES.md`](.claude/design/PARAMETERISED-PROFILES.md) —
-   profiles that take arguments, postponed by decision.
-
-What credentials reach a sandbox is not a draft:
+What credentials reach a sandbox:
 [`SECRETS.md`](.claude/design/SECRETS.md) carries the severity model, the three
 mechanisms, and the shapes that are refused with the measurement that refused
 them. What ships is one pinned ssh key through a filtering agent proxy, a

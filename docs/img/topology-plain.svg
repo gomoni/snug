@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 420" font-family="sans-serif">
+  <title>snug with no network: two long-lived processes, and the sandbox nested two pid namespaces deep</title>
+  <defs>
+    <marker id="tp-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="420" fill="#ffffff"/>
+
+  <!-- snug on the host -->
+  <rect x="24" y="14" width="560" height="70" rx="8"
+        fill="#fdecea" stroke="#c0392b" stroke-width="2"/>
+  <text x="44" y="42" font-size="20" font-weight="bold" fill="#8c2f22">snug</text>
+  <text x="44" y="68" font-size="15" fill="#8c2f22">the one you typed — the host's userns, netns and mount tree</text>
+
+  <line x1="300" y1="84" x2="300" y2="140" stroke="#555" stroke-width="2" marker-end="url(#tp-arrow)"/>
+  <text x="312" y="118" font-size="15" font-family="monospace" fill="#555">clone: user + pid + mount ns</text>
+
+  <!-- intermediate namespace -->
+  <rect x="24" y="146" width="1132" height="214" rx="12"
+        fill="#eaf1fb" stroke="#2f6fb5" stroke-width="2.5"/>
+  <text x="44" y="174" font-size="17" font-weight="bold" fill="#1d4a7d">an intermediate namespace snug makes — user, pid and mount</text>
+
+  <!-- bwrap leg -->
+  <rect x="48" y="190" width="1084" height="154" rx="8"
+        fill="#cfe7d5" stroke="#2f6b45" stroke-width="2"/>
+  <text x="68" y="218" font-size="17" font-weight="bold" fill="#17402a">snug __inpidns → bwrap — pid 1 of THIS namespace</text>
+
+  <!-- sandbox pid namespace -->
+  <rect x="72" y="234" width="1036" height="94" rx="8"
+        fill="#ffffff" stroke="#2f6b45" stroke-width="2"/>
+  <text x="92" y="260" font-size="15" fill="#17402a">the sandbox's own pid namespace, nested below it</text>
+  <text x="92" y="288" font-size="17" font-weight="bold" fill="#17402a">init (pid 1) → your command</text>
+  <text x="92" y="312" font-size="15" fill="#17402a">+ its own mount ns, its own EMPTY netns, seccomp</text>
+
+  <text x="590" y="394" text-anchor="middle" font-size="18" fill="#222">
+    Two long-lived processes: <tspan font-family="monospace">snug</tspan> and <tspan font-family="monospace">bwrap</tspan>. No stage, no pasta, and the sandbox's network namespace is empty.
+  </text>
+</svg>
