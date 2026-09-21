@@ -1370,9 +1370,10 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
 - *Order from structure* — mounts need no priority because depth decide; nothing
   in a search path play that role. Provenance class give a *band* — the
   `prepend` / `merge` / base ordering — but not a total order.
-- *Parameterised profiles as the ordering mechanism* —
-  `PARAMETERISED-PROFILES.md` make each contribution a distinct set member so
-  "the union falls out of set membership". Solve membership, not order.
+- *Parameterised profiles as the ordering mechanism* — make each contribution
+  a distinct set member so "the union falls out of set membership". Solve
+  membership, not order. (Profiles taking arguments are postponed; the idea is
+  recorded here because the ordering argument stands without them.)
 - *An expression language* (Dhall, CUE, Nickel, Starlark, KCL, Pkl) — **the one
   worth understanding.** TOML with `DisallowUnknownFields` load-bearing because
   unknown key = fatal parse error, so negation key cannot be smuggled in. That

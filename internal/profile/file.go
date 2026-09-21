@@ -162,9 +162,9 @@ func nameByteDesc(c byte) string { return policy.NameByteDesc(c) }
 //	     tree: the engine's store key is targetkey.Hash(pol.Target) and nothing
 //	     else (internal/engine/paths.go, engineKey), because issue #276 took
 //	     the profile selection out of it.
-//	":"  reserved for the parked design where a profile takes arguments
-//	     (.claude/design/PARAMETERISED-PROFILES.md): "name:arg" must split
-//	     unambiguously.
+//	":"  reserved for a profile that takes arguments, which is postponed
+//	     rather than designed: "name:arg" must split unambiguously if it ever
+//	     ships, and a character let into names now cannot be taken back.
 //	     whitespace and control characters, because every --dry-run line, every
 //	     Validate error and every provenance string renders a name as a
 //	     space-free token — a name with a space in it makes those nonsense, and
