@@ -262,7 +262,7 @@ const (
 // ── Policy: the single computed, immutable object ────────────────────────────
 type Policy struct {
     Target   string            // canonical host path of the sandbox's writable project dir
-    Home     string            // $HOME inside == $HOME outside (§9.7)
+    Home     string            // EvalSymlinks($HOME), inside and out; NOT pw_dir (§7.1, §9.7)
     Mounts   map[string]Mount  // keyed by Mount.Guest
     Env      map[string]string // resolved allowlist -> value; --clearenv + --setenv
     Net      NetPolicy
@@ -623,6 +623,8 @@ This is also why substituting a host binary is done by **PATH precedence, not ov
 
 This turns a runtime `bwrap` abort into a resolve-time error with a readable message, and it is directly unit-testable against a fake `Environ`.
 
+**A link target must be a clean path with no `..` component, refused at the fold.** Every guest walk here joins a target lexically, while the kernel resolves `..` after the component before it, so the two disagree whenever that component is a file, a missing name or another link. Measured: `/pbin -> /lnk/../..<ro dir>` read as the ro grant on `--dry-run` with no shadow-slot mark, while the payload's `git` ran from the tmpfs the kernel actually reached. Refusing the spelling is what keeps the walk and the kernel on one answer.
+
 **The HOST's symlinks inside a bound tree divert a mountpoint exactly as `snug`'s own do, and that half is `rejectRelocatedGrant`.** The rule above reads `snug`'s `KindSymlink` grants. It does not read the host content a covering bind supplies for the components *below* it — and `bwrap` does, because it resolves a destination INSIDE the sandbox, one component at a time, against whatever is mounted there at that moment. `guestLanding` walks every non-`Authored` mount's guest path the same way and refuses any whose landing is not its own guest path, naming the link, the link's text, the landing, and `grant <landing> instead`. MEASURED on `bubblewrap 0.12.0` (issue #588): `--ro-bind $S/w/mnt $S/G/sub/mnt`, with a host `$S/cover/sub -> $S/w` inside a cover bound at `$S/G`, created its mountpoint at `$S/w/mnt` and served an earlier profile's `rw` grant read-only — exit 0, no refusal, and `--dry-run` rendering the row at `$S/G/sub/mnt`.
 
 The refusal is what makes **`m.Guest` the landing** for every mount `rejectMasking`, `nearestCovering`, `checkNesting` and the depth sort see, so their lexical comparison of guest paths IS a landing comparison. It also removes what a "lands at" column in `--dry-run` would have disclosed: no policy `snug` will run has a mount whose landing differs from its guest path, so the FILESYSTEM block is true by construction rather than by annotation, and a column that is always empty is one nobody reads when it finally is not.
@@ -642,7 +644,7 @@ Before emitting anything, `Validate()` checks:
 - **RULE 2** — nesting, judged on the outer mount (below).
 - Relocation (§3.3) — a non-`Authored` grant whose destination lands anywhere other than its own guest path, checked before the two rules above so both may compare guest paths lexically.
 
-`Validate` is the *only* refuser, which is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for a validation failure and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
+`Validate` is the refuser of an assembled policy, with one companion that needs a `Context` fact `Validate` cannot ask for: `refuseUnreadSSHConfig` (§7.1). That is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for either refusal and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
 
 #### RULE 4 — `/proc` and `/dev` are `snug`'s, and a profile may not take them
 
@@ -1208,6 +1210,8 @@ Every surface below is off by default and reached by naming a profile. Each is a
 **What this cannot do, stated plainly:** it cannot restrict *what* is signed. A sign oracle for a key is authority to use that key for anything. Pinning to one key bounds the blast radius to one identity; it does not bound the actions. This is inherent to every agent forwarder and is not a `snug` limitation to be fixed later.
 
 `~/.ssh` itself is **never** mounted. `snug` generates a minimal `~/.ssh/config` and `~/.ssh/known_hosts` from a memfd (the pinned host's key only), so `git push` works without the sandbox seeing your host inventory.
+
+OpenSSH finds the per-user config from `getpwuid()->pw_dir`, never `$HOME`, and inside the sandbox that is the host's entry (`@sys` binds `/etc/passwd`, the uid is unmapped). The file is generated under `EvalSymlinks($HOME)`. Where `pw_dir/.ssh/config` does not resolve, through the sandbox's own mounts, to that generated file — `HOME` set elsewhere, or `/home -> /var/home` on Silverblue/MicroOS — every directive in it would be lost with exit 0, so `Resolve` refuses (`refuseUnreadSSHConfig`) and names the fix: `HOME=<pw_dir>` when `pw_dir` is canonical, otherwise a profile `symlink` from `pw_dir` to the home. No passwd entry refuses too. The gate is the generated file, so an unpinned run never asks.
 
 ### 7.2 The podman/docker socket proxy
 

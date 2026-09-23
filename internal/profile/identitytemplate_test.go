@@ -99,9 +99,11 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 		t.Fatalf("merging the extracted template alongside snug's own builtins failed: %v", err)
 	}
 
+	home := t.TempDir()
 	ctx := policy.Context{
-		Target: t.TempDir(),
-		Home:   t.TempDir(),
+		Target:         t.TempDir(),
+		Home:           home,
+		HostPasswdHome: home,
 	}
 	// The template's own inline comment says "the `defaults` are selected as
 	// well" (base.toml, on the `include` line) — a bare `snug -p work` adds

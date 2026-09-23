@@ -37,6 +37,7 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	stubPasswdHome(t, home)
 
 	// Public material only, and not the developer's: it is read and staged,
 	// never parsed, so a literal line is enough and nothing here can touch a
@@ -124,4 +125,14 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 			t.Errorf("agent-proxy resolved with no agent socket in the policy:\n%s", stdout)
 		}
 	})
+}
+
+// stubPasswdHome makes this uid's passwd home read as home for one test, so a
+// test that points HOME at a temp directory is not refused for the skew
+// refuseUnreadSSHConfig exists to catch.
+func stubPasswdHome(t *testing.T, home string) {
+	t.Helper()
+	orig := lookupPasswdHome
+	lookupPasswdHome = func() string { return home }
+	t.Cleanup(func() { lookupPasswdHome = orig })
 }

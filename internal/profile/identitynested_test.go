@@ -169,7 +169,8 @@ user = "some-one"
 		t.Fatalf("merging the file alongside snug's own builtins failed: %v", err)
 	}
 
-	ctx := policy.Context{Target: t.TempDir(), Home: t.TempDir()}
+	home := t.TempDir()
+	ctx := policy.Context{Target: t.TempDir(), Home: home, HostPasswdHome: home}
 	sel := append(append([]policy.ProfileName{}, BuiltinDefaults()...), "work")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, policy.OSEnviron{})
 	if err != nil {

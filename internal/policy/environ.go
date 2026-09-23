@@ -216,6 +216,13 @@ type Context struct {
 	// defaults the host's does (issue #43).
 	HostSSHConfig SSHValues
 
+	// HostPasswdHome is pw_dir of this uid's passwd entry, read by the caller:
+	// the directory the sandbox's ssh takes its per-user config from, since
+	// @sys binds the host's /etc/passwd and ssh never consults $HOME. Empty
+	// means no entry, and refuses any run with a generated ~/.ssh/config
+	// (refuseUnreadSSHConfig).
+	HostPasswdHome string
+
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox
 	// every host you have ever connected to.

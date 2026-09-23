@@ -57,12 +57,14 @@ func (e unusableTarget) Unwrap() error { return e.error }
 // zero profiles' grants into the base topology (/proc, /dev, /tmp,
 // /etc/resolv.conf), and is then refused by Validate as a policy nothing
 // selected can run. Describing a policy is not the same act as admitting it —
-// Validate is the only refuser, so --dry-run can show precisely what a refused
-// selection would have been. This means Resolve's return contract is NOT the
-// usual (nil, err) / (p, nil):
+// Describing a policy is not the same act as admitting it, so --dry-run can
+// show precisely what a refused selection would have been. This means
+// Resolve's return contract is NOT the usual (nil, err) / (p, nil):
 //
-//   - Validate failure: returns (p, err) — the non-nil policy is EXACTLY what
-//     was refused and why, for display. It must never be executed.
+//   - a refusal of the ASSEMBLED policy — Validate, or refuseUnreadSSHConfig,
+//     which needs a Context fact Validate cannot ask for: returns (p, err). The
+//     non-nil policy is EXACTLY what was refused and why, for display. It must
+//     never be executed.
 //   - every other failure (bad profile name, bad target, bad $HOME, ...):
 //     returns (nil, err), because no policy was ever assembled to show.
 //   - success: (p, nil).
@@ -293,6 +295,23 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			target, err := expandVars(s.Target, vars)
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			// A `..` in a link target is resolved by the kernel AFTER the
+			// component before it, and by every guest-side walk snug does
+			// (resolveThroughLinks) lexically. The two disagree whenever that
+			// component is a file, a missing name or another link. Measured:
+			// `/pbin -> /lnk/../..<ro dir>` read as the ro grant, carried no
+			// shadow-slot mark, and the payload's git ran from the tmpfs the
+			// kernel actually reached. Refused rather than modelled, so every
+			// walk sees the same path the kernel does.
+			if slices.Contains(strings.Split(target, "/"), "..") {
+				return nil, fmt.Errorf("profile %q: symlink target %s has a \"..\" component, "+
+					"which snug and the kernel can resolve differently; write the path it should reach",
+					name, VisibleText(target))
+			}
+			if c := filepath.Clean(target); c != target {
+				return nil, fmt.Errorf("profile %q: symlink target %s is not a clean path; write %s",
+					name, VisibleText(target), VisibleText(c))
 			}
 			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: target, Access: AccessRO, From: []string{string(name)}}); err != nil {
 				return nil, err
@@ -758,6 +777,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
 
 	if err := p.Validate(env); err != nil {
+		return p, err
+	}
+	if err := refuseUnreadSSHConfig(p, ctx, env); err != nil {
 		return p, err
 	}
 	return p, nil

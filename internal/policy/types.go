@@ -346,7 +346,7 @@ type Graft struct {
 // proxy's decisions too. One author means those cannot drift apart.
 type Policy struct {
 	Target   string // canonical host path of the writable project directory
-	Home     string // $HOME inside == $HOME outside
+	Home     string // EvalSymlinks($HOME); NOT pw_dir, see refuseUnreadSSHConfig
 	Hostname string
 	Chdir    string
 	Command  []string

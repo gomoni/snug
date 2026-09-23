@@ -49,10 +49,11 @@ var SystemSSHConfigPaths = []string{
 //     under it is ever read. It is also how a chain entry chosen by a human's
 //     own `Include /tmp/whatever.conf` stops being able to steer where snug
 //     authors bytes.
-//   - NOT UNDER Home. The user's own ~/.ssh/config is in the chain and is not
-//     a system file: snug generates that one only when an identity is pinned
-//     (identity.go), and replacing it here would silently displace a file the
-//     human wrote for themselves.
+//   - NOT UNDER Home NOR HostPasswdHome. The user's own ~/.ssh/config is in
+//     the chain and is not a system file: snug generates that one only when an
+//     identity is pinned (identity.go), and replacing it here would silently
+//     displace a file the human wrote for themselves. Both, because the chain
+//     comes from the host's ssh, which found that file from pw_dir, not $HOME.
 //   - NOR ANYWHERE INSIDE THE TARGET, and this one was found by attacking the
 //     change rather than by writing it. A human's own `Include <some
 //     repo>/ssh_config` puts a path from the SANDBOXED TREE into the chain,
@@ -77,6 +78,9 @@ func systemSSHConfigCandidates(ctx Context) []string {
 			continue
 		}
 		if ctx.Home != "" && underPath(ctx.Home, p) {
+			continue
+		}
+		if ctx.HostPasswdHome != "" && underPath(ctx.HostPasswdHome, p) {
 			continue
 		}
 		if ctx.Target != "" && underPath(ctx.Target, p) {
