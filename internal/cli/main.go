@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -469,7 +471,7 @@ func refuseVerbatim(cfg config, code int, text, message string) int {
 // nothing at all for most refusal classes (issue #334).
 //
 // pol MAY be nil: policy.Resolve's contract returns a policy only for a
-// Validate failure, and every other failure hands back nil. That is the whole
+// refusal of the assembled policy, and every other failure hands back nil. That is the whole
 // branch, and it is here rather than at the call site so no caller has to
 // remember which of Resolve's two shapes it is holding.
 //
@@ -637,6 +639,7 @@ func run(cfg config) int {
 		StdioTerminals:  stdioTerminals(),
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identitySSHHost(reg, selected)),
+		HostPasswdHome:  lookupPasswdHome(),
 		HostGit:         hostGit,
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and
@@ -653,8 +656,8 @@ func run(cfg config) int {
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
 	if err != nil {
-		// Resolve's contract (see its doc comment): a Validate failure returns
-		// the policy it refused ALONGSIDE the error, precisely so --dry-run can
+		// Resolve's contract (see its doc comment): a refusal of the assembled
+		// policy returns the policy it refused ALONGSIDE the error, precisely so --dry-run can
 		// show what was refused instead of just saying "no". Every other
 		// failure returns a nil policy, so there is nothing to show — and that
 		// branch is refusePolicy's, not this call site's. Either way, a
@@ -933,6 +936,24 @@ func hostNameservers() []string {
 		}
 	}
 	return out
+}
+
+// passwdHome is pw_dir for this uid, "" when there is no entry. user.LookupId,
+// never user.Current: the latter falls back to $HOME when the lookup fails,
+// which is the one answer this value exists to not be. cgo-free, so it reads
+// /etc/passwd itself — the same file @sys binds, and the one the sandbox's
+// getpwuid answers from.
+//
+// A variable so an in-process test that points HOME at a temp directory can
+// say what the passwd entry is; nothing else assigns it.
+var lookupPasswdHome = passwdHome
+
+func passwdHome() string {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		return ""
+	}
+	return u.HomeDir
 }
 
 // legacyTIOCSTI reports whether this kernel still allows the TIOCSTI ioctl. If

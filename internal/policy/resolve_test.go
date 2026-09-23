@@ -370,8 +370,8 @@ var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 // zero value would put --new-session in every golden in the tree and make the
 // common run the one nothing pins.
 func testCtx() Context {
-	return Context{Target: "/home/u/proj/sub", Home: "/home/u", Shell: "/bin/sh",
-		Command:        []string{"/bin/sh"},
+	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
+		Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
 

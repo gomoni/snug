@@ -72,11 +72,12 @@ func TestSnugRefusesToWriteItsGeneratedFilesOntoTheHost(t *testing.T) {
 		"# ABUSE: with this grant snug writes its own generated ssh config onto the host's.\n" +
 		"rw = [\"{home}/.ssh\"]\n"
 
-	env := writeProfiles(t, map[string]string{"pinned": identity, "sshrw": sshrw},
+	env := writeProfiles(t, map[string]string{"pinned": identity, "sshrw": sshrw,
+		"pwlink": passwdHomeLink(t, home)},
 		"HOME="+home, "SSH_AUTH_SOCK="+sock)
 
 	t.Run("the policy is refused and nothing is written", func(t *testing.T) {
-		out, code := cli(t, env, "-p", "pinned", "-p", "sshrw", proj, "--", "true")
+		out, code := cli(t, env, "-p", "pinned", "-p", "sshrw", "-p", "pwlink", proj, "--", "true")
 		if code == 0 {
 			// Errorf, not Fatalf, deliberately: when the rule is missing the run
 			// really happens and the host files really are rewritten, and the
@@ -103,7 +104,7 @@ func TestSnugRefusesToWriteItsGeneratedFilesOntoTheHost(t *testing.T) {
 	// exactly the path the rw grant covered — so the refusal is about a write
 	// that would genuinely have happened.
 	t.Run("without the rw grant the same run generates the file INSIDE", func(t *testing.T) {
-		in := runEnv(t, env, []string{"-p", "pinned"}, proj,
+		in := runEnv(t, env, []string{"-p", "pinned", "-p", "pwlink"}, proj,
 			"cat "+"$HOME/.ssh/config").mustRun(t)
 		if !strings.Contains(in.out, "IdentitiesOnly") {
 			t.Fatalf("the identity band generated no ~/.ssh/config inside the sandbox, so the "+

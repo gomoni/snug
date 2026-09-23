@@ -595,6 +595,15 @@ const maxGuestLinkHops = 8
 // Mount like any other once it is sitting in v.Mounts, so nothing about the
 // walk itself changes; only which map it reads does.
 func (v View) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
+	final, _, replaceable, ok = v.walkLinks(guest)
+	return final, replaceable, ok
+}
+
+// walkLinks is resolveThroughLinks plus the path the walk ended on. The landing
+// MOUNT only says what covers that path; a caller asking "does this reach
+// exactly X" needs the path too, because coveringMount lets a file cover its
+// descendants and the kernel answers ENOTDIR there.
+func (v View) walkLinks(guest string) (final Mount, at string, replaceable, ok bool) {
 	// CLEAN FIRST, EVERY HOP, and this line was missing for one review round.
 	// coveringMount matches on filepath.Clean(cur) while the remainder below was
 	// trimmed from the UNCLEANED cur, so the two disagreed for any non-canonical
@@ -613,10 +622,10 @@ func (v View) resolveThroughLinks(guest string) (final Mount, replaceable, ok bo
 	for hop := 0; hop <= maxGuestLinkHops; hop++ {
 		m, found := v.coveringMount(cur)
 		if !found {
-			return Mount{}, replaceable, false
+			return Mount{}, "", replaceable, false
 		}
 		if m.Kind != KindSymlink {
-			return m, replaceable, true
+			return m, cur, replaceable, true
 		}
 		if ground, _, has := v.nearestCovering(m.Guest); has && mountIsWritable(ground) {
 			replaceable = true
@@ -629,7 +638,7 @@ func (v View) resolveThroughLinks(guest string) (final Mount, replaceable, ok bo
 		// so the remainder is either empty or starts at a / boundary.
 		cur = filepath.Join(target, strings.TrimPrefix(cur, m.Guest))
 	}
-	return Mount{}, replaceable, false
+	return Mount{}, "", replaceable, false
 }
 
 // mountIsWritable is the one place "can whoever holds this VIEW write here" is

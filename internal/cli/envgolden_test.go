@@ -177,10 +177,11 @@ func (i envFakeInfo) Sys() any           { return nil }
 // per-run temporary directory would make the file unstable and unreviewable.
 func envGoldenCtx() policy.Context {
 	return policy.Context{
-		Target:  "/home/u/proj/sub",
-		Home:    "/home/u",
-		Shell:   "/usr/bin/bash",
-		Command: []string{"/bin/sh"},
+		Target:         "/home/u/proj/sub",
+		Home:           "/home/u",
+		HostPasswdHome: "/home/u",
+		Shell:          "/usr/bin/bash",
+		Command:        []string{"/bin/sh"},
 		// An INTERACTIVE run, which is what these goldens pin: a human at a
 		// terminal, all three descriptors on it. The non-interactive shape
 		// adds --new-session (issue #528) and is pinned once, in
