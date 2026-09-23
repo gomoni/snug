@@ -106,12 +106,13 @@ func leakyEnvRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	m := leakyEnvRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky", "@claude")
-	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	env := newEnvFakeEnv()
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) })
 
 	// POSITIVE CONTROL: the value actually reached the screen. Without this, a
 	// fixture that never resolved the "leaky" profile at all would pass the
@@ -262,11 +263,12 @@ func rowFor(t *testing.T, rendered, want string) string {
 func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	m := markJoinRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "markjoin")
-	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	env := newEnvFakeEnv()
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) })
 
 	// 1. Unrostered name, ungranted absolute-path value: BOTH marks, in order.
 	// The order is now LINE order — the marks are separate lines under the row
@@ -469,7 +471,8 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 
 	m := leakyEnvRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky")
-	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	env := newEnvFakeEnv()
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +482,7 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 	// reason that has nothing to do with the two screens agreeing. The two
 	// screens still agree on the TEXT, which is what this test is about; the
 	// geometry differs because one is an aligned table and the other is prose.
-	dryRow := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, p) }), "MY_TOOL_MODE")
+	dryRow := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) }), "MY_TOOL_MODE")
 	if !strings.Contains(dryRow, want) {
 		t.Errorf("--dry-run rendered %q, which does not carry %q", dryRow, want)
 	}

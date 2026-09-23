@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"io/fs"
 	"slices"
 	"strings"
 	"testing"
@@ -138,6 +139,48 @@ func TestSSHConfigSkewIsNotSatisfiedByALexicalLanding(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnreadSSHConfigHostLinkFailsClosed is issue #604's fix applied to #599's
+// own check: refuseUnreadSSHConfig's walk now follows a HOST symlink under a
+// covering bind the same way IsShadowSlot does, so pw_dir can be reached
+// through one and still satisfy the check — and a host read that fails on
+// the way must still refuse, exactly as every other unresolved chain does.
+func TestUnreadSSHConfigHostLinkFailsClosed(t *testing.T) {
+	reg := identityRegistry("/etc/key.pub")
+	reg["hostlink"] = &Profile{Name: "hostlink", RO: []string{"/mnt/otherhome"}}
+	sel := append(append([]ProfileName{}, pinnedSelection()...), "hostlink")
+
+	t.Run("accepted", func(t *testing.T) {
+		env := newFakeEnv()
+		env.dirs["/mnt/otherhome"] = true
+		// The host symlink nobody in the profile wrote, redirecting pw_dir's
+		// own .ssh directory onto the one snug actually generated the config
+		// under ({home}/.ssh, from ctx.Home in testCtx()).
+		env.links["/mnt/otherhome/.ssh"] = "/home/u/.ssh"
+		ctx := testCtx()
+		ctx.HostPasswdHome = "/mnt/otherhome"
+
+		if _, err := Resolve(reg, sel, ctx, env); err != nil {
+			t.Fatalf("a host symlink that truly leads pw_dir to the generated ~/.ssh/config "+
+				"was refused: %v", err)
+		}
+	})
+
+	t.Run("EACCES on the way refused", func(t *testing.T) {
+		env := newFakeEnv()
+		env.dirs["/mnt/otherhome"] = true
+		env.statErrs["/mnt/otherhome/.ssh"] = &fs.PathError{
+			Op: "lstat", Path: "/mnt/otherhome/.ssh", Err: fs.ErrPermission,
+		}
+		ctx := testCtx()
+		ctx.HostPasswdHome = "/mnt/otherhome"
+
+		if _, err := Resolve(reg, sel, ctx, env); err == nil {
+			t.Fatal("a host read that failed on the way to pw_dir's ssh config was accepted; " +
+				"snug cannot vouch for content it never actually read")
+		}
+	})
 }
 
 // The same lexical `..` lost the shadow-slot mark on PATH (red-team finding 2,

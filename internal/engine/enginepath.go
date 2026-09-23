@@ -50,7 +50,13 @@ const PinnedPATH = "/usr/bin:/usr/sbin:/bin:/sbin"
 // them, and answering "no slots" about a view nothing modelled is the shape
 // CLAUDE.md names as documented-but-not-implemented — so it is an error with the
 // missing call in it, not a silent pass.
-func checkEnginePATH(pol *policy.Policy) error {
+//
+// host is the reader the walk uses to follow a HOST symlink sitting under one
+// of these four grants, the same way the kernel does — engine.go's own call
+// passes policy.OSEnviron{}, the real host, because these four really are host
+// binds and a host symlink under one of them is exactly what this check
+// exists to catch.
+func checkEnginePATH(pol *policy.Policy, host policy.HostLinks) error {
 	view, ok := pol.EngineView()
 	if !ok {
 		return fmt.Errorf("the engine's PATH cannot be checked: this policy models no grafts, so "+
@@ -59,7 +65,20 @@ func checkEnginePATH(pol *policy.Policy) error {
 			"runroot, socket and config grafts, and the check below is the reason the order "+
 			"matters rather than merely being conventional.", PinnedPATH)
 	}
-	if elem, bad := firstShadowSlot(view, PinnedPATH); bad {
+	elem, verdict := firstShadowSlot(view, PinnedPATH, host)
+	switch verdict {
+	case policy.NotSlot:
+		return nil
+	case policy.Unresolved:
+		return fmt.Errorf("the container engine's PATH element %q cannot be resolved (a host path "+
+			"on the way cannot be read).\n"+
+			"       The engine runs as root in the sandbox's user namespace with the full "+
+			"delegated subuid range, and snug will not guess that a path it could not read is "+
+			"safe to put ahead of crun on its PATH.\n"+
+			"       PATH is snug's own (%s) and no profile authors it, so this means a grant "+
+			"or a graft in this run's policy landed on top of it. Run 'snug --dry-run' and "+
+			"look for the mount covering %s.", elem, PinnedPATH, elem)
+	default: // policy.Slot
 		return fmt.Errorf("the container engine's PATH element %q is WRITABLE in the engine's "+
 			"own mount view.\n"+
 			"       The engine runs as root in the sandbox's user namespace with the full "+
@@ -69,7 +88,6 @@ func checkEnginePATH(pol *policy.Policy) error {
 			"or a graft in this run's policy landed on top of it. Run 'snug --dry-run' and "+
 			"look for a writable mount covering %s.", elem, PinnedPATH, elem)
 	}
-	return nil
 }
 
 // firstShadowSlot is the sweep, separated from the refusal so a test can feed
@@ -83,15 +101,17 @@ func checkEnginePATH(pol *policy.Policy) error {
 // directory is not a path any View can resolve — so the view would answer
 // "not a slot" about the one element whose meaning depends on where the
 // process happens to stand. The measurement in Spec's own comment found an
-// empty element in the development host's PATH.
-func firstShadowSlot(view policy.View, path string) (string, bool) {
+// empty element in the development host's PATH. Reported policy.Slot rather
+// than policy.Unresolved: nothing was unreadable, the element is dangerous by
+// its own meaning.
+func firstShadowSlot(view policy.View, path string, host policy.HostLinks) (string, policy.ShadowVerdict) {
 	for _, elem := range strings.Split(path, ":") {
 		if elem == "" {
-			return elem, true
+			return elem, policy.Slot
 		}
-		if view.IsShadowSlot(elem) {
-			return elem, true
+		if v := view.Shadow(host, elem); v != policy.NotSlot {
+			return elem, v
 		}
 	}
-	return "", false
+	return "", policy.NotSlot
 }

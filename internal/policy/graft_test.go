@@ -638,12 +638,12 @@ func TestEngineViewIsShadowSlotSeesAGraft(t *testing.T) {
 	p := &Policy{Mounts: mounts}
 
 	// WITHOUT the graft: neither view may say StagedBinDir is a shadow slot.
-	if (View{Mounts: mounts}).IsShadowSlot(StagedBinDir) {
+	if (View{Mounts: mounts}).IsShadowSlot(noHostLinks{}, StagedBinDir) {
 		t.Fatal("control: IsShadowSlot(StagedBinDir) = true with NO graft installed at all — the " +
 			"predicate below would then be unfalsifiable, exactly the defect " +
 			"shadowslot_test.go documents about its own earlier version")
 	}
-	if p.SandboxView().IsShadowSlot(StagedBinDir) {
+	if p.SandboxView().IsShadowSlot(noHostLinks{}, StagedBinDir) {
 		t.Fatal("control: the SANDBOX's own view must never see a graft")
 	}
 
@@ -664,7 +664,7 @@ func TestEngineViewIsShadowSlotSeesAGraft(t *testing.T) {
 	if !ok {
 		t.Fatal("EngineView() ok=false with a graft present")
 	}
-	if !ev.IsShadowSlot(StagedBinDir) {
+	if !ev.IsShadowSlot(noHostLinks{}, StagedBinDir) {
 		t.Fatal("EngineView().IsShadowSlot(StagedBinDir) = false with an AccessRW graft at " + SnugDir + " — " +
 			"a graft is a Mount like any other once it is in the engine's view, and this is the " +
 			"exact hole issue #55 reports: neither Validate nor IsShadowSlot could see one")
@@ -674,7 +674,7 @@ func TestEngineViewIsShadowSlotSeesAGraft(t *testing.T) {
 	// exists — this is the fact that makes "the engine's view is derived from
 	// the sandbox's, never the other way, and never the same map" true rather
 	// than aspirational.
-	if p.SandboxView().IsShadowSlot(StagedBinDir) {
+	if p.SandboxView().IsShadowSlot(noHostLinks{}, StagedBinDir) {
 		t.Fatal("the SANDBOX's own view answered true once a graft existed — a graft must never " +
 			"reach the payload's mount namespace, in the model or at runtime")
 	}
@@ -717,7 +717,7 @@ func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
 				"deeper than /etc, so this case could not observe a shadow at all")
 		}
 		// POSITIVE CONTROL, before any graft exists.
-		if p.SandboxView().IsShadowSlot("/etc/resolv.conf") {
+		if p.SandboxView().IsShadowSlot(noHostLinks{}, "/etc/resolv.conf") {
 			t.Fatal("control: the payload's own view must not call /etc/resolv.conf a shadow slot " +
 				"before any graft exists")
 		}
@@ -742,14 +742,14 @@ func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
 		if !ok {
 			t.Fatal("EngineView() ok=false with a graft installed")
 		}
-		if !ev.IsShadowSlot("/etc/resolv.conf") {
+		if !ev.IsShadowSlot(noHostLinks{}, "/etc/resolv.conf") {
 			t.Fatal("EngineView().IsShadowSlot(/etc/resolv.conf) = false with a graft-rw at /etc — " +
 				"a per-key overlay leaves the deeper KindData mount visible THROUGH the graft " +
 				"(issue #55, finding F1); move_mount(2) onto /etc takes everything beneath it with it")
 		}
 		// POSITIVE CONTROL: the SANDBOX's own view of the identical Policy must
 		// still say no.
-		if p.SandboxView().IsShadowSlot("/etc/resolv.conf") {
+		if p.SandboxView().IsShadowSlot(noHostLinks{}, "/etc/resolv.conf") {
 			t.Fatal("the SANDBOX's own view answered true once the graft existed — a graft must " +
 				"never reach the payload's namespace")
 		}
@@ -768,10 +768,10 @@ func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
 		p := &Policy{Mounts: mounts}
 
 		// POSITIVE CONTROL, before any graft exists.
-		if (View{Mounts: mounts}).IsShadowSlot("/opt/tools/bin") {
+		if (View{Mounts: mounts}).IsShadowSlot(noHostLinks{}, "/opt/tools/bin") {
 			t.Fatal("control: a read-only PATH element must not be a shadow slot before any graft exists")
 		}
-		if p.SandboxView().IsShadowSlot("/opt/tools/bin") {
+		if p.SandboxView().IsShadowSlot(noHostLinks{}, "/opt/tools/bin") {
 			t.Fatal("control: the sandbox's own view must not see a shadow slot either, before any graft exists")
 		}
 
@@ -786,10 +786,10 @@ func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
 		if !ok {
 			t.Fatal("EngineView() ok=false with a graft present")
 		}
-		if !ev.IsShadowSlot("/opt") {
+		if !ev.IsShadowSlot(noHostLinks{}, "/opt") {
 			t.Fatal("EngineView().IsShadowSlot(/opt) = false with an AccessRW graft installed exactly there")
 		}
-		if !ev.IsShadowSlot("/opt/tools/bin") {
+		if !ev.IsShadowSlot(noHostLinks{}, "/opt/tools/bin") {
 			t.Fatal("EngineView().IsShadowSlot(/opt/tools/bin) = false with a graft-rw at /opt, its " +
 				"ancestor — this is #125's own PATH-sweep acceptance criterion (\"for every element " +
 				"of the engine's PATH, IsShadowSlot(elem) must be false\"), and the exact case a " +
@@ -798,7 +798,7 @@ func TestEngineViewGraftShadowsDeeperMounts(t *testing.T) {
 		}
 		// POSITIVE CONTROL: the SANDBOX's own view of the identical Policy must
 		// still say no — a graft never reaches the payload's namespace.
-		if p.SandboxView().IsShadowSlot("/opt/tools/bin") {
+		if p.SandboxView().IsShadowSlot(noHostLinks{}, "/opt/tools/bin") {
 			t.Fatal("the SANDBOX's own view answered true once the graft existed")
 		}
 	})

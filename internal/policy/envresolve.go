@@ -1,7 +1,9 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -335,7 +337,7 @@ func (p *Policy) sanitiseHostList(name string, t envType, from []string, env Env
 		if elem == "" {
 			continue
 		}
-		keep, reason := p.keepHostElement(elem)
+		keep, reason := p.keepHostElement(env, elem)
 		if keep {
 			p.addEnvEntry(name, true, t.sep, EnvEntry{Value: elem, Verb: VerbSanitise, From: from})
 			continue
@@ -447,20 +449,31 @@ func (p *Policy) EngineView() (View, bool) {
 // above uses. Two implementations of "is this granted" would eventually disagree,
 // and the one on screen is the one a human trusts.
 //
-// IT FOLLOWS SYMLINKS, because the filter does. For one review round it did not,
-// and the sentence above stopped being true the moment keepHostElement started
-// resolving: with `symlink /other/l -> /nonexistent` this returned true (the
-// lexical walk stops AT the symlink mount) while the filter returned
-// (false, DropNoGrant) for the identical path, so the same spelling read as
-// "granted" when a profile wrote it and "nothing grants that path" when the host
-// did, four lines apart on one screen. Sharing resolveThroughLinks is what makes
-// the doc paragraph above a fact rather than an intention.
+// IT FOLLOWS SYMLINKS, because the filter does — both kinds. For one review
+// round it followed only snug's own KindSymlink grants, and the sentence above
+// stopped being true the moment keepHostElement started resolving: with
+// `symlink /other/l -> /nonexistent` this returned true (the lexical walk
+// stops AT the symlink mount) while the filter returned (false, DropNoGrant)
+// for the identical path, so the same spelling read as "granted" when a
+// profile wrote it and "nothing grants that path" when the host did, four
+// lines apart on one screen. A second round found the same gap one mount kind
+// over: a HOST symlink sitting under a read-only KindBind — one the sandbox
+// never authored, just inherited from the tree it bound — was invisible to
+// this walk while the kernel followed it in the guest namespace exactly as it
+// follows one of ours. Sharing walkLinks, which now reads the host through the
+// injected HostLinks the same way rejectRelocatedGrant's walk does at build
+// time (INDEX.md §3.3), is what makes the doc paragraph above a fact rather
+// than an intention.
 //
 // "Verbatim" still holds and is a different axis: the caller's string is not
 // rewritten, and resolution decides only the verdict.
-func (v View) GrantsGuestPath(guest string) bool {
-	_, _, ok := v.resolveThroughLinks(guest)
-	return ok
+//
+// It answers only walkLanded — an UNRESOLVED chain (a host path on the way
+// could not be read) is not "granted" here any more than a chain that never
+// lands at all; a caller that needs to tell the two apart asks Shadow.
+func (v View) GrantsGuestPath(host HostLinks, guest string) bool {
+	_, _, _, end := v.walkLinks(host, guest)
+	return end == walkLanded
 }
 
 // (*Policy).GrantsGuestPath is a one-line wrapper over SandboxView so no
@@ -468,8 +481,8 @@ func (v View) GrantsGuestPath(guest string) bool {
 // sanitiseHostList path and every TestIsShadowSlot* case in envresolve_test.go
 // keep asking the Policy the question they always asked, and keep getting the
 // sandbox's own answer.
-func (p *Policy) GrantsGuestPath(guest string) bool {
-	return p.SandboxView().GrantsGuestPath(guest)
+func (p *Policy) GrantsGuestPath(host HostLinks, guest string) bool {
+	return p.SandboxView().GrantsGuestPath(host, guest)
 }
 
 // (*Policy).resolveThroughLinks is a one-line wrapper over SandboxView, kept
@@ -483,8 +496,8 @@ func (p *Policy) GrantsGuestPath(guest string) bool {
 // and graft.go:898 in fact calls p.SandboxView().coveringMount directly, as
 // systemsshconfig.go:150 does. A comment naming a caller is a copy of state
 // held in the caller.
-func (p *Policy) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
-	return p.SandboxView().resolveThroughLinks(guest)
+func (p *Policy) resolveThroughLinks(host HostLinks, guest string) (final Mount, replaceable, ok bool) {
+	return p.SandboxView().resolveThroughLinks(host, guest)
 }
 
 // coveringMount finds the DEEPEST mount whose Guest path lexically contains
@@ -542,22 +555,32 @@ func (v View) nearestCovering(guest string) (Mount, string, bool) {
 	return Mount{}, "", false
 }
 
-// maxGuestLinkHops bounds resolveThroughLinks. The only chain snug itself
-// builds is ONE hop (usr-merge: /bin -> usr/bin), so eight leaves room for a
-// hand-written profile that chains a few and is far below the kernel's
-// SYMLOOP_MAX of 40 — any chain that exhausts this budget is a cycle or a
-// construction nobody should be trusting a diagnostic about.
+// maxGuestLinkHops bounds walkLinks, and it MUST equal the kernel's own
+// resolution bound rather than a smaller one snug picks for tidiness. The walk
+// now shares one counter between snug's own KindSymlink grants and the HOST
+// symlinks it follows under a KindBind or KindGraft, and the kernel keeps
+// resolving until SYMLOOP_MAX (ELOOP at 40) whichever kind of link it is
+// chasing. A budget of 8 — the value this used to be, on the argument that the
+// only chain snug itself builds is one hop (usr-merge: /bin -> usr/bin) — left
+// hops 9 through 40 fail-open: a chain of that length ending on a tmpfs on
+// read-only ground overran the old budget and reported walkNowhere (not a
+// slot) here, while the kernel, bound only by its own 40, still landed on the
+// tmpfs and ran whatever the payload put there. Matching the kernel's bound is
+// what makes "the walk gave up" mean the kernel would also give up, rather
+// than "snug gave up before the kernel would have".
 //
 // A counter rather than a visited-set, deliberately: a visited-set terminates a
 // CYCLE exactly but still admits an arbitrarily long acyclic chain, and both
 // deserve the same answer ("I could not resolve this"). One bound covers both,
 // and cannot itself loop — which is the property --dry-run needs, since it
 // renders policies that Validate has already refused.
-const maxGuestLinkHops = 8
+const maxGuestLinkHops = 40
 
-// resolveThroughLinks walks a guest path through snug's OWN symlink grants and
-// returns the first non-symlink mount it lands on. It never returns a
-// KindSymlink: the walk is what removes that case from both callers' switches.
+// resolveThroughLinks walks a guest path through both kinds of link the walk
+// can meet — snug's OWN KindSymlink grants and a HOST symlink sitting under a
+// covering KindBind or KindGraft — and returns the first non-symlink mount it
+// lands on. It never returns a KindSymlink: the walk is what removes that case
+// from both callers' switches.
 //
 // It exists because the lexical walk in coveringMount stops AT a symlink while
 // the kernel walks THROUGH it — the same class of bug that made keepHostElement
@@ -565,7 +588,10 @@ const maxGuestLinkHops = 8
 // `tmpfs = ["/data/real"]`, `symlink /data/bin -> /data/real` and
 // `merge = { PATH = ["/data/bin"] }` got NO writable-PATH mark on --dry-run,
 // while the identical policy naming /data/real directly got one; in a live
-// sandbox the payload wrote /data/bin/git and it ran.
+// sandbox the payload wrote /data/bin/git and it ran. A second round found the
+// same gap on the HOST's own links: a read-only bind's tree can contain a
+// symlink nobody in the profile wrote, and the kernel still follows it inside
+// the sandbox's namespace — see walkLinks for that half.
 //
 // REPLACEABLE IS THE SECOND HALF, and it is not the same question as "where does
 // this land". A symlink is the one node kind snug emits that is NOT a mountpoint
@@ -576,7 +602,10 @@ const maxGuestLinkHops = 8
 // THROUGH the link with EROFS and then loses to `rm /data/bin && mkdir /data/bin`,
 // with the shadowed git running. The control is the same link on the root tmpfs
 // (`symlink /databin -> /usr/bin`), where `rm` fails EROFS and the real git runs
-// — so the discriminator really is the ground, not the link.
+// — so the discriminator really is the ground, not the link. A HOST symlink
+// standing on writable ground is replaceable the same way: the ground is a
+// property of the DIRECTORY holding the link, not of who authored the link
+// inside it.
 //
 // Ground is nearestCovering, whose "stops before / and never returns it" is
 // exactly right here: no mount above means the link sits on the ROOT tmpfs,
@@ -585,25 +614,83 @@ const maxGuestLinkHops = 8
 // generated FILE is not a directory search path at all; if a KindData grant ever
 // becomes a directory, revisit this line rather than assuming it was considered.
 //
-// ok is false when the chain runs out (nothing granted at the end) or exhausts
-// the hop budget. The two are NOT distinguished in the return, because both
-// callers want the same thing from them and neither may pretend the walk
-// resolved: keepHostElement drops the element, IsShadowSlot reports not-a-slot.
+// ok is true only for walkLanded. A chain that runs out (nothing granted at
+// the end), exhausts the hop budget, or meets a host path that cannot be read
+// all report ok == false here — the three are NOT distinguished in this
+// return, because resolveThroughLinks predates the three-way split and both of
+// its callers only ever needed "did this resolve to real, judgeable content".
+// A caller that needs to tell "nothing is there" from "a host read failed"
+// apart calls walkLinks or Shadow directly.
 //
 // Lifted onto View rather than Policy (issue #55) so the identical walk can be
 // asked of the ENGINE's derived view, not only the sandbox's — a graft is a
 // Mount like any other once it is sitting in v.Mounts, so nothing about the
 // walk itself changes; only which map it reads does.
-func (v View) resolveThroughLinks(guest string) (final Mount, replaceable, ok bool) {
-	final, _, replaceable, ok = v.walkLinks(guest)
-	return final, replaceable, ok
+func (v View) resolveThroughLinks(host HostLinks, guest string) (final Mount, replaceable, ok bool) {
+	final, _, replaceable, end := v.walkLinks(host, guest)
+	return final, replaceable, end == walkLanded
 }
 
-// walkLinks is resolveThroughLinks plus the path the walk ended on. The landing
-// MOUNT only says what covers that path; a caller asking "does this reach
-// exactly X" needs the path too, because coveringMount lets a file cover its
-// descendants and the kernel answers ENOTDIR there.
-func (v View) walkLinks(guest string) (final Mount, at string, replaceable, ok bool) {
+// walkEnd is how a walkLinks chain finished, and it exists because "resolved
+// to nothing" and "could not be judged" used to be the same false answer:
+// ok == false either way. A host Lstat/Readlink failure (EACCES, a link text
+// that cannot be read) is not the same fact as a chain that genuinely dangles,
+// and conflating them meant IsShadowSlot answered "not a slot" about a path
+// snug never actually looked at.
+type walkEnd uint8
+
+const (
+	// walkLanded is a mount the walk can judge: the chain reached a non-symlink
+	// node, or a host component below a covering bind was confirmed absent
+	// (ENOENT), which is the bind's own answer for that name.
+	walkLanded walkEnd = iota
+	// walkNowhere is nothing granted at the end of the chain, or the hop budget
+	// ran out — a cycle or a chain the kernel itself would answer ELOOP for.
+	walkNowhere
+	// walkUnknown is a host path on the way that could not be read for any
+	// reason other than not existing — a permission error, most often. The
+	// walk never guesses past one.
+	walkUnknown
+)
+
+// walkLinks is resolveThroughLinks plus the path the walk ended on and HOW it
+// ended. The landing MOUNT only says what covers that path; a caller asking
+// "does this reach exactly X" needs the path too, because coveringMount lets a
+// file cover its descendants and the kernel answers ENOTDIR there.
+//
+// HOST LINKS ARE FOLLOWED HERE, INSIDE THE WALK, RATHER THAN BY EVERY CALLER
+// SEPARATELY. All four callers — keepHostElement (the argv), IsShadowSlot and
+// GrantsGuestPath (the --dry-run screen and the engine's own PATH sweep), and
+// refuseUnreadSSHConfig (#599) — ask what the kernel resolves a guest path to,
+// and splitting the host-link step out to each of them would let the argv keep
+// what the screen marks: found by the red team on #603's working tree, a host
+// symlink `$F/hd/sub -> /tmp/sx` sitting inside a read-only bind carried no
+// `← writable from inside` mark on --dry-run, and then a payload wrote
+// `$F/hd/sub/git` and it ran (SHADOW-GIT-RAN).
+//
+// It reads the host through the injected HostLinks — Lstat to see what is AT a
+// name under a covering bind, Readlink plus linkLanding (validate.go) to see
+// where a host symlink there points, IN THE GUEST NAMESPACE — the same two
+// primitives rejectRelocatedGrant's guestLanding walk already uses at build
+// time (INDEX.md §3.3). It deliberately does NOT call env.EvalSymlinks: that
+// resolves against HOST path components, while both bwrap and this walk
+// resolve a mount destination against GUEST ones, and a path-translating grant
+// makes those two different places (#580). A nil host answers walkUnknown at
+// the first read it would need to make, rather than panicking — --dry-run
+// renders refused policies too, and a caller with nothing to read the host
+// with still gets a fail-closed verdict instead of a crash.
+//
+// The walk trusts every host component it reads to be LINK-FREE ABOVE the
+// point it reads it, so joining a link's relative text lexically (in
+// linkLanding) is correct rather than merely convenient: Validate refuses any
+// grant whose OWN guest path traverses one of snug's symlinks
+// (validate.go:~1492) and refuses a grant diverted by a HOST link under a
+// cover the same way (#588) — so by the time this walk reads a host component,
+// every prefix of the guest path it is judging was already walked clean by
+// Validate. A `..` in a host link's TEXT is still resolved lexically against
+// that clean prefix, which is what the kernel does too once the directory
+// components before it are real.
+func (v View) walkLinks(host HostLinks, guest string) (final Mount, at string, replaceable bool, end walkEnd) {
 	// CLEAN FIRST, EVERY HOP, and this line was missing for one review round.
 	// coveringMount matches on filepath.Clean(cur) while the remainder below was
 	// trimmed from the UNCLEANED cur, so the two disagreed for any non-canonical
@@ -619,26 +706,91 @@ func (v View) walkLinks(guest string) (final Mount, at string, replaceable, ok b
 	// decides the verdict only; what sanitiseHostList records is still the
 	// element as the host spelled it (DROP-NEVER-REWRITE).
 	cur := filepath.Clean(guest)
-	for hop := 0; hop <= maxGuestLinkHops; hop++ {
+	links := 0
+	for {
 		m, found := v.coveringMount(cur)
 		if !found {
-			return Mount{}, "", replaceable, false
+			return Mount{}, "", replaceable, walkNowhere
 		}
-		if m.Kind != KindSymlink {
-			return m, cur, replaceable, true
+
+		if m.Kind == KindSymlink {
+			if links++; links > maxGuestLinkHops {
+				return Mount{}, "", replaceable, walkNowhere
+			}
+			if ground, _, has := v.nearestCovering(m.Guest); has && mountIsWritable(ground) {
+				replaceable = true
+			}
+			target := m.Host
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(m.Guest), target)
+			}
+			// coveringMount matched on the cleaned cur and m.Guest is itself
+			// clean, so the remainder is either empty or starts at a / boundary.
+			cur = filepath.Join(target, strings.TrimPrefix(cur, m.Guest))
+			continue
 		}
-		if ground, _, has := v.nearestCovering(m.Guest); has && mountIsWritable(ground) {
-			replaceable = true
+
+		if m.Kind != KindBind && m.Kind != KindGraft {
+			return m, cur, replaceable, walkLanded
 		}
-		target := m.Host
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(m.Guest), target)
+
+		// The host tree this bind (or graft) supplies. A KindGraft may carry no
+		// Host at all — the engine's own store/runroot grafts are named by
+		// Guest alone (internal/engine/engine.go's own g.Host == "" check) —
+		// and the fallback to m.Guest matches guestLanding's identical
+		// `if host == "" { host = outer.Guest }` one file over.
+		hostRoot := m.Host
+		if hostRoot == "" {
+			hostRoot = m.Guest
 		}
-		// coveringMount matched on the cleaned cur and m.Guest is itself clean,
-		// so the remainder is either empty or starts at a / boundary.
-		cur = filepath.Join(target, strings.TrimPrefix(cur, m.Guest))
+		rest := strings.TrimPrefix(strings.TrimPrefix(cur, m.Guest), "/")
+		if rest == "" {
+			return m, cur, replaceable, walkLanded // the mountpoint itself: nothing below it to read
+		}
+
+		comps := strings.Split(rest, "/")
+		g, h := m.Guest, hostRoot
+		jumped := false
+		for i, c := range comps {
+			g, h = filepath.Join(g, c), filepath.Join(h, c)
+			fi, lerr := host.Lstat(h)
+			switch {
+			case errors.Is(lerr, fs.ErrNotExist):
+				// Nothing on the host at this name: judged by the bind itself,
+				// same as every read-only grant already was before host links
+				// were followed at all.
+				return m, cur, replaceable, walkLanded
+			case lerr != nil:
+				return Mount{}, "", replaceable, walkUnknown
+			}
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				if !fi.IsDir() {
+					// A file where the walk expected a directory: ENOTDIR
+					// inside, same as the bind's own content would give.
+					return m, cur, replaceable, walkLanded
+				}
+				continue
+			}
+
+			if links++; links > maxGuestLinkHops {
+				return Mount{}, "", replaceable, walkNowhere
+			}
+			if mountIsWritable(m) {
+				replaceable = true
+			}
+			landing, _, lerr := linkLanding(host, g, h)
+			if lerr != nil {
+				return Mount{}, "", replaceable, walkUnknown
+			}
+			cur = filepath.Join(append([]string{landing}, comps[i+1:]...)...)
+			jumped = true
+			break
+		}
+		if jumped {
+			continue // re-examine cur from the top: the landing can be under a different mount, or a link itself.
+		}
+		return m, cur, replaceable, walkLanded
 	}
-	return Mount{}, "", replaceable, false
 }
 
 // mountIsWritable is the one place "can whoever holds this VIEW write here" is
@@ -667,9 +819,9 @@ func mountIsWritable(m Mount) bool {
 }
 
 // keepHostElement decides whether one element of a sanitised host list
-// survives, and why not when it does not. It resolves the path through snug's
-// own symlinks (resolveThroughLinks) and switches EXHAUSTIVELY on the Kind of
-// the mount it lands on, fail-closed for any kind the switch does not name.
+// survives, and why not when it does not. It resolves the path through both
+// kinds of link walkLinks follows and switches EXHAUSTIVELY on the Kind of the
+// mount it lands on, fail-closed for any kind the switch does not name.
 //
 // The verdict at every kind, and at nesting — verbatim from the sanitise-C
 // design, §2:
@@ -687,6 +839,12 @@ func mountIsWritable(m Mount) bool {
 //	/bin (usr-merged host)             KindSymlink -> ro /usr      KEEP            RESOLVED, then judged: the walk lands on @sys's ro bind, so the row's verdict is unchanged and its reason is now the bind's
 //	/data/bin -> tmpfs /data/real      KindSymlink -> KindTmpfs    DROP (Tmpfs)    CHANGED — see below; the tmpfs row's reason applies through a link
 //	/data/bin -> nothing granted       KindSymlink -> —            DROP (NoGrant)  CHANGED — a dangling link resolves nowhere, so the host's content is absent
+//	/cover/sub -> a HOST symlink       walkLanded -> KindTmpfs    DROP (Tmpfs)    NEW — a host symlink INSIDE a ro bind, landing on a tmpfs, is judged the same as a snug-authored one: the host's content at that name is definitionally absent
+//	  (under a ro bind) -> a tmpfs
+//	/cover/sub -> a HOST symlink       walkLanded, replaceable   DROP (Replaceable) NEW — a host symlink whose OWN directory is writable, whatever it points to: the payload can unlink it and mkdir its own directory at that name (the same rule a snug-authored link on writable ground already gets)
+//	  (under a rw bind)
+//	/cover/sub -> HOST symlink under   walkUnknown                DROP (Unresolved) CHANGED — a host Lstat/Readlink error on the way (EACCES, most often) is not "nothing is there"; snug refuses to guess rather than answer either KEEP or DROP for content it never actually read
+//	  a ro bind, unreadable
 //	under /proc, /dev                  KindProc / KindDev         DROP (Pseudo)   see below — this arm was KEEP, and the red team walked through it
 //	a future Kind                      —                          DROP (NoGrant)  trailing default: a new kind fails closed until someone decides
 //	not absolute, e.g. "bin"           —                          DROP (NoGrant)  unchanged; coveringMount keeps the !filepath.IsAbs guard
@@ -730,7 +888,12 @@ func mountIsWritable(m Mount) bool {
 //     value written to Entries is elem itself, never the cleaned path and never
 //     the RESOLVED path — see sanitiseHostList's own DROP-NEVER-REWRITE
 //     contract. Resolution decides the verdict; it must not touch the value.
-//   - NO stat, no mode bits. internal/policy stays pure.
+//   - NO stat, no mode bits ON THE LANDING MOUNT — the Kind switch below still
+//     reads nothing but Mount.Kind. The walk that gets it there now DOES read
+//     the host, but only through the injected HostLinks (Lstat, Readlink) that
+//     walkLinks takes as a parameter, never a package-level os call: internal/policy
+//     stays pure, and every host fact this function's verdict can depend on is
+//     one a test can fake without touching a real filesystem.
 //
 // REPLACEABILITY DROPS, and the first version of this function discarded it with
 // a comment arguing that "can the payload OWN this path" was IsShadowSlot's
@@ -746,15 +909,20 @@ func mountIsWritable(m Mount) bool {
 // It is checked BEFORE the Kind switch, because the switch judges the landing
 // mount and the landing mount is exactly what is honest here — /usr/bin really
 // is read-only and really is populated. The defect is one node earlier.
-func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
+func (p *Policy) keepHostElement(host HostLinks, guest string) (bool, EnvDropReason) {
 	// Always the SANDBOX's own view: this filters what the PAYLOAD's PATH (and
 	// every other sanitised host list) may keep, and a graft never reaches the
 	// payload's namespace at all (issue #55).
-	m, replaceable, ok := p.SandboxView().resolveThroughLinks(guest)
+	m, _, replaceable, end := p.SandboxView().walkLinks(host, guest)
 	if replaceable {
 		return false, DropReplaceable
 	}
-	if !ok {
+	switch end {
+	case walkUnknown:
+		// A host path on the way could not be read at all: not the same fact
+		// as nothing being there, and not one this filter may guess past.
+		return false, DropUnresolved
+	case walkNowhere:
 		// Nothing granted at the end of the chain, or the chain did not
 		// terminate. Either way the element resolves to nothing inside the
 		// sandbox, which is what DropNoGrant already means.
@@ -769,17 +937,42 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 		return false, DropPseudoOnly
 	default:
 		// A future Kind fails closed until someone decides what it means here.
-		// KindSymlink cannot arrive: resolveThroughLinks never returns one.
+		// KindSymlink cannot arrive: walkLinks never returns one.
 		return false, DropNoGrant
 	}
 }
 
-// IsShadowSlot reports whether a directory named in the environment is
-// writable from inside THIS VIEW — a PATH entry the payload (sandbox view) or
-// the engine (engine view) can drop a file into and so choose what the next
-// `git` or `sh` resolves to.
+// ShadowVerdict is Shadow's three-way answer. It exists because "is this a
+// shadow slot" used to collapse two facts that a caller can act on very
+// differently: a path that genuinely cannot be a slot, and a path snug could
+// not finish judging because a host read on the way failed. Both used to
+// render as IsShadowSlot == false; NotSlot and Unresolved are that split made
+// explicit, and IsShadowSlot itself is now a two-line wrapper over Shadow that
+// keeps its old bool contract for every caller that only ever needed one.
+type ShadowVerdict uint8
+
+const (
+	// NotSlot is a path the walk landed on and found unwritable, or a path
+	// that resolves to nothing at all (walkNowhere) — inert either way.
+	NotSlot ShadowVerdict = iota
+	// Slot is writable from inside this view: the landing mount is writable,
+	// or a symlink on the way stands on writable ground (replaceable).
+	Slot
+	// Unresolved is a host path on the way that could not be read
+	// (walkUnknown). Not a refusal and not a shrug either: reported as a slot
+	// by IsShadowSlot (fail closed — snug does not know it is SAFE) and
+	// reported distinctly by name where a caller can say so, because "cannot
+	// tell" and "checked and it is fine" are different sentences to put on a
+	// trust screen.
+	Unresolved
+)
+
+// Shadow reports whether a directory named in the environment is writable
+// from inside THIS VIEW — a PATH entry the payload (sandbox view) or the
+// engine (engine view) can drop a file into and so choose what the next `git`
+// or `sh` resolves to — or whether snug could not tell.
 //
-// It shares ONE walk with keepHostElement — resolveThroughLinks, and through it
+// It shares ONE walk with keepHostElement — walkLinks, and through it
 // coveringMount and the deepest-mount rule — rather than asking the question a
 // second way, because two implementations of "what is at this path" eventually
 // disagree and the reader only ever checks one. They then apply DIFFERENT
@@ -801,30 +994,53 @@ func (p *Policy) keepHostElement(guest string) (bool, EnvDropReason) {
 // the second's cousin. The path may RESOLVE to something writable, or a symlink
 // on the way may be REPLACEABLE — sitting on writable ground, so the payload
 // unlinks it and puts its own directory at that name regardless of where it
-// pointed. The second is checked FIRST because it wins outright: a link to a
-// read-only /usr/bin, standing on a tmpfs, is a live shadow slot whose landing
-// mount says read-only.
+// pointed. The second is checked FIRST because it wins outright, and it wins
+// over Unresolved too: a chain that stands on writable ground and THEN meets an
+// unreadable host component is still a live shadow slot the moment the ground
+// under it is writable, whatever happens further down the chain.
 //
-// UNRESOLVED IS false, AND THAT IS TRUTHFUL RATHER THAN OPTIMISTIC. A chain that
-// cycles or overruns the hop budget resolves to nothing inside the sandbox
+// walkNowhere IS NotSlot, AND THAT IS TRUTHFUL RATHER THAN OPTIMISTIC. A chain
+// that cycles or overruns the hop budget resolves to nothing inside the sandbox
 // (ELOOP, or ENOENT for a dangling link), so nothing can be written there and a
 // mark would be a lie on the one screen CLAUDE.md says a human trusts. It is not
 // a fail-open either, because the dangerous half of "unresolved" is already
 // caught by replaceable: a cycle sitting in a writable tmpfs is marked at the
 // first hop, before the budget ever runs out. Verified both ways.
-func (v View) IsShadowSlot(guest string) bool {
-	m, replaceable, ok := v.resolveThroughLinks(guest)
+//
+// walkUnknown IS Unresolved, not NotSlot, and that is the opposite call for the
+// opposite reason: a host read failing is not evidence of anything, so
+// answering NotSlot would be optimism wearing the same "truthful" argument the
+// paragraph above earns honestly for a chain that genuinely dangles.
+func (v View) Shadow(host HostLinks, guest string) ShadowVerdict {
+	m, _, replaceable, end := v.walkLinks(host, guest)
 	if replaceable {
-		return true
+		return Slot
 	}
-	if !ok {
-		// Nothing is there at all, or the chain never landed; either way a PATH
-		// entry naming it is inert. Reached by its own branch rather than by
-		// falling through the switch, so "we could not resolve it" is never
-		// silently rendered as "we resolved it and it was fine".
-		return false
+	switch end {
+	case walkUnknown:
+		return Unresolved
+	case walkNowhere:
+		return NotSlot
 	}
-	return mountIsWritable(m)
+	if mountIsWritable(m) {
+		return Slot
+	}
+	return NotSlot
+}
+
+// (*Policy).Shadow is a one-line wrapper over SandboxView, for a caller that
+// wants the three-way verdict without going through EngineView (issue #55's
+// split — see (*Policy).IsShadowSlot below for why there is no single
+// Policy-level "which view" answer beyond the sandbox's own).
+func (p *Policy) Shadow(host HostLinks, guest string) ShadowVerdict {
+	return p.SandboxView().Shadow(host, guest)
+}
+
+// IsShadowSlot is Shadow collapsed to the bool every existing caller asks for:
+// Slot and Unresolved both answer true (fail closed — an unresolved chain is
+// not known to be SAFE), and only NotSlot answers false.
+func (v View) IsShadowSlot(host HostLinks, guest string) bool {
+	return v.Shadow(host, guest) != NotSlot
 }
 
 // (*Policy).IsShadowSlot is a one-line wrapper over SandboxView so no existing
@@ -838,8 +1054,8 @@ func (v View) IsShadowSlot(guest string) bool {
 // against a View, never through a Policy-level wrapper, because there is no
 // single Policy-level answer to give: which view is in question is exactly
 // the fact issue #55 is about.
-func (p *Policy) IsShadowSlot(guest string) bool {
-	return p.SandboxView().IsShadowSlot(guest)
+func (p *Policy) IsShadowSlot(host HostLinks, guest string) bool {
+	return p.SandboxView().IsShadowSlot(host, guest)
 }
 
 // dedupeEnvLists collapses a repeated element to its EARLIEST band.

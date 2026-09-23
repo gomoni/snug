@@ -50,7 +50,8 @@ func TestNoBuiltinPutsAWritableDirectoryOnPATH(t *testing.T) {
 	checked := 0
 	for _, name := range names {
 		sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), name)
-		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), newEnvFakeEnv())
+		env := newEnvFakeEnv()
+		p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
 		if err != nil {
 			// A selection this fake host cannot resolve says nothing either
 			// way, but it must be VISIBLE: a sweep that silently skipped every
@@ -60,7 +61,11 @@ func TestNoBuiltinPutsAWritableDirectoryOnPATH(t *testing.T) {
 		}
 		checked++
 		for _, e := range p.Env["PATH"].Entries {
-			if p.IsShadowSlot(e.Value) {
+			// The SAME env Resolve saw, not a fresh newEnvFakeEnv() — walkLinks
+			// now reads the host, and a builtin whose PATH element only
+			// resolves through a host fact THIS fixture set would otherwise be
+			// judged against a fixture that never carried it (issue #604).
+			if p.IsShadowSlot(env, e.Value) {
 				t.Errorf("builtin %s puts %s on PATH, and it is WRITABLE from inside "+
 					"(verb %s, from %v).\n"+
 					"A writable directory ahead of /usr/bin is a shadow slot: the payload writes "+
@@ -114,7 +119,7 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 	for _, e := range p.Env["PATH"].Entries {
 		if e.Value == "/home/u/.local/bin" {
 			found = true
-			if !p.IsShadowSlot(e.Value) {
+			if !p.IsShadowSlot(newEnvFakeEnv(), e.Value) {
 				t.Errorf("IsShadowSlot(%s) = false, but it is inside @home's writable tmpfs; "+
 					"the rule above is then being enforced by a predicate that cannot say no",
 					e.Value)
@@ -137,7 +142,7 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 	// the root tmpfs, and --remount-ro / covers that), but it is the answer this
 	// assertion would give for ANY path in the policy, which made it unfalsifiable
 	// at the one path it names. The control below is what makes it mean something.
-	if p.IsShadowSlot(policy.StagedBinDir) {
+	if p.IsShadowSlot(newEnvFakeEnv(), policy.StagedBinDir) {
 		t.Errorf("IsShadowSlot(%s) = true; snug's own staged-bin directory must be unwritable "+
 			"from inside", policy.StagedBinDir)
 	}
@@ -154,7 +159,7 @@ func TestShadowSlotPredicateFiresOnAWritableHomeDirectory(t *testing.T) {
 		Guest: policy.StagedBinDir, Kind: policy.KindTmpfs,
 		Access: policy.AccessRW, From: []string{"control"},
 	}
-	if !p.IsShadowSlot(policy.StagedBinDir) {
+	if !p.IsShadowSlot(newEnvFakeEnv(), policy.StagedBinDir) {
 		t.Errorf("IsShadowSlot(%s) = false with a writable tmpfs mounted there. The assertion "+
 			"above is then vacuous, and so is the one in TestWritableMarkIsPathOnly...: both "+
 			"would keep passing on a policy that hands the payload a writable directory first "+

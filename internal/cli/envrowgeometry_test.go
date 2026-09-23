@@ -65,11 +65,12 @@ func renderedEnvBlocks(t *testing.T) map[string]string {
 
 	m := markJoinRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "markjoin")
-	p, err := policy.Resolve(m, sel, envGoldenCtx(), newEnvFakeEnv())
+	markjoinEnv := newEnvFakeEnv()
+	p, err := policy.Resolve(m, sel, envGoldenCtx(), markjoinEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out["live:markjoin"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+	out["live:markjoin"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, p, markjoinEnv) })
 
 	// A DROP LINE, which no committed golden happens to contain and which the
 	// column rules below cannot be checked without: it is the other thing that
@@ -90,7 +91,7 @@ func renderedEnvBlocks(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out["live:dropper"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, dp) })
+	out["live:dropper"] = captureFile(t, func(f io.Writer) { describeEnvironment(f, dp, host) })
 	return out
 }
 
@@ -279,12 +280,13 @@ func TestAValueCannotForgeAMarkLine(t *testing.T) {
 		// the screen.
 		Environ: policy.EnvGrants{Merge: map[string][]string{"PATH": {"{home}/←not-granted"}}},
 	}
+	env := newEnvFakeEnv()
 	p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...),
-		"forge"), envGoldenCtx(), newEnvFakeEnv())
+		"forge"), envGoldenCtx(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) })
 
 	if !strings.Contains(got, "←not-granted") {
 		t.Fatalf("the forged value never reached the screen, so this test measures nothing:\n%s", got)

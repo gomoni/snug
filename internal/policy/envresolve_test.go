@@ -2,10 +2,28 @@ package policy
 
 import (
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 )
+
+// noHostLinks is the package-private stub the spec for issue #604 asks for:
+// Lstat always fs.ErrNotExist, never an exported no-op reader a production
+// call site could reach for real. Every walkLinks fixture in this file builds
+// its mounts by hand with no host symlink under a bind to find, so "the host
+// has nothing at any name" is not a shortcut around the walk — it is the
+// walk's own not-exist arm (walkLanded, judged by the bind), the same answer
+// these tests asserted before host links were followed at all.
+type noHostLinks struct{}
+
+func (noHostLinks) Lstat(p string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
+}
+
+func (noHostLinks) Readlink(p string) (string, error) {
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
+}
 
 // entryValues renders one variable's entries in band order, for assertions
 // about ORDER rather than about the joined string.
@@ -514,7 +532,7 @@ func TestSanitiseDropsProcAndDevMagicSymlinkElements(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		keep, reason := p.keepHostElement(c.elem)
+		keep, reason := p.keepHostElement(noHostLinks{}, c.elem)
 		if keep != c.wantKeep {
 			t.Errorf("keepHostElement(%q) keep=%v, want %v", c.elem, keep, c.wantKeep)
 			continue
@@ -619,7 +637,7 @@ func TestIsShadowSlotThroughASymlinkToAWritableTmpfs(t *testing.T) {
 		"/data/bin":  {Guest: "/data/bin", Kind: KindSymlink, Host: "/data/real"},
 		"/data/real": {Guest: "/data/real", Kind: KindTmpfs}, // target: writable
 	}}
-	if !p.IsShadowSlot("/data/bin") {
+	if !p.IsShadowSlot(noHostLinks{}, "/data/bin") {
 		t.Fatal("IsShadowSlot(/data/bin) = false; the link resolves to a writable tmpfs " +
 			"(/data/real), so a file the payload drops there is exactly the tmpfs shadow-slot " +
 			"finding, reached one node later through a link")
@@ -647,7 +665,7 @@ func TestIsShadowSlotThroughASymlinkStandingOnWritableGround(t *testing.T) {
 		"/data/bin": {Guest: "/data/bin", Kind: KindSymlink, Host: "/usr/bin"},
 		"/usr":      {Guest: "/usr", Kind: KindBind, Access: AccessRO}, // target: read-only
 	}}
-	if !p.IsShadowSlot("/data/bin") {
+	if !p.IsShadowSlot(noHostLinks{}, "/data/bin") {
 		t.Fatal("IsShadowSlot(/data/bin) = false; the link stands on a writable tmpfs (/data), " +
 			"so the payload can unlink it and create its own directory at that name whatever it " +
 			"pointed at — the target being read-only does not save it")
@@ -669,7 +687,7 @@ func TestIsShadowSlotFalseForASymlinkOnReadOnlyGroundToAReadOnlyTarget(t *testin
 		"/databin": {Guest: "/databin", Kind: KindSymlink, Host: "/usr/bin"},
 		"/usr":     {Guest: "/usr", Kind: KindBind, Access: AccessRO},
 	}}
-	if p.IsShadowSlot("/databin") {
+	if p.IsShadowSlot(noHostLinks{}, "/databin") {
 		t.Fatal("IsShadowSlot(/databin) = true for a link on read-only ground to a read-only " +
 			"target; a predicate that cannot say no here is not discriminating anything")
 	}
@@ -728,7 +746,7 @@ func TestResolveThroughLinksCleansEveryUncleanSpellingTheSameWay(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := symlinkSpellingFixture()
 
-			final, replaceable, ok := p.resolveThroughLinks(tc.spelled)
+			final, replaceable, ok := p.resolveThroughLinks(noHostLinks{}, tc.spelled)
 			if !ok || final.Guest != "/t" {
 				t.Errorf("resolveThroughLinks(%q) landed on %+v (ok=%v), want the tmpfs at /t — "+
 					"a value of /t/data/bin here means the walk fell into the concatenation bug",
@@ -739,11 +757,11 @@ func TestResolveThroughLinksCleansEveryUncleanSpellingTheSameWay(t *testing.T) {
 					"(the root tmpfs) has no mount above it, so this must be false", tc.spelled)
 			}
 
-			if keep, reason := p.keepHostElement(tc.spelled); keep || reason != DropTmpfsOnly {
+			if keep, reason := p.keepHostElement(noHostLinks{}, tc.spelled); keep || reason != DropTmpfsOnly {
 				t.Errorf("keepHostElement(%q) = (%v, %v), want (false, DropTmpfsOnly)",
 					tc.spelled, keep, reason)
 			}
-			if !p.IsShadowSlot(tc.spelled) {
+			if !p.IsShadowSlot(noHostLinks{}, tc.spelled) {
 				t.Errorf("IsShadowSlot(%q) = false, want true — it resolves to the writable /t "+
 					"tmpfs same as the clean spelling does", tc.spelled)
 			}
@@ -824,14 +842,14 @@ func TestSanitiseRecordsTheUncleanSpellingVerbatimNotCleaned(t *testing.T) {
 // is unbounded is what makes the cycle test below meaningful to have at all.
 func TestResolveThroughLinksHopBudgetBoundary(t *testing.T) {
 	within := buildSymlinkChain(maxGuestLinkHops)
-	m, _, ok := within.resolveThroughLinks("/link0")
+	m, _, ok := within.resolveThroughLinks(noHostLinks{}, "/link0")
 	if !ok || m.Guest != "/real" {
 		t.Errorf("a chain of exactly maxGuestLinkHops (%d) symlinks did not resolve: "+
 			"final=%+v ok=%v", maxGuestLinkHops, m, ok)
 	}
 
 	tooLong := buildSymlinkChain(maxGuestLinkHops + 1)
-	if _, _, ok := tooLong.resolveThroughLinks("/link0"); ok {
+	if _, _, ok := tooLong.resolveThroughLinks(noHostLinks{}, "/link0"); ok {
 		t.Errorf("a chain of maxGuestLinkHops+1 (%d) symlinks resolved; the budget did not bound it",
 			maxGuestLinkHops+1)
 	}
@@ -854,10 +872,10 @@ func TestResolveThroughLinksDanglingTarget(t *testing.T) {
 		"/data/bin": {Guest: "/data/bin", Kind: KindSymlink,
 			Host: "/nowhere/at/all"},
 	}}
-	if _, _, ok := writable.resolveThroughLinks("/data/bin"); ok {
+	if _, _, ok := writable.resolveThroughLinks(noHostLinks{}, "/data/bin"); ok {
 		t.Error("resolveThroughLinks resolved a link to a target nothing grants")
 	}
-	if keep, reason := writable.keepHostElement("/data/bin"); keep || reason != DropReplaceable {
+	if keep, reason := writable.keepHostElement(noHostLinks{}, "/data/bin"); keep || reason != DropReplaceable {
 		t.Errorf("keepHostElement(/data/bin) = (%v, %v), want (false, DropReplaceable) — the link "+
 			"stands on writable ground, which must dominate even though the target does not "+
 			"resolve to anything", keep, reason)
@@ -865,7 +883,7 @@ func TestResolveThroughLinksDanglingTarget(t *testing.T) {
 	// The link still stands on a writable tmpfs, so it is a live shadow slot
 	// EVEN THOUGH nothing can be reached through it — the payload does not
 	// need the link to resolve anywhere to `rm` and `mkdir` over it.
-	if !writable.IsShadowSlot("/data/bin") {
+	if !writable.IsShadowSlot(noHostLinks{}, "/data/bin") {
 		t.Error("IsShadowSlot(/data/bin) = false for a dangling link standing on writable ground; " +
 			"the target need not exist for the ground to matter")
 	}
@@ -878,12 +896,12 @@ func TestResolveThroughLinksDanglingTarget(t *testing.T) {
 		"/data":     {Guest: "/data", Kind: KindBind, Access: AccessRO},
 		"/data/bin": {Guest: "/data/bin", Kind: KindSymlink, Host: "/nowhere/at/all"},
 	}}
-	if keep, reason := readonly.keepHostElement("/data/bin"); keep || reason != DropNoGrant {
+	if keep, reason := readonly.keepHostElement(noHostLinks{}, "/data/bin"); keep || reason != DropNoGrant {
 		t.Errorf("keepHostElement(/data/bin) = (%v, %v), want (false, DropNoGrant) for a dangling "+
 			"link on READ-ONLY ground — with replaceable out of the picture, this is the ordinary "+
 			"'nothing grants that path' case", keep, reason)
 	}
-	if readonly.IsShadowSlot("/data/bin") {
+	if readonly.IsShadowSlot(noHostLinks{}, "/data/bin") {
 		t.Error("IsShadowSlot(/data/bin) = true for a dangling link on read-only ground")
 	}
 }
@@ -903,7 +921,7 @@ func TestResolveThroughLinksCycleTerminates(t *testing.T) {
 	done := make(chan struct{})
 	var ok bool
 	go func() {
-		_, _, ok = p.resolveThroughLinks("/a")
+		_, _, ok = p.resolveThroughLinks(noHostLinks{}, "/a")
 		close(done)
 	}()
 	select {
@@ -918,7 +936,7 @@ func TestResolveThroughLinksCycleTerminates(t *testing.T) {
 
 	// A cycle is also inert for the shadow-slot question: it never lands
 	// anywhere, and neither /a nor /b is a mount with content of its own.
-	if p.IsShadowSlot("/a") {
+	if p.IsShadowSlot(noHostLinks{}, "/a") {
 		t.Error("IsShadowSlot(/a) = true for an unresolvable cycle with no writable ground on the way")
 	}
 }
@@ -1027,7 +1045,7 @@ func TestSanitiseDropsASymlinkSpellingOfAShadowSlot(t *testing.T) {
 	// IsShadowSlot must already agree that this is a slot — if this assertion
 	// fails, the fixture is not exercising Route B at all, and the operand
 	// check above is not exercising `replaceable` either.
-	if !p.IsShadowSlot("/data/bin") {
+	if !p.IsShadowSlot(env, "/data/bin") {
 		t.Fatal("control: IsShadowSlot(/data/bin) = false; the fixture is not standing the link " +
 			"on writable ground, so a keepHostElement fix that consults `replaceable` would have " +
 			"nothing to catch here")
@@ -1293,5 +1311,385 @@ func TestPrependReordersWithoutRemoving(t *testing.T) {
 	}
 	if !found {
 		t.Error("adding a prepend removed another profile's entry; only its POSITION may move")
+	}
+}
+
+// ── issue #604: a HOST symlink under a covering bind is now part of the walk ─
+//
+// walkLinks used to stop at the first KindBind or KindGraft mount and hand it
+// straight to the caller as the landing. The kernel does not stop there: a
+// symlink the HOST tree contains under that bind — one nobody's profile
+// wrote — is still followed, in the guest namespace, exactly like one of
+// snug's own KindSymlink grants. Found by the red team on #603's working
+// tree: `ro = ["$F/hd"]` with a host symlink `$F/hd/sub -> /tmp/sx` merged
+// onto PATH carried no `← writable from inside` mark, and a payload's
+// `mkdir -p /tmp/sx && echo … >/tmp/sx/git` then ran ahead of the real git.
+//
+// Every test below uses newFakeEnv() rather than noHostLinks{}: the point is
+// that walkLinks now reads the host, through the injected HostLinks, so the
+// fixture has to be able to answer Lstat/Readlink for the exact names each
+// case reads.
+
+// TestIsShadowSlotThroughAHostSymlinkInsideAReadOnlyBind is the issue's own
+// reproduction, cut down to the walk: a read-only bind whose host tree
+// contains a symlink pointing at snug's own unconditional writable /tmp.
+func TestIsShadowSlotThroughAHostSymlinkInsideAReadOnlyBind(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/f/hd/sub"] = "/tmp/sx"
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/f/hd": {Guest: "/f/hd", Host: "/f/hd", Kind: KindBind, Access: AccessRO},
+		"/tmp":  {Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW},
+	}}
+
+	if !p.IsShadowSlot(env, "/f/hd/sub") {
+		t.Fatal("IsShadowSlot(/f/hd/sub) = false; the HOST itself has a symlink there, under a " +
+			"read-only bind, pointing at a writable tmpfs — the kernel follows it inside the " +
+			"sandbox's own namespace exactly as it follows one snug authored")
+	}
+	if keep, reason := p.keepHostElement(env, "/f/hd/sub"); keep || reason != DropTmpfsOnly {
+		t.Errorf("keepHostElement(/f/hd/sub) = (%v, %v), want (false, DropTmpfsOnly) — the walk "+
+			"lands on the tmpfs the same way a snug-authored link to it would", keep, reason)
+	}
+}
+
+// TestHostSymlinkToReadOnlyGroundIsNotASlot is the negative half of the case
+// above: a host symlink whose own directory AND whose target are both
+// read-only. Followed correctly, this must discriminate exactly like a
+// snug-authored link does — not report every host symlink a slot regardless
+// of where it stands.
+func TestHostSymlinkToReadOnlyGroundIsNotASlot(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/usr/x"] = "/usr/bin"
+	env.dirs["/usr/bin"] = true
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/usr": {Guest: "/usr", Host: "/usr", Kind: KindBind, Access: AccessRO},
+	}}
+
+	t.Run("through a host symlink", func(t *testing.T) {
+		if p.IsShadowSlot(env, "/usr/x") {
+			t.Error("IsShadowSlot(/usr/x) = true; the link stands on read-only ground (the " +
+				"/usr bind) and points at read-only ground (/usr/bin, the same bind) — " +
+				"nothing in this chain is writable")
+		}
+		if keep, _ := p.keepHostElement(env, "/usr/x"); !keep {
+			t.Error("keepHostElement(/usr/x) = false; the host directory it resolves to " +
+				"really is there, read-only, which is KEEP's own standing contract")
+		}
+	})
+
+	// CONTROL: the identical verdict with no symlink on the way at all — what
+	// makes the case above a statement about the LINK rather than about /usr/bin.
+	t.Run("real directory control", func(t *testing.T) {
+		if p.IsShadowSlot(env, "/usr/bin") {
+			t.Error("control: IsShadowSlot(/usr/bin) = true with no symlink on the way at all")
+		}
+		if keep, _ := p.keepHostElement(env, "/usr/bin"); !keep {
+			t.Error("control: keepHostElement(/usr/bin) = false with no symlink on the way at all")
+		}
+	})
+}
+
+// TestHostSymlinkLandsInGuestNamespace pins the #580-shaped half of the fix:
+// a RELATIVE host symlink's text is resolved against the GUEST directory the
+// link sits in, never against the host one. The decoy mount at /h/w is what
+// makes this a real discriminator — a walk that (wrongly) joined the
+// relative text onto the HOST path would land there, a read-only bind, and
+// answer NotSlot; the correct walk joins it onto the GUEST path and lands on
+// /g/w, a writable tmpfs.
+func TestHostSymlinkLandsInGuestNamespace(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/h/cover/sub"] = "../w"
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/g/cover": {Guest: "/g/cover", Host: "/h/cover", Kind: KindBind, Access: AccessRO},
+		"/g/w":     {Guest: "/g/w", Kind: KindTmpfs, Access: AccessRW},
+		// The DECOY: where a HOST-namespace resolution of "../w" against
+		// /h/cover would land (/h/cover/../w = /h/w), sitting there as a
+		// read-only bind so a wrong implementation gets a definite (wrong)
+		// answer instead of an accidental match.
+		"/h/w": {Guest: "/h/w", Host: "/h/w", Kind: KindBind, Access: AccessRO},
+	}}
+
+	final, at, _, end := p.SandboxView().walkLinks(env, "/g/cover/sub")
+	if end != walkLanded || final.Guest != "/g/w" || at != "/g/w" {
+		t.Fatalf("walkLinks(/g/cover/sub) landed on %+v at %q (end=%v), want the tmpfs at "+
+			"/g/w — landing at /h/w means the relative link text was resolved against HOST "+
+			"components, the #580 defect one node over", final, at, end)
+	}
+	if !p.IsShadowSlot(env, "/g/cover/sub") {
+		t.Error("IsShadowSlot(/g/cover/sub) = false; it lands on the writable /g/w tmpfs")
+	}
+}
+
+// TestHostSymlinkInWritableBindIsReplaceable is REPLACEABLE asked of a HOST
+// symlink rather than a snug-authored one: the link's own directory is
+// writable, so the payload can unlink the link and mkdir its own directory
+// at that name whatever the link used to point at — the target's own
+// read-only-ness does not save it.
+func TestHostSymlinkInWritableBindIsReplaceable(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/t/bin"] = "/usr/bin"
+	env.dirs["/usr/bin"] = true
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/t":   {Guest: "/t", Host: "/t", Kind: KindBind, Access: AccessRW},
+		"/usr": {Guest: "/usr", Host: "/usr", Kind: KindBind, Access: AccessRO},
+	}}
+
+	if !p.IsShadowSlot(env, "/t/bin") {
+		t.Fatal("IsShadowSlot(/t/bin) = false; /t is a writable bind, so the payload can rm " +
+			"the link and mkdir its own directory at /t/bin regardless of where it pointed")
+	}
+	if keep, reason := p.keepHostElement(env, "/t/bin"); keep || reason != DropReplaceable {
+		t.Errorf("keepHostElement(/t/bin) = (%v, %v), want (false, DropReplaceable)", keep, reason)
+	}
+}
+
+// TestMixedSnugAndHostLinkChain proves walkLinks shares ONE counter and ONE
+// resolution rule for both kinds of link regardless of which comes first —
+// snug's own KindSymlink grants and a HOST symlink discovered under a
+// covering bind.
+func TestMixedSnugAndHostLinkChain(t *testing.T) {
+	t.Run("snug link then host link", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/hb1/x"] = "/tmpz"
+		p := &Policy{Mounts: map[string]Mount{
+			"/s1":   {Guest: "/s1", Kind: KindSymlink, Host: "/b1"},
+			"/b1":   {Guest: "/b1", Host: "/hb1", Kind: KindBind, Access: AccessRO},
+			"/tmpz": {Guest: "/tmpz", Kind: KindTmpfs, Access: AccessRW},
+		}}
+		if !p.IsShadowSlot(env, "/s1/x") {
+			t.Error("IsShadowSlot(/s1/x) = false for snug-symlink -> bind -> host-symlink -> " +
+				"writable tmpfs")
+		}
+	})
+
+	t.Run("host link then snug link", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/hc2/y"] = "/s2"
+		p := &Policy{Mounts: map[string]Mount{
+			"/c2":    {Guest: "/c2", Host: "/hc2", Kind: KindBind, Access: AccessRO},
+			"/s2":    {Guest: "/s2", Kind: KindSymlink, Host: "/tmpz2"},
+			"/tmpz2": {Guest: "/tmpz2", Kind: KindTmpfs, Access: AccessRW},
+		}}
+		if !p.IsShadowSlot(env, "/c2/y") {
+			t.Error("IsShadowSlot(/c2/y) = false for bind -> host-symlink -> snug-symlink -> " +
+				"writable tmpfs")
+		}
+	})
+}
+
+// TestUnreadableHostPathFailsClosed is the walkUnknown half: a host read that
+// fails for a reason OTHER than the component simply not existing must never
+// be read as "nothing is there" (walkNowhere, which drops silently) or as
+// "granted" (which would ship an unjudged path). It has to say it does not
+// know.
+func TestUnreadableHostPathFailsClosed(t *testing.T) {
+	mounts := map[string]Mount{
+		"/u1": {Guest: "/u1", Host: "/hu1", Kind: KindBind, Access: AccessRO},
+	}
+	p := &Policy{Mounts: mounts}
+
+	t.Run("Lstat fails", func(t *testing.T) {
+		env := newFakeEnv()
+		env.statErrs["/hu1/z"] = &fs.PathError{Op: "lstat", Path: "/hu1/z", Err: fs.ErrPermission}
+
+		if v := p.Shadow(env, "/u1/z"); v != Unresolved {
+			t.Errorf("Shadow(/u1/z) = %v, want Unresolved — a permission error is not evidence "+
+				"of anything, and must not be read as either NotSlot or Slot", v)
+		}
+		if !p.IsShadowSlot(env, "/u1/z") {
+			t.Error("IsShadowSlot(/u1/z) = false for an unresolved chain; fail closed means " +
+				"unresolved reads as a slot")
+		}
+		if p.GrantsGuestPath(env, "/u1/z") {
+			t.Error("GrantsGuestPath(/u1/z) = true for a chain that was never actually read")
+		}
+		if keep, reason := p.keepHostElement(env, "/u1/z"); keep || reason != DropUnresolved {
+			t.Errorf("keepHostElement(/u1/z) = (%v, %v), want (false, DropUnresolved)", keep, reason)
+		}
+	})
+
+	t.Run("Readlink fails", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/hu1/w"] = "/wherever" // makes Lstat see a symlink at all
+		env.readlinkErrs["/hu1/w"] = &fs.PathError{Op: "readlink", Path: "/hu1/w", Err: fs.ErrPermission}
+
+		if v := p.Shadow(env, "/u1/w"); v != Unresolved {
+			t.Errorf("Shadow(/u1/w) = %v, want Unresolved", v)
+		}
+		if !p.IsShadowSlot(env, "/u1/w") {
+			t.Error("IsShadowSlot(/u1/w) = false for an unresolved chain")
+		}
+		if p.GrantsGuestPath(env, "/u1/w") {
+			t.Error("GrantsGuestPath(/u1/w) = true for a chain that was never actually read")
+		}
+		if keep, reason := p.keepHostElement(env, "/u1/w"); keep || reason != DropUnresolved {
+			t.Errorf("keepHostElement(/u1/w) = (%v, %v), want (false, DropUnresolved)", keep, reason)
+		}
+	})
+}
+
+// TestHostLinkCycleTerminates is TestResolveThroughLinksCycleTerminates's
+// twin for a HOST-authored cycle rather than a snug-authored one: the shared
+// hop budget must bound it the same way, and REPLACEABLE must still win
+// outright the moment the first hop stands on writable ground, before the
+// cycle ever exhausts the budget.
+func TestHostLinkCycleTerminates(t *testing.T) {
+	t.Run("ro bind", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/hc/a"] = "/c/b"
+		env.links["/hc/b"] = "/c/a"
+		p := &Policy{Mounts: map[string]Mount{
+			"/c": {Guest: "/c", Host: "/hc", Kind: KindBind, Access: AccessRO},
+		}}
+
+		done := make(chan struct{})
+		var v ShadowVerdict
+		go func() { v = p.Shadow(env, "/c/a"); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shadow(/c/a) did not return within 2s — a host-link cycle hung the walk")
+		}
+		if v != NotSlot {
+			t.Errorf("Shadow(/c/a) = %v, want NotSlot for a cycle standing entirely on "+
+				"read-only ground", v)
+		}
+		if keep, reason := p.keepHostElement(env, "/c/a"); keep || reason != DropNoGrant {
+			t.Errorf("keepHostElement(/c/a) = (%v, %v), want (false, DropNoGrant)", keep, reason)
+		}
+	})
+
+	t.Run("rw bind", func(t *testing.T) {
+		env := newFakeEnv()
+		env.links["/hd/a"] = "/d/b"
+		env.links["/hd/b"] = "/d/a"
+		p := &Policy{Mounts: map[string]Mount{
+			"/d": {Guest: "/d", Host: "/hd", Kind: KindBind, Access: AccessRW},
+		}}
+
+		done := make(chan struct{})
+		var v ShadowVerdict
+		go func() { v = p.Shadow(env, "/d/a"); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Shadow(/d/a) did not return within 2s — a host-link cycle hung the walk")
+		}
+		if v != Slot {
+			t.Errorf("Shadow(/d/a) = %v, want Slot — the FIRST hop already stands on writable "+
+				"ground, which must win before the cycle ever exhausts the budget", v)
+		}
+		if keep, reason := p.keepHostElement(env, "/d/a"); keep || reason != DropReplaceable {
+			t.Errorf("keepHostElement(/d/a) = (%v, %v), want (false, DropReplaceable)", keep, reason)
+		}
+	})
+}
+
+// buildSymlinkChainOntoTmpfs is buildSymlinkChain's twin, landing on a
+// WRITABLE tmpfs instead of a read-only bind — the shape
+// TestLinkBudgetIsTheKernels needs: the second fail-open the ruling for
+// issue #604 records only shows up where the chain's end is writable, since
+// a budget that cuts a chain off too early and a budget that cuts a chain
+// off correctly give the identical answer (not a slot) against a read-only
+// target.
+func buildSymlinkChainOntoTmpfs(n int) *Policy {
+	mounts := map[string]Mount{
+		"/real": {Guest: "/real", Kind: KindTmpfs, Access: AccessRW},
+	}
+	target := "/real"
+	for i := n - 1; i >= 0; i-- {
+		guest := fmt.Sprintf("/tlink%d", i)
+		mounts[guest] = Mount{Guest: guest, Kind: KindSymlink, Host: target}
+		target = guest
+	}
+	return &Policy{Mounts: mounts}
+}
+
+// TestLinkBudgetIsTheKernels pins maxGuestLinkHops against the kernel's own
+// SYMLOOP_MAX (40), not a smaller value snug used to pick for tidiness
+// (8, on the argument that the only chain snug itself built was one hop
+// long). A chain of 9 snug KindSymlink grants — comfortably under 40, and
+// comfortably over the old 8 — landing on a writable tmpfs must still read
+// as a shadow slot: the kernel would still resolve every hop and run
+// whatever the payload put at the end.
+func TestLinkBudgetIsTheKernels(t *testing.T) {
+	within := buildSymlinkChain(maxGuestLinkHops)
+	if _, _, ok := within.resolveThroughLinks(noHostLinks{}, "/link0"); !ok {
+		t.Errorf("a chain of exactly maxGuestLinkHops (%d) symlinks did not resolve",
+			maxGuestLinkHops)
+	}
+	tooLong := buildSymlinkChain(maxGuestLinkHops + 1)
+	if _, _, ok := tooLong.resolveThroughLinks(noHostLinks{}, "/link0"); ok {
+		t.Errorf("a chain of maxGuestLinkHops+1 (%d) symlinks resolved; the budget did not "+
+			"bound it", maxGuestLinkHops+1)
+	}
+
+	nine := buildSymlinkChainOntoTmpfs(9)
+	if !nine.IsShadowSlot(noHostLinks{}, "/tlink0") {
+		t.Errorf("IsShadowSlot(/tlink0) = false for a 9-hop chain of snug's own symlinks " +
+			"ending on a writable tmpfs; SYMLOOP_MAX is 40, so the kernel follows every hop " +
+			"and would run whatever the payload put at the end")
+	}
+}
+
+// TestMissingPathBelowBindUnchanged is a not-exist component below a
+// covering bind — walkLanded, judged by the bind itself — asserted to be
+// UNCHANGED by host-link following: it was the bind's own answer before any
+// host read happened at all, and it must stay that way.
+func TestMissingPathBelowBindUnchanged(t *testing.T) {
+	t.Run("ro", func(t *testing.T) {
+		env := newFakeEnv()
+		p := &Policy{Mounts: map[string]Mount{
+			"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO},
+		}}
+		if keep, reason := p.keepHostElement(env, "/ro/missing"); !keep {
+			t.Errorf("keepHostElement(/ro/missing) = (%v, %v), want keep — nothing on the "+
+				"host at this name is the bind's own answer (ENOENT)", keep, reason)
+		}
+		if p.IsShadowSlot(env, "/ro/missing") {
+			t.Error("IsShadowSlot(/ro/missing) = true for a read-only bind")
+		}
+	})
+
+	t.Run("rw", func(t *testing.T) {
+		env := newFakeEnv()
+		p := &Policy{Mounts: map[string]Mount{
+			"/rw": {Guest: "/rw", Host: "/hrw", Kind: KindBind, Access: AccessRW},
+		}}
+		if !p.IsShadowSlot(env, "/rw/missing") {
+			t.Error("IsShadowSlot(/rw/missing) = false for a writable bind; a missing " +
+				"component does not change what the bind itself already grants")
+		}
+	})
+}
+
+// TestFileBelowBindIsNotUnknown is the non-dir, non-symlink arm: a plain
+// FILE where the walk expected a directory is ENOTDIR inside, the bind's own
+// content — landed, not unknown. An implementation that read "not a
+// directory" as a host-read failure would answer Unresolved here, which is
+// the wrong fact: the host WAS read successfully, and it said "file".
+func TestFileBelowBindIsNotUnknown(t *testing.T) {
+	env := newFakeEnv()
+	env.files["/hro/plainfile"] = true
+	p := &Policy{Mounts: map[string]Mount{
+		"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO},
+	}}
+
+	final, at, _, end := p.SandboxView().walkLinks(env, "/ro/plainfile")
+	if end != walkLanded {
+		t.Fatalf("walkLinks(/ro/plainfile) end=%v, want walkLanded — a plain file where the "+
+			"walk expected a directory is ENOTDIR inside, not a host-read failure", end)
+	}
+	if final.Guest != "/ro" || at != "/ro/plainfile" {
+		t.Errorf("walkLinks(/ro/plainfile) landed on %+v at %q, want the /ro bind at "+
+			"/ro/plainfile", final, at)
+	}
+	if v := p.Shadow(env, "/ro/plainfile"); v == Unresolved {
+		t.Error("Shadow(/ro/plainfile) = Unresolved for a plain file; a non-directory " +
+			"component is landed, not unknown")
 	}
 }

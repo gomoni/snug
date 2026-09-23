@@ -75,6 +75,19 @@ type Environ interface {
 	Gid() int
 }
 
+// HostLinks is the two host reads walkLinks needs to follow a HOST symlink
+// sitting under a KindBind or KindGraft, in the guest namespace, the same way
+// bwrap and the kernel do. It is narrower than Environ on purpose: every
+// caller that only ever asks "what does this PATH element or graft actually
+// resolve to" (IsShadowSlot, GrantsGuestPath, the sanitise filter,
+// refuseUnreadSSHConfig) needs nothing else, and a caller with a real Environ
+// already satisfies this — Environ's own Lstat and Readlink are the same two
+// methods.
+type HostLinks interface {
+	Lstat(path string) (fs.FileInfo, error)
+	Readlink(path string) (string, error)
+}
+
 // OSEnviron is the real host.
 type OSEnviron struct{}
 

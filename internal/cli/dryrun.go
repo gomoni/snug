@@ -47,7 +47,7 @@ func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, 
 	if cfg.json {
 		return renderJSON(out, rep)
 	}
-	renderHuman(out, rep, p, args, cfg, refusedBy)
+	renderHuman(out, rep, p, args, cfg, refusedBy, env)
 	// The NOTES block last, and only on the human screen: --json's document
 	// is a schema, and adding a field for prose snug would otherwise have said
 	// on stderr is a change to that schema rather than a rendering detail.
@@ -59,7 +59,7 @@ func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, 
 // as well as the Policy because the facts both renderers state must come from
 // ONE derivation — see Report's doc comment for where the sharing is
 // structural (Mounts) and where it is only parallel.
-func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg config, refusedBy error) {
+func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg config, refusedBy error, env policy.Environ) {
 	if refusedBy != nil {
 		fmt.Fprintln(out, "snug — dry run of a REFUSED policy (nothing below can run; nothing was started)")
 	} else {
@@ -87,7 +87,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeGit(out, p)
 	describeCommitSigning(out, p)
 	describeSSH(out, p)
-	describeCommands(out, p)
+	describeCommands(out, p, env)
 	describeClaude(out, p)
 	describeTTY(out, rep)
 	describeSeccomp(out, rep.Seccomp)
@@ -196,7 +196,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	}
 
 	fmt.Fprintln(out)
-	describeEnvironment(out, p)
+	describeEnvironment(out, p, env)
 
 	if p.Net.Mode == policy.NetEgress {
 		fmt.Fprintln(out)
@@ -524,11 +524,11 @@ func wrapList(items []string, width int) []string {
 // the renderer is lying, and a flat NAME=value list (which this replaced) could
 // not disagree because it said nothing: not which verb produced a value, not
 // which profile, and not what a filter dropped on the way.
-func describeEnvironment(out io.Writer, p *policy.Policy) {
+func describeEnvironment(out io.Writer, p *policy.Policy, env policy.Environ) {
 	fmt.Fprintln(out, "ENVIRONMENT  (--clearenv, then:)")
 	for _, name := range p.EnvNames() {
 		v := p.Env[name]
-		lines := envLines(p, v)
+		lines := envLines(p, v, env)
 		if len(lines) == 0 && len(v.Dropped) == 0 {
 			continue
 		}
@@ -572,7 +572,7 @@ func describeEnvironment(out io.Writer, p *policy.Policy) {
 		// Adding a reason to policy.EnvDropReason means adding it here.
 		for _, reason := range []policy.EnvDropReason{
 			policy.DropNoGrant, policy.DropTmpfsOnly, policy.DropPseudoOnly,
-			policy.DropReplaceable,
+			policy.DropReplaceable, policy.DropUnresolved,
 		} {
 			var vals []string
 			for _, d := range v.Dropped {
@@ -716,7 +716,7 @@ type envLine struct {
 	marks  []string
 }
 
-func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
+func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 	var out []envLine
 	for _, e := range v.Entries {
 		verb, from := e.Verb.String(), strings.Join(e.From, "+")
@@ -787,7 +787,7 @@ func envLines(p *policy.Policy, v policy.EnvVar) []envLine {
 		// string and the other sink held a second — see policy.UncheckedEnvNote.
 		add(policy.UncheckedEnvNote(v.Name, e.Verb))
 		add(policy.EnvNote(v.Name, e.Verb))
-		add(grantMark(p, v.Name, e.Value))
+		add(grantMark(p, v.Name, e.Value, env))
 		// The collapse key is unchanged in MEANING — it was the concatenated mark
 		// string and is now the same statements compared elementwise. A band of
 		// several values that all carry the identical marks stays one row with one
@@ -989,9 +989,11 @@ func isForgingRune(r rune) bool {
 //
 // For every case reachable before the symlink work the two orderings agree, so
 // this is a reorder rather than a behaviour change wherever it can be compared.
-func grantMark(p *policy.Policy, name, value string) string {
-	grant, inside := envGrantVerdict(p, name, value)
+func grantMark(p *policy.Policy, name, value string, env policy.Environ) string {
+	grant, inside := envGrantVerdict(p, name, value, env)
 	switch grant {
+	case grantUnresolved:
+		return "  ← cannot tell where this lands (a host path on the way cannot be read)"
 	case grantShadowSlot:
 		return "  ← writable from inside"
 	case grantNotGranted:
@@ -1006,7 +1008,7 @@ func grantMark(p *policy.Policy, name, value string) string {
 	return ""
 }
 
-// The three CODES envGrantVerdict returns. jsonEnvEntry.Grant carries these
+// The four CODES envGrantVerdict returns. jsonEnvEntry.Grant carries these
 // spellings verbatim (dryrunjson.go), so a consumer can assert `grant !=
 // "shadow_slot"` without reimplementing IsShadowSlot over mounts[] — the thing
 // grantMark's own history above warns against.
@@ -1014,6 +1016,10 @@ const (
 	grantOK         = ""
 	grantShadowSlot = "shadow_slot"
 	grantNotGranted = "not_granted"
+	// grantUnresolved is a host path on the way to Value that could not be
+	// read — snug did not judge this value, and CANNOT say it is granted,
+	// writable, or absent, so it says that instead of any of the three.
+	grantUnresolved = "unresolved"
 )
 
 // envGrantVerdict is grantMark's FACT, split from its SENTENCE, so both
@@ -1021,16 +1027,27 @@ const (
 // copy. insideCount is meaningful only when grant is grantNotGranted; it is
 // the same count grantMark's parenthetical reports.
 //
-// See grantMark's own comment for why the shadow-slot check runs before
-// GrantsGuestPath and why it is scoped to PATH alone.
-func envGrantVerdict(p *policy.Policy, name, value string) (grant string, insideCount int) {
+// ORDER: not shaped like an absolute path -> grantOK (nothing to judge). Then
+// policy.Shadow's verdict is checked for EVERY variable, not only PATH — a
+// value snug could not resolve is worth saying so about wherever it appears —
+// and Unresolved wins outright, before the PATH-only shadow-slot check, for
+// the same reason resolveThroughLinks's own doc comment gives for checking
+// replaceable first: "cannot tell" is a fact this function does have, and it
+// must not be silently downgraded to "not granted" by falling through.
+// PATH && Slot is next, scoped to PATH alone (grantMark's own history explains
+// why), then the ordinary GrantsGuestPath check, then grantNotGranted with its
+// count.
+func envGrantVerdict(p *policy.Policy, name, value string, env policy.Environ) (grant string, insideCount int) {
 	if !strings.HasPrefix(value, "/") {
 		return grantOK, 0
 	}
-	if name == "PATH" && p.IsShadowSlot(value) {
+	switch verdict := p.Shadow(env, value); {
+	case verdict == policy.Unresolved:
+		return grantUnresolved, 0
+	case name == "PATH" && verdict == policy.Slot:
 		return grantShadowSlot, 0
 	}
-	if p.GrantsGuestPath(value) {
+	if p.GrantsGuestPath(env, value) {
 		return grantOK, 0
 	}
 	inside := 0
@@ -1581,7 +1598,7 @@ func describeSSH(out io.Writer, p *policy.Policy) {
 // bind gets the one-line form: what it is and where it came from is a profile's
 // grant, already on the FILESYSTEM lines above, and repeating it here would be
 // two places to keep true.
-func describeCommands(out io.Writer, p *policy.Policy) {
+func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ) {
 	var staged []string
 	for guest := range p.Mounts {
 		if strings.HasPrefix(guest, policy.StagedBinDir+"/") {
@@ -1644,7 +1661,7 @@ func describeCommands(out io.Writer, p *policy.Policy) {
 	// reachability argument, and do not weaken it on one either: it is also the
 	// backstop for an AUTHORED mount, which Validate's refusal exempts by design,
 	// and for any future renderer that shows a policy Validate never saw.
-	if p.IsShadowSlot(policy.StagedBinDir) {
+	if p.Shadow(env, policy.StagedBinDir) != policy.NotSlot {
 		fmt.Fprintf(out, "         %s IS WRITABLE from inside, which it must never be: it is first on\n", policy.StagedBinDir)
 		fmt.Fprintf(out, "         PATH, so anything running here can drop a file called 'git' or 'ssh'\n")
 		fmt.Fprintf(out, "         into it and the next one a human runs is that file. Report this.\n")

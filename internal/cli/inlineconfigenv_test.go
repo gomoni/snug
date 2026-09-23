@@ -381,8 +381,9 @@ func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 				},
 			}
 
+			env := newEnvFakeEnv()
 			p, err := policy.Resolve(m, append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky"),
-				envGoldenCtx(), newEnvFakeEnv())
+				envGoldenCtx(), env)
 			if err != nil {
 				t.Fatalf("Resolve refused environ.set %s: %v.\nA human writing this in their own "+
 					"profile is opening a hole in their own sandbox, which snug does not refuse — "+
@@ -413,7 +414,7 @@ func TestEnvironSetRustcWrapperIsCarriedAndAnnotated(t *testing.T) {
 			// the row (dryrun.go's markIndent), so the hand-rolled line search
 			// this used to do would find the data row — which carries no
 			// annotation — and report the table as not reaching the screen.
-			row := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, p) }), name)
+			row := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) }), name)
 			if !strings.Contains(row, "cargo runs this") {
 				t.Errorf("the --dry-run row for %s carries no annotation:\n%s\nThe table is only "+
 					"worth having if it reaches the screen a human reads", name, row)

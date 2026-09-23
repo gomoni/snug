@@ -45,7 +45,11 @@ func refuseUnreadSSHConfig(p *Policy, ctx Context, env Environ) error {
 	}
 	// The walk must END on want, not merely under a mount covering it: the
 	// generated file covering want/config lexically is ENOTDIR to the kernel.
-	if final, at, _, ok := p.SandboxView().walkLinks(sshWill); ok && at == want && final.Guest == want && final.Kind == KindData {
+	// Only walkLanded is accepted — walkUnknown (a host path on the way could
+	// not be read) and walkNowhere refuse exactly like every other unresolved
+	// chain does here, because a host link this cannot vouch for is not
+	// evidence that ssh will find the generated file.
+	if final, at, _, end := p.SandboxView().walkLinks(env, sshWill); end == walkLanded && at == want && final.Guest == want && final.Kind == KindData {
 		return nil
 	}
 

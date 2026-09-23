@@ -537,11 +537,16 @@ const maxGeneratedDestLinks = 40
 // linkLanding reads the host symlink at hostAt and returns where it lands in
 // GUEST terms: absolute text against the sandbox's root, relative text against
 // the directory the link sits in. It is the single step bwrap's resolution and
-// snug's two destination walks have in common, and it is here rather than
-// copied because the namespace is the part that was got wrong once (#580):
+// snug's destination walks have in common, and it is here rather than copied
+// because the namespace is the part that was got wrong once (#580):
 // EvalSymlinks resolves against HOST components, bwrap against GUEST ones, and
 // a path-translating grant makes those different places.
-func linkLanding(env Environ, guestAt, hostAt string) (landing, text string, err error) {
+//
+// Takes HostLinks rather than the wider Environ — Readlink is all it reads —
+// so envresolve.go's walkLinks can share this exact step without needing the
+// rest of Environ's host-canonicalisation surface. Every existing Environ
+// value still satisfies HostLinks, so no caller here changes.
+func linkLanding(env HostLinks, guestAt, hostAt string) (landing, text string, err error) {
 	text, err = env.Readlink(hostAt)
 	if err != nil {
 		return "", "", err
