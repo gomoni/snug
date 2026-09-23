@@ -1412,7 +1412,7 @@ func TestHostSymlinkLandsInGuestNamespace(t *testing.T) {
 		"/h/w": {Guest: "/h/w", Host: "/h/w", Kind: KindBind, Access: AccessRO},
 	}}
 
-	final, at, _, end := p.SandboxView().walkLinks(env, "/g/cover/sub")
+	final, at, _, end, _ := p.SandboxView().walkLinks(env, "/g/cover/sub")
 	if end != walkLanded || final.Guest != "/g/w" || at != "/g/w" {
 		t.Fatalf("walkLinks(/g/cover/sub) landed on %+v at %q (end=%v), want the tmpfs at "+
 			"/g/w — landing at /h/w means the relative link text was resolved against HOST "+
@@ -1679,17 +1679,502 @@ func TestFileBelowBindIsNotUnknown(t *testing.T) {
 		"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO},
 	}}
 
-	final, at, _, end := p.SandboxView().walkLinks(env, "/ro/plainfile")
+	final, at, _, end, _ := p.SandboxView().walkLinks(env, "/ro/plainfile")
 	if end != walkLanded {
 		t.Fatalf("walkLinks(/ro/plainfile) end=%v, want walkLanded — a plain file where the "+
 			"walk expected a directory is ENOTDIR inside, not a host-read failure", end)
 	}
-	if final.Guest != "/ro" || at != "/ro/plainfile" {
+	// at == "": this is an EARLY landing (A1, issue #604's follow-up) — the
+	// walk never confirmed a path past the file it stopped at, so it does not
+	// claim to know one.
+	if final.Guest != "/ro" || at != "" {
 		t.Errorf("walkLinks(/ro/plainfile) landed on %+v at %q, want the /ro bind at "+
-			"/ro/plainfile", final, at)
+			"an empty at", final, at)
 	}
 	if v := p.Shadow(env, "/ro/plainfile"); v == Unresolved {
 		t.Error("Shadow(/ro/plainfile) = Unresolved for a plain file; a non-directory " +
 			"component is landed, not unknown")
+	}
+}
+
+// ── issue #604's follow-up: kernel-faithful ".." and host aliasing ─────────
+//
+// A conformance round run against the walk above (queued components, one at a
+// time, coveringMount/host-read state) found that ".." was still being
+// resolved LEXICALLY — cur := filepath.Clean(guest) up front, and a link's
+// own text joined the same way — which agrees with the kernel only when
+// nothing on the way is itself a link. walkLinks now queues raw components,
+// "" and "." dropped but ".." kept, and applies each ".." against the walk's
+// OWN position as it is consumed rather than against a Clean() computed
+// before any link was ever read. The tests below are the fixtures that round
+// measured disagreeing, reproduced against the fix, plus the three
+// implementation choices the fix makes that are narrower or differently
+// ordered than the literal ruling text, each pinned so a "simplification"
+// back toward the literal wording is caught: (1) a component with no
+// covering mount at all is passed straight through rather than answering
+// walkNowhere on the spot — TestMissingPathBelowBindUnchanged and
+// TestDotDotClimbsOutOfABind exercise this; only the FULLY CONSUMED path
+// being uncovered is walkNowhere; (2) keepHostElement checks `replaceable`
+// BEFORE walkUnknown/walkNowhere, unchanged from the original fix; (3) the
+// aliasing check in keepHostElement requires `!mountIsWritable(final)` first
+// — TestSanitiseKeepsAnElementARealBindCovers (a plain rw bind, "candidate
+// C") must keep passing, because a bind is not "aliased by itself".
+
+// TestLinkInsideHostLinkTextIsFollowedBeforeDotDot is FINDING 1 from the
+// conformance round: a host link's OWN TEXT can name another link and then
+// climb out with "..", and the kernel resolves the NAMED LINK FIRST — landing
+// wherever it points — before ever applying the "..". A lexical Clean of the
+// text cancels "l2/.." to nothing instead, landing on whatever real name sits
+// next to l2 in trick's own directory, which is a different place whenever l2
+// is itself a link.
+//
+// Measured: ro $F/hd, hd/l2 -> /tmp/a/b (a host link), hd/trick -> l2/../bin
+// (a host link whose TEXT names l2 and climbs out of it), hd/bin a real,
+// read-only directory. Before this fix, snug landed hd/trick on hd/bin,
+// unmarked; the kernel landed in /tmp/a/bin, a writable tmpfs, and a
+// payload's `ls` planted there ran ahead of the real one.
+func TestLinkInsideHostLinkTextIsFollowedBeforeDotDot(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/f/hd/l2"] = "/tmp/a/b"
+	env.links["/f/hd/trick"] = "l2/../bin"
+	env.dirs["/f/hd/bin"] = true // the DECOY: where a lexical Clean of trick's text lands
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/f/hd": {Guest: "/f/hd", Host: "/f/hd", Kind: KindBind, Access: AccessRO},
+		"/tmp":  {Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW},
+	}}
+
+	if !p.IsShadowSlot(env, "/f/hd/trick") {
+		t.Fatal("IsShadowSlot(/f/hd/trick) = false; the kernel resolves l2 first, landing in " +
+			"the writable /tmp, not on the read-only /f/hd/bin a lexical Clean of the link's " +
+			"text would compute")
+	}
+	if keep, reason := p.keepHostElement(env, "/f/hd/trick"); keep || reason != DropTmpfsOnly {
+		t.Errorf("keepHostElement(/f/hd/trick) = (%v, %v), want (false, DropTmpfsOnly)", keep, reason)
+	}
+
+	// l2 REAL DIR CONTROL, first half: l2 ALONE (no "..", no "trick") already
+	// resolves into the writable /tmp — so the assertions above are about
+	// trick's OWN dotdot handling, not about l2 secretly failing to resolve
+	// at all.
+	if !p.IsShadowSlot(env, "/f/hd/l2") {
+		t.Error("IsShadowSlot(/f/hd/l2) = false; l2 alone already resolves into the writable /tmp")
+	}
+
+	// l2 REAL DIR CONTROL, second half: the REAL directory a lexical
+	// (wrong) landing would have found is itself an ordinary, unmarked
+	// read-only grant when named directly — proving the fix does not widen
+	// past the link that actually resolves elsewhere and start dropping
+	// /f/hd/bin too.
+	if p.IsShadowSlot(env, "/f/hd/bin") {
+		t.Error("IsShadowSlot(/f/hd/bin) = true for the real, read-only decoy directory")
+	}
+	if keep, _ := p.keepHostElement(env, "/f/hd/bin"); !keep {
+		t.Error("keepHostElement(/f/hd/bin) = false for the real, read-only decoy directory")
+	}
+}
+
+// TestDotDotAfterAHostLinkInThePathElement is FINDING 2: the same shape one
+// level up, with the ".." typed directly into the PATH ELEMENT rather than
+// hidden inside a link's own text. The walk still resolves the host link
+// FIRST, applying the trailing ".." against wherever it lands rather than
+// against the link's own directory.
+//
+// The fixture climbs entirely across real BINDS, deliberately — a tmpfs
+// early-lands the moment an unanchored name below it is read (the earlier
+// test's l2 -> /tmp/a/b already exercises that path), which would let a
+// broken ".." handler pass by accident. Landing this one on real content
+// forces the walk to actually apply the ".." before any verdict is possible,
+// and the DECOY at /base/real — exactly where a lexical Clean of the whole
+// element computes — makes a regression to lexical joining observable as a
+// wrong, distinguishable landing rather than a coincidentally-correct one.
+func TestDotDotAfterAHostLinkInThePathElement(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/hbase/abs"] = "/x" // keyed by the HOST path; single component
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/base": {Guest: "/base", Host: "/hbase", Kind: KindBind, Access: AccessRO},
+		"/x":    {Guest: "/x", Host: "/hx", Kind: KindBind, Access: AccessRO},
+		"/real": {Guest: "/real", Host: "/hreal", Kind: KindBind, Access: AccessRW},
+		// The DECOY: Clean("/base/abs/../real") = "/base/real", a real,
+		// READ-ONLY grant sitting exactly where a lexical join lands.
+		"/base/real": {Guest: "/base/real", Host: "/hbase/real", Kind: KindBind, Access: AccessRO},
+	}}
+
+	final, at, replaceable, end, hostAt := p.SandboxView().walkLinks(env, "/base/abs/../real")
+	if end != walkLanded || final.Guest != "/real" || at != "/real" || hostAt != "/hreal" {
+		t.Fatalf("walkLinks(/base/abs/../real) landed on %+v at %q hostAt %q (end=%v), want the "+
+			"WRITABLE /real bind at /real — landing on /base/real means the element was joined "+
+			"lexically instead of resolving abs first", final, at, hostAt, end)
+	}
+	if replaceable {
+		t.Error("replaceable=true; nothing on this chain stands on writable ground, the " +
+			"landing mount itself is simply writable")
+	}
+	if !p.IsShadowSlot(env, "/base/abs/../real") {
+		t.Error("IsShadowSlot(/base/abs/../real) = false; the correct kernel-order landing is " +
+			"the WRITABLE /real bind — landing on the read-only decoy instead would wrongly say " +
+			"false here")
+	}
+	// keepHostElement KEEPS a writable bind (Candidate C, not Candidate A —
+	// see TestSanitiseKeepsAnElementARealBindCovers): being marked a shadow
+	// slot and surviving sanitise are different questions.
+	if keep, _ := p.keepHostElement(env, "/base/abs/../real"); !keep {
+		t.Error("keepHostElement(/base/abs/../real) = false; a writable bind still KEEPS, " +
+			"the same as any other real grant — only IsShadowSlot marks it")
+	}
+
+	// CONTROL: $F/base/abs ALONE (no trailing ".."), already correct before
+	// this fix — the conformance round's own text: "$F/hd/abs alone
+	// correctly drops" (here: alone already resolves into /x, read-only).
+	if p.IsShadowSlot(env, "/base/abs") {
+		t.Error("IsShadowSlot(/base/abs) = true; the link alone resolves to the read-only /x " +
+			"bind with no \"..\" involved at all")
+	}
+}
+
+// TestSnugSymlinkTargetDotDotAfterAHostLink proves the SAME splice mechanism
+// governs a SNUG-authored KindSymlink's own target text, not only a raw host
+// link's: mixing a snug symlink, a host link, and a "..", all in one chain,
+// the walk still resolves each link before applying the "..' after it —
+// never joining the whole remaining text lexically at any splice point.
+//
+// The DECOY at /base/real is where filepath.Clean of the FULL, un-spliced
+// target text ("/base/hlk/../real/file") would land — a real, but WRITABLE,
+// bind, chosen to be starkly distinguishable from the correct landing (a
+// read-only file) rather than merely different.
+func TestSnugSymlinkTargetDotDotAfterAHostLink(t *testing.T) {
+	env := newFakeEnv()
+	env.links["/hbase/hlk"] = "/x" // single component, under /base's host tree
+	env.files["/hreal/file"] = true
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/base": {Guest: "/base", Host: "/hbase", Kind: KindBind, Access: AccessRO},
+		"/x":    {Guest: "/x", Host: "/hx", Kind: KindBind, Access: AccessRO},
+		"/real": {Guest: "/real", Host: "/hreal", Kind: KindBind, Access: AccessRO},
+		// snug's OWN symlink, whose Host TEXT embeds the host link "hlk" and
+		// then climbs out of wherever it lands.
+		"/link": {Guest: "/link", Kind: KindSymlink, Host: "/base/hlk/../real/file"},
+		// The DECOY, WRITABLE so a wrong landing is not merely a different
+		// path but a different, observably wrong VERDICT.
+		"/base/real": {Guest: "/base/real", Host: "/hbase/real", Kind: KindBind, Access: AccessRW},
+	}}
+
+	final, _, replaceable, end, hostAt := p.SandboxView().walkLinks(env, "/link")
+	if end != walkLanded || final.Guest != "/real" || hostAt != "/hreal/file" {
+		t.Fatalf("walkLinks(/link) landed on %+v hostAt %q (end=%v), want the read-only /real "+
+			"bind at /hreal/file — landing on the writable decoy under /base/real means the "+
+			"target text was joined lexically at some splice point instead of resolving hlk first",
+			final, hostAt, end)
+	}
+	if replaceable {
+		t.Error("replaceable=true for a chain standing entirely on read-only ground")
+	}
+	if p.IsShadowSlot(env, "/link") {
+		t.Error("IsShadowSlot(/link) = true; the correct landing is the read-only /real bind — " +
+			"true here means the walk fell into the writable decoy instead")
+	}
+	if keep, _ := p.keepHostElement(env, "/link"); !keep {
+		t.Error("keepHostElement(/link) = false for a chain that correctly lands on a real, " +
+			"read-only file")
+	}
+}
+
+// TestDotDotAtRootStaysAtRoot pins `filepath.Dir("/") == "/"`, the one-line
+// fact the walk leans on to need no special case for a ".." at the very
+// start of a guest path: climbing out of the walk's own root must stay AT
+// the root, not error and not silently switch to a RELATIVE position (which
+// `filepath.Dir("/") == "."` would do — coveringMount's own `!IsAbs` guard
+// then refuses every further component, and this test is what catches that).
+func TestDotDotAtRootStaysAtRoot(t *testing.T) {
+	p := &Policy{Mounts: map[string]Mount{
+		"/usr": {Guest: "/usr", Host: "/usr", Kind: KindBind, Access: AccessRO},
+	}}
+
+	final, at, _, end, hostAt := p.SandboxView().walkLinks(noHostLinks{}, "/../../usr")
+	if end != walkLanded || final.Guest != "/usr" || at != "/usr" || hostAt != "/usr" {
+		t.Fatalf("walkLinks(/../../usr) landed on %+v at %q hostAt %q (end=%v), want the /usr "+
+			"bind at /usr — a \"..\" that cannot climb further must stay at the root, not turn "+
+			"the walk's position relative", final, at, hostAt, end)
+	}
+}
+
+// TestDotDotClimbsOutOfABind is the boundary case for the same fact one level
+// down: a ".." popped while standing inside a NESTED bind must leave that
+// bind's own scope and be judged by whatever covers the parent position —
+// here, a DIFFERENT bind with its own Host root and its own Access — with no
+// special case needed, because pos is link-free the whole way.
+func TestDotDotClimbsOutOfABind(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/hproj/outside"] = true // real, under the OUTER bind's host root
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/proj":     {Guest: "/proj", Host: "/hproj", Kind: KindBind, Access: AccessRW},
+		"/proj/sub": {Guest: "/proj/sub", Host: "/hprojsub", Kind: KindBind, Access: AccessRO},
+	}}
+
+	final, at, _, end, hostAt := p.SandboxView().walkLinks(env, "/proj/sub/../outside")
+	if end != walkLanded || final.Guest != "/proj" || at != "/proj/outside" || hostAt != "/hproj/outside" {
+		t.Fatalf("walkLinks(/proj/sub/../outside) landed on %+v at %q hostAt %q (end=%v), want "+
+			"the OUTER /proj bind at /proj/outside (host /hproj/outside) — climbing \"..\" out of "+
+			"/proj/sub must leave its host tree behind, not keep reading /hprojsub", final, at, hostAt, end)
+	}
+	// The outer bind is RW: this PATH element is a legitimate shadow slot
+	// once ".." has left the inner, read-only bind's scope.
+	if !p.IsShadowSlot(env, "/proj/sub/../outside") {
+		t.Error("IsShadowSlot(/proj/sub/../outside) = false; it resolves under the WRITABLE " +
+			"outer /proj bind, not the read-only /proj/sub one")
+	}
+}
+
+// TestDotDotAfterMissingNameUnderReadOnlyBindIsInert is choice (1): a
+// component with no covering mount at ALL is passed through (pos = next,
+// walkNowhere only once the FULLY CONSUMED path is still uncovered) — but a
+// component that IS covered (by a bind) and simply is not PRESENT on the
+// host (ENOENT) is a different case, and an early landing there is a dead
+// end a trailing ".." cannot climb back out of, because the walk returns
+// immediately rather than continuing to pop the queue. This is what makes a
+// missing name under a read-only bind INERT: an attacker cannot use a
+// nonexistent name plus enough ".." to redirect the walk onto some other,
+// unrelated (here: WRITABLE) mount that merely happens to sit at the
+// lexically-cancelled destination.
+func TestDotDotAfterMissingNameUnderReadOnlyBindIsInert(t *testing.T) {
+	env := newFakeEnv() // /hro/missing is simply absent — the ordinary ENOENT case
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO},
+		// The DECOY a working ".." climb would reach: writable, so a walk
+		// that kept going past the missing name would flip the verdict.
+		"/etc": {Guest: "/etc", Host: "/hetc", Kind: KindBind, Access: AccessRW},
+	}}
+
+	final, at, _, end, hostAt := p.SandboxView().walkLinks(env, "/ro/missing/../../etc/passwd")
+	if end != walkLanded || final.Guest != "/ro" || at != "" || hostAt != "/hro/missing" {
+		t.Fatalf("walkLinks(/ro/missing/../../etc/passwd) landed on %+v at %q hostAt %q (end=%v), "+
+			"want an EARLY landing on the /ro bind at host /hro/missing — the missing name must be "+
+			"a dead end the trailing \"..\"s never get a chance to climb out of", final, at, hostAt, end)
+	}
+	if p.IsShadowSlot(env, "/ro/missing/../../etc/passwd") {
+		t.Error("IsShadowSlot(...) = true; the missing name under the read-only bind is inert " +
+			"and must not let the trailing \"..\"s reach the writable /etc decoy")
+	}
+	if keep, _ := p.keepHostElement(env, "/ro/missing/../../etc/passwd"); !keep {
+		t.Error("keepHostElement(...) = false; ENOENT under a read-only bind is the bind's own " +
+			"ordinary KEEP, same as every other missing component")
+	}
+}
+
+// TestEarlyLandingNeverMatchesAnExactPath consolidates the "at" invariant
+// across every EARLY LANDING arm walkLinks has: none of them may set `at` to
+// anything but "". A caller like #599's refuseUnreadSSHConfig compares `at`
+// against an exact wanted path, and an early landing that leaked a non-empty
+// `at` could spuriously equal it for the wrong reason — accepting a policy
+// whose generated file the walk never actually confirmed reaching.
+func TestEarlyLandingNeverMatchesAnExactPath(t *testing.T) {
+	env := newFakeEnv()
+	env.files["/hro/f"] = true // arm (a): a plain file below a bind
+
+	cases := []struct {
+		name  string
+		host  HostLinks
+		guest string
+		p     *Policy
+	}{
+		{
+			"file below a bind", env, "/ro/f/more",
+			&Policy{Mounts: map[string]Mount{"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO}}},
+		},
+		{
+			"missing component below a bind", env, "/ro/missing/tail",
+			&Policy{Mounts: map[string]Mount{"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO}}},
+		},
+		{
+			"unanchored name under a bare tmpfs", noHostLinks{}, "/tmp/x",
+			&Policy{Mounts: map[string]Mount{"/tmp": {Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW}}},
+		},
+		{
+			"generated file with more path below it", noHostLinks{}, "/f/more",
+			&Policy{Mounts: map[string]Mount{"/f": {Guest: "/f", Kind: KindData, Access: AccessRO}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, at, _, end, _ := tc.p.SandboxView().walkLinks(tc.host, tc.guest)
+			if end != walkLanded {
+				t.Fatalf("end=%v, want walkLanded — this case is not exercising an early landing "+
+					"at all", end)
+			}
+			if at != "" {
+				t.Errorf("at=%q, want \"\" — an early landing must never claim to know an exact "+
+					"path past the point the walk actually confirmed", at)
+			}
+		})
+	}
+}
+
+// TestReadOnlyBindAliasedByAWritableGrantIsASlot is FINDING 4: a bind whose
+// own Access says `ro` can still be WRITABLE, when a SEPARATE grant's
+// writable host root equals or contains its host tree — the payload writes
+// through that other grant and the content changes here too, whatever this
+// bind's own Access claims. View.hostAliased is the check, and every
+// subtest below pins one direction of it: which pairs count as aliased, and
+// — just as load-bearing — which do not, so a widened check cannot pass
+// unnoticed.
+func TestReadOnlyBindAliasedByAWritableGrantIsASlot(t *testing.T) {
+	t.Run("writer equals the ro bind's own host root", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/a": {Guest: "/a", Host: "/h/shared", Kind: KindBind, Access: AccessRO},
+			"/b": {Guest: "/b", Host: "/h/shared", Kind: KindBind, Access: AccessRW},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/a"); v != Slot {
+			t.Errorf("Shadow(/a) = %v, want Slot — /b's writable host root EQUALS /a's", v)
+		}
+		if keep, reason := p.keepHostElement(noHostLinks{}, "/a"); keep || reason != DropHostAliased {
+			t.Errorf("keepHostElement(/a) = (%v, %v), want (false, DropHostAliased)", keep, reason)
+		}
+	})
+
+	t.Run("writer is an ancestor of the ro bind's host root", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/deep":   {Guest: "/deep", Host: "/h/z/deep/sub", Kind: KindBind, Access: AccessRO},
+			"/writer": {Guest: "/writer", Host: "/h/z", Kind: KindBind, Access: AccessRW},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/deep"); v != Slot {
+			t.Errorf("Shadow(/deep) = %v, want Slot — /writer's writable host root (/h/z) is an "+
+				"ANCESTOR of /deep's (/h/z/deep/sub)", v)
+		}
+		if keep, reason := p.keepHostElement(noHostLinks{}, "/deep"); keep || reason != DropHostAliased {
+			t.Errorf("keepHostElement(/deep) = (%v, %v), want (false, DropHostAliased)", keep, reason)
+		}
+	})
+
+	t.Run("sibling host trees are not aliased", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/a": {Guest: "/a", Host: "/h/one", Kind: KindBind, Access: AccessRO},
+			"/b": {Guest: "/b", Host: "/h/two", Kind: KindBind, Access: AccessRW},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/a"); v != NotSlot {
+			t.Errorf("Shadow(/a) = %v, want NotSlot — /h/one and /h/two are unrelated trees", v)
+		}
+		if keep, _ := p.keepHostElement(noHostLinks{}, "/a"); !keep {
+			t.Error("keepHostElement(/a) = false for a bind aliased by nothing")
+		}
+	})
+
+	// A writable grant STRICTLY BELOW an outer read-only bind's host root
+	// must NOT widen the OUTER bind to a slot — only a writer at or above a
+	// landing's own host path counts, never a writer somewhere inside it,
+	// or granting one file rw a few levels into a large ro tree would mark
+	// the WHOLE tree writable.
+	t.Run("a writer strictly below an outer ro bind does not widen the outer bind", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/parent": {Guest: "/parent", Host: "/h/x", Kind: KindBind, Access: AccessRO},
+			"/rw":     {Guest: "/rw", Host: "/h/x/sub", Kind: KindBind, Access: AccessRW},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/parent"); v != NotSlot {
+			t.Errorf("Shadow(/parent) = %v, want NotSlot — the writer's root (/h/x/sub) is BELOW "+
+				"/parent's (/h/x), not at or above it; a nested writable grant must not widen the "+
+				"whole tree above it", v)
+		}
+		if keep, _ := p.keepHostElement(noHostLinks{}, "/parent"); !keep {
+			t.Error("keepHostElement(/parent) = false; the outer bind must not be widened by a " +
+				"writer nested strictly below it")
+		}
+	})
+
+	// The SAME writer, asked at its OWN root rather than at the outer bind
+	// above it: a SEPARATE ro bind mounted exactly at /h/x/sub — the
+	// writer's own host root — IS aliased. Read together with the subtest
+	// above, this is the same rule (writer at-or-above the landing) seen
+	// from both sides of one hierarchy: the ancestor is untouched, the
+	// writer's own level is not.
+	t.Run("a ro bind at the writer's own root is a slot", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/parent":     {Guest: "/parent", Host: "/h/x", Kind: KindBind, Access: AccessRO},
+			"/parent/sub": {Guest: "/parent/sub", Host: "/h/x/sub", Kind: KindBind, Access: AccessRO},
+			"/rw":         {Guest: "/rw", Host: "/h/x/sub", Kind: KindBind, Access: AccessRW},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/parent/sub"); v != Slot {
+			t.Errorf("Shadow(/parent/sub) = %v, want Slot — its host root (/h/x/sub) EQUALS the "+
+				"writer's", v)
+		}
+		if keep, reason := p.keepHostElement(noHostLinks{}, "/parent/sub"); keep || reason != DropHostAliased {
+			t.Errorf("keepHostElement(/parent/sub) = (%v, %v), want (false, DropHostAliased)", keep, reason)
+		}
+		// And the ancestor is STILL untouched in this same policy, not just
+		// in isolation — the point of putting both binds in one fixture.
+		if v := p.Shadow(noHostLinks{}, "/parent"); v != NotSlot {
+			t.Errorf("Shadow(/parent) = %v, want NotSlot even with /parent/sub aliased in the "+
+				"SAME policy", v)
+		}
+	})
+
+	// A plain rw bind is not "aliased by itself": mountIsWritable(final) is
+	// checked FIRST in both Shadow and keepHostElement, so a bind whose OWN
+	// Access already says rw never reaches the aliasing question at all.
+	// This is choice (3) — without the guard, a straightforward rw grant
+	// would still answer Slot (harmlessly, since it already does via
+	// mountIsWritable) but keepHostElement would answer DropHostAliased
+	// instead of the correct KEEP, because hostAliased has no way to
+	// distinguish "this mount's own host root" from "some other grant's".
+	t.Run("a plain rw bind is not aliased by itself", func(t *testing.T) {
+		p := &Policy{Mounts: map[string]Mount{
+			"/rw": {Guest: "/rw", Host: "/h/only", Kind: KindBind, Access: AccessRW},
+		}}
+		if keep, reason := p.keepHostElement(noHostLinks{}, "/rw"); !keep {
+			t.Errorf("keepHostElement(/rw) = (%v, %v), want (true, _) — a plain rw bind must "+
+				"KEEP, not be treated as aliased by its own host root appearing in hostWriters",
+				keep, reason)
+		}
+	})
+}
+
+// TestEngineViewWritersIncludeShadowedSandboxTarget pins the ORDERING
+// EngineView's own doc comment states: hostWriters is taken from p.Mounts
+// (and p.Grafts) BEFORE the shadowing loop deletes anything — a graft
+// shadowing the sandbox's writable target removes that GUEST path from the
+// derived view, but the HOST tree behind it is exactly as writable as
+// before, and the aliasing check must still see it.
+func TestEngineViewWritersIncludeShadowedSandboxTarget(t *testing.T) {
+	p := &Policy{
+		Mounts: map[string]Mount{
+			// The SANDBOX's own writable target, @target-rw's shape.
+			"/home/u/proj/sub": {Guest: "/home/u/proj/sub", Host: "/home/u/proj/sub",
+				Kind: KindBind, Access: AccessRW, From: []string{"@target-rw"}},
+			// BASELINE, unaffected by any graft: a plain ro bind whose host
+			// tree sits inside the target's, visible in EVERY view. If this
+			// is not Slot, hostAliased itself is broken and the assertion
+			// below proves nothing about shadowing specifically.
+			"/opt/plain": {Guest: "/opt/plain", Host: "/home/u/proj/sub/plain",
+				Kind: KindBind, Access: AccessRO, From: []string{"fixture"}},
+		},
+		Grafts: map[string]Graft{
+			// A graft landing EXACTLY on the target, shadowing it out of the
+			// derived mount map — but not out of hostWriters.
+			"/home/u/proj/sub": {Mount: Mount{Guest: "/home/u/proj/sub", Host: "/run/store",
+				Kind: KindGraft, Access: AccessRO, From: []string{"(snug)"}}, Why: "fixture"},
+			// A SEPARATE, read-only graft whose host tree sits inside the
+			// shadowed target's — the landing this test actually checks.
+			"/opt/aliased": {Mount: Mount{Guest: "/opt/aliased", Host: "/home/u/proj/sub/deep",
+				Kind: KindGraft, Access: AccessRO, From: []string{"fixture"}}, Why: "fixture"},
+		},
+	}
+
+	// BASELINE CONTROL, through the SANDBOX view: proves hostAliased itself
+	// works in this fixture before any graft or shadowing is involved.
+	if v := p.Shadow(noHostLinks{}, "/opt/plain"); v != Slot {
+		t.Fatalf("control: SandboxView().Shadow(/opt/plain) = %v, want Slot; repair the fixture "+
+			"before trusting the engine-view assertion below", v)
+	}
+
+	view, ok := p.EngineView()
+	if !ok {
+		t.Fatal("fixture: EngineView() reported no view")
+	}
+	if v := view.Shadow(noHostLinks{}, "/opt/aliased"); v != Slot {
+		t.Errorf("EngineView().Shadow(/opt/aliased) = %v, want Slot — the target's writable host "+
+			"root must still be in hostWriters even though the graft at /home/u/proj/sub shadowed "+
+			"the ORIGINAL rw mount out of the derived mount map; a writers slice read from the "+
+			"post-shadow map instead of p.Mounts would lose it here", v)
 	}
 }

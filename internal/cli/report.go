@@ -373,8 +373,10 @@ type reportEnvEntry struct {
 	// grantShadowSlot when Name is PATH and p.Shadow(env, Value) ==
 	// policy.Slot (the payload can write a command at this entry — @claude's
 	// {home}/.local/bin "survived a milestone on screen in front of
-	// everybody" before this mark existed), grantNotGranted when nothing
-	// inside covers it. grantMark's own comment forbids a consumer
+	// everybody" before this mark existed; Slot also covers a read-only
+	// landing whose host tree is aliased by a SEPARATE writable grant, which
+	// is writable in exactly the same practical sense), grantNotGranted when
+	// nothing inside covers it. grantMark's own comment forbids a consumer
 	// reimplementing IsShadowSlot over mounts[]; this field is the fact that
 	// check needs instead.
 	Grant string

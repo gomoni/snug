@@ -160,3 +160,107 @@ git --version`).mustRun(t)
 			"did not run, so the --dry-run mark this test backs is not truthful:\n%s", hd, r.out)
 	}
 }
+
+// TestHostLinkDotDotMarkIsTruthful is issue #604's follow-up conformance
+// round, findings 1/2's shape, end to end: a PATH element climbs ".." out of
+// a HOST symlink — typed directly into the merged PATH element, not hidden
+// inside any link's own text — and the kernel resolves the symlink FIRST,
+// landing on snug's own writable /tmp, before ever applying the "..". A
+// lexical Clean of the whole element would instead cancel "abs/.." to
+// nothing and land on the real, read-only hd/bin next to it — this test
+// plants nothing there, so a payload reaching THAT directory instead would
+// fail closed rather than run, which is what makes this a live
+// discriminator and not merely a live reproduction.
+func TestHostLinkDotDotMarkIsTruthful(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	hd := filepath.Join(t.TempDir(), "hd")
+	if err := os.MkdirAll(hd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The HOST symlink nobody in the profile wrote, onto an UNANCHORED name
+	// under snug's own unconditional writable /tmp — so the trailing ".."
+	// in the PATH element below has somewhere real to climb out of.
+	if err := os.Symlink("/tmp/sx", filepath.Join(hd, "abs")); err != nil {
+		t.Fatal(err)
+	}
+
+	env := envProfileLayer(t, "hostlinkdotdot.toml",
+		"[profile.hostlinkdotdot]\n"+
+			"description = \"a PATH element climbing dotdot out of a host symlink\"\n"+
+			"ro = [\""+hd+"\", \"/usr/bin\"]\n"+
+			"\n[profile.hostlinkdotdot.environ.merge]\n"+
+			"PATH = [\""+hd+"/abs/../bin\", \"/usr/bin\"]\n",
+		os.Getenv("PATH"))
+
+	r := runEnv(t, env, []string{"-p", "hostlinkdotdot"}, proj,
+		`mkdir -p /tmp/sx /tmp/bin
+printf '#!/bin/sh\necho SHADOW-GIT-RAN\n' >/tmp/bin/git
+chmod +x /tmp/bin/git
+command -v git
+git --version`).mustRun(t)
+
+	// POSITIVE CONTROL folded into the assertion itself: `command -v git`
+	// must name the PATH element the dotdot walk actually resolves through.
+	if !strings.Contains(r.out, hd+"/abs/../bin/git") {
+		t.Fatalf("`command -v git` did not resolve through %s/abs/../bin, so the run below "+
+			"cannot be attributed to it:\n%s", hd, r.out)
+	}
+	if !strings.Contains(r.out, "SHADOW-GIT-RAN") {
+		t.Errorf("the payload's own git — reached by climbing \"..\" out of the host symlink "+
+			"%s/abs, landing on snug's own writable /tmp — did not run:\n%s", hd, r.out)
+	}
+}
+
+// TestAliasedReadOnlyBindMarkIsTruthful is issue #604's follow-up
+// conformance round, finding 4's shape, end to end: a read-only bind's own
+// Access says ro, no symlink anywhere on the way, but its HOST tree sits
+// inside the writable {target}'s — @target-rw's own grant. A payload that
+// writes through the TARGET (a plain rw bind, nothing exotic) sees the write
+// appear at the READ-ONLY PATH element too, because both are the same host
+// directory bind-mounted twice, and can execute what it planted there.
+func TestAliasedReadOnlyBindMarkIsTruthful(t *testing.T) {
+	budget(t)
+	requireSandbox(t)
+	proj, _ := target(t)
+
+	// Must exist before snug resolves the ro grant below (Resolve's own
+	// EvalSymlinks check on every `ro` entry), empty otherwise.
+	realbin := filepath.Join(proj, "realbin")
+	if err := os.MkdirAll(realbin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := envProfileLayer(t, "aliasedbin.toml",
+		"[profile.aliasedbin]\n"+
+			"description = \"a ro bind whose host tree sits inside the writable target\"\n"+
+			// host:guest — a RELOCATED grant, host tree deliberately inside the
+			// target @target-rw grants rw.
+			"ro = [\""+realbin+":/srv/aliasedbin\", \"/usr/bin\"]\n"+
+			"\n[profile.aliasedbin.environ.merge]\n"+
+			"PATH = [\"/srv/aliasedbin\", \"/usr/bin\"]\n",
+		os.Getenv("PATH"))
+
+	r := runEnv(t, env, []string{"-p", "aliasedbin"}, proj,
+		`mkdir -p "$SNUG_TARGET/realbin"
+printf '#!/bin/sh\necho SHADOW-GIT-RAN\n' >"$SNUG_TARGET/realbin/git"
+chmod +x "$SNUG_TARGET/realbin/git"
+command -v git
+git --version`).mustRun(t)
+
+	// POSITIVE CONTROL folded into the assertion itself: `command -v git`
+	// must name the ALIASED read-only bind, not the writable target itself —
+	// this is a claim about the RO element, not about the target being
+	// writable (which is unremarkable and not what finding 4 is about).
+	if !strings.Contains(r.out, "/srv/aliasedbin/git") {
+		t.Fatalf("`command -v git` did not resolve to the aliased read-only bind "+
+			"(/srv/aliasedbin/git), so the run below cannot be attributed to it:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "SHADOW-GIT-RAN") {
+		t.Errorf("the payload's own git — written through the WRITABLE target grant, read back "+
+			"through the READ-ONLY /srv/aliasedbin bind of the SAME host directory — did not "+
+			"run:\n%s", r.out)
+	}
+}

@@ -668,6 +668,12 @@ func TestDropLinesNameTheirReason(t *testing.T) {
 				Dropped: []policy.EnvDrop{
 					{Value: "/srv/nothing", Var: "PATH", From: []string{"x"}, Reason: policy.DropNoGrant},
 					{Value: "/tmp/x/bin", Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+					// issue #604's follow-up (finding 4): a SANITISED host PATH
+					// element whose own mount says ro, dropped because a SEPARATE
+					// writable grant's host root aliases it. DropHostAliased is last
+					// in the fixed slice, so this also pins the ORDER: it must render
+					// after DropTmpfsOnly, not merely be present somewhere.
+					{Value: "/opt/aliased", Var: "PATH", From: []string{"x"}, Reason: policy.DropHostAliased},
 				},
 			},
 		},
@@ -677,19 +683,29 @@ func TestDropLinesNameTheirReason(t *testing.T) {
 
 	noGrantLine := "nothing grants that path: /srv/nothing"
 	tmpfsLine := "only an empty writable tmpfs is mounted there: /tmp/x/bin"
+	aliasedLine := "it is mounted read-only here, but the host directory behind it is " +
+		"writable from inside through another grant: /opt/aliased"
 	iNoGrant := strings.Index(got, noGrantLine)
 	iTmpfs := strings.Index(got, tmpfsLine)
+	iAliased := strings.Index(got, aliasedLine)
 	if iNoGrant < 0 {
 		t.Errorf("no line names the DropNoGrant element:\n%s", got)
 	}
 	if iTmpfs < 0 {
 		t.Errorf("no line names the DropTmpfsOnly element:\n%s", got)
 	}
-	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
-		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly} order:\n%s", got)
+	if iAliased < 0 {
+		t.Errorf("no line names the DropHostAliased element:\n%s", got)
 	}
-	if n := strings.Count(got, "dropped —"); n != 2 {
-		t.Errorf("expected exactly two drop lines (one per reason, never conflated), got %d:\n%s", n, got)
+	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
+		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly, ...} order:\n%s", got)
+	}
+	if iTmpfs >= 0 && iAliased >= 0 && iTmpfs > iAliased {
+		t.Errorf("DropHostAliased did not render after DropTmpfsOnly, the fixed slice's own "+
+			"order:\n%s", got)
+	}
+	if n := strings.Count(got, "dropped —"); n != 3 {
+		t.Errorf("expected exactly three drop lines (one per reason, never conflated), got %d:\n%s", n, got)
 	}
 }
 

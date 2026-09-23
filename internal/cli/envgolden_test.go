@@ -309,7 +309,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		// this profile makes writable, marked `← writable from inside`; a
 		// host read that fails on the way, marked `← cannot tell where this
 		// lands …`; and an unmarked control with no symlink on the way at all.
-		{"hostlink-marks", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "hostlinkmarks"),
+		{"hostlink-marks", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "hlmarks"),
 			envGoldenCtx(), false, hostlinkMarksRegistry, hostlinkMarksEnv},
 	}
 

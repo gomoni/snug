@@ -299,3 +299,40 @@ func TestEnginePATHRefusesAHostLinkOutOfUsr(t *testing.T) {
 		}
 	})
 }
+
+// TestEnginePATHRefusesAReadOnlyGraftAliasedByTheWritableTarget is issue
+// #604's follow-up (finding 4) reaching the ENGINE's own PATH check: a
+// READ-ONLY graft landing on /usr/bin — no symlink anywhere on the way — is
+// still WRITABLE in the engine's derived view, because its host tree sits
+// inside the SANDBOX's own writable target bind (@target-rw's shape). The
+// payload writes through the target and the content changes at /usr/bin too,
+// whatever this graft's own Access claims.
+func TestEnginePATHRefusesAReadOnlyGraftAliasedByTheWritableTarget(t *testing.T) {
+	mounts := roUsr()
+	// The SANDBOX's own writable bind of the target, @target-rw's shape.
+	mounts["/home/u/proj/sub"] = policy.Mount{Guest: "/home/u/proj/sub", Host: "/home/u/proj/sub",
+		Kind: policy.KindBind, Access: policy.AccessRW, From: []string{"@target-rw"}}
+
+	grafts := engineGraft()
+	// A READ-ONLY graft over /usr/bin, one of the engine's own four PATH
+	// elements, whose HOST tree sits inside the writable target's.
+	grafts["/usr/bin"] = policy.Graft{
+		Mount: policy.Mount{Guest: "/usr/bin", Host: "/home/u/proj/sub/realbin",
+			Kind: policy.KindGraft, Access: policy.AccessRO, From: []string{"fixture"}},
+		Why: "fixture",
+	}
+
+	p := &policy.Policy{Mounts: mounts, Grafts: grafts}
+	err := checkEnginePATH(p, noHostLinks{})
+	if err == nil {
+		t.Fatal("a read-only graft over /usr/bin whose host tree sits inside the writable " +
+			"target's was accepted; the payload writes through the target bind and the " +
+			"content changes here too, whatever this graft's own Access says")
+	}
+	if !strings.Contains(err.Error(), "/usr/bin") {
+		t.Errorf("refusal does not name /usr/bin: %v", err)
+	}
+	if !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("refusal does not say WRITABLE for a graft aliased by a writable grant: %v", err)
+	}
+}

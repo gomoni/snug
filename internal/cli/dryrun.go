@@ -572,7 +572,7 @@ func describeEnvironment(out io.Writer, p *policy.Policy, env policy.Environ) {
 		// Adding a reason to policy.EnvDropReason means adding it here.
 		for _, reason := range []policy.EnvDropReason{
 			policy.DropNoGrant, policy.DropTmpfsOnly, policy.DropPseudoOnly,
-			policy.DropReplaceable, policy.DropUnresolved,
+			policy.DropReplaceable, policy.DropUnresolved, policy.DropHostAliased,
 		} {
 			var vals []string
 			for _, d := range v.Dropped {

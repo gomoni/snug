@@ -118,6 +118,13 @@ const (
 	// DropNoGrant, but the reason says WHY snug cannot vouch for it rather than
 	// claiming to have judged it.
 	DropUnresolved
+
+	// DropHostAliased is a read-only landing whose host tree sits at or below a
+	// SEPARATE grant's writable host root: the element names a real, present
+	// directory — same as a plain `ro` KEEP — but the payload can write through
+	// that other grant and see it appear here too, whatever this element's own
+	// Access says.
+	DropHostAliased
 )
 
 func (r EnvDropReason) String() string {
@@ -131,6 +138,8 @@ func (r EnvDropReason) String() string {
 			"because the directory holding the link is writable from inside"
 	case DropUnresolved:
 		return "a host path on the way to it could not be read, so snug cannot tell where the sandbox resolves it"
+	case DropHostAliased:
+		return "it is mounted read-only here, but the host directory behind it is writable from inside through another grant"
 	default:
 		return "nothing grants that path"
 	}

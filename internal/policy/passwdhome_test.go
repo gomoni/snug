@@ -183,6 +183,96 @@ func TestUnreadSSHConfigHostLinkFailsClosed(t *testing.T) {
 	})
 }
 
+// ── issue #604's follow-up: kernel-faithful ".." reaches #599's own check ──
+
+// TestUnreadSSHConfigDotDotThroughAHostLinkRefuses is finding 3's shape,
+// reproduced against #599's check rather than against IsShadowSlot directly:
+// a host link's TEXT can name another link and climb out of it with "..",
+// and the kernel resolves the named link FIRST. Here the named link (l3)
+// DANGLES, so the kernel — and the walk — can never actually reach
+// anywhere, let alone the generated config; a lexical-Clean implementation
+// that cancelled "l3/.." without ever checking whether l3 resolves at all
+// could have accepted this regardless.
+//
+// The two controls prove the refusal above is about the DANGLING link, not
+// about host links reaching pw_dir at all: a profile's own symlink straight
+// to HOME, and a plain host link straight to HOME (mirroring
+// TestUnreadSSHConfigHostLinkFailsClosed's "accepted" case, "hl/h -> $R/u" in
+// this file's own naming), both still accept.
+func TestUnreadSSHConfigDotDotThroughAHostLinkRefuses(t *testing.T) {
+	reg := identityRegistry("/etc/key.pub")
+	reg["hostlink3"] = &Profile{
+		Name: "hostlink3",
+		RO:   []string{"/mnt/hl"},
+		// The "direct symlink" control: a profile grant straight to HOME,
+		// no host link and no "..' anywhere on the way.
+		Symlink: []Symlink{{At: "/mnt/direct", Target: "/home/u"}},
+	}
+	sel := append(append([]ProfileName{}, pinnedSelection()...), "hostlink3")
+
+	t.Run("dotdot through a dangling host link refuses", func(t *testing.T) {
+		env := newFakeEnv()
+		env.dirs["/mnt/hl"] = true
+		env.links["/mnt/hl/l3"] = "/nonexist/a/b" // dangles: nothing is there
+		// t's own text names l3 and climbs out of wherever l3 lands — not
+		// out of t's own directory, which is what a lexical Clean would do.
+		env.links["/mnt/hl/t"] = "l3/../u"
+		ctx := testCtx()
+		ctx.HostPasswdHome = "/mnt/hl/t"
+
+		if _, err := Resolve(reg, sel, ctx, env); err == nil {
+			t.Fatal("pw_dir /mnt/hl/t, whose host link text climbs out of a DANGLING host link " +
+				"(l3), was accepted — the kernel can never reach the generated config through a " +
+				"link that does not resolve to anything")
+		}
+	})
+
+	t.Run("direct symlink to HOME accepts", func(t *testing.T) {
+		env := newFakeEnv()
+		env.dirs["/mnt/hl"] = true
+		ctx := testCtx()
+		ctx.HostPasswdHome = "/mnt/direct"
+
+		if _, err := Resolve(reg, sel, ctx, env); err != nil {
+			t.Fatalf("pw_dir reached through the profile's own symlink straight to HOME was "+
+				"refused: %v", err)
+		}
+	})
+
+	t.Run("hl/h -> $R/u plain host link accepts", func(t *testing.T) {
+		env := newFakeEnv()
+		env.dirs["/mnt/hl"] = true
+		env.links["/mnt/hl/h"] = "/home/u"
+		ctx := testCtx()
+		ctx.HostPasswdHome = "/mnt/hl/h"
+
+		if _, err := Resolve(reg, sel, ctx, env); err != nil {
+			t.Fatalf("pw_dir reached through a plain host link straight to HOME was refused: %v", err)
+		}
+	})
+}
+
+// TestUnreadSSHConfigRawPwDirIsWalked pins that sshWill is fed to the walk
+// RAW — pw's own text, unjoined and uncleaned (passwdhome.go's own comment) —
+// by using a pw_dir that is NOT already filepath.Clean, so the `pw ==
+// filepath.Clean(pw)` guard skips the short-circuit and every call must
+// reach walkLinks. The ".." here resolves entirely across mounts Resolve
+// itself anchors ({home}/.ssh, generated for the pinned identity), so it is
+// harmless once walked — and this pins that skipping the short-circuit for a
+// non-canonical pw does not regress an otherwise-valid setup into a refusal.
+func TestUnreadSSHConfigRawPwDirIsWalked(t *testing.T) {
+	env := newFakeEnv()
+	ctx := testCtx()
+	// Clean("/home/u/.ssh/..") == "/home/u" == ctx.Home, but the RAW string
+	// is not — this is the case the short-circuit's own guard exists for.
+	ctx.HostPasswdHome = "/home/u/.ssh/.."
+
+	if _, err := Resolve(identityRegistry("/etc/key.pub"), pinnedSelection(), ctx, env); err != nil {
+		t.Fatalf("pw_dir %q, a non-canonical spelling that walks back to HOME through snug's "+
+			"own anchored {home}/.ssh mount, was refused: %v", ctx.HostPasswdHome, err)
+	}
+}
+
 // The same lexical `..` lost the shadow-slot mark on PATH (red-team finding 2,
 // live: the payload's git ran from /pbin). Refused at the fold, so no walk can
 // disagree with the kernel about it.
