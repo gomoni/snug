@@ -414,7 +414,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	got := captureFile(t, func(f io.Writer) { describeCommands(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}) })
 	if !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("no COMMANDS block: %q", got)
 	}
@@ -432,7 +432,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	// the block must not print at all — a block that always prints proves
 	// nothing about the staging condition.
 	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"})
-	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain) }); got != "" {
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain, policy.OSEnviron{}) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
 	}
 }
@@ -464,14 +464,14 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 	// CONTROL: the fixture only means something if a nested grant is actually
 	// there and the covering mount really is a tmpfs. Otherwise this passes on a
 	// path that is plainly granted and proves nothing about the predicate.
-	if !p.GrantsGuestPath(localShare) {
+	if !p.GrantsGuestPath(policy.OSEnviron{}, localShare) {
 		t.Fatalf("%s is not granted at all, so it cannot show which predicate is in use", localShare)
 	}
-	if !p.IsShadowSlot(localShare) {
+	if !p.IsShadowSlot(policy.OSEnviron{}, localShare) {
 		t.Fatalf("%s is not writable, so it is not the tmpfs-covered case this test needs", localShare)
 	}
 
-	if got := grantMark(p, "SOME_PATH_VAR", localShare); got != "" {
+	if got := grantMark(p, "SOME_PATH_VAR", localShare, policy.OSEnviron{}); got != "" {
 		t.Errorf("grantMark(%s) = %q, want no mark — grantMark must keep asking 'is there a "+
 			"node here' (policy.GrantsGuestPath), not sanitise's narrower 'is the host's "+
 			"content here' (policy.keepHostElement); unifying them would print a false "+
@@ -508,13 +508,13 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	}
 
 	// $HOME is @home's writable tmpfs: the arrangement @claude shipped.
-	if got := grantMark(p, "PATH", home); !strings.Contains(got, "writable from inside") {
+	if got := grantMark(p, "PATH", home, policy.OSEnviron{}); !strings.Contains(got, "writable from inside") {
 		t.Errorf("grantMark(PATH, %s) = %q, want the writable mark. %s is a writable tmpfs, "+
 			"so a PATH entry naming it is a shadow slot the payload can fill — and the screen "+
 			"saying nothing is how @claude's {home}/.local/bin survived a milestone in plain "+
 			"sight", home, got, home)
 	}
-	if got := grantMark(p, "CARGO_HOME", home); got != "" {
+	if got := grantMark(p, "CARGO_HOME", home, policy.OSEnviron{}); got != "" {
 		t.Errorf("grantMark(CARGO_HOME, %s) = %q, want no mark — the mark is about directories "+
 			"searched for COMMANDS. A writable CARGO_HOME is correct, and marking it teaches "+
 			"the reader to ignore the mark where it matters", home, got)
@@ -524,10 +524,10 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	// so it is not a slot to fill. (This is the ORDINARY not-granted case, not
 	// the one where the two marks can coincide — see
 	// TestGrantMarkPrecedesGrantedWhenBothConditionsHold for that one.)
-	if got := grantMark(p, "PATH", "/nowhere/at/all"); !strings.Contains(got, "not granted") {
+	if got := grantMark(p, "PATH", "/nowhere/at/all", policy.OSEnviron{}); !strings.Contains(got, "not granted") {
 		t.Errorf("grantMark(PATH, /nowhere/at/all) = %q, want the not-granted mark", got)
 	}
-	if strings.Contains(grantMark(p, "PATH", "/nowhere/at/all"), "writable") {
+	if strings.Contains(grantMark(p, "PATH", "/nowhere/at/all", policy.OSEnviron{}), "writable") {
 		t.Error("an ungranted path with no symlink on the way was marked writable")
 	}
 
@@ -539,7 +539,7 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	// granted" and the check could never fail — it measured ABSENT and read as
 	// UNWRITABLE. Two different facts, and the one being claimed is the second.
 	stageMount(p, policy.KindBind, policy.AccessRO)
-	if got := grantMark(p, "PATH", policy.StagedBinDir); strings.Contains(got, "writable") {
+	if got := grantMark(p, "PATH", policy.StagedBinDir, policy.OSEnviron{}); strings.Contains(got, "writable") {
 		t.Errorf("grantMark(PATH, %s) = %q with a read-only bind staged there. The directory "+
 			"is the root tmpfs, which --remount-ro / covers, so nothing on this line may say "+
 			"writable", policy.StagedBinDir, got)
@@ -548,7 +548,7 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	// itself, because it is snug's `--dir`. That wording is the documented
 	// compromise above, and it is asserted here so this test fails if the mark
 	// ever silently starts claiming something stronger.
-	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "1 grant inside") {
+	if got := grantMark(p, "PATH", policy.StagedBinDir, policy.OSEnviron{}); !strings.Contains(got, "1 grant inside") {
 		t.Errorf("grantMark(PATH, %s) = %q, want the count of what is staged inside — "+
 			"without it the fixture is not staging anything and both assertions here are "+
 			"about an empty policy", policy.StagedBinDir, got)
@@ -559,7 +559,7 @@ func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	// shape Validate now refuses (snugsOwn), reconstructed here after resolution
 	// precisely because it can no longer come out of one.
 	stageMount(p, policy.KindTmpfs, policy.AccessRW)
-	if got := grantMark(p, "PATH", policy.StagedBinDir); !strings.Contains(got, "writable from inside") {
+	if got := grantMark(p, "PATH", policy.StagedBinDir, policy.OSEnviron{}); !strings.Contains(got, "writable from inside") {
 		t.Errorf("grantMark(PATH, %s) = %q with a tmpfs mounted there, want the writable mark. "+
 			"If this does not fire, the assertion above is vacuous and the shadow-slot rule is "+
 			"unguarded at the one path snug puts on PATH itself", policy.StagedBinDir, got)
@@ -606,16 +606,16 @@ func TestGrantMarkPrecedesGrantedWhenBothConditionsHold(t *testing.T) {
 	// hold. Without these, the assertion below could pass on a fixture that is
 	// merely granted, or merely a shadow slot, and prove nothing about
 	// precedence.
-	if p.GrantsGuestPath("/data/bin") {
+	if p.GrantsGuestPath(&envFakeEnv{}, "/data/bin") {
 		t.Fatal("control: /data/bin resolves after all (the dangling target turned out to be " +
 			"granted); the fixture does not exercise the not-granted side of this case")
 	}
-	if !p.IsShadowSlot("/data/bin") {
+	if !p.IsShadowSlot(&envFakeEnv{}, "/data/bin") {
 		t.Fatal("control: /data/bin is not a shadow slot; the fixture does not stand the link " +
 			"on writable ground")
 	}
 
-	got := grantMark(p, "PATH", "/data/bin")
+	got := grantMark(p, "PATH", "/data/bin", &envFakeEnv{})
 	if !strings.Contains(got, "writable from inside") {
 		t.Errorf("grantMark(PATH, /data/bin) = %q, want the writable mark. GrantsGuestPath is "+
 			"false AND IsShadowSlot is true here, and the writable mark must win: 'you can be "+
@@ -668,28 +668,44 @@ func TestDropLinesNameTheirReason(t *testing.T) {
 				Dropped: []policy.EnvDrop{
 					{Value: "/srv/nothing", Var: "PATH", From: []string{"x"}, Reason: policy.DropNoGrant},
 					{Value: "/tmp/x/bin", Var: "PATH", From: []string{"x"}, Reason: policy.DropTmpfsOnly},
+					// issue #604's follow-up (finding 4): a SANITISED host PATH
+					// element whose own mount says ro, dropped because a SEPARATE
+					// writable grant's host root aliases it. DropHostAliased is last
+					// in the fixed slice, so this also pins the ORDER: it must render
+					// after DropTmpfsOnly, not merely be present somewhere.
+					{Value: "/opt/aliased", Var: "PATH", From: []string{"x"}, Reason: policy.DropHostAliased},
 				},
 			},
 		},
 	}
 
-	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+	got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p, &envFakeEnv{}) })
 
 	noGrantLine := "nothing grants that path: /srv/nothing"
 	tmpfsLine := "only an empty writable tmpfs is mounted there: /tmp/x/bin"
+	aliasedLine := "it is mounted read-only here, but the host directory behind it is " +
+		"writable from inside through another grant: /opt/aliased"
 	iNoGrant := strings.Index(got, noGrantLine)
 	iTmpfs := strings.Index(got, tmpfsLine)
+	iAliased := strings.Index(got, aliasedLine)
 	if iNoGrant < 0 {
 		t.Errorf("no line names the DropNoGrant element:\n%s", got)
 	}
 	if iTmpfs < 0 {
 		t.Errorf("no line names the DropTmpfsOnly element:\n%s", got)
 	}
-	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
-		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly} order:\n%s", got)
+	if iAliased < 0 {
+		t.Errorf("no line names the DropHostAliased element:\n%s", got)
 	}
-	if n := strings.Count(got, "dropped —"); n != 2 {
-		t.Errorf("expected exactly two drop lines (one per reason, never conflated), got %d:\n%s", n, got)
+	if iNoGrant >= 0 && iTmpfs >= 0 && iNoGrant > iTmpfs {
+		t.Errorf("drop lines are not in the fixed {DropNoGrant, DropTmpfsOnly, ...} order:\n%s", got)
+	}
+	if iTmpfs >= 0 && iAliased >= 0 && iTmpfs > iAliased {
+		t.Errorf("DropHostAliased did not render after DropTmpfsOnly, the fixed slice's own "+
+			"order:\n%s", got)
+	}
+	if n := strings.Count(got, "dropped —"); n != 3 {
+		t.Errorf("expected exactly three drop lines (one per reason, never conflated), got %d:\n%s", n, got)
 	}
 }
 
@@ -742,8 +758,8 @@ func TestDryRunDropLineDoesNotRenderControlCharsVerbatim(t *testing.T) {
 		}
 	}
 
-	forged := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(forgedDrop, forgedKept)) })
-	safe := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(safeDrop, safeKept)) })
+	forged := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(forgedDrop, forgedKept), &envFakeEnv{}) })
+	safe := captureFile(t, func(f io.Writer) { describeEnvironment(f, build(safeDrop, safeKept), &envFakeEnv{}) })
 
 	// THE ASSERTION THAT ACTUALLY MATTERS: a value with a newline in it must
 	// not add a line to the block. Comparing against the space-separated

@@ -69,7 +69,13 @@ type fakeEnv struct {
 	// rejectGeneratedOntoHost's ARM 3 refuses rather than guess when Stat
 	// fails with anything else — then has a branch no fixture can reach.
 	statErrs map[string]error
-	env      map[string]string
+	// readlinkErrs is statErrs' equivalent for Readlink: without it, a fixture
+	// can only ever make Readlink fail with fs.ErrInvalid (the "this is not a
+	// link at all" default below), never with the kind of error walkLinks
+	// treats as walkUnknown — a permission error reading a host symlink's own
+	// text, distinct from the component itself simply not existing.
+	readlinkErrs map[string]error
+	env          map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -113,9 +119,10 @@ func newFakeEnv() *fakeEnv {
 			// GRANTED as well as named (§2.5's coupling rule).
 			"/home/u/.local/bin/tool": true,
 		},
-		links:       map[string]string{},
-		symlinkErrs: map[string]error{},
-		statErrs:    map[string]error{},
+		links:        map[string]string{},
+		symlinkErrs:  map[string]error{},
+		statErrs:     map[string]error{},
+		readlinkErrs: map[string]error{},
 		// EDITOR is here so a fixture profile can actually re-admit something
 		// past --clearenv. Widening canon() to render the environment asserts
 		// nothing unless a fixture exercises it — the same trap the canon
@@ -190,6 +197,9 @@ func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
 // Readlink is the link TEXT the fixture wrote, which may be relative — that is
 // the whole point of the guest-namespace walk in rejectGeneratedOntoHost.
 func (f *fakeEnv) Readlink(p string) (string, error) {
+	if err, ok := f.readlinkErrs[p]; ok {
+		return "", err
+	}
 	if t, ok := f.links[p]; ok {
 		return t, nil
 	}

@@ -109,6 +109,22 @@ const (
 	// element is snug writing a shadow slot into the PATH it hands over, which is
 	// the one thing the staging rule says it must never do.
 	DropReplaceable
+
+	// DropUnresolved is a chain that could not be judged at all: some host path
+	// on the way — a component under a KindBind or KindGraft the walk had to
+	// Lstat to see whether it is a host symlink — could not be read (EACCES, or
+	// any Lstat/Readlink error other than the component simply not existing).
+	// Fail closed rather than guess: the element is dropped the same as
+	// DropNoGrant, but the reason says WHY snug cannot vouch for it rather than
+	// claiming to have judged it.
+	DropUnresolved
+
+	// DropHostAliased is a read-only landing whose host tree sits at or below a
+	// SEPARATE grant's writable host root: the element names a real, present
+	// directory — same as a plain `ro` KEEP — but the payload can write through
+	// that other grant and see it appear here too, whatever this element's own
+	// Access says.
+	DropHostAliased
 )
 
 func (r EnvDropReason) String() string {
@@ -120,6 +136,10 @@ func (r EnvDropReason) String() string {
 	case DropReplaceable:
 		return "it reaches that content through a symlink the payload can delete and replace, " +
 			"because the directory holding the link is writable from inside"
+	case DropUnresolved:
+		return "a host path on the way to it could not be read, so snug cannot tell where the sandbox resolves it"
+	case DropHostAliased:
+		return "it is mounted read-only here, but the host directory behind it is writable from inside through another grant"
 	default:
 		return "nothing grants that path"
 	}

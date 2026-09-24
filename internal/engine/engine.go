@@ -705,7 +705,7 @@ func (e *Engine) Spec(pol *policy.Policy, podman string, baseEnv []string, cgrou
 	// elements really are read-only IN THE ENGINE'S OWN VIEW, which is a
 	// question about this run's resolved policy and not about the literal.
 	// checkEnginePATH asks it.
-	if err := checkEnginePATH(pol); err != nil {
+	if err := checkEnginePATH(pol, policy.OSEnviron{}); err != nil {
 		return stage.EngineSpec{}, err
 	}
 	finalEnv = setEnv(finalEnv, "PATH", PinnedPATH)

@@ -367,11 +367,16 @@ type reportEnvEntry struct {
 	ValueNote string
 	// Grant is envGrantVerdict's CODE for this entry's Value as a path:
 	// grantOK ("") when Value is not shaped like an absolute path or is
-	// covered by a grant, grantShadowSlot when Name is PATH and
-	// p.IsShadowSlot(Value) (the payload can write a command at this entry —
-	// @claude's {home}/.local/bin "survived a milestone on screen in front of
-	// everybody" before this mark existed), grantNotGranted when nothing
-	// inside covers it. grantMark's own comment forbids a consumer
+	// covered by a grant, grantUnresolved when a host path on the way to
+	// Value could not be read (p.Shadow(env, Value) == policy.Unresolved —
+	// snug did not judge this value and says so rather than guessing),
+	// grantShadowSlot when Name is PATH and p.Shadow(env, Value) ==
+	// policy.Slot (the payload can write a command at this entry — @claude's
+	// {home}/.local/bin "survived a milestone on screen in front of
+	// everybody" before this mark existed; Slot also covers a read-only
+	// landing whose host tree is aliased by a SEPARATE writable grant, which
+	// is writable in exactly the same practical sense), grantNotGranted when
+	// nothing inside covers it. grantMark's own comment forbids a consumer
 	// reimplementing IsShadowSlot over mounts[]; this field is the fact that
 	// check needs instead.
 	Grant string
@@ -484,7 +489,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 	rep.BwrapExec = execResolution("bwrap")
 	rep.Pasta = buildPastaReport(p)
 	for _, name := range p.EnvNames() {
-		rep.Environment = append(rep.Environment, buildEnvReport(p, p.Env[name]))
+		rep.Environment = append(rep.Environment, buildEnvReport(p, p.Env[name], env))
 	}
 	// The one variable inside the sandbox snug does not write itself: PWD,
 	// which bwrap sets from --chdir. Appended AFTER the sorted names for the
@@ -715,10 +720,10 @@ func buildContainersReport(env policy.Environ, p *policy.Policy,
 	return c
 }
 
-func buildEnvReport(p *policy.Policy, v policy.EnvVar) reportEnvVar {
+func buildEnvReport(p *policy.Policy, v policy.EnvVar, env policy.Environ) reportEnvVar {
 	out := reportEnvVar{Name: v.Name}
 	for _, e := range v.Entries {
-		grant, inside := envGrantVerdict(p, v.Name, e.Value)
+		grant, inside := envGrantVerdict(p, v.Name, e.Value, env)
 		out.Entries = append(out.Entries, reportEnvEntry{
 			Value:      e.Value,
 			Verb:       e.Verb.String(),

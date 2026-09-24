@@ -534,23 +534,67 @@ func endpointNoun(mode fs.FileMode) string {
 // rather than in a loop inside Validate.
 const maxGeneratedDestLinks = 40
 
+// errLinkTextDotDotAfterName is linkLanding's sentinel for a link text this
+// build-time walk refuses to join lexically rather than risk resolving wrong:
+// see linkLanding's own doc comment for what it names and why.
+var errLinkTextDotDotAfterName = errors.New("link text has a \"..\" following a name that may itself be a symlink")
+
 // linkLanding reads the host symlink at hostAt and returns where it lands in
 // GUEST terms: absolute text against the sandbox's root, relative text against
 // the directory the link sits in. It is the single step bwrap's resolution and
-// snug's two destination walks have in common, and it is here rather than
-// copied because the namespace is the part that was got wrong once (#580):
-// EvalSymlinks resolves against HOST components, bwrap against GUEST ones, and
-// a path-translating grant makes those different places.
-func linkLanding(env Environ, guestAt, hostAt string) (landing, text string, err error) {
+// snug's destination walks (followToDestination, guestLanding) have in common,
+// and it is here rather than copied because the namespace is the part that was
+// got wrong once (#580): EvalSymlinks resolves against HOST components, bwrap
+// against GUEST ones, and a path-translating grant makes those different
+// places.
+//
+// Takes HostLinks rather than the wider Environ — Readlink is all it reads.
+//
+// IT JOINS LEXICALLY, and that is only safe for the leading run of ".."
+// components a relative text may start with — those climb out of guestAt's
+// OWN directory, which every caller here has already walked clean, component
+// by component. A ".." AFTER a name in the same text is a different claim:
+// the kernel resolves that name FIRST, and if it is itself a symlink, ".."
+// climbs out of wherever THAT one lands, not out of the textually-preceding
+// directory this function would compute. envresolve.go's walkLinks avoids the
+// question entirely by splicing link text onto its component queue instead of
+// joining it — the fix this build-time walk does not share, because doing so
+// here would mean rewriting followToDestination and guestLanding onto the
+// same queue-based model. Short of that, this refuses instead of guessing:
+// any ".." found after the leading run returns errLinkTextDotDotAfterName,
+// and both callers refuse rather than wrap it as an ordinary read failure.
+func linkLanding(env HostLinks, guestAt, hostAt string) (landing, text string, err error) {
 	text, err = env.Readlink(hostAt)
 	if err != nil {
 		return "", "", err
+	}
+	if dotDotFollowsAName(text) {
+		return "", text, errLinkTextDotDotAfterName
 	}
 	landing = text
 	if !filepath.IsAbs(text) {
 		landing = filepath.Join(filepath.Dir(guestAt), text)
 	}
 	return filepath.Clean(landing), text, nil
+}
+
+// dotDotFollowsAName reports whether text, split into path components, has a
+// ".." anywhere after its leading run of ".." components — the shape
+// linkLanding refuses rather than resolve lexically. "a/../b" (i=0, "a" is
+// not "..") and "../a/../b" (the leading run is one "..", then "a" is not
+// "..") both trigger it; "../.." (nothing but the leading run) does not.
+func dotDotFollowsAName(text string) bool {
+	comps := walkQueueComponents(text)
+	i := 0
+	for i < len(comps) && comps[i] == ".." {
+		i++
+	}
+	for ; i < len(comps); i++ {
+		if comps[i] == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // followToDestination walks from the covering grant's root down to the
@@ -615,6 +659,14 @@ func (p *Policy) followToDestination(env Environ, m, outer Mount, at, host strin
 					provenance(outer), outer.Access, at, VisibleText(host), m.Guest, maxGeneratedDestLinks)
 			}
 			landing, text, rerr := linkLanding(env, guestAt, hostAt)
+			if errors.Is(rerr, errLinkTextDotDotAfterName) {
+				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
+					"       inside it, but the host symlink %s points to %q, whose `..` follows a name\n"+
+					"       that may itself be a symlink; the kernel resolves that name first, and snug\n"+
+					"       does not guess where it leads, so it refuses.",
+					provenance(outer), outer.Access, at, VisibleText(host), m.Guest,
+					VisibleText(hostAt), text)
+			}
 			if rerr != nil {
 				return false, fmt.Errorf("profile %s grants %s on %s (the host's %s), and snug generates %s\n"+
 					"       inside it, but the host symlink %s cannot be read: %v.\n"+
@@ -1850,6 +1902,14 @@ func (p *Policy) guestLanding(env Environ, m Mount) (landing, via, text string, 
 			}
 
 			landingHere, linkText, rerr := linkLanding(env, cur, hostAt)
+			if errors.Is(rerr, errLinkTextDotDotAfterName) {
+				return "", via, text, fmt.Errorf("profile %s puts %s at %s, and resolving where it "+
+					"lands reaches the host symlink\n"+
+					"       %s, which points to %q, whose `..` follows a name that may itself be a\n"+
+					"       symlink; the kernel resolves that name first, and snug does not guess where\n"+
+					"       it leads, so it refuses.",
+					provenance(m), describeNode(m), m.Guest, VisibleText(hostAt), linkText)
+			}
 			if rerr != nil {
 				return "", via, text, fmt.Errorf("profile %s puts %s at %s, and resolving where it "+
 					"lands reaches the host symlink\n"+

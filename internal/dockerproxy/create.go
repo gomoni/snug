@@ -1519,7 +1519,7 @@ func (p *Proxy) hostPathVisible(host string, needWrite bool) bool {
 // nothing covers the path at all, or a bind covers it read-only and the client
 // asked for writable.
 func (p *Proxy) bindRefusalReason(source string, needWrite bool) string {
-	if p.pol.GrantsGuestPath(source) && !p.pol.HostPathVisible(source, false) {
+	if p.pol.GrantsGuestPath(policy.OSEnviron{}, source) && !p.pol.HostPathVisible(source, false) {
 		return fmt.Sprintf("%s is not a bind of a host directory — snug created it for this "+
 			"run, so there is no host source to forward. The sandbox can see it; that is a "+
 			"different question.", source)

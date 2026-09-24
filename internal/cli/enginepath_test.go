@@ -72,14 +72,14 @@ func TestTheEnginesPATHIsUnwritableUnderTheREALBuiltins(t *testing.T) {
 	// grants would all answer "not a slot" for the wrong reason.
 	elems := strings.Split(engine.PinnedPATH, ":")
 	for _, elem := range elems {
-		if !view.GrantsGuestPath(elem) {
+		if !view.GrantsGuestPath(newEnvFakeEnv(), elem) {
 			t.Fatalf("nothing in the engine's view covers %s — the assertion below would then be "+
 				"true of a path that is not there", elem)
 		}
 	}
 
 	for _, elem := range elems {
-		if view.IsShadowSlot(elem) {
+		if view.IsShadowSlot(newEnvFakeEnv(), elem) {
 			t.Errorf("PATH element %s is WRITABLE in the engine's view under the profile set snug "+
 				"ships. The engine is root-in-U with the full delegated subuid range, so this is "+
 				"the payload choosing what it executes (issue #125, C3).", elem)
@@ -89,7 +89,7 @@ func TestTheEnginesPATHIsUnwritableUnderTheREALBuiltins(t *testing.T) {
 	// CONTROL C — the sweep still says "slot" about something, on this exact
 	// view: the payload's own home is writable, and under a DERIVED view that
 	// is the directory the host's real PATH leads with.
-	if !view.IsShadowSlot(envGoldenCtx().Home + "/bin") {
+	if !view.IsShadowSlot(newEnvFakeEnv(), envGoldenCtx().Home+"/bin") {
 		t.Errorf("%s/bin is not reported a shadow slot in a view where @home makes {home} a "+
 			"writable tmpfs; the four assertions above then cannot be read as the sweep "+
 			"discriminating", envGoldenCtx().Home)

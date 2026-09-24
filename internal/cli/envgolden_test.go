@@ -46,6 +46,19 @@ type envFakeEnv struct {
 	files map[string]bool
 	links map[string]string
 	env   map[string]string
+	// hostSymlinks is issue #604's addition: a HOST symlink walkLinks reads
+	// through Lstat/Readlink while following a covering bind, distinct from
+	// links above — which only EvalSymlinks and (pre-#604) Readlink ever
+	// consulted, and which Lstat has never reported as a symlink at all (see
+	// Lstat's own comment). Kept separate rather than folding into links so
+	// every EXISTING fixture that plants a links entry keeps meaning exactly
+	// what it meant before: "EvalSymlinks resolves this", not "Lstat sees a
+	// symlink here too".
+	hostSymlinks map[string]string
+	// lstatErrs is a host Lstat failure walkLinks must treat as walkUnknown —
+	// distinct from the path simply not existing, which every other map here
+	// already answers by omission.
+	lstatErrs map[string]error
 }
 
 func newEnvFakeEnv() *envFakeEnv {
@@ -99,7 +112,9 @@ func newEnvFakeEnv() *envFakeEnv {
 		// NO_COLOR is present and EMPTY, which is its specified spelling — "set
 		// to any value, including empty" — and the case a `v != ""` read of the
 		// host silently turned back into "colour on".
-		env: map[string]string{"USER": "u", "PAGER": "less", "NO_COLOR": ""},
+		env:          map[string]string{"USER": "u", "PAGER": "less", "NO_COLOR": ""},
+		hostSymlinks: map[string]string{},
+		lstatErrs:    map[string]error{},
 	}
 }
 
@@ -129,10 +144,24 @@ func (f *envFakeEnv) Stat(p string) (fs.FileInfo, error) {
 
 // Lstat: this fixture's links map is consulted by EvalSymlinks alone — nothing
 // it holds is a symlink AT a name a generated file lands on — so what is at the
-// name is what Stat says.
-func (f *envFakeEnv) Lstat(p string) (fs.FileInfo, error) { return f.Stat(p) }
+// name is what Stat says. hostSymlinks is the one map that DOES make Lstat
+// report a symlink (issue #604's walkLinks reads exactly that combination:
+// Lstat to see what is at a host name under a covering bind, Readlink to see
+// where it points).
+func (f *envFakeEnv) Lstat(p string) (fs.FileInfo, error) {
+	if err, ok := f.lstatErrs[p]; ok {
+		return nil, err
+	}
+	if _, ok := f.hostSymlinks[p]; ok {
+		return envFakeInfo{name: p, link: true}, nil
+	}
+	return f.Stat(p)
+}
 
 func (f *envFakeEnv) Readlink(p string) (string, error) {
+	if t, ok := f.hostSymlinks[p]; ok {
+		return t, nil
+	}
 	if t, ok := f.links[p]; ok {
 		return t, nil
 	}
@@ -158,12 +187,18 @@ func (f *envFakeEnv) LookPath(name string) (string, error) {
 type envFakeInfo struct {
 	name string
 	dir  bool
+	// link is issue #604's addition: a hostSymlinks entry reports ModeSymlink
+	// from Lstat, distinct from dir and from the plain-file zero value.
+	link bool
 }
 
 func (i envFakeInfo) Name() string { return i.name }
 func (i envFakeInfo) Size() int64  { return 0 }
 func (i envFakeInfo) Mode() fs.FileMode {
-	if i.dir {
+	switch {
+	case i.link:
+		return fs.ModeSymlink
+	case i.dir:
 		return fs.ModeDir
 	}
 	return 0
@@ -214,6 +249,11 @@ func TestGoldenEnvironment(t *testing.T) {
 		// renders three marks at once was therefore asserted only inside a test's
 		// string comparisons and had no committed artifact until this case.
 		reg func(*testing.T) map[policy.ProfileName]*policy.Profile
+		// env customises the fixture HOST — a hostSymlinks/lstatErrs entry, or
+		// any other per-case host fact — before Resolve runs. Only the
+		// hostlink-marks case uses it: every other case is content with the
+		// plain fixture newEnvFakeEnv already returns.
+		env func(*envFakeEnv)
 	}{
 		// What a bare `snug <dir>` selects.
 		//
@@ -237,18 +277,18 @@ func TestGoldenEnvironment(t *testing.T) {
 		// which is the opposite of #84's question. The check to run against a
 		// future default golden is "does an XDG row carry a mark", not "did this
 		// file change".
-		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false, nil},
+		{"defaults", profile.BuiltinDefaults(), envGoldenCtx(), false, nil, nil},
 		// The one shipped profile that touches the environment today. What the
 		// golden shows: PAGER and NO_COLOR arriving through `inherit`, and
 		// /snug/bin on PATH because the profile's binary is staged there.
 		// @claude names NO PATH directory of its own — the band is snug's, and
 		// that is the fix for the shadow slot the old `merge {home}/.local/bin`
 		// installed (TestNoBuiltinPutsAWritableDirectoryOnPATH).
-		{"claude", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false, nil},
+		{"claude", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude"), envGoldenCtx(), false, nil, nil},
 		// Containers, with a host whose podman is a distrobox shim — so the
 		// staged stub's directory appears on PATH and the golden shows where in
 		// the ordering it lands.
-		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtxWithShim(), false, nil},
+		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, envGoldenCtxWithShim(), false, nil, nil},
 		// The MARKS screen, and the reason it is a golden rather than a handful of
 		// strings.Contains: this is the layout a human reads when a profile hands
 		// over something snug has a measurement about. It carries, in one render,
@@ -258,13 +298,19 @@ func TestGoldenEnvironment(t *testing.T) {
 		// the unmarked controls. Before the mark lines were split out, the
 		// equivalent rows were 264–277 columns wide.
 		{"marks", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "markjoin"),
-			envGoldenCtx(), false, markJoinRegistry},
+			envGoldenCtx(), false, markJoinRegistry, nil},
 		// §4.2, the case the design measured and nothing rendered: snug authors
 		// HOME, SHELL and the four base PATH entries unconditionally, and with
 		// only @parent-ro selected NONE of those paths is granted. It must keep
 		// authoring them — §4.3 shows PATH and HOME have no safe absent state —
 		// so the repair is that this block SAYS SO.
-		{"parent-ro-marks", []policy.ProfileName{"@parent-ro"}, envGoldenCtx(), true, nil},
+		{"parent-ro-marks", []policy.ProfileName{"@parent-ro"}, envGoldenCtx(), true, nil, nil},
+		// issue #604: a host symlink under a read-only bind, landing on ground
+		// this profile makes writable, marked `← writable from inside`; a
+		// host read that fails on the way, marked `← cannot tell where this
+		// lands …`; and an unmarked control with no symlink on the way at all.
+		{"hostlink-marks", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "hlmarks"),
+			envGoldenCtx(), false, hostlinkMarksRegistry, hostlinkMarksEnv},
 	}
 
 	for _, tc := range cases {
@@ -273,7 +319,11 @@ func TestGoldenEnvironment(t *testing.T) {
 			if tc.reg != nil {
 				m = tc.reg(t)
 			}
-			p, err := policy.Resolve(m, tc.sel, tc.ctx, newEnvFakeEnv())
+			env := newEnvFakeEnv()
+			if tc.env != nil {
+				tc.env(env)
+			}
+			p, err := policy.Resolve(m, tc.sel, tc.ctx, env)
 			switch {
 			case tc.refused && err == nil:
 				t.Fatalf("Resolve(%v) was expected to be refused; if this selection became "+
@@ -281,7 +331,7 @@ func TestGoldenEnvironment(t *testing.T) {
 			case !tc.refused && err != nil:
 				t.Fatalf("Resolve(%v): %v", tc.sel, err)
 			}
-			got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p) })
+			got := captureFile(t, func(f io.Writer) { describeEnvironment(f, p, env) })
 
 			path := filepath.Join("testdata", "env."+tc.name+".txt")
 			if *update {

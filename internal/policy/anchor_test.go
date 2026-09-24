@@ -296,7 +296,7 @@ func TestAnchorsNeverChangeAShadowSlotVerdict(t *testing.T) {
 	}
 
 	for g := range withAnchors.Mounts {
-		got, want := withAnchors.IsShadowSlot(g), withoutAnchors.IsShadowSlot(g)
+		got, want := withAnchors.IsShadowSlot(noHostLinks{}, g), withoutAnchors.IsShadowSlot(noHostLinks{}, g)
 		if got != want {
 			t.Errorf("IsShadowSlot(%s) = %v with anchors installed, %v without", g, got, want)
 		}

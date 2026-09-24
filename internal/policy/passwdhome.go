@@ -38,14 +38,26 @@ func refuseUnreadSSHConfig(p *Policy, ctx Context, env Environ) error {
 			"drop identity.ssh from the profile",
 			VisibleText(want), VisibleText(strings.Join(owner, "+")), env.Uid(), passwdHomeShown(pw))
 	}
-	pw = filepath.Clean(pw)
-	sshWill := filepath.Join(pw, ".ssh", "config")
-	if sshWill == want {
+	// sshWill is RAW — pw's own text, unjoined and uncleaned — because the walk
+	// below resolves it component by component and a lexical Clean or Join
+	// here would decide a ".." in pw before the walk ever sees whether the
+	// name before it is itself a link, the same mistake walkLinks itself used
+	// to make. The short-circuit below is only safe when pw needed no
+	// cleaning to begin with: a raw pw containing ".." can equal want lexically
+	// while resolving somewhere else entirely.
+	sshWill := pw + "/.ssh/config"
+	if pw == filepath.Clean(pw) && sshWill == want {
 		return nil
 	}
 	// The walk must END on want, not merely under a mount covering it: the
 	// generated file covering want/config lexically is ENOTDIR to the kernel.
-	if final, at, _, ok := p.SandboxView().walkLinks(sshWill); ok && at == want && final.Guest == want && final.Kind == KindData {
+	// Only walkLanded is accepted — walkUnknown (a host path on the way could
+	// not be read) and walkNowhere refuse exactly like every other unresolved
+	// chain does here, because a host link this cannot vouch for is not
+	// evidence that ssh will find the generated file. at == "" (an early
+	// landing, one the walk could not confirm all the way to the end) can
+	// never equal want, so it refuses here without a separate check.
+	if final, at, _, end, _ := p.SandboxView().walkLinks(env, sshWill); end == walkLanded && at == want && final.Guest == want && final.Kind == KindData {
 		return nil
 	}
 

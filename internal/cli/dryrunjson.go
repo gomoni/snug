@@ -637,10 +637,13 @@ type jsonEnvEntry struct {
 	// ValueNote is policy.EnvNote's text — see reportEnvEntry.ValueNote and
 	// policy.EnvNote's doc comment.
 	ValueNote string `json:"value_note,omitempty"`
-	// Grant is envGrantVerdict's code ("", "shadow_slot", "not_granted") —
-	// see reportEnvEntry.Grant. Always present, like Verb and From: "" is
-	// itself the fact "nothing to say", not an absent key a consumer has to
-	// branch on.
+	// Grant is envGrantVerdict's code ("", "shadow_slot", "not_granted",
+	// "unresolved") — see reportEnvEntry.Grant. Always present, like Verb and
+	// From: "" is itself the fact "nothing to say", not an absent key a
+	// consumer has to branch on. "unresolved" means a host path on the way to
+	// Value could not be read, so snug did not judge it at all — a consumer
+	// asserting `grant != "shadow_slot"` should treat this the same way
+	// grantMark does: NOT the same as granted.
 	Grant string `json:"grant"`
 	// GrantsInside is meaningful only when Grant is "not_granted"; 0 (and
 	// present) otherwise.
