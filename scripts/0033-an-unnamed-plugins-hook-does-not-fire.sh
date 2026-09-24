@@ -12,12 +12,27 @@
 # allowlist has to close the channel before Claude Code opens it, not merely
 # hide the plugin from `/plugin list`.
 #
-# `claude --debug hooks --debug-file <path>` prints, deterministically,
-# `Registered N hooks from M plugins` and one `Loading hooks from plugin:
-# <name>` line per plugin whose hooks.json it read — a real signal, not model
+# `claude --debug hooks --debug-file <path>` prints a real signal, not model
 # behaviour, so this does not depend on an LLM reliably noticing an injected
-# instruction. Nothing asserted this by any means before;
-# this is the first.
+# instruction. The script asserts on plugin IDENTITY, never on a count:
+#
+#   Loaded N installed plugins from <path>   — upstream of every hook channel
+#   Loading hooks from plugin: <name>        — one per hooks.json read
+#   plugin.register: <x> (<tier>, <id>)      — one per registered plugin
+#   hooks module <id> loaded (native, …)     — one per native hooks module
+#
+# `Registered N hooks from M plugins` is printed and NOT asserted: M counts
+# Claude Code's own `@builtin` plugins (agents-md, telemetry), which load
+# inside regardless of snug (issue #606), and N counts only hooks.json hooks,
+# so a second channel — installed plugins' native hooks modules, gated by the
+# `tengu_plugin_hooks_modules` rollout flag — would never show in it. What is
+# asserted inside is that every registered plugin and every loaded hooks
+# module is `@builtin`, and that no hooks.json is read.
+#
+# Every log line carries a `<timestamp> [DEBUG] ` prefix, so no pattern here is
+# anchored at `^`. The same checks are first run against the HOST log and must
+# FAIL there: a pattern that drifted with the log format would otherwise pass
+# inside by matching nothing.
 #
 # The debug file is written to a path relative to the target directory, which
 # keeps its host path inside the sandbox (`./debug.log`), so a log written by
@@ -57,7 +72,21 @@ netFail() {
 	printf '%s\n' "$1" | grep -qiE 'network|offline|ECONNREFUSED|could not connect|timed out|timeout'
 }
 
-# ── host: at least one plugin's hooks.json is read, and at least one loads ──
+# unnamedPluginsSilent LOG — succeeds when LOG shows no installed plugin
+# reaching any hook channel; otherwise prints why and fails.
+unnamedPluginsSilent() {
+	loaded=$(grep -o 'Loaded [0-9]* installed plugins from' "$1" | tail -1)
+	[ -n "$loaded" ] || { echo "no 'Loaded N installed plugins from' line"; return 1; }
+	[ "$loaded" = 'Loaded 0 installed plugins from' ] || { echo "$loaded"; return 1; }
+	read=$(grep -o 'Loading hooks from plugin: .*' "$1") && { echo "$read"; return 1; }
+	reg=$(grep -o 'plugin\.register: .*' "$1" | grep -v '^plugin\.register: [^ ]* (builtin, [^ )]*@builtin)') \
+		&& { echo "$reg"; return 1; }
+	mod=$(grep -o 'hooks module [^ ]* loaded' "$1" | grep -v '^hooks module [^ ]*@builtin loaded$') \
+		&& { echo "$mod"; return 1; }
+	return 0
+}
+
+# ── host: at least one installed plugin's hooks.json is read ───────────────
 hostOut=$(cd "$SC/proj/sub" && timeout 90 claude --debug hooks --debug-file ./host-debug.log \
 	-p "reply with the single word OK" </dev/null 2>&1) || true
 if netFail "$hostOut"; then
@@ -67,17 +96,20 @@ fi
 hostLog="$SC/proj/sub/host-debug.log"
 [ -s "$hostLog" ] || fail "the host run produced no debug log at all: $hostOut"
 
-hostRegistered=$(grep -o 'Registered [0-9]* hooks from [0-9]* plugins' "$hostLog" | tail -1)
-printf '%s\n' "$hostRegistered"
-case $hostRegistered in
-'Registered 0 hooks from 0 plugins'|'')
-	echo "SKIP: no plugin hook actually loaded on the host either, so this host cannot" >&2
-	echo "SKIP: distinguish 'allowlisted' from 'nothing installed carries a hook'" >&2
-	exit $skip ;;
-esac
-echo "asserted: host — at least one installed plugin's SessionStart hook loads unsandboxed"
+grep -o 'Registered [0-9]* hooks from [0-9]* plugins' "$hostLog" | tail -1
+hostPlugins=$(grep -o 'Loading hooks from plugin: .*' "$hostLog" | sed 's/^Loading hooks from plugin: //' | sort -u)
+[ -n "$hostPlugins" ] || {
+	echo "SKIP: no installed plugin's hooks.json was read on the host either, so this host" >&2
+	echo "SKIP: cannot distinguish 'allowlisted' from 'nothing installed carries a hook'" >&2
+	exit $skip
+}
+echo "asserted: host — hooks.json read for: $(echo $hostPlugins)"
 
-rm -f "$SC/proj/sub/host-debug.log"
+why=$(unnamedPluginsSilent "$hostLog") \
+	&& fail "the inside checks PASS on the host log, where plugins do load — a pattern no longer matches the log format"
+echo "asserted: the inside checks fail on the host log ($why)"
+
+rm -f "$hostLog"
 
 # ── inside @claude, with the default empty allowlist: nothing loads ────────
 insideOut=$(timeout 90 "$SNUG" -p @claude -p @net "$SC/proj/sub" -- claude --debug hooks \
@@ -89,13 +121,7 @@ fi
 insideLog="$SC/proj/sub/inside-debug.log"
 [ -s "$insideLog" ] || fail "the sandboxed run produced no debug log at all: $insideOut"
 
-insideRegistered=$(grep -o 'Registered [0-9]* hooks from [0-9]* plugins' "$insideLog" | tail -1)
-printf '%s\n' "$insideRegistered"
-[ "$insideRegistered" = 'Registered 0 hooks from 0 plugins' ] \
-	|| fail "a plugin hook was registered inside the sandbox with @claude's default empty allowlist: $insideRegistered"
-echo "asserted: inside — @claude's default empty allowlist registers no plugin hook at all"
-
-if grep -q '^Loading hooks from plugin:' "$insideLog"; then
-	fail "a plugin's hooks.json was read inside even though nothing was registered from it: $(grep '^Loading hooks from plugin:' "$insideLog")"
-fi
-echo "asserted: no unnamed plugin's hooks.json is even read inside, not merely unregistered"
+grep -o 'Registered [0-9]* hooks from [0-9]* plugins' "$insideLog" | tail -1
+why=$(unnamedPluginsSilent "$insideLog") \
+	|| fail "an installed plugin reached a hook channel inside with @claude's default empty allowlist: $why"
+echo "asserted: inside — 0 installed plugins loaded, no hooks.json read, every registered plugin and hooks module is @builtin"
