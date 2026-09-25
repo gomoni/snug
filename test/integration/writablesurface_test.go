@@ -14,9 +14,8 @@ import (
 // /proc/self/mounts, and requires the result to be exactly the writable
 // surface a human deciding to trust snug is entitled to expect.
 //
-// NINE IS ITSELF THE FINDING. Both documents that counted this surface by
-// hand said EIGHT: .claude/design/INDEX.md §9's writable-surface paragraph and
-// .claude/agents/sandbox-policy.md's shadow-slot rule listed {home},
+// NINE IS ITSELF THE FINDING. The document that counted this surface by hand,
+// .claude/agents/sandbox-policy.md's shadow-slot rule, said EIGHT: {home},
 // {home}/.cache, {home}/.config, {home}/.local/share, {home}/.local/state,
 // the target, /dev/shm and /tmp — eight — and measured here, a ninth path,
 // {home}/.local, is ALSO in the surface on every run that selects @home.
@@ -30,10 +29,10 @@ import (
 // TestHomeTmpfsListIsPinnedToTheDocumentsQuotingIt already names happening
 // once before ("said SEVEN for a milestone after @home grew
 // {home}/.local/share"): a hand-count goes stale the moment the tree it
-// describes grows a level, and nothing but eyes were checking it. INDEX §9
-// now says nine and names the anchor mechanism as the reason a list derived
-// from base.toml will always be one short. This test is what replaces the
-// eyes.
+// describes grows a level, and nothing but eyes were checking it.
+// sandbox-policy.md now says nine and names the anchor mechanism as the
+// reason a list derived from base.toml will always be one short. This test
+// is what replaces the eyes.
 //
 // THE TARGET IS ROOTED ONE os.MkdirTemp LEVEL DIRECTLY UNDER /tmp, not
 // t.TempDir()'s own nested pair of directories and not target()'s deeper
@@ -116,8 +115,8 @@ echo PROBE-RAN`).mustRun(t)
 	for p := range got {
 		if !want[p] {
 			t.Errorf("%s IS writable inside the sandbox and is not one of the paths this test "+
-				"knows to expect — either a grant went wider than .claude/design/INDEX.md §9's "+
-				"writable-surface paragraph documents, or this test's own expected set needs the "+
+				"knows to expect — either a grant went wider than .claude/agents/sandbox-policy.md's "+
+				"writable-surface bullet documents, or this test's own expected set needs the "+
 				"same kind of update {home}/.local just got", p)
 		}
 	}

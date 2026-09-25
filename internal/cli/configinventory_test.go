@@ -10,9 +10,9 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// ── the ~/.config generated-file inventory INDEX.md §9.5 states in prose ────
+// ── the ~/.config generated-file inventory ───────────────────────────────────
 //
-// A red-team round on #582 caught INDEX.md §9.5 claiming snug generates
+// A red-team round on #582 caught a design document claiming snug generates
 // exactly ONE file under ~/.config (.config/git/allowed_signers). It
 // generates TWO: [identity.gh] stages a second one, .config/gh/hosts.yml,
 // holding a GitHub OAuth token minted on the host by `gh auth token`
@@ -24,9 +24,7 @@ import (
 //
 // This test holds the count in code. It fails if stageGhConfig or
 // startSSHIdentity ever start (or stop) writing a mount under ~/.config, so
-// a future change to either has to walk over here and, if the count really
-// changed, edit .claude/design/INDEX.md §9.5 to match rather than leave it
-// describing a tree that no longer exists.
+// a future change to either has to walk over here.
 
 // mountsUnderConfig is every guest path staged under {home}/.config, sorted.
 func mountsUnderConfig(pol *policy.Policy) []string {
@@ -53,8 +51,7 @@ func TestTheGeneratedConfigInventoryIsExactlyTwoFiles(t *testing.T) {
 	got := mountsUnderConfig(pol)
 	want := []string{"/home/u/.config/gh/hosts.yml"}
 	if !equalStringSlices(got, want) {
-		t.Fatalf("[identity.gh] alone staged %v under ~/.config, want exactly %v — if this changed "+
-			"on purpose, .claude/design/INDEX.md §9.5's inventory has to be edited in the same change",
+		t.Fatalf("[identity.gh] alone staged %v under ~/.config, want exactly %v",
 			got, want)
 	}
 
@@ -79,8 +76,7 @@ func TestTheGeneratedConfigInventoryIsExactlyTwoFiles(t *testing.T) {
 	want = []string{"/home/u/.config/gh/hosts.yml", "/home/u/.config/git/allowed_signers"}
 	if !equalStringSlices(got, want) {
 		t.Fatalf("with [identity.gh] and [identity.git] signing_key both set, ~/.config holds %v, "+
-			"want exactly these TWO generated files: %v — the count INDEX.md §9.5 states in prose "+
-			"because nothing else checks it, and this is the something else", got, want)
+			"want exactly these TWO generated files: %v", got, want)
 	}
 }
 

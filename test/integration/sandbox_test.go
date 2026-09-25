@@ -2030,7 +2030,7 @@ func TestHostLoopbackIsUnreachable(t *testing.T) {
 	requireInternet(t)
 	proj, _ := target(t)
 
-	// Both families, as INDEX §12.4 spells out: v4 and v6 loopback are closed
+	// Both families, per INDEX.md §4.2: v4 and v6 loopback are closed
 	// by different pasta flags, so checking only 127.0.0.1 leaves half the
 	// property untested.
 	//
@@ -2466,7 +2466,8 @@ func serveBanner(t *testing.T, ln net.Listener) {
 // them out. X11 and D-Bus both listen on abstract sockets; if the sandbox could
 // reach them it could log keystrokes and screenshot the desktop. snug has no
 // mode that shares the host's network namespace, so this is an unconditional
-// property of every run; nothing else in the suite covers it (INDEX §12.4).
+// property of every run; nothing else in the suite covers it (see
+// .claude/agents/sandbox-tester.md, Layer 3).
 func TestAbstractSocketsAreUnreachable(t *testing.T) {
 	budget(t)
 	requireSandbox(t)

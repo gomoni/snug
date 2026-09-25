@@ -89,6 +89,11 @@ ro = [
   "/etc/os-release",
   "/etc/alternatives",
 ]
+# /etc/resolv.conf is the one generated /etc file — see the KindData mount
+# Resolve assigns directly into p.Mounts (net.go). /etc/hosts is NOT
+# generated and is not granted here, so a run has no hosts file at all: a
+# tool expecting `localhost` to resolve from a file rather than the resolver
+# will not find it.
 optional = [
   "/opt",
   "/etc/ld.so.conf.d",
@@ -523,10 +528,11 @@ dns = true
 # The exact list is policy.ClaudeSettingAllowlist, and this comment
 # deliberately does NOT restate it as a count. It said "ten … and seven
 # booleans" for one draft, which is a copy of state held in that slice —
-# INDEX.md's "the writable surface is eight paths" bullet records what
-# happens next: the list grows, the prose does not, and no test can fail. The
-# injected ~/.claude/CLAUDE.md enumerates the real names at runtime rather
-# than counting them (claudeAllowlistNames, internal/cli/claude.go).
+# .claude/agents/sandbox-policy.md's writable-surface bullet records what
+# happens next when a count is restated in prose: the tree it describes grows
+# a level, the prose does not, and no test can fail until one is written to
+# enumerate it. The injected ~/.claude/CLAUDE.md enumerates the real names at
+# runtime rather than counting them (claudeAllowlistNames, internal/cli/claude.go).
 #
 # THE PLUGIN DOOR, closed by `plugins` below (issue #68). `ro` still binds
 # {home}/.claude/plugins, but dropping `enabledPlugins` from settings.json was

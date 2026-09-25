@@ -263,9 +263,8 @@ beats the most thorough one. Three rules, in order of how much they save:
   `go test -run TestOneThing ./internal/policy`, `snug --dry-run`, `bwrap --help`,
   a probe inside a sandbox — and quote the decisive line, not the transcript.
 - **Never read a large file whole.** `internal/profile/profiles/base.toml` is
-  30 KB; read the one `[profile.x]` section you need. Same for the design
-  documents — `INDEX.md` is 157 KB and `ENVIRONMENT-VARIABLES.md` is 72 KB, so
-  grep for the section heading and read from there. Following a citation is
+  large; read the one `[profile.x]` section you need. Same for the design
+  documents: grep for the section heading and read from there. Following a citation is
   correct; loading the file that contains it is not.
 - **Use `LSP` over `Grep` for Go symbols** (table below). `findReferences`
   returns the callers; a grep for `Env` or `Mount` returns comments, struct tags

@@ -163,8 +163,8 @@ func Main() {
 //     `--version` is the same answer, which is why there is no `version` word
 //     (issue #36 builds the flag; this is the ruling it builds against).
 //  2. Does an existing word already own the subject? Then it is a SUB-verb of
-//     that word and costs nothing. `snug prune` (INDEX §11, designed) is
-//     `snug engine prune`; a second host repair is `snug fix <subject>`.
+//     that word and costs nothing. `snug prune` is `snug engine prune`; a
+//     second host repair is `snug fix <subject>`.
 //  3. Does it need a NEW word? Then it may have one only if its subject will
 //     answer two or more commands. A subject with one command folds into
 //     test 2's nearest word, and if none fits, go back to test 1.
@@ -312,7 +312,7 @@ A config file replaces that list, so see "snug config" for the effective one and
 where it came from.
 
 Profiles only ever GRANT. There is no un-grant — not in a profile, not on the
-command line, nowhere. To grant less, select fewer profiles. See .claude/design/INDEX.md.
+command line, nowhere. To grant less, select fewer profiles. See .claude/design/INDEX.md §2.5.
 `)
 }
 

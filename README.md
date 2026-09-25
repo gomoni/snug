@@ -276,6 +276,9 @@ rw = ["/srv/project", "/opt/cache/project"]
 Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 `/opt/cache/project` as read-write and enable the networking.
 
+- Path variables: `{target}`, `{target_parent}`, `{home}`, `~` — the three
+  `resolve.go` actually builds, plus the tilde.
+
 ## Identity — one account per sandbox
 
 > **Alpha state

@@ -91,7 +91,7 @@ on someone's word. What these check is that **the sandbox holds**, which is not
 the same question as whether your profiles are safe: snug does not second-guess
 a profile, so `rw ["{home}"]` and `environ.set EDITOR = "/tmp/evil"` are holes
 you opened, they are on screen in `--dry-run`, and nothing below will fail on
-them. See [`.claude/design/INDEX.md`](../.claude/design/INDEX.md) §1.4 and the
+them. See [`THREAT-MODEL.md`](../.claude/design/THREAT-MODEL.md) §3.4 and the
 README's *What snug does not defend against*.
 
 Setup used throughout:
@@ -579,7 +579,7 @@ netns excludes them by construction, which is a property to keep rather than a
 gap to close.
 
 It also does not cover the threats snug does not defend against at all: kernel
-0-days, and a determined human attacker with a shell. See INDEX §1.2.
+0-days, and a determined human attacker with a shell. See THREAT-MODEL.md §3.
 
 ### Where the reasoning is thinnest
 

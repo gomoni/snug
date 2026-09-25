@@ -40,13 +40,65 @@ should not be able to read, alter, or act through:
   keyring, or drive host processes.
 - **Persistence** — anywhere a program could write something the *host* will
   later execute: `~/.bashrc`, autostart, cron, `~/.local/bin` on `PATH`.
+- **Host container engine as an escape vector** — a filtering proxy stands over
+  a per-sandbox engine; the host's own engine never sees a client request.
+
+`org.freedesktop.systemd1` on the session D-Bus bus is the sharpest instance of
+the desktop-surface row above: it can start a transient unit *outside* the
+sandbox — a complete escape — which is why no D-Bus profile ships (§3.4).
 
 The base state is an empty tmpfs root, an empty network namespace, and an empty
 environment. Nothing is inherited. Every one of the goals below is a mechanism
 that keeps some slice of host state out of the sandbox unless a profile — a
 *named hole* — explicitly grants it.
 
+### Goals
+
+- **G1** Run an untrusted payload (a build, a test suite, a coding agent —
+  Claude Code, Codex, aider, …) against one project directory with **no root,
+  no setuid, no daemon, no unit files**. `snug` is a process; when it exits,
+  nothing remains.
+- **G2** Deny-by-default filesystem. The agent sees the project, the OS
+  runtime, and exactly what a profile granted.
+- **G3** The sandbox **cannot reach the host's loopback**. This is a hard
+  requirement, not a nice-to-have. A *container* started through
+  `@podman-socket` runs in the sandbox's **own** netns, so it is covered by
+  this too — it reaches exactly what the sandbox reaches and no more (see
+  [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §0).
+- **G4** Internet egress works by default when a `@net` profile is selected;
+  fully-offline is the *absence* of that profile, so it is trivially
+  achievable and cannot be accidentally re-enabled.
+- **G5** Works inside `distrobox`/containers with nested user namespaces.
+  Where a capability is genuinely missing, `snug` **fails loudly with a
+  diagnosis**, and never silently downgrades its security posture.
+- **G6** Host integration (ssh signing, container engine, tmp sharing) is
+  possible but goes through *filtering proxies* that `snug` owns, never
+  through raw socket passthrough.
+- **G7** Total transparency: `snug --dry-run` prints the resolved policy and
+  the exact `bwrap` and `pasta` argv. If you cannot read what it is going to
+  do, you cannot trust it.
+
 ## 2 Threats
+
+### 2.0 The adversary
+
+**The adversary is the agent process itself**, assumed to be one of:
+
+- **T1 — a confused agent.** `rm -rf /` in the wrong directory, `git push
+  --force` to the wrong remote, a runaway build eating the disk. The dominant
+  real-world case.
+- **T2 — a prompt-injected agent.** The agent read a `README.md`, an issue
+  comment, a web page, or an npm postinstall script that told it to do
+  something hostile: exfiltrate `~/.ssh/id_ed25519`, POST `~/.aws/credentials`
+  to a webhook, add a cron entry, modify `~/.bashrc`, or `curl` the internal
+  service on `127.0.0.1:3100`. **This is the case `snug` is designed for.**
+- **T3 — malicious code the agent runs.** `npm install`, `pip install`,
+  `cargo build`, `make`, a test suite. Same authority as the agent, no
+  additional trust.
+- **T4 — a hostile repository.** The project directory itself is
+  attacker-controlled: symlinks pointing out of the tree, a `.snug/`
+  directory trying to grant itself privileges, a `.git/hooks/` payload, a
+  `Dockerfile` that bind-mounts `/`.
 
 ### 2.1 Access to $HOME is not granted by default
 
@@ -91,6 +143,15 @@ network namespace as the main sandbox.
 threats this does not solve. Some may get implemented and move up in the
 future, some won't.
 
+Three more, stated briefly because they hold without a measurement to attach.
+`snug` is **not** a defence against a determined human attacker with a shell:
+it bounds the blast radius of software, and a human with time will find the
+seam. It does **not** attempt to constrain *what* the agent does with the
+authority a grant hands it — if you grant `ssh-agent` signing for a key, the
+agent can push anything to anywhere that key can reach; scoping bounds the
+identity, not the actions (§2.2). And it is **not** a general container
+runtime: `snug` runs *one* command tree.
+
 ### 3.1 Network security
 
 There is no proxy deployed, and code inside the sandbox can have unrestricted
@@ -118,8 +179,9 @@ sharp case, being unsandboxed with that machine's files and credentials.
 why this is a non-goal and not a bug: closing it needs a filtering proxy over
 TLS to Anthropic, distinguishing "the agent doing its job" from "the agent
 messaging a peer" on the same host, same credential, same protocol — the shape
-[INDEX.md](INDEX.md) §7.4 already refuses for D-Bus, in these words: *a
-filtering proxy that is 95% correct is a sandbox that is 0% sound*. The
+[`host-bridge.md`](../agents/host-bridge.md) already refuses for D-Bus, in
+these words: *a filtering proxy that is 95% correct is a sandbox that is 0%
+sound*. The
 alternatives are removing the credential or the egress, which is removing the
 feature.
 
@@ -200,6 +262,58 @@ tmpfs.
 
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.
+
+**There are two places an attacker could stand, and conflating them has
+already cost review rounds.** Inside the sandbox is T1–T4 (§2.0); everything
+in snug is aimed there. Outside it, writing profiles, is a human — invariant 3
+puts the trusted profile set outside the sandboxed material precisely so that
+this human, and not the payload, decides what is granted, and snug has no
+opinion about what they decide. A profile that grants too much is not a snug
+defect, and neither is a typo, a copy-paste, or a profile that is simply
+wrong: `rw = ["{home}"]` really does hand over the real `$HOME`, and both are
+**user-inflicted**.
+
+**Why this is not a cop-out.** snug already refuses in three shapes, and none
+of them is a veto over what a human may want:
+
+- **Mechanism.** The thing cannot be represented or transported. A NUL in an
+  `environ.set` value authors a bwrap flag; a newline forges a row on a screen
+  a human trusts; a hand-written separator inside a list value smuggles an
+  empty element. Refusing here is not policy — it is snug declining to lie
+  about what it did.
+- **Ownership.** snug writes `HOME`, `PATH`, `PS1`, `SNUG_PROFILES` itself. A
+  profile that could write them could unmake snug's own guarantees,
+  `--dry-run` included, so no profile may.
+- **Type.** `environ.sanitise` on `MANPATH` would ADD directories, because an
+  empty element there is an operator ([`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) §3.3).
+  Refusing is snug declining to perform an operation it knows does the
+  opposite of what it claims.
+
+What is NOT in that list is any refusal of the form *"this grant is
+dangerous, so you may not have it"*. Issue #44 removed the one place snug had
+drifted into saying it: three environment denylists, converted to
+annotations.
+
+**What replaces the refusal is disclosure.** The roster
+(`internal/policy/envtypes.go`) is **what snug KNOWS, not what it permits**,
+and every measurement it holds is owed to the human as an annotation on
+`--dry-run` and `snug profile show`. The two failure modes are asymmetric and
+must stay so: **incomplete is expected and honest** — a name snug has never
+been taught about renders `← unchecked`, and the absence of a mark must never
+read as approval; **wrong is a defect** — a row saying a value is inert when
+it is executed is a lie in the one artifact a human uses to decide whether to
+run the sandbox.
+
+**Two limits worth stating so nobody reasons past them.** The payload owns its
+own environment: a profile handing over a clean `GIT_CONFIG_GLOBAL` does not
+stop the payload setting `GIT_CONFIG_KEY_0` for itself, and a writable `$HOME`
+reaches the same hijack through `~/.bashrc`. What snug owes is narrower — the
+`sanitise` rule, that the environment snug ITSELF hands over must not ship the
+override pre-installed. And **"you get what you configure" is not available
+to us about our own profiles**: `@claude`, `@git` and `@podman-socket` are
+snug's material, so a shipped grant that hands over more than its abuse
+comment claims is a finding against snug, which is what `checkBuiltinEnvRoster`
+holds a builtin to a stricter rule than a human's profile for.
 
 ### 3.5 Sibling access
 

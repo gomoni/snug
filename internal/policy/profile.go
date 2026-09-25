@@ -117,7 +117,7 @@ type Profile struct {
 	// consults it, and a grep for the identifier is the check rather than
 	// this comment. The gate it was named for — an explicitly-named config
 	// whose profiles may not carry privileged grants — is DESIGNED AND NOT
-	// BUILT (.claude/design/INDEX.md §2.7), so every layer ConfigDirs
+	// BUILT (CLAUDE.md invariant 3), so every layer ConfigDirs
 	// returns is trusted equally, $XDG_CONFIG_HOME included. Do not read
 	// this field as a decision that has been made about a profile.
 	Source  string

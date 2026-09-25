@@ -1005,17 +1005,16 @@ func TestNoHostSidePodmanReadsARecordedPid(t *testing.T) {
 			"regression if it cannot catch a synthetic one", got, len(needles))
 	}
 
-	// The design docs are swept too (red team F7): INDEX.md §8.2 and
-	// ENGINE-WIRING.md §6 both described the pre-#167 teardown in the
-	// PRESENT tense for a while after the code stopped matching, and a
-	// future implementer reading either would reintroduce exactly what
-	// #167 removed with nothing here to notice. Both now describe the old
-	// mechanism only in the past tense, without ever spelling the literal
-	// env var, Go snippet or shell line the needles look for — verified by
-	// this sweep passing on the corrected text, not merely asserted.
+	// The design docs are swept too (red team F7): ENGINE-WIRING.md §6
+	// described the pre-#167 teardown in the PRESENT tense for a while after
+	// the code stopped matching, and a future implementer reading it would
+	// reintroduce exactly what #167 removed with nothing here to notice. It
+	// now describes the old mechanism only in the past tense, without ever
+	// spelling the literal env var, Go snippet or shell line the needles look
+	// for — verified by this sweep passing on the corrected text, not merely
+	// asserted.
 	for _, f := range []string{
 		"engine.go", "reaper.go",
-		"../../.claude/design/INDEX.md",
 		"../../.claude/design/ENGINE-WIRING.md",
 	} {
 		b, err := os.ReadFile(f)

@@ -282,6 +282,13 @@ func checkRef(ref, from, source string) (policy.ProfileName, error) {
 type Registry map[policy.ProfileName]*policy.Profile
 
 // parse decodes one TOML document into profiles.
+//
+// TOML, not a programmable format: profiles are flat name -> grant-list
+// tables with no need for expressions, and a format with expressions
+// (Starlark, HCL) would make monotonicity un-provable by inspection, because
+// what a profile grants could then depend on computation rather than being
+// readable off the file. DisallowUnknownFields below is what makes strict,
+// fail-closed decoding possible at all.
 func parse(data []byte, source string, trusted bool) (Registry, error) {
 	var f file
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
@@ -600,7 +607,7 @@ type BadFile struct {
 // There is deliberately NO fourth layer. snug never auto-loads .snug/ or
 // snug.toml from beside the target: a hostile repository that ships its own
 // profile would be granting itself permissions, which defeats the entire threat
-// model. See .claude/design/INDEX.md §2.7.
+// model. See CLAUDE.md invariant 3.
 //
 // The returned error is for failures that leave no usable registry at all: a
 // builtin that will not parse (a bug in snug), an unreadable directory entry, or

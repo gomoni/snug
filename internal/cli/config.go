@@ -498,7 +498,7 @@ func configCmd(args []string) int {
 	}
 	fmt.Println()
 	fmt.Println("repo-local config is never auto-loaded: a repository that could ship its own")
-	fmt.Println("profile would be granting itself permissions. See .claude/design/INDEX.md §2.7.")
+	fmt.Println("profile would be granting itself permissions. See CLAUDE.md invariant 3.")
 	// The output above is still worth printing — it is what someone runs this
 	// command for — but the exit code must not say everything is fine while a
 	// file in the search path above did not load.

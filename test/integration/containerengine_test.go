@@ -1645,8 +1645,8 @@ func allSections(out, label string) []string {
 // a container (or a build's RUN step) and the sandbox payload, which is not
 // the same claim as "the namespace is usable" — `lo` inside a fresh netns
 // must be brought UP, and doing that needs CAP_NET_ADMIN, which the engine
-// deliberately does not hold (policy.EngineCapBounding, the 2026-08-18
-// decision INDEX §"Networking" records). A container landing in the right
+// deliberately does not hold (policy.EngineCapBounding; see ENGINE-NETNS.md
+// §0). A container landing in the right
 // netns with `lo` still down would pass every inode-equality assertion above
 // while being unable to reach anything at all — exactly the gap this test
 // closes: the sandbox payload opens a TCP listener on its own 127.0.0.1
