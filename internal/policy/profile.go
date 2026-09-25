@@ -74,7 +74,7 @@ type Profile struct {
 	// after the sandbox is already running.
 	ListenNames []string
 
-	// Network is "isolated" | "egress" | "host", joined by max. There is
+	// Network is "isolated" | "egress", joined by max. There is
 	// deliberately no "offline": offline is the ABSENCE of a net profile, so it
 	// cannot be re-enabled by adding one.
 	Network string
@@ -82,7 +82,7 @@ type Profile struct {
 
 	MTU int
 
-	// Podman is "off" | "socket", joined by max like every other scalar.
+	// Podman is "off" | "socket" | "build", joined by max like every other scalar.
 	Podman string
 
 	// Git is "off" | "extract", joined by max. "extract" reconstructs the

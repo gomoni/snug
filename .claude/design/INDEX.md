@@ -335,13 +335,12 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 
 | Key | Domain | Join | Permissive direction |
 |---|---|---|---|
-| `network` | `isolated < egress < host` | `max` | more reachability |
+| `network` | `isolated < egress` | `max` | more reachability |
 | `listen_names` | name set | union (a SET) | more doors |
 | `podman` | `off < socket < build` | `max` | more engine surface |
 | `dns` | `bool` | `OR` | working DNS |
-| `ro` / `rw` / `dev` | path sets | union + `Access.Join` | more access |
-| `env` | name set | union | more variables |
-| `path` | dir set | union, then sorted | more PATH entries (grants nothing) |
+| `git` | `off < extract` | `max` | more of the host's git config carried |
+| `ro` / `rw` | path sets | union + `Access.Join` | more access |
 
 **No key in the model is last-writer-wins**, and `mtu` is the one that would most easily become it — taking whichever profile the sorted fold reached last, which is exactly the shape of dependence §2.2 forbids. There is no "more open" MTU, so it cannot be a join either: two profiles disagreeing is a **symmetric ERROR naming both profiles and both values**, as `identity` is. It remains a pasta cosmetic — it changes how the sandbox's stack segments, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different MTU was never a coherent request.
 
@@ -408,13 +407,13 @@ So the second row — a profile *lowering* effective write access at a strict su
 ```toml
 [profile.example]
 description = "One line, shown by `snug profile list`."
-include  = ["sys", "home"]        # composition; expanded into a SET before folding
+include  = ["@sys", "@home"]      # composition; expanded into a SET before folding
 ro       = ["/usr", "{home}/.gitconfig"]
 rw       = ["{target}"]
 tmpfs    = ["{home}", "{home}/.cache"]
 symlink  = [ { at = "/bin", target = "usr/bin" } ]
 optional = ["{home}/.gitconfig"]  # -try semantics: skip silently when absent
-network  = "egress"               # isolated < egress < host
+network  = "egress"               # isolated < egress
 dns      = true
 listen_names = ["web"]            # a door a human may open with `snug proxy`
 podman   = "socket"               # off < socket < build
@@ -523,11 +522,10 @@ snug --config ./snug.toml ~/src/proj          # explicit path
 SNUG_CONFIG=./snug.toml snug ~/src/proj       # explicit env
 ```
 
-An explicitly-loaded config file would be a *convenience*, not a full trust promotion — the human typed one word and cannot be expected to have audited a 200-line TOML file that a `git pull` may have changed since they last looked. Four grant classes would count as **privileged**:
+An explicitly-loaded config file would be a *convenience*, not a full trust promotion — the human typed one word and cannot be expected to have audited a 200-line TOML file that a `git pull` may have changed since they last looked. Two grant classes would count as **privileged**:
 
-- `network = "host"`
 - `podman = "socket"` / `"build"`
-- any `rw`/`ro`/`dev` grant whose canonical path escapes `{target}`'s ancestor chain and is not under `/usr`, `/etc`, or `/opt`
+- any `rw`/`ro` grant whose canonical path escapes `{target}`'s ancestor chain and is not under `/usr`, `/etc`, or `/opt`
 
 A privileged grant appearing in a non-trusted-layer config would be a **fatal error** naming the file, the profile, and the grant. To use it, the human must move that profile into `~/.config/snug/profiles.d/`, which is an act of the human on the human's own machine, outside any repository.
 
@@ -1166,15 +1164,15 @@ The previous generation (`/home/u/projects/work/team/agent-sandbox`, ~45 Go file
 | Prior key | `snug` | Why |
 |---|---|---|
 | `include` | **kept** | Composition is the model. |
-| `ro`, `rw` | **kept** | Direct grants. `dev` added. |
-| `env` | **kept** | Allowlist. |
+| `ro`, `rw` | **kept** | Direct grants. |
+| `env` | **`environ.inherit`**, one of five `environ` verbs | Allowlist; the other four verbs let snug author a value rather than copy the host's (§9.6). |
 | `match` | **kept in the design, not built** (§9.2) | Convenient; the failure mode must be stated. |
 | `[identity]` | **kept, nested by tool** | The pin is right; six flat keys were not. See §6.1. |
-| `network = "host"\|"offline"\|"private"` | **kept as `"host"\|"egress"\|"isolated"`**, joined by max | `private` was ambiguous about egress. `offline` removed. |
+| `network = "host"\|"offline"\|"private"` | **`"egress"\|"isolated"`**, joined by max | `private` was ambiguous about egress. `offline` is the absence of `@net`. `host` would share the host's network namespace (§4.6). |
 | `docker`, `docker_build` | **`podman = "off"\|"socket"\|"build"`** | One key, one lattice, and the name matches the engine. |
 | `allowlist_root`, `mask` | **removed** | §6.2 |
 | `seccomp` | **removed from profiles**, CLI only | Profiles may not weaken defence-in-depth (§2.3). |
-| — | **new**: `tmpfs`, `symlink`, `optional`, `path`, `dns`, `address`, `mtu`, `description`, `claude_credentials`, `claude_notice` | §2.6 |
+| — | **new**: `tmpfs`, `symlink`, `optional`, `dns`, `mtu`, `git`, `plugins`, `listen_names`, `description` | §2.6 |
 
 ### 6.4 The correction
 
@@ -1644,7 +1642,7 @@ There is no `-d`/`--dir` flag and adding one is refused — it reaches the scrip
 author who already knows the hazard and not the person who typed `snug fix`,
 who is the one who is wrong.
 
-**Designed, not built:** `--config PATH` (§2.7), `--publish PORT`, `--keep-tmp` (§7.3), `--net-strict`, `snug prune` (§8.2), a `--dry-run --json` machine format, and shell completion. Do not cite any of them as existing.
+**Designed, not built:** `--config PATH` (§2.7), `--publish PORT`, `--keep-tmp` (§7.3), `--net-strict`, `snug prune` (§8.2), and shell completion. Do not cite any of them as existing.
 
 **A session is a sandbox, and there is no other kind.** snug has no verb that
 places a process into a running sandbox's namespaces: a second session on a
