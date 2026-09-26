@@ -385,11 +385,25 @@ func orphanWait(t *testing.T, cmd *exec.Cmd) {
 	snug := cmd.Process.Pid
 	tree := append([]int{snug}, descendantsOf(snug)...)
 	dump := dumpProcessTree(tree)
+
+	// A SECOND signal before the kill, and its outcome is the most useful line
+	// of the report. The one live instance of #616 found so far was snug in an
+	// ordinary cmd.Wait on a HEALTHY sandbox, and a SIGTERM sent 7h later tore
+	// it all down at once: the guard was listening and the first signal never
+	// reached it. "Exited" says the signal was lost; "still alive" says
+	// teardown itself is stuck. No debugger needed for either.
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	second := "was still ALIVE 3s after a second signal (SIGTERM): teardown itself is stuck"
+	select {
+	case <-done:
+		second = "EXITED on a second signal (SIGTERM): the guard was live and the first signal was lost"
+	case <-time.After(3 * time.Second):
+	}
 	killAll(tree)
 	t.Fatalf("snug (pid %d) did not exit within %s of being signalled — issue #616's hang, "+
 		"where the identical wait blocked 3m43s in a full `make integration` run and left no "+
-		"trace of where snug was stuck. Dumped just before killing the tree:\n%s%s",
-		snug, orphanWaitBudget, dump, orphanLog(t, cmd))
+		"trace of where snug was stuck. snug %s. Dumped before the second signal:\n%s%s",
+		snug, orphanWaitBudget, second, dump, orphanLog(t, cmd))
 }
 
 // dumpProcessTree renders, for each pid, its cmdline, the signal-disposition
