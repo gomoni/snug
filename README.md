@@ -8,17 +8,16 @@
 ## What is it
 
 A lightweight sandboxing tool for Linux. Provides the safe environment, but integrated with a
-host itself as much as possible (and safe). Hear about [distrobox](https://distrobox.it)? This
-is basically a companion.
+host itself as much as possible (and safe).
 
 Main properties are
 
 1. **No root or daemon**: It does not require a `root`, `suid` helpers or an external daemon.
-2. **Modern Linux capabilities**: Uses `bwrap`, `passta` and all modern Linux features
+2. **Modern Linux capabilities**: Uses `bwrap`, `pasta` and all modern Linux features
    like namespaces, the `at` family of syscalls, seccomp, drops the capabilities, and more ..., to build
    the isolation.
-4. **Hide the host by default**:  the host system is hidden by default - your `~/.ssh/` is not visible
-   inside a sandbox.
+4. **Hide the host by default**:  the host system is hidden by default - your `~/.ssh/` is never visible
+   inside a sandbox. If it exposes sensitive parts, those are filtered by the tool.
 5. **Integrates with host**: While `~/.ssh` is missing, `snug` can run an `ssh-agent` inside a sandbox with
    EXACTLY the keys needed for a job. It brings a concept of account to multi-account tools like `gh`.
 4. **Declarative configuration**: TOML configuration and a concept of profiles, which are the Lego bricks
