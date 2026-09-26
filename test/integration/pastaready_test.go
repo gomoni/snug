@@ -223,36 +223,57 @@ func TestAGatedRunWhosePastaDiesBeforeReleaseIsRefusedWithoutALoopbackWarning(t 
 // stage reports ready only once bwrap's mounts are finished, and P0 looks at
 // pasta again right before the release byte.
 //
-// The fake pasta runs the real one and kills it the moment the stage has a
-// bwrap child — inside the build. Measured before this change: 5 of 5 such
-// runs ran the payload with the warning.
+// The kill is placed by a handshake rather than timed. The stage hands the
+// sandbox to whatever `bwrap` P0 resolved on PATH, so a fake bwrap runs after
+// P0's last look at pasta before StartSandbox and before the build. It cannot
+// signal pasta itself — it is pid 1 of its own pid namespace, and measured,
+// `kill` there says "No such process" — so it touches a file, and a watcher
+// the fake pasta left in the host pid namespace SIGKILLs pasta, waits until
+// P0 has reaped it, and answers with a second file. Only then does the fake
+// exec the real bwrap, so pasta is always dead before the build and the
+// release. The first version polled `pgrep -P <stage> -x bwrap` from a fake
+// pasta instead; on the ubuntu-24.04 CI runner the build and release beat the
+// poll: 4 of 5 runs ran the payload (exit 0, no output), so the kill never
+// landed inside the window and the run said nothing about the fix. Measured
+// before this change (with the poll, locally): 5 of 5 such runs ran the
+// payload with the warning.
 func TestANetRunWhosePastaDiesDuringTheBwrapBuildIsRefused(t *testing.T) {
 	budget(t, 120*time.Second)
 	requireSandbox(t)
 	requirePasta(t)
-	if _, err := exec.LookPath("pgrep"); err != nil {
-		skipOrFail(t, "pgrep is not installed; the fake pasta needs it to find bwrap")
-	}
 	realPasta, err := exec.LookPath("pasta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realBwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Fatal(err)
 	}
 	proj, _ := target(t)
 	marker := filepath.Join(proj, "RAN")
 	fakeBin := t.TempDir()
-	// The stage's pid is in pasta's own --netns /proc/<stage>/fd/<n>.
-	script := "#!/bin/sh\nstage=\n" +
-		"for a in \"$@\"; do case \"$a\" in /proc/[0-9]*/fd/*) stage=${a#/proc/}; stage=${stage%%/*};; esac; done\n" +
-		realPasta + " \"$@\" | {\n" +
-		"  read l; echo \"$l\"\n" +
-		"  i=0; while [ $i -lt 20000 ] && [ -z \"$(pgrep -P \"$stage\" -x bwrap)\" ]; do i=$((i+1)); done\n" +
-		"  kill -9 \"$l\"\n}\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(fakeBin, "pasta"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	state := t.TempDir()
+	goFile, deadFile := filepath.Join(state, "go"), filepath.Join(state, "dead")
+	// exec keeps $$, so the watcher's target is the real pasta P0 waits on. Its
+	// stdio is /dev/null: it must not hold pasta's readiness or stderr pipe.
+	pastaScript := "#!/bin/sh\np=$$\n" +
+		"( while [ ! -e " + goFile + " ]; do :; done; kill -9 $p; " +
+		"while [ -e /proc/$p ]; do :; done; : > " + deadFile + " ) </dev/null >/dev/null 2>&1 &\n" +
+		"exec " + realPasta + " \"$@\"\n"
+	// bwrap runs with an empty environment: absolute paths and builtins only.
+	bwrapScript := "#!/bin/sh\n: > " + goFile + "\n" +
+		"while [ ! -e " + deadFile + " ]; do :; done\n" +
+		"exec " + realBwrap + " \"$@\"\n"
+	for name, body := range map[string]string{"pasta": pastaScript, "bwrap": bwrapScript} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for i := range 5 {
 		os.Remove(marker)
+		os.Remove(goFile)
+		os.Remove(deadFile)
 		out, code := cli(t, baseEnv("PATH="+fakeBin+":"+os.Getenv("PATH")),
 			"-p", "@net", proj, "--", "/bin/sh", "-c", `touch "$SNUG_TARGET/RAN"`)
 		if _, err := os.Stat(marker); err == nil {
