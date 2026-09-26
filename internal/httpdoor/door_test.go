@@ -89,6 +89,32 @@ func TestNewValidates(t *testing.T) {
 	}
 }
 
+// Issue #613: a bad Addr or Token used to be refused as "Config.Addr must be
+// a valid address with a nonzero port" — a Go struct field, not a value, and
+// no door named. Both reach here from a corrupted or hand-edited run-state
+// file (readHTTPDoors), so the refusal has to say which door and what value.
+func TestNewNamesTheDoorAndTheValue(t *testing.T) {
+	base := Config{
+		Addr:     netip.MustParseAddrPort("127.64.1.2:8099"),
+		Token:    "tok",
+		DoorName: "web-dev",
+		Dial:     func(context.Context) (net.Conn, error) { return nil, nil },
+		Log:      &bytes.Buffer{},
+	}
+
+	bad := base
+	bad.Addr = netip.MustParseAddrPort("127.64.1.2:0")
+	if _, err := New(bad); err == nil || !strings.Contains(err.Error(), "web-dev") {
+		t.Errorf("a zero-port Addr's refusal does not name the door: %v", err)
+	}
+
+	bad = base
+	bad.Token = ""
+	if _, err := New(bad); err == nil || !strings.Contains(err.Error(), "web-dev") {
+		t.Errorf("an empty Token's refusal does not name the door: %v", err)
+	}
+}
+
 func TestSecFetchSite(t *testing.T) {
 	cases := []struct {
 		value string

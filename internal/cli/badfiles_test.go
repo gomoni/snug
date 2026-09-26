@@ -64,3 +64,44 @@ func TestRefusingToRunNamesEveryFileAndAWayForward(t *testing.T) {
 		t.Errorf("a clean load was refused: %v", err)
 	}
 }
+
+// Issue #613: badFileErrorLines is the one place a profiles.d parser error —
+// go-toml's, not snug's, and per this file's own doc comment attacker-
+// influenceable via a hostile $XDG_CONFIG_HOME (invariant 3) — reaches a
+// screen. refuseBadFiles and reportBadFiles both already routed it (and
+// f.Path) through VisibleText; doctor's own "profile set will not load"
+// block was the one caller composing both fields with a bare %s/%v instead,
+// found by this issue's audit and fixed to use the same two calls.
+func TestBadFileEscapesAForgingRuneInThePathAndTheError(t *testing.T) {
+	const forgedPath = "FORGED-BADFILE-PATH"
+	const forgedErr = "FORGED-BADFILE-ERR"
+	bad := []profile.BadFile{{
+		Path: "/home/u/.config/snug/profiles.d/\n          reclaimed  " + forgedPath + "\x1b[2K.toml",
+		Err:  fmt.Errorf("bad line\n          reclaimed  " + forgedErr + "\x1b[2K"),
+	}}
+
+	check := func(name, screen string) {
+		t.Helper()
+		for _, forged := range []string{forgedPath, forgedErr} {
+			if !strings.Contains(screen, forged) {
+				t.Fatalf("%s: the fixture's forged text (%q) never reached the screen at all, so "+
+					"this test measures nothing:\n%s", name, forged, screen)
+			}
+		}
+		if r, ok := rawForgingRune(screen); ok {
+			t.Errorf("%s printed a raw control character (%q) from a profiles.d file's own path "+
+				"or parse error:\n%s", name, r, strings.ReplaceAll(screen, "\x1b", "<ESC>"))
+		}
+		if !strings.Contains(screen, `\n`) {
+			t.Errorf("%s: the escaped form of the newline never reached the screen: %s", name, screen)
+		}
+	}
+
+	if err := refuseBadFiles(bad); err == nil {
+		t.Fatal("refuseBadFiles accepted a non-empty bad list")
+	} else {
+		check("refuseBadFiles", err.Error())
+	}
+
+	check("reportBadFiles", captureStderr(t, func() { reportBadFiles(bad) }))
+}

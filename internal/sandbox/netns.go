@@ -179,7 +179,7 @@ func (h *netHelper) failure() string {
 	if msg == "" {
 		msg = "no output"
 	}
-	return msg
+	return policy.VisibleText(msg)
 }
 
 // markStopping says "this teardown is ours" without doing any of it.
@@ -237,6 +237,6 @@ func (h *netHelper) watch(warn func(string)) {
 			return // ordinary teardown, not a failure
 		}
 		warn(fmt.Sprintf("the network helper exited (%v); the sandbox now has loopback only.\n"+
-			"      %s", h.waitErr, strings.TrimSpace(h.stderr.String())))
+			"      %s", h.waitErr, policy.VisibleText(strings.TrimSpace(h.stderr.String()))))
 	}()
 }

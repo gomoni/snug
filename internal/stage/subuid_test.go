@@ -256,3 +256,34 @@ func devNullFile(t *testing.T) *os.File {
 	t.Cleanup(func() { f.Close() })
 	return f
 }
+
+// runIDMapTool's error used to append newuidmap/newgidmap's combined
+// stdout+stderr raw. Issue #613: a forging rune in that output (plausible —
+// it echoes the argv this process built, which nothing here refuses for
+// content) reached the composed error unescaped.
+func TestRunIDMapToolEscapesAForgingRuneInTheToolsOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "faketool")
+	const forged = "FORGED-IDMAP-OUTPUT"
+	content := "#!/bin/sh\nprintf '%s' 'bad\n          reclaimed  " + forged + "\x1b[2K'\nexit 1\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runIDMapTool(script, 12345, []idMapLine{{ns: 0, host: 1000, size: 1}})
+	if err == nil {
+		t.Fatal("runIDMapTool did not fail against a script that always exits 1")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, forged) {
+		t.Fatalf("the fixture's forged text never reached the error at all, so this test "+
+			"measures nothing: %v", err)
+	}
+	if i := strings.IndexFunc(msg, func(r rune) bool { return r != '\n' && policy.IsForgingRune(r) }); i >= 0 {
+		t.Errorf("runIDMapTool's error printed a raw control character (%q) from the tool's own "+
+			"combined output:\n%s", []rune(msg[i:])[0], strings.ReplaceAll(msg, "\x1b", "<ESC>"))
+	}
+	if !strings.Contains(msg, `\n`) {
+		t.Errorf("the escaped form of the newline never reached the error: %v", err)
+	}
+}

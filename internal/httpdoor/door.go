@@ -73,22 +73,28 @@ type Door struct {
 // It does not bind — that happens in Serve, so that constructing a Door and
 // reporting its URL (for --dry-run) costs nothing and risks nothing.
 func New(cfg Config) (*Door, error) {
+	// Checked first, and named on its own, because every other refusal below
+	// names this door — a Config the caller built from a corrupted or
+	// hand-edited run-state file (readHTTPDoors) can fail this check too, and
+	// there is then no name left to put in front of "address" or "token".
+	if cfg.DoorName == "" {
+		return nil, errors.New("httpdoor: a door with no name")
+	}
 	if !cfg.Addr.IsValid() || cfg.Addr.Port() == 0 {
-		return nil, errors.New("httpdoor: Config.Addr must be a valid address with a nonzero port")
+		return nil, fmt.Errorf("http door %q: address %q is not valid with a nonzero port",
+			cfg.DoorName, cfg.Addr)
 	}
 	if cfg.Token == "" {
-		return nil, errors.New("httpdoor: Config.Token must be non-empty")
-	}
-	if cfg.DoorName == "" {
-		return nil, errors.New("httpdoor: Config.DoorName must be non-empty")
+		return nil, fmt.Errorf("http door %q: token is empty", cfg.DoorName)
 	}
 	if cfg.Dial == nil {
-		return nil, errors.New("httpdoor: Config.Dial must be set")
+		return nil, fmt.Errorf("http door %q: Config.Dial must be set", cfg.DoorName)
 	}
 	if cfg.Log == nil {
 		// No silent fallback to os.Stderr: a caller that forgot Log would
 		// otherwise lose every refusal and violation this package reports.
-		return nil, errors.New("httpdoor: Config.Log must not be nil (pass os.Stderr)")
+		return nil, fmt.Errorf("http door %q: Config.Log must not be nil (pass os.Stderr)",
+			cfg.DoorName)
 	}
 	return &Door{
 		cfg:    cfg,

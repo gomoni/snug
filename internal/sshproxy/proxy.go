@@ -201,7 +201,9 @@ func New(keys []PinnedKey, upstream, socketPath string, audit func(string)) (*Pr
 	// anything that can connect can ask for a signature.
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		ln.Close()
-		return nil, err
+		return nil, fmt.Errorf("ssh-agent proxy: could not restrict %s to this user (%w); "+
+			"anything else on this host that can connect to it could ask for a signature",
+			socketPath, err)
 	}
 
 	if audit == nil {

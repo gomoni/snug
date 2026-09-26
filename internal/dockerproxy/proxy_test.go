@@ -533,6 +533,19 @@ func TestSymlinkedBindSourceIsJudgedAfterResolution(t *testing.T) {
 		t.Run(src, func(t *testing.T) {
 			refuse(t, sock, eng, "/v1.41/containers/create",
 				`{"HostConfig":{"Binds":["`+src+`:/x"]}}`, "cannot see /etc")
+
+			// issue #613: the refusal used to name only the RESOLVED path,
+			// never the string the client actually wrote — a client with more
+			// than one bind in the request could not tell which `-v` flag was
+			// the offender, and a reader unfamiliar with the symlink rule
+			// reads it as snug expanding the bind wrongly rather than as this
+			// symlink resolving somewhere ungranted.
+			_, resp := post(t, sock, "/v1.41/containers/create",
+				`{"HostConfig":{"Binds":["`+src+`:/x"]}}`)
+			if msg := denyMessage(resp); !strings.Contains(msg, src) {
+				t.Errorf("the refusal does not name the bind source the client wrote (%q): %s",
+					src, msg)
+			}
 		})
 	}
 

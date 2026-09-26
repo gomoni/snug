@@ -8,6 +8,8 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // CheckSubuidDelegation reports whether /etc/subuid and /etc/subgid each
@@ -185,7 +187,8 @@ func runIDMapTool(tool string, pid int, lines []idMapLine) error {
 	cmd.Env = []string{}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %s: %w: %s", tool, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s %s: %w: %s", tool, strings.Join(args, " "), err,
+			policy.VisibleText(strings.TrimSpace(string(out))))
 	}
 	return nil
 }

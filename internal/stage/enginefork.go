@@ -222,11 +222,11 @@ func startEngine(netnsN *os.File, initPID int, req request, p0 int) error {
 	}
 
 	if err := fdseal.SealFor(cmd); err != nil {
-		return err
+		return fmt.Errorf("starting the container engine's setns helper: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("starting the container engine's setns helper: %w", err)
 	}
 
 	// Reap it whenever it eventually exits, in the background — nothing here
@@ -251,7 +251,8 @@ func waitForSocket(path string, timeout time.Duration) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the container engine did not create its socket at %s within %s",
+			return fmt.Errorf("the container engine did not create its socket at %s within %s "+
+				"(see the podman output above, or run `snug --dry-run` to check the engine argv)",
 				path, timeout)
 		}
 		time.Sleep(20 * time.Millisecond)

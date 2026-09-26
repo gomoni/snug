@@ -599,7 +599,7 @@ func decodeLibpodNSMode(raw json.RawMessage) (nsSpec, error) {
 		Value  string `json:"value"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return nsSpec{}, fmt.Errorf("is not the {\"nsmode\":...} object podman sends: %v", err)
+		return nsSpec{}, fmt.Errorf("is not the {\"nsmode\":...} object podman sends")
 	}
 	mode := strings.ToLower(strings.TrimSpace(v.NsMode))
 	// podman's own enum already uses "container" and "path" where
