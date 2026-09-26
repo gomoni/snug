@@ -74,11 +74,13 @@ func TestEngineKeyUsesTheCanonicalTarget(t *testing.T) {
 	sel := []policy.ProfileName{"sys", "rw"}
 
 	env := policy.OSEnviron{}
-	polReal, err := policy.Resolve(reg, sel, policy.Context{Target: real, Home: home}, env)
+	polReal, err := policy.Resolve(reg, sel, policy.Context{Target: real, Home: home,
+		Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u"}, env)
 	if err != nil {
 		t.Fatalf("resolving the real target: %v", err)
 	}
-	polLink, err := policy.Resolve(reg, sel, policy.Context{Target: link, Home: home}, env)
+	polLink, err := policy.Resolve(reg, sel, policy.Context{Target: link, Home: home,
+		Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u"}, env)
 	if err != nil {
 		t.Fatalf("resolving the symlinked target: %v", err)
 	}

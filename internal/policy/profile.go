@@ -82,6 +82,14 @@ type Profile struct {
 
 	MTU int
 
+	// NSS is OR-joined across the selection, like DNS: any selected profile
+	// may turn it on, and none may turn it back off. It gates Resolve's own
+	// generated /etc/passwd, /etc/group and /etc/nsswitch.conf (issue #612) —
+	// @sys sets it, and a profile that wants those files without @sys may set
+	// it too, but a selection with neither generates none of the three and a
+	// profile is free to bind its own host copies instead.
+	NSS bool
+
 	// Podman is "off" | "socket" | "build", joined by max like every other scalar.
 	Podman string
 

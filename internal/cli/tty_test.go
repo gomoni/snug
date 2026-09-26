@@ -25,7 +25,7 @@ func resolveForTTY(t *testing.T, sel []policy.ProfileName, terminals policy.Stdi
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{
-		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 		StdioTerminals: terminals, LegacyTIOCSTI: legacyTIOCSTI,
 	}
 	p, err := policy.Resolve(reg, sel, ctx, policy.OSEnviron{})

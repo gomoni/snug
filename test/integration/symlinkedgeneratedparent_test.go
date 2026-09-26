@@ -64,12 +64,11 @@ func TestSymlinkedGeneratedParentCreatesNoHostFile(t *testing.T) {
 		"name = \"Snug Integration\"\n" +
 		"email = \"snug-signing-integration@example.invalid\"\n"
 
-	env := writeProfiles(t, map[string]string{"repro": repro, "pinned": identity,
-		"pwlink": passwdHomeLink(t, home)},
+	env := writeProfiles(t, map[string]string{"repro": repro, "pinned": identity},
 		"HOME="+home, "SSH_AUTH_SOCK="+sock)
 
 	out, code := cli(t, env, "--no-defaults", "-p", "@sys", "-p", "repro", "-p", "pinned",
-		"-p", "pwlink", proj, "--", "true")
+		proj, "--", "true")
 
 	// (a) is the diagnostic, not the assertion — see (b) below for why.
 	if code == 0 {

@@ -114,7 +114,7 @@ func TestErgonomicCostOfTheAnchoredSourceRule(t *testing.T) {
 			}
 			ctx := policy.Context{
 				Target: tc.target, Home: "/home/u",
-				Shell: "/usr/bin/bash", Command: []string{"/bin/sh"},
+				Shell: "/usr/bin/bash", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 			}
 			base := tc.sel
 			if base == nil {
@@ -198,7 +198,7 @@ func TestTheReadWriteBoundAncestorResidualStillRefuses(t *testing.T) {
 	}
 	ctx := policy.Context{
 		Target: "/var/tmp/data/proj", Home: "/home/u",
-		Shell: "/usr/bin/bash", Command: []string{"/bin/sh"},
+		Shell: "/usr/bin/bash", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 	}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "data")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, env)

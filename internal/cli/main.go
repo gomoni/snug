@@ -12,9 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -627,6 +625,21 @@ func run(cfg config) int {
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
 
+	// Run on EVERY invocation, whether or not this selection wants the
+	// generated /etc/passwd and /etc/group (issue #612): getent is the only
+	// source of USER/LOGNAME, which are authored regardless of `nss`, and
+	// it also fills HostPasswdHome, the host-side fact
+	// systemSSHConfigCandidates needs regardless. It never refuses HERE — a
+	// placeholder name would be the silent narrowing invariant 5 forbids.
+	// The failure is carried into Context.HostAccountErr instead, and
+	// Resolve refuses on it unconditionally.
+	name, pwHome, gname, accountErr := lookupHostAccount()
+	accountErrText := ""
+	if accountErr != nil {
+		accountErrText = accountErr.Error()
+		pwHome = ""
+	}
+
 	ctx := policy.Context{
 		Target:          abs,
 		Home:            home,
@@ -639,7 +652,10 @@ func run(cfg config) int {
 		StdioTerminals:  stdioTerminals(),
 		HostNameservers: hostNameservers(),
 		KnownHosts:      knownHostsFor(identitySSHHost(reg, selected)),
-		HostPasswdHome:  lookupPasswdHome(),
+		HostPasswdHome:  pwHome,
+		HostUserName:    name,
+		HostGroupName:   gname,
+		HostAccountErr:  accountErrText,
 		HostGit:         hostGit,
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and
@@ -936,24 +952,6 @@ func hostNameservers() []string {
 		}
 	}
 	return out
-}
-
-// passwdHome is pw_dir for this uid, "" when there is no entry. user.LookupId,
-// never user.Current: the latter falls back to $HOME when the lookup fails,
-// which is the one answer this value exists to not be. cgo-free, so it reads
-// /etc/passwd itself — the same file @sys binds, and the one the sandbox's
-// getpwuid answers from.
-//
-// A variable so an in-process test that points HOME at a temp directory can
-// say what the passwd entry is; nothing else assigns it.
-var lookupPasswdHome = passwdHome
-
-func passwdHome() string {
-	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
-	if err != nil {
-		return ""
-	}
-	return u.HomeDir
 }
 
 // legacyTIOCSTI reports whether this kernel still allows the TIOCSTI ioctl. If

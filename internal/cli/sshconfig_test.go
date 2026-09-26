@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -108,6 +111,31 @@ func TestSSHConfigChainOnThisHost(t *testing.T) {
 		if !strings.HasSuffix(p, "/ssh_config") {
 			t.Errorf("chain entry %q is not a top-level system ssh_config", p)
 		}
+	}
+}
+
+// TestProbeSSHConfigWaitDelayBoundsAChildHoldingThePipe reproduces the shape
+// from issue #612's redteam round against probeSSHConfig's own cmd.Run,
+// exactly as TestWaitDelayBoundsAChildHoldingThePipe does for
+// internal/getent.Run: a `Match exec` command (or any child ssh forks before
+// exec'ing itself) can background a process that inherits the stdout/stderr
+// pipe, and the context kill at sshProbeTimeout only reaches the direct
+// child. Without WaitDelay, Run blocks until the backgrounded process exits.
+func TestProbeSSHConfigWaitDelayBoundsAChildHoldingThePipe(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ssh")
+	body := "#!/bin/sh\nsleep 30 &\nexec sleep 30\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	probeSSHConfig(t.TempDir(), nil)
+	elapsed := time.Since(start)
+	if want := sshProbeTimeout + 2*time.Second; elapsed > want {
+		t.Fatalf("probeSSHConfig took %s to return, want at most %s: WaitDelay is not "+
+			"bounding the wait for a child holding the pipe", elapsed, want)
 	}
 }
 

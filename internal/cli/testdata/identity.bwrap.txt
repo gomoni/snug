@@ -27,24 +27,24 @@
 --size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
---ro-bind /etc/group /etc/group
+--ro-bind-data 10 /etc/group
 --ro-bind /etc/ld.so.cache /etc/ld.so.cache
 --ro-bind /etc/ld.so.conf /etc/ld.so.conf
---ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
---ro-bind /etc/passwd /etc/passwd
---ro-bind-data 10 /etc/resolv.conf
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
 --size 1073741824
 --tmpfs /home/u
---ro-bind-data 11 /proc/config.gz
---ro-bind-data 12 /proc/key-users
---ro-bind-data 13 /proc/keys
+--ro-bind-data 14 /proc/config.gz
+--ro-bind-data 15 /proc/key-users
+--ro-bind-data 16 /proc/keys
 --ro-bind /proc/sys /proc/sys
 --bind /run/user/1000/snug/run-N/ssh-agent.sock /snug/ssh-agent.sock
 --size 1073741824
 --tmpfs /home/u/.cache
 --size 1073741824
 --tmpfs /home/u/.config
---ro-bind-data 14 /home/u/.gitconfig
+--ro-bind-data 17 /home/u/.gitconfig
 --size 1073741824
 --tmpfs /home/u/.local
 --size 1073741824
@@ -57,12 +57,12 @@
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---ro-bind-data 15 /home/u/.ssh/config
---ro-bind-data 16 /home/u/.ssh/id_snug.pub
---ro-bind-data 17 /home/u/.ssh/id_snug_signing.pub
---ro-bind-data 18 /home/u/.ssh/known_hosts
+--ro-bind-data 18 /home/u/.ssh/config
+--ro-bind-data 19 /home/u/.ssh/id_snug.pub
+--ro-bind-data 20 /home/u/.ssh/id_snug_signing.pub
+--ro-bind-data 21 /home/u/.ssh/known_hosts
 --bind /home/u/proj/sub /home/u/proj/sub
---ro-bind-data 19 /home/u/.config/git/allowed_signers
+--ro-bind-data 22 /home/u/.config/git/allowed_signers
 --remount-ro /
 --clearenv
 --setenv GIT_CONFIG_GLOBAL /home/u/.gitconfig

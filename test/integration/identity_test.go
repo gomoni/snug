@@ -443,9 +443,11 @@ func TestAnIdentityWithNoGhAccountStagesNoToken(t *testing.T) {
 //     sandbox does not replace. snug's replacement is scoped to exactly the
 //     one top-level file (SystemSSHConfig's doc comment: "no Include line...
 //     every file it would pull in is root-owned too") — it is not a general
-//     bypass of OpenSSH's ownership check. /etc/passwd is granted read-only by
-//     @sys on every host (base.toml's fixed /etc list) and is root-owned on
-//     every Linux host, so it needs no host-specific drop-in to reproduce:
+//     bypass of OpenSSH's ownership check. /etc/ld.so.cache is granted
+//     read-only by @sys on every host (base.toml's fixed /etc list) and is
+//     root-owned on every Linux host — unlike /etc/passwd, which issue #612
+//     made a snug-generated, sandbox-uid-owned file — so it needs no
+//     host-specific drop-in to reproduce:
 //     measured, the file named directly to -F is itself exempt from the
 //     check (an explicit human choice), but anything IT Includes is still
 //     checked — that is what actually fails, and it is what proves the
@@ -483,7 +485,7 @@ func TestSSHRunsInsideTheSandboxWhenAnIdentityIsPinned(t *testing.T) {
 	}, "SSH_AUTH_SOCK="+sock)
 
 	probeConf := filepath.Join(proj, "probe_ssh_config")
-	if err := os.WriteFile(probeConf, []byte("Include /etc/passwd\n"), 0o644); err != nil {
+	if err := os.WriteFile(probeConf, []byte("Include /etc/ld.so.cache\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -512,7 +514,7 @@ fi`).mustRun(t)
 			"every file it names is root-owned and reads as 65534 inside:\n%s", r.out)
 	}
 	if !strings.Contains(r.out, "PROBE-REFUSED") {
-		t.Errorf("ssh accepted a config Including /etc/passwd, a root-owned file the "+
+		t.Errorf("ssh accepted a config Including /etc/ld.so.cache, a root-owned file the "+
 			"sandbox does NOT replace; the ownership refusal this whole feature routes "+
 			"around is no longer enforced, so SSH-OK above proves nothing:\n%s", r.out)
 	}

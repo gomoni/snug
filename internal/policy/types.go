@@ -346,7 +346,7 @@ type Graft struct {
 // proxy's decisions too. One author means those cannot drift apart.
 type Policy struct {
 	Target   string // canonical host path of the writable project directory
-	Home     string // EvalSymlinks($HOME); NOT pw_dir, see refuseUnreadSSHConfig
+	Home     string // EvalSymlinks($HOME); pw_dir IS Home in the generated /etc/passwd, by construction
 	Hostname string
 	Chdir    string
 	Command  []string
@@ -461,6 +461,11 @@ type Policy struct {
 	Net      NetPolicy
 	Identity *Identity
 	Podman   PodmanMode
+
+	// NSS is the OR-fold of every selected profile's `nss` key (issue #612).
+	// It gates Resolve's own generated /etc/passwd, /etc/group and
+	// /etc/nsswitch.conf — see the `if p.NSS` branch in Resolve.
+	NSS bool
 
 	// PluginAllowlist is the union of the selected profiles' `plugins` lists —
 	// the Claude Code plugins whose installed_plugins.json entry snug

@@ -79,10 +79,9 @@ type Environ interface {
 // sitting under a KindBind or KindGraft, in the guest namespace, the same way
 // bwrap and the kernel do. It is narrower than Environ on purpose: every
 // caller that only ever asks "what does this PATH element or graft actually
-// resolve to" (IsShadowSlot, GrantsGuestPath, the sanitise filter,
-// refuseUnreadSSHConfig) needs nothing else, and a caller with a real Environ
-// already satisfies this — Environ's own Lstat and Readlink are the same two
-// methods.
+// resolve to" (IsShadowSlot, GrantsGuestPath, the sanitise filter) needs
+// nothing else, and a caller with a real Environ already satisfies this —
+// Environ's own Lstat and Readlink are the same two methods.
 type HostLinks interface {
 	Lstat(path string) (fs.FileInfo, error)
 	Readlink(path string) (string, error)
@@ -229,12 +228,36 @@ type Context struct {
 	// defaults the host's does (issue #43).
 	HostSSHConfig SSHValues
 
-	// HostPasswdHome is pw_dir of this uid's passwd entry, read by the caller:
-	// the directory the sandbox's ssh takes its per-user config from, since
-	// @sys binds the host's /etc/passwd and ssh never consults $HOME. Empty
-	// means no entry, and refuses any run with a generated ~/.ssh/config
-	// (refuseUnreadSSHConfig).
+	// HostPasswdHome is field 6 (pw_dir) of the host's `getent passwd <uid>`
+	// line, read by the caller. It is a HOST-side fact only: Resolve's own
+	// generated /etc/passwd carries `home`, the HOME it authors, in that
+	// field instead, which is what makes getpwuid()->pw_dir == $HOME true
+	// inside the sandbox by construction. The one remaining reader is
+	// systemSSHConfigCandidates, filtering the host's ssh_config chain, which
+	// the HOST's ssh found via the HOST's pw_dir.
 	HostPasswdHome string
+
+	// HostUserName is field 1 (pw_name) of the same getent passwd line, and
+	// HostGroupName is field 1 (gr_name) of the host's `getent group <gid>`
+	// line for this uid's primary gid. Both are read by the caller through
+	// getent, which resolves through NSS the way the host's own `id` does —
+	// cgo-free Go can only parse /etc/passwd as text and never sees an
+	// sssd or LDAP account. getent is the only source of either name, USER
+	// and LOGNAME are authored unconditionally below regardless of `nss`, and
+	// there is no fallback name for them — see HostAccountErr for the refusal
+	// that follows from a lookup failure.
+	HostUserName  string
+	HostGroupName string
+
+	// HostAccountErr is set by the caller when the getent lookup that fills
+	// HostUserName, HostGroupName and HostPasswdHome failed — missing getent,
+	// no NSS entry for this uid, a timeout, a malformed line — and is empty
+	// on success. Resolve refuses with this text, verbatim, regardless of
+	// Policy.NSS: USER and LOGNAME need HostUserName on every run, `nss` or
+	// not, and there is no fallback value invariant 5 permits. The caller
+	// never refuses on this failure itself, precisely so Resolve stays the
+	// one place a policy failure is reported.
+	HostAccountErr string
 
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox

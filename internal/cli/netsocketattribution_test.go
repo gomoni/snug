@@ -183,7 +183,7 @@ func TestDryRunDoesNotContradictAGrantThatExposesAPathnameSocket(t *testing.T) {
 				RO:   []string{hostDir + ":" + guest},
 			}
 			ctx := policy.Context{
-				Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+				Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 			}
 			p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "hostsock"}, ctx, policy.OSEnviron{})
 			if err != nil {

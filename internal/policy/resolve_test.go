@@ -91,8 +91,13 @@ func newFakeEnv() *fakeEnv {
 			// that lands inside a read-only bind, because where nothing is there
 			// bwrap has to create the mountpoint and cannot. A fixture host that
 			// published /etc but not /etc/resolv.conf is not a host anyone runs
-			// on, and every default selection would be refused against it.
-			"/etc/resolv.conf": true,
+			// on, and every default selection would be refused against it. Same
+			// reasoning for /etc/passwd and /etc/group (issue #612): every real
+			// host has both.
+			"/etc/resolv.conf":   true,
+			"/etc/passwd":        true,
+			"/etc/group":         true,
+			"/etc/nsswitch.conf": true,
 		},
 		dirs: map[string]bool{
 			"/usr": true, "/etc": true, "/opt": true,
@@ -244,6 +249,11 @@ func testRegistry() map[ProfileName]*Profile {
 			RO:       []string{"/usr", "/etc", "/opt"},
 			Optional: []string{"/opt"},
 			Symlink:  []Symlink{{At: "/bin", Target: "usr/bin"}},
+			// Matches the real @sys's own `nss = true` (base.toml): the
+			// goldens built from this registry are meant to show the
+			// generated /etc/passwd, /etc/group and /etc/nsswitch.conf a
+			// real default selection carries.
+			NSS: true,
 		},
 		// Matches the real @home in base.toml, entry for entry, because the
 		// .bwrap.txt goldens are built from this registry: a fake @home with
@@ -382,6 +392,7 @@ var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
 		Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		HostUserName: "u", HostGroupName: "users",
 		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
 
@@ -1147,7 +1158,10 @@ func TestEmptySelectionResolvesToTheFloor(t *testing.T) {
 	// Four snug authors unconditionally, plus the four issue #29 adds to the
 	// procfs it just mounted: three empty-file replacements and the read-only
 	// /proc/sys. They are part of the floor because they are not grants —
-	// nothing selects them and no profile can name them.
+	// nothing selects them and no profile can name them. /etc/passwd,
+	// /etc/group and /etc/nsswitch.conf are NOT here (issue #612): they are
+	// gated on Policy.NSS, and the floor selects no profile at all, so no
+	// profile's `nss = true` ever folds in.
 	want := map[string]bool{
 		"/proc": true, "/dev": true, "/tmp": true, "/etc/resolv.conf": true,
 		"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,

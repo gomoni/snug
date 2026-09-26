@@ -46,6 +46,7 @@ var probes = map[string]string{
 	"Optional":    "/probe-optional",
 	"Network":     "egress",
 	"DNS":         "resolv.conf",
+	"NSS":         "nsswitch.conf",
 	"Plugins":     "probe-plugin",
 	"ListenNames": "probe-door",
 	"MTU":         "1428",
@@ -78,6 +79,7 @@ optional = ["/probe-optional"]
 symlink  = [{at = "/probe-link", target = "/probe-ro"}]
 network  = "egress"
 dns      = true
+nss      = true
 plugins  = ["probe-plugin"]
 listen_names = ["probe-door"]
 mtu      = 1428

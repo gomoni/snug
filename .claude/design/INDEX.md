@@ -303,7 +303,7 @@ Before emitting anything, `Validate()` checks:
 - **RULE 2** — nesting, judged on the outer mount (below).
 - Relocation (§3.3) — a non-`Authored` grant whose destination lands anywhere other than its own guest path, checked before the two rules above so both may compare guest paths lexically.
 
-`Validate` is the refuser of an assembled policy, with one companion that needs a `Context` fact `Validate` cannot ask for: `refuseUnreadSSHConfig` (`internal/policy/systemsshconfig.go`). That is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for either refusal and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
+`Validate` is the one refuser of an assembled policy, no companion. That is what lets `--dry-run` render a policy it would not run (`Resolve` returns `(p, err)` for `Validate`'s own refusal and `(nil, err)` for everything else). It is also run **a second time**, in `internal/cli`, after the staging layer has added the mounts that had to be created on the host first: the staged Claude credentials, the generated `gh` `hosts.yml`, the ssh-agent and container proxy sockets. Those are added after `Resolve` returned, so without the second pass they were never validated at all.
 
 #### RULE 4 — `/proc` and `/dev` are `snug`'s, and a profile may not take them
 

@@ -170,7 +170,8 @@ user = "some-one"
 	}
 
 	home := t.TempDir()
-	ctx := policy.Context{Target: t.TempDir(), Home: home, HostPasswdHome: home}
+	ctx := policy.Context{Target: t.TempDir(), Home: home, HostPasswdHome: home,
+		Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u"}
 	sel := append(append([]policy.ProfileName{}, BuiltinDefaults()...), "work")
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, policy.OSEnviron{})
 	if err != nil {

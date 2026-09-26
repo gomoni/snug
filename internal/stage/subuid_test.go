@@ -19,7 +19,7 @@ func TestLookupIDRangeMatchesByUidWhenNameUnknown(t *testing.T) {
 	if err := os.WriteFile(path, []byte("999999999:100000:65536\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lookupIDRange(path, 999999999); err != nil {
+	if _, err := lookupIDRange(path, idOwner{uid: 999999999}); err != nil {
 		t.Fatalf("lookupIDRange: %v", err)
 	}
 }
@@ -31,7 +31,7 @@ func TestLookupIDRangeSkipsCommentsAndBlankLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := lookupIDRange(path, 999999999)
+	r, err := lookupIDRange(path, idOwner{uid: 999999999})
 	if err != nil {
 		t.Fatalf("lookupIDRange: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestLookupIDRangeRefusesNamesTheFix(t *testing.T) {
 	if err := os.WriteFile(path, []byte("someoneelse:100000:65536\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := lookupIDRange(path, 999999999)
+	_, err := lookupIDRange(path, idOwner{uid: 999999999})
 	if err == nil {
 		t.Fatal("lookupIDRange accepted an id with no matching entry")
 	}
@@ -59,7 +59,7 @@ func TestLookupIDRangeRefusesNamesTheFix(t *testing.T) {
 }
 
 func TestLookupIDRangeRefusesMissingFile(t *testing.T) {
-	if _, err := lookupIDRange("/does/not/exist/subuid", 0); err == nil {
+	if _, err := lookupIDRange("/does/not/exist/subuid", idOwner{}); err == nil {
 		t.Fatal("lookupIDRange accepted a missing file")
 	}
 }
@@ -99,11 +99,15 @@ func TestDelegateSubuidWritesBothRanges(t *testing.T) {
 		t.Skipf("newgidmap not available: %v", err)
 	}
 	hostUID, hostGID := os.Getuid(), os.Getgid()
-	uRange, err := lookupIDRange("/etc/subuid", hostUID)
+	owner, err := subordinateOwner(hostUID)
+	if err != nil {
+		t.Skipf("no getent answer for this user: %v", err)
+	}
+	uRange, err := lookupIDRange("/etc/subuid", owner)
 	if err != nil {
 		t.Skipf("no /etc/subuid range for this user: %v", err)
 	}
-	gRange, err := lookupIDRange("/etc/subgid", hostGID)
+	gRange, err := lookupIDRange("/etc/subgid", owner)
 	if err != nil {
 		t.Skipf("no /etc/subgid range for this user: %v", err)
 	}
@@ -188,12 +192,16 @@ func TestStartDelegatesTheFullSubuidRange(t *testing.T) {
 	if _, err := findIDMapTool("newgidmap"); err != nil {
 		t.Skipf("newgidmap not available: %v", err)
 	}
-	hostUID, hostGID := os.Getuid(), os.Getgid()
-	uRange, err := lookupIDRange("/etc/subuid", hostUID)
+	hostUID := os.Getuid()
+	owner, err := subordinateOwner(hostUID)
+	if err != nil {
+		t.Skipf("no getent answer for this user: %v", err)
+	}
+	uRange, err := lookupIDRange("/etc/subuid", owner)
 	if err != nil {
 		t.Skipf("no /etc/subuid range for this user: %v", err)
 	}
-	gRange, err := lookupIDRange("/etc/subgid", hostGID)
+	gRange, err := lookupIDRange("/etc/subgid", owner)
 	if err != nil {
 		t.Skipf("no /etc/subgid range for this user: %v", err)
 	}
@@ -255,4 +263,25 @@ func devNullFile(t *testing.T) *os.File {
 	}
 	t.Cleanup(func() { f.Close() })
 	return f
+}
+
+// /etc/subgid is keyed by the USER — login name or uid — exactly like
+// /etc/subuid: shadow's newgidmap checks the invoking user's lines. Looking
+// the owner up by the gid instead matched only where gid == uid, so an
+// openSUSE account in `users` (gid 100) found no range at all.
+func TestLookupIDRangeKeysSubgidByUserNotGid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subgid")
+	if err := os.WriteFile(path, []byte("alice:200000:65536\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := lookupIDRange(path, idOwner{name: "alice", uid: 1000})
+	if err != nil {
+		t.Fatalf("lookupIDRange: %v", err)
+	}
+	if r.base != 200000 || r.size != 65536 {
+		t.Fatalf("got %+v, want base 200000 size 65536", r)
+	}
+	if _, err := lookupIDRange(path, idOwner{uid: 100}); err == nil {
+		t.Fatal("a line naming alice matched an owner that is only uid 100")
+	}
 }

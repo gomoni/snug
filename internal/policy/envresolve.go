@@ -690,11 +690,11 @@ const (
 // file cover its descendants and the kernel answers ENOTDIR there.
 //
 // HOST LINKS ARE FOLLOWED HERE, INSIDE THE WALK, RATHER THAN BY EVERY CALLER
-// SEPARATELY. All four callers — keepHostElement (the argv), IsShadowSlot and
-// GrantsGuestPath (the --dry-run screen and the engine's own PATH sweep), and
-// refuseUnreadSSHConfig (#599) — ask what the kernel resolves a guest path to,
-// and splitting the host-link step out to each of them would let the argv keep
-// what the screen marks: found by the red team on #603's working tree, a host
+// SEPARATELY. All three callers — keepHostElement (the argv), and IsShadowSlot
+// and GrantsGuestPath (the --dry-run screen and the engine's own PATH sweep) —
+// ask what the kernel resolves a guest path to, and splitting the host-link
+// step out to each of them would let the argv keep what the screen marks:
+// found by the red team on #603's working tree, a host
 // symlink `$F/hd/sub -> /tmp/sx` sitting inside a read-only bind carried no
 // `← writable from inside` mark on --dry-run, and then a payload wrote
 // `$F/hd/sub/git` and it ran (SHADOW-GIT-RAN).

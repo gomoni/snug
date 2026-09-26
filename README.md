@@ -848,6 +848,16 @@ MIT licensed. Linux with unprivileged user namespaces, `bubblewrap`, Go 1.26+ to
 user namespaces are fine. `snug doctor` tells you where you stand, and names the
 exact sysctl when something is missing.
 
+**`getent` on the host, from glibc.** snug writes the sandbox's own one-line
+`/etc/passwd` and `/etc/group` so that the home directory there is `$HOME`, and
+takes the user and group names from `getent passwd`/`getent group`. `getent`
+is snug's only source of host account data — the subuid owner `snug doctor`
+and the container engine look up too — and resolves through glibc NSS, so sssd
+and LDAP accounts work. No fallback: no `getent`
+or no entry for your uid means snug refuses. Package: `glibc` (openSUSE),
+`libc-bin` (Debian/Ubuntu), `glibc-common` (Fedora). On a non-glibc host provide
+a compact `getent`, as musl does. `snug doctor` reports it only when missing.
+
 **Networking also needs `/dev/net/tun`**: `pasta` puts a tap device in the
 sandbox's own network namespace, so the node has to be present and openable.
 A bare host wants `modprobe tun`; a container is not given the node by default

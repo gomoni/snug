@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrTargetUnusable marks the four ways step 2 of Resolve can reject the target
@@ -62,10 +64,9 @@ func (e unusableTarget) Unwrap() error { return e.error }
 // show precisely what a refused selection would have been. This means
 // Resolve's return contract is NOT the usual (nil, err) / (p, nil):
 //
-//   - a refusal of the ASSEMBLED policy — Validate, or refuseUnreadSSHConfig,
-//     which needs a Context fact Validate cannot ask for: returns (p, err). The
-//     non-nil policy is EXACTLY what was refused and why, for display. It must
-//     never be executed.
+//   - a refusal of the ASSEMBLED policy — Validate, the one refuser of an
+//     assembled policy: returns (p, err). The non-nil policy is EXACTLY what
+//     was refused and why, for display. It must never be executed.
 //   - every other failure (bad profile name, bad target, bad $HOME, ...):
 //     returns (nil, err), because no policy was ever assembled to show.
 //   - success: (p, nil).
@@ -456,6 +457,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			p.Podman = p.Podman.Join(mode)
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
+		p.NSS = p.NSS || prof.NSS
 
 		// listen_names doors: a SET unioned across profiles, same reasoning as
 		// Plugins — two profiles naming "web" resolve to ONE door,
@@ -693,6 +695,92 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		From:    []string{"(snug)"},
 	})
 
+	// getent's lookup runs on EVERY invocation (internal/cli's
+	// lookupHostAccount), whether or not any selected profile's `nss` folds
+	// true: USER and LOGNAME are authored unconditionally below, there is no
+	// fallback name for either (invariant 5), and getent is the only source of
+	// one. A failure there — missing getent, no NSS entry for this uid, a
+	// timeout, a malformed line — refuses the whole run, not just the three
+	// generated files p.NSS gates next.
+	if ctx.HostAccountErr != "" {
+		return nil, errors.New(ctx.HostAccountErr)
+	}
+
+	// /etc/passwd, /etc/group and /etc/nsswitch.conf are GENERATED too, but
+	// only when some selected profile's `nss = true` folded true (p.NSS,
+	// above) — @sys sets it in base.toml, and a profile that wants the three
+	// files without @sys may set it too. @sys used to bind the host's
+	// /etc/passwd verbatim, and with the uid unmapped in the sandbox's own
+	// user namespace that made getpwuid()->pw_dir the HOST's home directory
+	// rather than $HOME — every program that takes its home from the passwd
+	// entry rather than from $HOME (ssh chief among them) then disagreed with
+	// the sandbox it was running in. Generating the one line for this uid
+	// instead makes getpwuid(getuid())->pw_dir == $HOME true by construction.
+	//
+	// Without `nss`, none of the three is generated, and a profile that wants
+	// one binds its own host copy — the ordinary grant language, no special
+	// case. See base.toml's `nss = true` for the abuse sentence all three
+	// share, and TestNoBuiltinGrantsTheNscdSocket for the residual it names:
+	// this holds by construction only while `files` answers first, and a
+	// human profile granting nscd's own request socket could still let it
+	// answer ahead of the generated files.
+	if p.NSS {
+		// Refused before any of the three is authored: an empty field, one
+		// containing ':' (both files' own field separator), a control byte,
+		// DEL, or invalid UTF-8 would not read back as the entry snug means
+		// to write. name and gname are refused further for whitespace and a
+		// leading '+', '-' or '#': glibc's `compat` NSS module reads exactly
+		// those three as NIS directives rather than as an account name. There
+		// is no POSIX charset whitelist beyond that — `user@domain` and
+		// `first.last` are real sssd account names and must resolve.
+		if err := refuseUnwritablePasswdField("HOME", "a path", home, false); err != nil {
+			return nil, err
+		}
+		if err := refuseUnwritablePasswdField("SHELL", "a path", ctx.Shell, false); err != nil {
+			return nil, err
+		}
+		if err := refuseUnwritablePasswdField("the account name", "a name", ctx.HostUserName, true); err != nil {
+			return nil, err
+		}
+		if err := refuseUnwritablePasswdField("the primary group name", "a name", ctx.HostGroupName, true); err != nil {
+			return nil, err
+		}
+
+		// gecos is the SAME name as pw_name: git falls back to pw_gecos when
+		// user.name is unset, and an empty gecos makes `git commit` fail with
+		// "empty ident name". No root line, no `nobody` line — the payload
+		// never runs as uid 0 and gains nothing from either existing.
+		p.Replace(Mount{
+			Guest:  "/etc/passwd",
+			Kind:   KindData,
+			Access: AccessRO,
+			Content: Secret(fmt.Sprintf("%s:x:%d:%d:%s:%s:%s\n",
+				ctx.HostUserName, env.Uid(), env.Gid(), ctx.HostUserName, home, ctx.Shell)),
+			From: passwdReplacesNote(p, "/etc/passwd"),
+		})
+		// One line, no member list: a supplementary gid is not mapped inside
+		// the sandbox's own user namespace, so enumerating one here would
+		// name a host group the sandbox has no membership in. The primary
+		// group is often not the account's own name either — openSUSE's
+		// default is `users`, gid 100.
+		p.Replace(Mount{
+			Guest:   "/etc/group",
+			Kind:    KindData,
+			Access:  AccessRO,
+			Content: Secret(fmt.Sprintf("%s:x:%d:\n", ctx.HostGroupName, env.Gid())),
+			From:    passwdReplacesNote(p, "/etc/group"),
+		})
+		// See generatedNsswitchConf's own doc comment for the content and for
+		// why it is generated rather than bound.
+		p.Replace(Mount{
+			Guest:   "/etc/nsswitch.conf",
+			Kind:    KindData,
+			Access:  AccessRO,
+			Content: Secret(generatedNsswitchConf),
+			From:    passwdReplacesNote(p, "/etc/nsswitch.conf"),
+		})
+	}
+
 	// The LAST mount write in Resolve, and it has to be: an anchor is computed
 	// from the finished mount set, and the generated KindData files above create
 	// ancestors that need one ({home}/.ssh from the identity config, {home}/.claude
@@ -737,9 +825,17 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.AuthorEnvList("PATH", []string{StagedBinDir}, "staged bin")
 	}
 	p.AuthorEnvList("PATH", basePATH, "base")
-	user := envOr(env, "USER", "user")
-	p.AuthorEnv("USER", user)
-	p.AuthorEnv("LOGNAME", user)
+	// USER and LOGNAME are authored from the same getent name that fills
+	// pw_name in the generated /etc/passwd when `nss` is on, so pw_name ==
+	// $USER == $LOGNAME — never from the host's own USER, which needs no NSS
+	// lookup to spoof and answers a different question ("what did the shell
+	// that started snug export") than "what account does this uid resolve
+	// to". Authored unconditionally, even without `nss`: it is an
+	// environment variable a payload can already overwrite for itself, not a
+	// file snug vouches for, so it carries no reason to wait for a profile
+	// to ask.
+	p.AuthorEnv("USER", ctx.HostUserName)
+	p.AuthorEnv("LOGNAME", ctx.HostUserName)
 	p.AuthorEnv("SHELL", ctx.Shell)
 	p.AuthorEnv("TMPDIR", "/tmp")
 	if ctx.Term != "" {
@@ -778,9 +874,6 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
 
 	if err := p.Validate(env); err != nil {
-		return p, err
-	}
-	if err := refuseUnreadSSHConfig(p, ctx, env); err != nil {
 		return p, err
 	}
 	return p, nil
@@ -846,18 +939,97 @@ func under(canonTarget, p string) (string, bool) {
 // carried by a reviewed profile file and a value inherited from whoever launched
 // snug are two different things, so each gets its own sentence (CALL 4).
 
-// envOr keeps Getenv's "empty means absent" reading DELIBERATELY, and it is the
-// one place that is right. Its callers want a value snug can fall back on —
-// USER, and nothing else today — where an empty host value is no more useful
-// than an unset one and "user" is a better answer than "". The presence
-// distinction above exists for FLAG variables, where empty is a value; do not
-// unify the two, because "right for one type, wrong for the other" is how this
-// class of bug ships (§2.6).
-func envOr(e Environ, k, def string) string {
-	if v := e.Getenv(k); v != "" {
-		return v
+// generatedNsswitchConf is the content of the generated /etc/nsswitch.conf,
+// gated on p.NSS beside /etc/passwd and /etc/group.
+//
+// Generated rather than bound, unlike the OS-runtime files @sys binds
+// verbatim: a bound copy can name an NSS module — sss, ldap, nis, mdns — the
+// sandbox has no socket for, which glibc silently skips but which is a claim
+// about the host a fixed, snug-authored file no longer needs to make. Every
+// db here reads only `files`, plus `dns` where a database has one, plus
+// `usrfiles` for the four databases glibc ships a *second*, `/usr`-rooted
+// nss_files backend for (services, protocols, rpc, ethers) — the same
+// /usr/etc split base.toml's own comment measures for nsswitch.conf itself,
+// carried one level down into the file's OWN content. `hosts` also carries
+// `myhostname`: with no generated /etc/hosts, that module is what answers
+// `localhost` and the sandbox's own hostname; nothing else needs a hosts
+// file at all. No [ACTION] token appears anywhere: every db here is
+// terminal on `files` succeeding, and a module glibc does not have compiled
+// in is skipped rather than refused.
+//
+// A four-line version (passwd/group/hosts/networks only, everything else
+// left unset) broke `getent services http` and `getent protocols tcp` on
+// openSUSE with exit 2 rather than falling back to a compiled-in default —
+// unlike nsswitch.conf's own absence, an nsswitch.conf that is PRESENT but
+// silent on a database is not the same as one that never existed, and glibc
+// answers each one it names explicitly. Naming `usrfiles` for those four
+// fixes it.
+const generatedNsswitchConf = `passwd:    files
+group:     files
+shadow:    files
+gshadow:   files
+hosts:     files myhostname dns
+networks:  files dns
+services:  files usrfiles
+protocols: files usrfiles
+rpc:       files usrfiles
+ethers:    files usrfiles
+netgroup:  files
+`
+
+// passwdReplacesNote is From for a generated /etc/passwd, /etc/group or
+// /etc/nsswitch.conf mount: "(snug)" alone, or with a "replaces:" note naming
+// the profile whose grant this file lands inside — a bare "ro = [\"/etc\"]"
+// covers guest by ANCESTRY, at a different map key ("/etc"), so
+// Policy.Replace's own exact-key check never sees it. Mirrors
+// replaceSystemSSHConfig's identical annotation for the same reason: a
+// covering grant that is silently displaced is invisible on --dry-run
+// otherwise.
+func passwdReplacesNote(p *Policy, guest string) []string {
+	from := []string{"(snug)"}
+	if cov, ok := p.SandboxView().coveringMount(guest); ok && cov.Guest != guest {
+		from = append(from, "replaces:"+strings.Join(cov.From, "+"))
 	}
-	return def
+	return from
+}
+
+// refuseUnwritablePasswdField refuses value for field before Resolve writes it
+// into the generated /etc/passwd or /etc/group: empty, containing ':' (both
+// files' own field separator), a control byte, DEL, or invalid UTF-8. account
+// additionally refuses whitespace and a leading '+', '-' or '#' — see the doc
+// comment on the two Replace calls in Resolve for why. Every message but the
+// empty case names the offending VALUE too, through VisibleText, so a human
+// reading the refusal sees which value was bad without a raw forging rune or
+// control byte reaching their terminal on the way.
+func refuseUnwritablePasswdField(field, kind, value string, account bool) error {
+	set := fmt.Sprintf("set %s to %s", field, kind)
+	switch {
+	case value == "":
+		return fmt.Errorf("%s is empty, which cannot appear in a passwd entry; %s", field, set)
+	case !utf8.ValidString(value):
+		return fmt.Errorf("%s (%s) is not valid UTF-8, which cannot appear in a passwd entry; %s that is valid UTF-8",
+			field, VisibleText(value), set)
+	case strings.ContainsRune(value, ':'):
+		return fmt.Errorf("%s (%s) contains ':', which cannot appear in a passwd entry; %s without ':'",
+			field, VisibleText(value), set)
+	}
+	if i := strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+		return fmt.Errorf("%s (%s) contains a control byte (0x%02x), which cannot appear in a passwd entry; "+
+			"%s without control characters", field, VisibleText(value), value[i], set)
+	}
+	if !account {
+		return nil
+	}
+	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("%s (%s) contains whitespace, which is not a valid passwd or group name; "+
+			"%s without whitespace", field, VisibleText(value), set)
+	}
+	if c := value[0]; c == '+' || c == '-' || c == '#' {
+		return fmt.Errorf("%s (%s) begins with %q, which glibc's compat NSS module reads as a NIS "+
+			"directive rather than a name (nss_compat(5)); set %s to a name that does not start "+
+			"with '+', '-' or '#'", field, VisibleText(value), string(c), field)
+	}
+	return nil
 }
 
 // join folds one grant into the policy — RULE 1, the same-path rule.

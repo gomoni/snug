@@ -26,77 +26,122 @@ import (
 func TestTheDryRunHeaderNeverRendersAHostPathRaw(t *testing.T) {
 	// TARGET carries the bidi override, and its marker is written BACKWARDS in
 	// the source so that a bidi-rendering terminal shows "FORGED-BY-A-PATH"
-	// after it. HOME carries pure C1 instead — U+009B is CSI, the
-	// single-character form of ESC-[ — so no ASCII control in the same value can
-	// make %q escape it on snug's behalf, and the two rows exercise the two
-	// halves of IsForgingRune rather than one of them twice.
+	// after it. HOME carries pure C1 plus a raw CR instead - U+009B is CSI,
+	// the single-character form of ESC-[, and "\r" completes a CSI-cursor-up
+	// escape sequence into something a terminal would actually act on - so the
+	// two rows exercise the two halves of IsForgingRune rather than one of
+	// them twice.
+	//
+	// The two poisons are resolved SEPARATELY (two subtests), not combined
+	// into one Context as an earlier version of this test did. Combined,
+	// HOME's own control byte trips resolve.go's passwd-field format guard
+	// (issue #612: BuiltinDefaults() selects @sys, which sets `nss = true`)
+	// before Validate ever sees TARGET's bidi override - the guard returns
+	// (nil, err), and there is no dry-run screen left to render AT ALL for
+	// that Resolve call, combined or not. Splitting the two lets each poison
+	// reach the refusal it actually produces: TARGET still reaches Validate's
+	// refusal (p, err) and this test still asserts --dry-run never renders it
+	// raw; HOME reaches the format guard's OWN refusal instead, and what is
+	// asserted there is that the guard's message - the one thing a nil policy
+	// leaves to print - escapes it exactly the same way.
 	const markerTarget = "HTAP-A-YB-DEGROF"
 	const markerHome = "FORGED-BY-A-HOME"
-
-	target := "/home/u/proj/w\u202e" + markerTarget
-	home := "/home/u\u009b1A\r" + markerHome
-	ctx := policy.Context{
-		Target:  target,
-		Home:    home,
-		Shell:   "/usr/bin/bash",
-		Command: []string{"/bin/sh"},
-	}
-
-	// The fake host has to CONTAIN the poisoned directories, or Resolve refuses
-	// before anything is rendered and this test measures the refusal instead.
-	env := newEnvFakeEnv()
-	env.dirs[target] = true
-	env.dirs[home] = true
 
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
-		profile.BuiltinDefaults(), ctx, env)
+	regMap := map[policy.ProfileName]*policy.Profile(reg)
 
-	// THE POLICY IS REFUSED, AND THAT IS THE CASE UNDER TEST, not an accident of
-	// the fixture. Since the round-3 sweep, Validate refuses a forging rune in a
-	// GUEST path, and the target is bound at its own path inside, so this
-	// selection cannot run. But Resolve's contract returns the policy anyway and
-	// `snug --dry-run` RENDERS it — that is the whole reproduction in issue #65,
-	// where the attacker's only move is `mkdir`. A version of this test that
-	// stopped at the error would assert the refusal, which is not the property
-	// this screen needs.
-	if err != nil && p == nil {
-		t.Fatalf("Resolve returned no policy to render: %v", err)
-	}
-	if err == nil {
-		t.Fatal("the fixture was accepted; the refused-policy path this test exists for " +
-			"was never reached, so it is measuring a different screen")
-	}
-
-	got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
-
-	// The positive controls, and they are load-bearing twice over: without them
-	// a dry run that failed to render either path would pass every assertion
-	// below, and so would a fixture whose Context never reached the policy.
-	if !strings.Contains(got, markerTarget) {
-		t.Fatalf("the TARGET fixture never reached the screen, so this test is measuring "+
-			"nothing:\n%s", got)
-	}
-	if !strings.Contains(got, markerHome) {
-		t.Fatalf("the HOME fixture never reached the screen, so the half of this test that is "+
-			"about C1 is measuring nothing:\n%s", got)
-	}
-
-	if r, found := rawForgingRune(got); found {
-		t.Errorf("--dry-run rendered %q raw. A host path is not snug's to refuse, so the "+
-			"renderer is the only guard it has, and this screen is the artifact a human reads "+
-			"to decide whether to trust the sandbox:\n%s", r, got)
-	}
-	// The verbatim check, because rawForgingRune exempts '\n' and therefore
-	// structurally cannot see a newline smuggled in through a directory name.
-	for _, probe := range []string{"\u202e" + markerTarget, "\u009b1A"} {
-		if strings.Contains(got, probe) {
-			t.Errorf("--dry-run rendered the probe %q verbatim", probe)
+	t.Run("TARGET's bidi override reaches Validate and renders escaped", func(t *testing.T) {
+		// NOT under /home/u: nested under a clean HOME, the SHARED block's
+		// own "PERSISTS below" listing would render TARGET a second time
+		// through a sink this test does not cover, and a real one would
+		// fail the assertions below for a reason unrelated to the header
+		// rows this test is about.
+		target := "/srv/proj/w\u202e" + markerTarget
+		ctx := policy.Context{
+			Target: target,
+			Home:   "/home/u",
+			Shell:  "/usr/bin/bash", HostUserName: "u", HostGroupName: "u",
+			Command: []string{"/bin/sh"},
 		}
-	}
+		env := newEnvFakeEnv()
+		env.dirs[target] = true
+		env.dirs["/home/u"] = true
+
+		p, err := policy.Resolve(regMap, profile.BuiltinDefaults(), ctx, env)
+
+		// THE POLICY IS REFUSED, AND THAT IS THE CASE UNDER TEST, not an
+		// accident of the fixture. Since the round-3 sweep, Validate refuses a
+		// forging rune in a GUEST path, and the target is bound at its own
+		// path inside, so this selection cannot run. But Resolve's contract
+		// returns the policy anyway and `snug --dry-run` RENDERS it - that is
+		// the whole reproduction in issue #65, where the attacker's only move
+		// is `mkdir`. A version of this test that stopped at the error would
+		// assert the refusal, which is not the property this screen needs.
+		if err != nil && p == nil {
+			t.Fatalf("Resolve returned no policy to render: %v", err)
+		}
+		if err == nil {
+			t.Fatal("the fixture was accepted; the refused-policy path this test exists for " +
+				"was never reached, so it is measuring a different screen")
+		}
+
+		got := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
+
+		// The positive control: without it, a dry run that failed to render
+		// TARGET at all would pass every assertion below.
+		if !strings.Contains(got, markerTarget) {
+			t.Fatalf("the TARGET fixture never reached the screen, so this test is measuring "+
+				"nothing:\n%s", got)
+		}
+		if r, found := rawForgingRune(got); found {
+			t.Errorf("--dry-run rendered %q raw. A host path is not snug's to refuse, so the "+
+				"renderer is the only guard it has, and this screen is the artifact a human reads "+
+				"to decide whether to trust the sandbox:\n%s", r, got)
+		}
+		if strings.Contains(got, "\u202e"+markerTarget) {
+			t.Errorf("--dry-run rendered the probe %q verbatim", "\u202e"+markerTarget)
+		}
+	})
+
+	t.Run("HOME's control byte reaches the passwd-field guard and refuses escaped", func(t *testing.T) {
+		home := "/home/u\u009b1A\r" + markerHome
+		ctx := policy.Context{
+			Target: "/home/u/proj",
+			Home:   home,
+			Shell:  "/usr/bin/bash", HostUserName: "u", HostGroupName: "u",
+			Command: []string{"/bin/sh"},
+		}
+		env := newEnvFakeEnv()
+		env.dirs["/home/u/proj"] = true
+		env.dirs[home] = true
+
+		p, err := policy.Resolve(regMap, profile.BuiltinDefaults(), ctx, env)
+		if err == nil {
+			t.Fatal("the poisoned HOME was accepted; the format guard this half exists for " +
+				"was never reached")
+		}
+		if p != nil {
+			t.Fatalf("Resolve returned a policy despite an error; the format guard's own "+
+				"contract is (nil, err), not (p, err): %v", err)
+		}
+
+		msg := err.Error()
+		if !strings.Contains(msg, markerHome) {
+			t.Fatalf("the HOME fixture never reached the refusal, so this test is measuring "+
+				"nothing:\n%s", msg)
+		}
+		if r, found := rawForgingRune(msg); found {
+			t.Errorf("the format guard's refusal rendered %q raw - this is the same sink issue "+
+				"#65 closed for --dry-run, on the ONE message a nil policy leaves to print:\n%s",
+				r, msg)
+		}
+		if strings.Contains(msg, "\u009b1A") {
+			t.Errorf("the format guard's refusal rendered the probe %q verbatim:\n%s", "\u009b1A", msg)
+		}
+	})
 }
 
 // The same property for `snug profile show`'s "defined in" row (issue #65).

@@ -40,7 +40,7 @@ func TestPostStagingValidateCatchesNestedGrant(t *testing.T) {
 		RO:   []string{filepath.Join(home, "empty") + ":" + filepath.Join(home, ".claude.json", "evil")},
 	}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude", "hostile"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("control: Resolve alone must accept this selection — the KindData mount "+
@@ -82,7 +82,7 @@ func TestPostStagingValidateStaysSilentOnANormalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

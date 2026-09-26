@@ -23,12 +23,15 @@
 --size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
---ro-bind-data 10 /etc/resolv.conf
+--ro-bind-data 10 /etc/group
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
 --size 1073741824
 --tmpfs /home/u
---ro-bind-data 11 /proc/config.gz
---ro-bind-data 12 /proc/key-users
---ro-bind-data 13 /proc/keys
+--ro-bind-data 14 /proc/config.gz
+--ro-bind-data 15 /proc/key-users
+--ro-bind-data 16 /proc/keys
 --ro-bind /proc/sys /proc/sys
 --size 1073741824
 --tmpfs /home/u/.cache

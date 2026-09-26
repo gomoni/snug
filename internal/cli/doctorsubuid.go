@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/gomoni/snug/internal/getent"
 )
 
 // ── the container engine's delegated subuid/subgid range ────────────────────
@@ -35,6 +37,12 @@ func reportSubuidDelegation(check func() error, h subuidHost) {
 
 	fmt.Println("  ⚠️  no delegated subuid/subgid range — container profiles will refuse to start")
 	fmt.Printf("     💬 %v\n", err)
+
+	if h.nameErr != nil {
+		fmt.Printf("     💬 the owner name for a suggested line could not be resolved either: %v\n", h.nameErr)
+		fmt.Println("     🔒 only the container profiles need this; offline and net sandboxes are unaffected")
+		return
+	}
 
 	// The example the checker's own message carries is the conventional one,
 	// and inside a container it names nothing at all: a keep-id box's uid_map
@@ -85,15 +93,24 @@ type subuidHost struct {
 	uid int
 	// name is the owner column an /etc/subuid line needs.
 	name string
+	// nameErr is set when subuidEntryName's getent lookup failed for a reason
+	// OTHER than the uid having no NSS entry — a missing getent, a timeout, a
+	// malformed line. name is then "", and reportSubuidDelegation reports this
+	// instead of a suggested line: a line built on an empty owner name is not
+	// a degraded suggestion, it is a wrong one (subuidOwnerPresent would never
+	// match it against the real owner's line either).
+	nameErr error
 	// container is containerMarker(), "" on a bare host.
 	container string
 }
 
 func currentSubuidHost() subuidHost {
+	name, nameErr := subuidEntryName()
 	return subuidHost{
 		idMap:     readIDMap(),
 		uid:       os.Getuid(),
-		name:      subuidEntryName(),
+		name:      name,
+		nameErr:   nameErr,
 		container: containerMarker(),
 	}
 }
@@ -230,12 +247,24 @@ func readIDMap() string {
 	return string(b)
 }
 
-// subuidEntryName is the owner column an /etc/subuid line needs: the username
-// when this uid has one, the number when it does not. subuid(5) accepts both.
-func subuidEntryName() string {
+// subuidEntryName is the owner column an /etc/subuid line needs: the login
+// name getent gives this uid, or the number when getent gives no NSS entry
+// for it (exit 2, getent.ErrNoEntry) — subuid(5) accepts both, so the number
+// is a correct line, not a degraded one. Any OTHER getent failure — missing
+// getent, a timeout, a malformed line — is returned as an error rather than
+// folded into the same fallback: a name of "1000" for a uid getent could not
+// actually resolve is not a correct line either, it is a line for the WRONG
+// owner that happens to parse (issue #612), matching internal/stage's own
+// subordinateOwner, which draws the identical line for the same reason.
+func subuidEntryName() (string, error) {
 	uid := os.Getuid()
-	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil && u.Username != "" {
-		return u.Username
+	pw, err := getent.PasswdByUID(uid)
+	switch {
+	case err == nil:
+		return pw.Name, nil
+	case errors.Is(err, getent.ErrNoEntry):
+		return strconv.Itoa(uid), nil
+	default:
+		return "", err
 	}
-	return strconv.Itoa(uid)
 }

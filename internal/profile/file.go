@@ -58,6 +58,7 @@ type rawProfile struct {
 	Network string `toml:"network"`
 	DNS     bool   `toml:"dns"`
 	MTU     int    `toml:"mtu"`
+	NSS     bool   `toml:"nss"`
 
 	Podman   string       `toml:"podman"`
 	Git      string       `toml:"git"`
@@ -357,6 +358,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			Network:     r.Network,
 			DNS:         r.DNS,
 			MTU:         r.MTU,
+			NSS:         r.NSS,
 			Podman:      r.Podman,
 			Git:         r.Git,
 			Identity:    identity,

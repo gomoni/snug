@@ -233,7 +233,7 @@ func TestPreflightToolchainRootAgreesWithTheScreenOnOrdinarySpellings(t *testing
 
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	screenPolicy, err := policy.Resolve(reg,
 		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
@@ -322,7 +322,7 @@ func TestPreflightPodmanBinaryRefusesNonRegularObjects(t *testing.T) {
 
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg,
 		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {
@@ -427,7 +427,7 @@ func TestResolvConfBindNoticeWarnsWithoutRefusing(t *testing.T) {
 func TestPreflightPodmanBinaryRefusesARelativeNonexistentSpelling(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg,
 		[]policy.ProfileName{"@sys", "@home", "@target-rw", "@podman-socket"}, ctx, policy.OSEnviron{})
 	if err != nil {

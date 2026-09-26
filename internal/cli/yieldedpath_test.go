@@ -158,7 +158,7 @@ func TestTheTmpTakeoverCostsOneWritablePath(t *testing.T) {
 	env.dirs["/tmp"] = true
 	env.dirs["/tmp/proj"] = true
 	ctx := policy.Context{
-		Target: "/tmp/proj", Home: "/home/u", Shell: "/usr/bin/bash", Command: []string{"/bin/sh"},
+		Target: "/tmp/proj", Home: "/home/u", Shell: "/usr/bin/bash", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 	}
 
 	without, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
