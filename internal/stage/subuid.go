@@ -2,13 +2,14 @@ package stage
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/getent"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -22,11 +23,14 @@ import (
 // setuid) — that surfaces, already named clearly, from the tool's own stderr
 // the one time delegateSubuid actually runs it.
 func CheckSubuidDelegation() error {
-	hostUID, hostGID := os.Getuid(), os.Getgid()
-	if _, err := lookupIDRange("/etc/subuid", hostUID); err != nil {
+	owner, err := subordinateOwner(os.Getuid())
+	if err != nil {
 		return err
 	}
-	if _, err := lookupIDRange("/etc/subgid", hostGID); err != nil {
+	if _, err := lookupIDRange("/etc/subuid", owner); err != nil {
+		return err
+	}
+	if _, err := lookupIDRange("/etc/subgid", owner); err != nil {
 		return err
 	}
 	if _, err := findIDMapTool("newuidmap"); err != nil {
@@ -44,11 +48,36 @@ type idRange struct {
 	base, size uint32
 }
 
+// idOwner is who a subuid(5)/subgid(5) line must name: the login name, or the
+// numeric UID. BOTH files are keyed by the user — /etc/subgid too, never by
+// the gid, which is what shadow's newgidmap checks — so a host whose primary
+// gid differs from its uid (openSUSE's `users`, gid 100) still matches.
+type idOwner struct {
+	name string // "" when the uid has no NSS entry
+	uid  int
+}
+
+// subordinateOwner resolves uid's login name through internal/getent. A uid
+// with no entry (getent exit 2) is an answer: subuid(5) accepts the number.
+// Any other failure refuses, because a line keyed by the name would then go
+// unmatched and the refusal would blame /etc/subuid for a getent problem.
+func subordinateOwner(uid int) (idOwner, error) {
+	pw, err := getent.PasswdByUID(uid)
+	switch {
+	case err == nil:
+		return idOwner{name: pw.Name, uid: uid}, nil
+	case errors.Is(err, getent.ErrNoEntry):
+		return idOwner{uid: uid}, nil
+	default:
+		return idOwner{}, fmt.Errorf("looking up the owner of uid %d's subordinate id range: %w", uid, err)
+	}
+}
+
 // lookupIDRange reads path (/etc/subuid or /etc/subgid) and returns the FIRST
-// line delegated to the calling process's own real id — matched by username
-// first (the conventional spelling, "alice:100000:65536") and by the numeric
-// uid/gid second (some hosts write the id instead of the name, and both are
-// legal per subuid(5)).
+// line delegated to owner — matched by login name first (the conventional
+// spelling, "alice:100000:65536") and by the numeric uid second (some hosts
+// write the id instead of the name, and both are legal per subuid(5) and
+// subgid(5)).
 //
 // Matching only the caller's OWN id is deliberate and is not merely the
 // common case: newuidmap enforces the identical rule server-side (a range
@@ -56,7 +85,7 @@ type idRange struct {
 // set of lines would just be rejected one step later with a less specific
 // error. Doing the same match here first is what lets the refusal name the
 // fix ("add a line for this user") instead of relayed newuidmap stderr.
-func lookupIDRange(path string, id int) (idRange, error) {
+func lookupIDRange(path string, owner idOwner) (idRange, error) {
 	// HOSTREAD-EXEMPT: every caller passes a literal, "/etc/subuid" or
 	// "/etc/subgid"; path is a parameter only so a test can point it at a
 	// fixture.
@@ -66,11 +95,7 @@ func lookupIDRange(path string, id int) (idRange, error) {
 	}
 	defer f.Close()
 
-	name := ""
-	if u, err := user.LookupId(strconv.Itoa(id)); err == nil {
-		name = u.Username
-	}
-
+	id, name := owner.uid, owner.name
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -148,11 +173,15 @@ func delegateSubuid(pid, hostUID, hostGID int) error {
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
-	uRange, err := lookupIDRange("/etc/subuid", hostUID)
+	owner, err := subordinateOwner(hostUID)
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
-	gRange, err := lookupIDRange("/etc/subgid", hostGID)
+	uRange, err := lookupIDRange("/etc/subuid", owner)
+	if err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	gRange, err := lookupIDRange("/etc/subgid", owner)
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}

@@ -713,10 +713,11 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // Environ
 		"",  // Network
 		false,
-		0,   // MTU
-		"",  // Podman
-		"",  // Git
-		nil, // Identity
+		0,     // MTU
+		false, // NSS
+		"",    // Podman
+		"",    // Git
+		nil,   // Identity
 	}
 }
 

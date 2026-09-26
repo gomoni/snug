@@ -187,7 +187,7 @@ func floorMountCovering(t *testing.T, home string) (policy.Mount, bool) {
 	// the same contract --dry-run relies on to render a refused selection. The
 	// mounts in it are exactly snug's own, which is what this check needs.
 	floor, _ := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), nil,
-		policy.Context{Target: home, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}},
+		policy.Context{Target: home, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}},
 		policy.OSEnviron{})
 	if floor == nil {
 		t.Fatal("Resolve returned no policy for the floor selection, so the fixture's location " +
@@ -201,7 +201,7 @@ func resolveFor(t *testing.T, sel []policy.ProfileName) *policy.Policy {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{
-		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 	}
 	p, err := policy.Resolve(reg, sel, ctx, policy.OSEnviron{})
 	if err != nil {
@@ -325,7 +325,7 @@ func TestDryRunAnnotationDoesNotUnderstateWriteAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"layered"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -404,7 +404,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{
-		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 		HostShims: []policy.HostShim{
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
@@ -454,7 +454,7 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -501,7 +501,7 @@ func TestGrantMarkStillUsesTheWiderPredicate(t *testing.T) {
 func TestWritableMarkIsPathOnlyAndDistinctFromNotGranted(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -798,7 +798,7 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{
-		Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 		HostShims: []policy.HostShim{
 			{Name: "podman", Path: "/usr/bin/podman", Resolved: "/usr/bin/distrobox-host-exec"},
 		},
@@ -848,7 +848,7 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	}
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -909,7 +909,7 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/usr/local/etc/ssh"}}
 	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{runtimeOnlyDir(t, home) + ":/bin"}}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 		HostSSHConfigs: []string{guest}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@home", "@target-rw", "sshhost", "runtime-only"}, ctx, policy.OSEnviron{})
 	if err != nil {
@@ -941,7 +941,7 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 	}
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"},
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
 		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {

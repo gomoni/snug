@@ -22,7 +22,7 @@ import (
 func TestClaudeGuidanceDoesNotClaimTheSessionMeshIsClosed(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	sel := []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}
 	p, err := policy.Resolve(reg, sel, ctx, policy.OSEnviron{})
 	if err != nil {

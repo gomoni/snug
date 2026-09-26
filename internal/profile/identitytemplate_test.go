@@ -104,6 +104,9 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 		Target:         t.TempDir(),
 		Home:           home,
 		HostPasswdHome: home,
+		Shell:          "/bin/sh",
+		HostUserName:   "u",
+		HostGroupName:  "u",
 	}
 	// The template's own inline comment says "the `defaults` are selected as
 	// well" (base.toml, on the `include` line) — a bare `snug -p work` adds

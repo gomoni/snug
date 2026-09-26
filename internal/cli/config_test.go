@@ -13,7 +13,7 @@ import (
 )
 
 // TestEmptyDefaultsMeansEmpty pins the fix for a bug found while retiring the
-// @null profile: `defaults = []` used to silently fall back to the built-in four,
+// @null profile: `defaults = []` used to silently fall back to the built-in defaults,
 // because Defaults was a plain []string and could not distinguish an explicit
 // empty list from an absent key — both decode to len 0. Defaults is now
 // *[]string precisely so the written intent survives decoding, in both
@@ -39,7 +39,7 @@ func TestEmptyDefaultsMeansEmpty(t *testing.T) {
 	}
 
 	// CONTROL, the other direction: an ABSENT key must still fall back to the
-	// built-in four. Without this, "defaultProfiles returns empty" above could
+	// built-in defaults. Without this, "defaultProfiles returns empty" above could
 	// mean the *[]string distinction broke the other way — every config now
 	// resolving to nothing, which would make a bare `snug <dir>` grant nothing
 	// on every host with no config file at all.
@@ -58,7 +58,7 @@ func TestEmptyDefaultsMeansEmpty(t *testing.T) {
 // TestUnreadableConfigIsFatal — a red team finding from the same round, and the same class
 // as TestEmptyDefaultsMeansEmpty above: a parse error was fatal, a READ error
 // was not. `chmod 000` on a file saying `defaults = []` returned the zero config
-// and so widened the sandbox back to the built-in four, while `snug config`
+// and so widened the sandbox back to the built-in defaults, while `snug config`
 // reported the source as "built-in" with os.Stat proving the file was there.
 // Invariant 5: no silent downgrade.
 //

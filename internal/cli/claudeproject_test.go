@@ -22,7 +22,7 @@ func resolveClaudeWithTarget(t *testing.T, home, target string) *policy.Policy {
 	for _, d := range []string{".claude/skills", ".claude/plugins"} {
 		_ = os.MkdirAll(filepath.Join(home, d), 0o755)
 	}
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -242,7 +242,7 @@ func TestExplainSaysTheTrustDialogIsPreAnswered(t *testing.T) {
 	// for every sandbox and say something false about most of them.
 	plainHome, plainTarget := testTree(t)
 	reg := loadTestRegistry(t)
-	ctx := policy.Context{Target: plainTarget, Home: plainHome, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: plainTarget, Home: plainHome, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	plain, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -304,7 +304,7 @@ func TestADanglingSymlinkAtAProjectedNameRefusesRatherThanWritingTheHost(t *test
 			for _, d := range []string{".claude/skills", ".claude/plugins"} {
 				_ = os.MkdirAll(filepath.Join(home, d), 0o755)
 			}
-			ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+			ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 			pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)

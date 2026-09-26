@@ -91,6 +91,7 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	stubHostAccount(t, home)
 
 	// A config directory with a profile file that does not parse. Set per
 	// case, not here: every other case needs a config directory that LOADS.
@@ -490,6 +491,7 @@ func TestTheRefusalDocumentEscapesForgingRunes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stubHostAccount(t, home)
 
 	// U+202E reverses how the rest of the row reads; U+007F is issue #333's one
 	// code point. In a path that does NOT exist, so the refusal quotes it back.

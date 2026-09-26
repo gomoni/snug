@@ -84,6 +84,12 @@ func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues) {
 	// becoming a prompt. One invocation answers both questions: WHICH file
 	// (stderr) and WHAT IT SAYS (stdout).
 	cmd := exec.CommandContext(ctx, ssh, "-G", "-v", "-o", "BatchMode=yes", sshProbeHost)
+	// WaitDelay bounds the wait for cmd.Run's own I/O goroutines once the
+	// context kills ssh itself: a `Match exec` child inheriting the stdout or
+	// stderr pipe would otherwise hold Run open past sshProbeTimeout for as
+	// long as that child lives (internal/getent.Run's WaitDelay is the same
+	// fix for the same shape).
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	// cmd.Env stays nil, so the probe inherits the HOST user's environment —
@@ -136,6 +142,7 @@ func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues) {
 // value still has to pass the whitelist and sshValueOK.
 func sshDefaultValues(ctx context.Context, ssh string) policy.SSHValues {
 	cmd := exec.CommandContext(ctx, ssh, "-G", "-F", os.DevNull, "-o", "BatchMode=yes", sshProbeHost)
+	cmd.WaitDelay = time.Second // the same bound probeSSHConfig sets, for the same reason
 	out, err := cmd.Output()
 	if err != nil {
 		return nil

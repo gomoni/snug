@@ -47,7 +47,7 @@ type userConfig struct {
 	// "the key was absent". A plain []string cannot tell an explicit empty list
 	// from an unset one, since both decode to len 0 — that told a user's
 	// written `defaults = []` a lie by silently widening it back to the
-	// built-in four.
+	// built-in defaults.
 	//
 	// []string and NOT []policy.ProfileName, deliberately, even though every
 	// element is a profile name: go-toml writes this field by REFLECTION, which
@@ -298,7 +298,7 @@ func loadUserConfig() userConfig {
 		// Only "there is no config file" is a non-event. Every OTHER read error
 		// — unreadable mode, EIO, a dangling symlink, a FIFO, an oversized file —
 		// used to return the empty config, which silently WIDENS the sandbox
-		// back to the built-in four while `snug config` reports the source as
+		// back to the built-in defaults while `snug config` reports the source as
 		// "built-in". `chmod 000` on a file saying `defaults = []` produced a
 		// full default sandbox. A parse error was already fatal; a read error
 		// must be too, for the same reason (invariant 5: no silent downgrade).
@@ -358,7 +358,7 @@ func loadUserConfig() userConfig {
 // It is also the door through which the `defaults` setting becomes
 // policy.ProfileName. A name the grammar refuses is fatal here rather than
 // carried: `defaults` is read on the path that starts a sandbox, so continuing
-// with the built-in four instead would be a silent widening — invariant 5, and
+// with the built-in defaults instead would be a silent widening — invariant 5, and
 // the same reasoning that already makes an unreadable config.toml fatal above.
 func defaultProfiles() (names []policy.ProfileName, source string) {
 	c := loadUserConfig()
@@ -914,6 +914,12 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 	if p.DNS {
 		show("dns", capRows("yes",
 			"a generated /etc/resolv.conf names a resolver inside the sandbox"))
+	}
+	if p.NSS {
+		show("nss", capRows("yes",
+			"generated /etc/passwd, /etc/group and /etc/nsswitch.conf name the host login "+
+				"name, uid, primary gid and group name — already exposed by `id` and $USER — "+
+				"and nothing else; no other account, no member list, no command table"))
 	}
 	if len(p.ListenNames) > 0 {
 		show("listen_names", capRows(strings.Join(p.ListenNames, " "),

@@ -39,6 +39,12 @@
 # print(len(ssl.create_default_context().get_ca_certs()))"
 [profile.sys]
 description = "Read-only OS runtime: /usr plus the few /etc files things actually need."
+# ABUSE: a hostile process inside the sandbox can use this to learn the host
+# login name, uid, primary gid and group name (already exposed by `id` and
+# `$USER`) and to resolve `localhost`/`snug` to the sandbox's own loopback;
+# the files are read-only, written by snug, name no other account, and name
+# only NSS modules loaded from the read-only /usr.
+nss = true
 ro = [
   "/usr",
   "/opt",
@@ -57,43 +63,38 @@ ro = [
   "/var/lib/ca-certificates",
   "/usr/share/ca-certificates",
 
-  # identity and name lookup
-  #
-  # nsswitch.conf is OPTIONAL because openSUSE ships it under /usr/etc and the
-  # /etc copy is absent on the container images — measured: no
-  # /etc/nsswitch.conf in registry.opensuse.org/opensuse/tumbleweed:latest,
-  # only /usr/etc/nsswitch.conf, 2222 bytes. Required, it refused that image
-  # outright (exit 77, `profile "@sys" grants "/etc/nsswitch.conf" which does
-  # not exist`), which is a legitimate distribution layout snug would not run
-  # on.
-  #
-  # glibc falls back there by itself, and the vendor copy is ALREADY inside
-  # under this profile's own /usr bind, so it needs no grant of its own.
-  # Measured under bwrap with a tmpfs /etc: openat /etc/nsswitch.conf ENOENT,
-  # then openat /usr/etc/nsswitch.conf = 3, and `getent passwd root` answers.
-  # Do NOT add a grant for it: it is the same host subpath of the /usr bind, so
-  # it is legal (sameUnderlyingTree) but an argv row with no effect and a claim
-  # that is false on every non-openSUSE host.
-  #
-  # Not a silent downgrade of anything the sandbox can use. The fallback only
-  # ever LOSES NSS modules — the host copy here names `mdns_minimal`, the
-  # vendor copy names only `files dns` — and the sandbox has no socket for
-  # sss, ldap, nis or mdns. With neither file glibc's compiled-in files/dns
-  # default still resolves both databases (measured).
-  "/etc/nsswitch.conf",
-  "/etc/passwd",
-  "/etc/group",
-
   # locale, timezone, and distro detection that tools branch on
   "/etc/localtime",
   "/etc/os-release",
   "/etc/alternatives",
+
+  # port and protocol names, the static IANA tables the generated
+  # nsswitch.conf's `services:`/`protocols: files` lines read. Debian and
+  # Ubuntu ship them only in /etc (netbase); openSUSE ships them only under
+  # /usr/etc, already inside the /usr bind and reached by `usrfiles`, so both
+  # are optional. Measured on the ubuntu-24.04 CI runner: without them
+  # `getent services http` and `getent protocols tcp` both fail in a sandbox.
+  "/etc/services",
+  "/etc/protocols",
 ]
-# /etc/resolv.conf is the one generated /etc file — see the KindData mount
-# Resolve assigns directly into p.Mounts (net.go). /etc/hosts is NOT
-# generated and is not granted here, so a run has no hosts file at all: a
-# tool expecting `localhost` to resolve from a file rather than the resolver
-# will not find it.
+# /etc/resolv.conf is the one generated /etc file that is UNCONDITIONAL — see
+# the KindData mount Resolve assigns directly into p.Mounts (net.go). identity
+# and name lookup are generated too — /etc/passwd, /etc/group and
+# /etc/nsswitch.conf, resolve.go's `if p.NSS` branch — but only when some
+# selected profile's `nss = true` folds true (Policy.NSS), which is what this
+# profile's own `nss = true` above does (issue #612: binding the host's own
+# /etc/passwd made getpwuid()->pw_dir the HOST's home directory rather than
+# $HOME, because the uid is unmapped inside the sandbox's user namespace — and
+# a bound /etc/nsswitch.conf could name a module, like sss or ldap, the
+# sandbox has no socket for, which is not a downgrade but is a claim the
+# generated file no longer needs to make since its content is fixed rather
+# than copied). Without `nss`, nothing here generates any of the three, and a
+# profile is free to bind its own host copies instead.
+#
+# /etc/hosts is NOT generated and is not granted here, so a run has no hosts
+# file at all beyond what nsswitch's `hosts: files myhostname dns` line
+# resolves without one: `localhost` and the sandbox's own hostname, through
+# libnss_myhostname, never anything else.
 optional = [
   "/opt",
   "/etc/ld.so.conf.d",
@@ -104,10 +105,11 @@ optional = [
   "/etc/crypto-policies",
   "/var/lib/ca-certificates",
   "/usr/share/ca-certificates",
-  "/etc/nsswitch.conf",
   "/etc/localtime",
   "/etc/os-release",
   "/etc/alternatives",
+  "/etc/services",
+  "/etc/protocols",
 ]
 symlink = [
   { at = "/bin",   target = "usr/bin"   },

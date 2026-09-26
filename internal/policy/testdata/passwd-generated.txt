@@ -1,0 +1,5 @@
+── /etc/passwd ──
+u:x:1000:1000:u:/home/u:/bin/sh
+
+── /etc/group ──
+users:x:1000:

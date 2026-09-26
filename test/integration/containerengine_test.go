@@ -2133,7 +2133,14 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 	})
 
 	t.Run("P3: newuidmap/newgidmap missing from PATH", func(t *testing.T) {
-		fakePATH := t.TempDir() // deliberately empty: nothing needed reaches this refusal
+		// NOT an empty PATH: since issue #612, snug looks up getent on every
+		// run (Context.HostAccountErr, main.go), before Resolve, before this
+		// preflight ever runs, and `-p @podman-socket` ADDS to the default
+		// selection rather than replacing it — @sys sets `nss = true`, so an
+		// empty PATH lost getent along with newuidmap/newgidmap and produced
+		// a DIFFERENT refusal than the one this case is about. pathWithout
+		// keeps every other resolvable name and removes only these two.
+		fakePATH := pathWithout(t, "newuidmap", "newgidmap")
 		fakeEnv := append(append([]string{}, env...), "PATH="+fakePATH)
 		proj, _ := target(t)
 		r := runEnv(t, fakeEnv, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
@@ -2157,6 +2164,47 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 		}
 		assertNoStageStarted(t, proj)
 	})
+}
+
+// pathWithout builds a directory symlinking every executable name the real
+// $PATH resolves, except the ones in except, and returns it as a PATH value
+// on its own (no fallback to the real $PATH after it) — so a preflight check
+// that legitimately needs everything else on this host still finds it, and
+// only the named binaries are actually absent. Used where a fixture needs ONE
+// specific binary missing rather than the whole environment gutted: an empty
+// PATH is also missing getent, bash and every other name a run needs before
+// it ever reaches the check under test.
+func pathWithout(t *testing.T, except ...string) string {
+	t.Helper()
+	skip := make(map[string]bool, len(except))
+	for _, n := range except {
+		skip[n] = true
+	}
+	dir := t.TempDir()
+	seen := map[string]bool{}
+	for _, d := range strings.Split(os.Getenv("PATH"), ":") {
+		if d == "" {
+			continue
+		}
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if skip[name] || seen[name] {
+				continue
+			}
+			// Best effort: a name this loop cannot symlink (a second entry
+			// with the same base name further down $PATH, say) is simply not
+			// re-added — the first one found, exactly like $PATH's own
+			// resolution order, wins.
+			if os.Symlink(filepath.Join(d, name), filepath.Join(dir, name)) == nil {
+				seen[name] = true
+			}
+		}
+	}
+	return dir
 }
 
 // dropEnv removes every "KEY=..." entry whose key is name, keeping the last

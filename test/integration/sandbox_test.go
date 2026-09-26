@@ -1336,6 +1336,10 @@ func TestSanitiseNeverLeavesAnEmptyPATHElement(t *testing.T) {
 	if err := os.Symlink(bwrap, filepath.Join(granted, "bwrap")); err != nil {
 		t.Fatal(err)
 	}
+	// getent too: @sys's generated /etc/passwd takes the account name from it,
+	// through the same filtered PATH, and a run without it refuses before the
+	// payload this test needs.
+	linkHostTool(t, granted, "getent")
 
 	// The binary a gap would reach. In the target, which is where an empty
 	// element resolves to.
@@ -1446,6 +1450,10 @@ func TestPseudoFSPathDropHoldsAgainstTheKernelsOwnResolution(t *testing.T) {
 	if err := os.Symlink(bwrap, filepath.Join(granted, "bwrap")); err != nil {
 		t.Fatal(err)
 	}
+	// getent too: @sys's generated /etc/passwd takes the account name from it,
+	// through the same filtered PATH, and a run without it refuses before the
+	// payload this test needs.
+	linkHostTool(t, granted, "getent")
 
 	// The hostile binary a shadow would reach: same name as the real coreutils
 	// tool, planted directly in the writable target, the way a compromised
@@ -2873,7 +2881,7 @@ func TestAbortedNetworkNeverRunsThePayload(t *testing.T) {
 	// path that was not fail-closed — which is now the startPasta step, before
 	// stage.StartSandbox has forked anything at all.
 	fakeBin := t.TempDir()
-	for _, b := range []string{"bwrap", "sh", "bash", "cat", "echo", "sleep", "touch"} {
+	for _, b := range []string{"bwrap", "getent", "sh", "bash", "cat", "echo", "sleep", "touch"} {
 		p, err := exec.LookPath(b)
 		if err != nil {
 			continue
@@ -3931,5 +3939,18 @@ echo MARKER-STILL-ALIVE
 	}
 	if code != 0 {
 		t.Errorf("the run exited %d after the payload signalled pid 1\n%s", code, out)
+	}
+}
+
+// linkHostTool symlinks the host's own name (found on the test's PATH) into
+// dir, for a test that hands snug a PATH holding only dir.
+func linkHostTool(t *testing.T, dir, name string) {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s is not on the host PATH, and snug refuses every @sys run without it: %v", name, err)
+	}
+	if err := os.Symlink(p, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
 	}
 }

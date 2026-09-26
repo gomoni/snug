@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/getent"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/stage"
@@ -97,6 +98,10 @@ func doctor(argv []string) int {
 		ok = false
 	} else {
 		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(bwrap, "--version")), bwrap)
+	}
+
+	if !reportGetent(getent.LookPath) {
+		ok = false
 	}
 
 	if pasta, err := exec.LookPath("pasta"); err != nil {
@@ -342,6 +347,27 @@ func doctor(argv []string) int {
 	}
 	fmt.Println("🎉 This host can run snug.")
 	return 0
+}
+
+// reportGetent prints the programs-section row for getent, ONLY when it is
+// missing: it is load-bearing for every run (issue #612's generated
+// /etc/passwd and /etc/group take their account and group name from it, with
+// no fallback), but that is true of libc itself, and this section reports
+// what is WRONG rather than inventorying everything present. lookup is
+// injected — the same shape as reportSubuidDelegation's check — and doctor's
+// own call site passes getent.LookPath, the identical var every
+// internal/getent lookup calls, so this row and an actual refusal can never
+// disagree about whether getent is there.
+func reportGetent(lookup func() (string, error)) bool {
+	if _, err := lookup(); err == nil {
+		return true
+	}
+	fmt.Println("  ❌ getent not found on PATH — every run will refuse")
+	fmt.Println("     💬 snug takes the sandbox's account and group name from the host's " +
+		"`getent`, with no fallback")
+	fmt.Println("     📦 zypper in glibc  |  apt install libc-bin  |  dnf install glibc-common")
+	fmt.Println("     🔧 on a non-glibc host, provide a compact getent, as musl does")
+	return false
 }
 
 // The four outcomes of the user-namespace probe. Three of them are not "it

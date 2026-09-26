@@ -145,7 +145,7 @@ func stageClaude(t *testing.T, host hostClaude) (policy.Mount, string, string) {
 		}
 		hostClaudeJSONTrusting(t, home, key)
 	}
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
 	pol, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "@claude"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

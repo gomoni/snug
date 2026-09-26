@@ -53,7 +53,10 @@
 --size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
---ro-bind-data 10 /etc/resolv.conf
+--ro-bind-data 10 /etc/group
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
 --size 1073741824
 --tmpfs /home/u
 --size 1073741824
@@ -65,7 +68,7 @@
 --size 1073741824
 --tmpfs /home/u/proj
 --perms 0755
---ro-bind-data 11 /snug/bin/podman
+--ro-bind-data 14 /snug/bin/podman
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824

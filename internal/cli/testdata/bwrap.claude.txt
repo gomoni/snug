@@ -29,22 +29,22 @@
 --size 1073741824
 --tmpfs /tmp
 --ro-bind /usr /usr
---ro-bind /etc/group /etc/group
+--ro-bind-data 10 /etc/group
 --ro-bind /etc/ld.so.cache /etc/ld.so.cache
 --ro-bind /etc/ld.so.conf /etc/ld.so.conf
---ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
---ro-bind /etc/passwd /etc/passwd
---ro-bind-data 10 /etc/resolv.conf
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
 --size 1073741824
 --tmpfs /home/u
---ro-bind-data 11 /proc/config.gz
---ro-bind-data 12 /proc/key-users
---ro-bind-data 13 /proc/keys
+--ro-bind-data 14 /proc/config.gz
+--ro-bind-data 15 /proc/key-users
+--ro-bind-data 16 /proc/keys
 --ro-bind /proc/sys /proc/sys
 --size 1073741824
 --tmpfs /home/u/.cache
 --perms 0600
---file 14 /home/u/.claude.json
+--file 17 /home/u/.claude.json
 --size 1073741824
 --tmpfs /home/u/.config
 --size 1073741824
@@ -52,9 +52,9 @@
 --size 1073741824
 --tmpfs /home/u/proj
 --ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
---ro-bind-data 15 /home/u/.claude/CLAUDE.md
+--ro-bind-data 18 /home/u/.claude/CLAUDE.md
 --perms 0600
---file 16 /home/u/.claude/settings.json
+--file 19 /home/u/.claude/settings.json
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824

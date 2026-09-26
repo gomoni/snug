@@ -261,7 +261,7 @@ func TestContainersScreenDoesNotOverclaimAcrossAWritableMiddleHop(t *testing.T) 
 	}
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
 		[]policy.ProfileName{"@sys", "@target-rw", "@podman-socket"},
-		policy.Context{Target: "/base/proj", Home: "/home/u", Shell: "/usr/bin/bash", Command: []string{"/bin/sh"}},
+		policy.Context{Target: "/base/proj", Home: "/home/u", Shell: "/usr/bin/bash", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}},
 		env)
 	if err != nil {
 		t.Fatal(err)

@@ -128,7 +128,7 @@ func assertNameRefusal(t *testing.T, out string, code int, arg, want string) {
 const exitUsageCode = 64
 
 // The `defaults` setting is the third door, and it is the one with a silent
-// downgrade available: continuing with the built-in four after refusing a name
+// downgrade available: continuing with the built-in defaults after refusing a name
 // the file asked for would widen the sandbox past what the human wrote
 // (invariant 5), exactly as an unreadable config.toml would.
 //

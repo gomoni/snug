@@ -14,14 +14,16 @@ import (
 // TestGetentWorksWhenOnlyTheVendorNsswitchIsVisible reproduces, with a raw
 // bwrap invocation rather than snug, the exact filesystem shape
 // registry.opensuse.org/opensuse/tumbleweed:latest has: no /etc/nsswitch.conf,
-// only /usr/etc/nsswitch.conf. Fails if @sys's now-optional grant for
-// /etc/nsswitch.conf stops being sufficient — i.e. if glibc's own fallback to
-// the vendor copy ever needs something this sandbox does not already give it
-// through the /usr bind.
+// only /usr/etc/nsswitch.conf. This is a HOST/glibc measurement, independent
+// of snug's own @sys: since issue #612, @sys no longer grants
+// /etc/nsswitch.conf at all (optional or otherwise) — it generates the file
+// instead, with fixed content, so this shape can never occur inside a real
+// snug sandbox. What stays worth pinning is the fact underneath the old
+// grant: glibc's own fallback to the vendor copy under /usr needs nothing
+// this raw bwrap invocation does not already give it through a /usr bind.
 //
 // The probe is raw bwrap, deliberately not snug, for requireSandbox's own
-// reason: a bug in snug's handling of the optional grant must not be able to
-// make this test pass by skipping the sandbox rather than by exercising it.
+// reason: this measures glibc, not snug's resolver.
 func TestGetentWorksWhenOnlyTheVendorNsswitchIsVisible(t *testing.T) {
 	budget(t)
 	requireSandbox(t)

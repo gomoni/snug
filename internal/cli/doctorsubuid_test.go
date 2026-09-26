@@ -2,9 +2,14 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/getent"
 )
 
 // TestDoctorWarnsAboutAMissingSubuidRangeAndDoesNotCondemnTheHost is issue
@@ -231,5 +236,69 @@ func TestTheSubuidReportNamesTheUnconventionalBaseAsUnconventional(t *testing.T)
 	}
 	if strings.Contains(out, "cannot map it") {
 		t.Fatalf("the conventional base was reported as unconventional:\n%s", out)
+	}
+}
+
+// TestSubuidEntryNameFallsBackOnlyOnNoEntry pins issue #612's F5: a numeric
+// fallback is a correct line only when getent affirmatively has no entry for
+// this uid (ErrNoEntry, exit 2). Any other getent failure — missing getent, a
+// timeout, a malformed line — must come back as an error rather than silently
+// becoming "1000", which subuidOwnerPresent would then fail to match against
+// the real owner's line in /etc/subuid.
+func TestSubuidEntryNameFallsBackOnlyOnNoEntry(t *testing.T) {
+	orig := getent.LookPath
+	t.Cleanup(func() { getent.LookPath = orig })
+
+	t.Run("no NSS entry falls back to the uid", func(t *testing.T) {
+		dir := t.TempDir()
+		script := filepath.Join(dir, "getent")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		getent.LookPath = func() (string, error) { return script, nil }
+		name, err := subuidEntryName()
+		if err != nil {
+			t.Fatalf("subuidEntryName refused on ErrNoEntry: %v", err)
+		}
+		if name != strconv.Itoa(os.Getuid()) {
+			t.Fatalf("name = %q, want the numeric uid %d", name, os.Getuid())
+		}
+	})
+
+	t.Run("any other getent failure refuses rather than falling back", func(t *testing.T) {
+		dir := t.TempDir()
+		script := filepath.Join(dir, "getent")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'NSS module load error' >&2\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		getent.LookPath = func() (string, error) { return script, nil }
+		name, err := subuidEntryName()
+		if err == nil {
+			t.Fatalf("subuidEntryName fell back to %q instead of refusing", name)
+		}
+		if name != "" {
+			t.Errorf("name = %q on a refusal, want empty", name)
+		}
+	})
+}
+
+// TestSubuidReportSurfacesANameLookupFailure pins the same issue at
+// reportSubuidDelegation: a getent failure that is not "no entry" must be
+// reported as itself, and the report must not compute a `snug fix subuid -w`
+// suggestion from an owner name it does not actually have.
+func TestSubuidReportSurfacesANameLookupFailure(t *testing.T) {
+	absent := func() error { return errors.New("/etc/subuid has no range for uid 1000; add one") }
+	nameErr := errors.New(`getent passwd 1000 failed: exit status 1: NSS module load error`)
+
+	out := captureStdout(t, func() {
+		reportSubuidDelegation(absent, subuidHost{
+			idMap: "0 0 4294967295\n", uid: 1000, nameErr: nameErr,
+		})
+	})
+	if !strings.Contains(out, "NSS module load error") {
+		t.Fatalf("the report did not surface the getent failure:\n%s", out)
+	}
+	if strings.Contains(out, "snug fix subuid -w") {
+		t.Fatalf("the report suggested a command built on an owner name it never resolved:\n%s", out)
 	}
 }

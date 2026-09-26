@@ -52,10 +52,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
-	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/getent"
 	"github.com/gomoni/snug/internal/hostread"
 	"golang.org/x/sys/unix"
 )
@@ -186,7 +185,7 @@ func subuidUserArg(who string) string {
 // subuidTargetUser answers WHOSE range this is, and it is the question that
 // makes the difference between a working line and one that looks right.
 //
-// Under sudo, os.Getuid() is 0 and user.LookupId gives "root" — so the
+// Under sudo, os.Getuid() is 0 and getent names uid 0 "root" — so the
 // obvious implementation emits `root:1001:64535`, which delegates a range to
 // an account no rootless container will ever run as. A distrobox init_hook is
 // the same trap one level worse: root runs the hook and the BOX USER is the
@@ -196,8 +195,11 @@ func subuidUserArg(who string) string {
 // with no argument and no $SUDO_USER is refused rather than served, because at
 // that point nothing on the machine says who was meant.
 func subuidTargetUser(explicit string) (name string, uid int, err error) {
-	return resolveSubuidUser(explicit, os.Getenv("SUDO_USER"), os.Geteuid(), user.Lookup,
-		func() (string, int) { return subuidEntryName(), os.Getuid() })
+	return resolveSubuidUser(explicit, os.Getenv("SUDO_USER"), os.Geteuid(), getent.PasswdByName,
+		func() (string, int, error) {
+			name, err := subuidEntryName()
+			return name, os.Getuid(), err
+		})
 }
 
 // resolveSubuidUser is the decision above with every host fact injected, for
@@ -208,8 +210,8 @@ func subuidTargetUser(explicit string) (name string, uid int, err error) {
 func resolveSubuidUser(
 	explicit, sudoUser string,
 	euid int,
-	lookup func(string) (*user.User, error),
-	self func() (string, int),
+	lookup func(string) (getent.Passwd, error),
+	self func() (string, int, error),
 ) (name string, uid int, err error) {
 	switch {
 	case explicit != "":
@@ -217,29 +219,24 @@ func resolveSubuidUser(
 		if lerr != nil {
 			return "", 0, fmt.Errorf("no such user %s on this host: %w", visibleValue(explicit), lerr)
 		}
-		return u.Username, atoiOrNegative(u.Uid), nil
+		return u.Name, u.UID, nil
 	case sudoUser != "":
 		u, lerr := lookup(sudoUser)
 		if lerr != nil {
 			return "", 0, fmt.Errorf("$SUDO_USER names %s, which this host does not know: %w",
 				visibleValue(sudoUser), lerr)
 		}
-		return u.Username, atoiOrNegative(u.Uid), nil
+		return u.Name, u.UID, nil
 	case euid == 0:
 		return "", 0, errors.New("running as root with no $SUDO_USER and no user named: say whose range " +
 			"this is — `snug fix subuid <user>` — because a range delegated to root delegates nothing")
 	default:
-		n, i := self()
+		n, i, serr := self()
+		if serr != nil {
+			return "", 0, fmt.Errorf("looking up the invoking user's own account name: %w", serr)
+		}
 		return n, i, nil
 	}
-}
-
-func atoiOrNegative(s string) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return -1
-	}
-	return n
 }
 
 // subuidLineAlreadyPresent is the idempotency check, and it is deliberately

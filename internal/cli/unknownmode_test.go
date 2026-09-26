@@ -37,7 +37,7 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	stubPasswdHome(t, home)
+	stubHostAccount(t, home)
 
 	// Public material only, and not the developer's: it is read and staged,
 	// never parsed, so a literal line is enough and nothing here can touch a
@@ -127,12 +127,16 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 	})
 }
 
-// stubPasswdHome makes this uid's passwd home read as home for one test, so a
-// test that points HOME at a temp directory is not refused for the skew
-// refuseUnreadSSHConfig exists to catch.
-func stubPasswdHome(t *testing.T, home string) {
+// stubHostAccount makes lookupHostAccount answer a fixed account for one
+// test, so an in-process test never depends on the CI host's own uid having
+// a getent entry. name and gname default to "u" when empty, which is enough
+// for every caller that does not care what the generated /etc/passwd or
+// /etc/group actually says.
+func stubHostAccount(t *testing.T, home string) {
 	t.Helper()
-	orig := lookupPasswdHome
-	lookupPasswdHome = func() string { return home }
-	t.Cleanup(func() { lookupPasswdHome = orig })
+	orig := lookupHostAccount
+	lookupHostAccount = func() (name, pwHome, gname string, err error) {
+		return "u", home, "u", nil
+	}
+	t.Cleanup(func() { lookupHostAccount = orig })
 }

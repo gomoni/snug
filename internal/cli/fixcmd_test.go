@@ -3,10 +3,11 @@ package cli
 import (
 	"errors"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/getent"
 )
 
 // WHOSE range this is decides whether the line works or merely looks right,
@@ -19,15 +20,15 @@ import (
 // a test that reads the machine asserts whatever machine ran it. The root arm
 // cannot be exercised any other way at all.
 func TestTheSubuidRangeIsNamedForTheRightUser(t *testing.T) {
-	known := map[string]string{"michal": "1000", "runner": "1001"}
-	lookup := func(name string) (*user.User, error) {
+	known := map[string]int{"michal": 1000, "runner": 1001}
+	lookup := func(name string) (getent.Passwd, error) {
 		uid, ok := known[name]
 		if !ok {
-			return nil, errors.New("unknown user " + name)
+			return getent.Passwd{}, errors.New("unknown user " + name)
 		}
-		return &user.User{Username: name, Uid: uid}, nil
+		return getent.Passwd{Name: name, UID: uid}, nil
 	}
-	self := func() (string, int) { return "invoker", 4242 }
+	self := func() (string, int, error) { return "invoker", 4242, nil }
 
 	for _, tc := range []struct {
 		name     string
@@ -70,6 +71,31 @@ func TestTheSubuidRangeIsNamedForTheRightUser(t *testing.T) {
 				t.Errorf("got %s:%d, want %s:%d", gotName, gotUID, tc.wantName, tc.wantUID)
 			}
 		})
+	}
+}
+
+// TestResolveSubuidUserSurfacesASelfLookupFailure pins issue #612's F5: the
+// default (no explicit user, no $SUDO_USER, not root) arm names the invoker
+// through self(), and a self() failure that is NOT "this uid has no NSS
+// entry" must reach the caller as a refusal naming the getent problem — not
+// be swallowed into a numeric fallback that then names the WRONG owner in a
+// `snug fix subuid -w` line (subuidEntryName's own doc comment: a name of
+// "1000" for a uid getent could not resolve is not a degraded line, it is a
+// line for the wrong owner that happens to parse).
+func TestResolveSubuidUserSurfacesASelfLookupFailure(t *testing.T) {
+	lookup := func(string) (getent.Passwd, error) {
+		t.Fatal("lookup should not run on the default arm")
+		return getent.Passwd{}, nil
+	}
+	selfErr := errors.New(`getent passwd 1000 failed: exit status 1: NSS module load error`)
+	self := func() (string, int, error) { return "", 0, selfErr }
+
+	_, _, err := resolveSubuidUser("", "", 1000, lookup, self)
+	if err == nil {
+		t.Fatal("resolveSubuidUser accepted a self() failure instead of refusing")
+	}
+	if !errors.Is(err, selfErr) {
+		t.Fatalf("refusal %q does not wrap the getent failure %q", err, selfErr)
 	}
 }
 
