@@ -2424,12 +2424,33 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                  run whose engine never came up is a run whose payload never\n")
 		fmt.Fprintf(out, "                  existed. The same pipe's write end is passed as --sync-fd and\n")
 		fmt.Fprintf(out, "                  held by the sandbox's own pid 1, so snug being KILLED cannot\n")
-		fmt.Fprintf(out, "                  release it either — only snug writing the byte can.\n")
+		fmt.Fprintf(out, "                  release it either — only snug writing the byte can, and a\n")
+		fmt.Fprintf(out, "                  TERM/INT/HUP snug catches first tears the sandbox down instead.\n")
 		fmt.Fprintf(out, "                  Residual: a snug SIGKILLed inside that window is measured to\n")
 		fmt.Fprintf(out, "                  leave nothing behind — the stage sees the lifeline close and\n")
 		fmt.Fprintf(out, "                  kills the parked init first — but a stage that cannot run code\n")
 		fmt.Fprintf(out, "                  at all (a SIGSTOPped tree) orphans that init, holding N and the\n")
 		fmt.Fprintf(out, "                  mount tree with a payload that does not exist and never will.\n")
+		if p.Net.Mode == policy.NetEgress {
+			fmt.Fprintf(out, "                  With @net, snug also confirms the network helper is still\n")
+			fmt.Fprintf(out, "                  running before the release; one that died first refuses the run.\n")
+		}
+	} else if p.Net.Mode == policy.NetEgress {
+		// The same gate on an @net run with no engine (issue #605): exec.go's
+		// runIsGated, spelled from the policy here for the same reason the
+		// engine's line above is.
+		fmt.Fprintf(out, "  payload gate    the payload is PARKED (bwrap --block-fd) from the moment its\n")
+		fmt.Fprintf(out, "                  mount tree is built until snug has confirmed the network helper\n")
+		fmt.Fprintf(out, "                  is still running, so a helper that died while the sandbox was\n")
+		fmt.Fprintf(out, "                  built is a refused run, not a payload with loopback only. The\n")
+		fmt.Fprintf(out, "                  same pipe's write end is passed as --sync-fd and held by the\n")
+		fmt.Fprintf(out, "                  sandbox's own pid 1, so snug being KILLED cannot release it,\n")
+		fmt.Fprintf(out, "                  and a TERM/INT/HUP snug catches first tears the sandbox down\n")
+		fmt.Fprintf(out, "                  instead of releasing it.\n")
+		fmt.Fprintf(out, "                  Residual: the helper dying between the release and the\n")
+		fmt.Fprintf(out, "                  payload's exec, or later, is a warning (loopback only); a\n")
+		fmt.Fprintf(out, "                  signal landing between snug's last look and the byte starts\n")
+		fmt.Fprintf(out, "                  the payload and then stops it.\n")
 	}
 	if !p.Topology.NeedsStage() {
 		fmt.Fprintf(out, "  control         none — there is no stage to control.\n")

@@ -61,7 +61,8 @@ TOPOLOGY
                   run whose engine never came up is a run whose payload never
                   existed. The same pipe's write end is passed as --sync-fd and
                   held by the sandbox's own pid 1, so snug being KILLED cannot
-                  release it either — only snug writing the byte can.
+                  release it either — only snug writing the byte can, and a
+                  TERM/INT/HUP snug catches first tears the sandbox down instead.
                   Residual: a snug SIGKILLed inside that window is measured to
                   leave nothing behind — the stage sees the lifeline close and
                   kills the parked init first — but a stage that cannot run code

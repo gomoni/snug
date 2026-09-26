@@ -3,6 +3,7 @@ package cli
 import (
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/internal/engine"
@@ -544,8 +545,8 @@ func buildPastaReport(p *policy.Policy) *reportPasta {
 		return &reportPasta{
 			Exec: execResolution("pasta"),
 			Argv: p.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD)),
-			Placeholder: "/proc/0/fd/63 is a placeholder; the real pid is the stage's, " +
-				"and 63 is fdNetnsN (internal/stage/fds.go)",
+			Placeholder: "/proc/0/fd/" + strconv.Itoa(stage.NetnsFD) + " is a placeholder; the real pid is the stage's, " +
+				"and " + strconv.Itoa(stage.NetnsFD) + " is fdNetnsN (internal/stage/fds.go)",
 		}
 	}
 	return &reportPasta{

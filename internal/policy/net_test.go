@@ -318,3 +318,27 @@ func TestHostAddressesSealedIsExactlyEgress(t *testing.T) {
 		}
 	}
 }
+
+// Issue #605: readiness is pasta's pid line, written after its whole
+// configuration, never "snug0 is UP" — pasta raises the link before it copies
+// the addresses the stage then seals. The pid file must be pasta's own stdout,
+// which is the pipe internal/sandbox's startPasta reads
+// (TestPastaIsNotConfiguredUntilItWritesItsPid asserts that end).
+func TestPastaArgsReportReadinessThroughItsStdout(t *testing.T) {
+	if PastaReadyPath != "/proc/self/fd/1" {
+		t.Fatalf("PastaReadyPath = %q; startPasta hands pasta the readiness pipe as fd 1", PastaReadyPath)
+	}
+	args := (&Policy{Net: NetPolicy{Mode: NetEgress}}).PastaArgs(PastaTargetChild(1))
+	n := 0
+	for i, a := range args {
+		if a == "--pid" {
+			n++
+			if i+1 >= len(args) || args[i+1] != PastaReadyPath {
+				t.Errorf("--pid is not followed by %s: %v", PastaReadyPath, args)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("--pid appears %d times, want exactly 1: %v", n, args)
+	}
+}

@@ -456,6 +456,33 @@ func PastaTargetStage(stagePID, netnsFD int) PastaTarget {
 	}
 }
 
+// PastaReadyPath is where pasta is told to write its pid file, and the pid line
+// arriving there is snug's only evidence that pasta has FINISHED configuring
+// the namespace. internal/sandbox's startPasta hands pasta a pipe as its
+// stdout, so pasta's /proc/self/fd/1 is that pipe and the path is the same on
+// every run: no filesystem state, and nothing for --dry-run to print as a
+// placeholder.
+//
+// Why a pid file and not "snug0 is UP and RUNNING": pasta raises IFF_UP on the
+// tap BEFORE it copies the host's addresses onto it (pasta.c's pasta_ns_conf:
+// nl_link_set_flags, then the IPv4 nl_addr_dup, then the IPv6 one), so UP and
+// RUNNING hold while pasta is still mid-configuration. The stage used to seal
+// the host's addresses onto snug0 at that point, and a v6 /128 seal landing
+// before pasta's own copy of the same address made pasta's add fail — the
+// kernel keys a v6 address by the address alone, and v4 by address and prefix,
+// which is why only the v6 half ever collided — so pasta died with "Couldn't
+// set IPv6 address(es) in namespace: File exists" (issue #605). MEASURED, 200
+// `@net` runs 16 at a time on a host with two global v6 addresses: 26 died
+// that way with UP+RUNNING as the readiness bar, 0 with this one (and 0 of 400
+// at 24 at a time).
+//
+// pasta opens this path in conf_open_files, before it joins the namespace, and
+// with --foreground writes its pid there only after tap_backend_init — the
+// call that runs pasta_ns_conf — has returned (passt.c; read at tags
+// 2026_06_11.a9c61ff and 2026_09_25.df90211). pasta ignores SIGPIPE and
+// writes nothing else to stdout, and snug drains the pipe regardless.
+const PastaReadyPath = "/proc/self/fd/1"
+
 // PastaArgs builds the pasta invocation for a sandbox whose netns and userns
 // are named by t.
 //
@@ -516,6 +543,9 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 		// Pdeathsig, early-failure detection through Wait(), and deterministic
 		// teardown all at once.
 		"--foreground",
+
+		// The readiness signal: see PastaReadyPath.
+		"--pid", PastaReadyPath,
 	}
 
 	if n.NeedsDNSForward() {

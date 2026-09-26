@@ -889,6 +889,8 @@
       "--no-netns-quit",
       "--quiet",
       "--foreground",
+      "--pid",
+      "/proc/self/fd/1",
       "--netns",
       "/proc/0/fd/68",
       "--userns",
@@ -896,6 +898,6 @@
     ],
     "argv0_resolved": false,
     "argv0_note": "argv[0] is the bare name \"pasta\" and snug does not exec that name: it calls exec.LookPath(\"pasta\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH pasta runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v pasta",
-    "placeholder": "/proc/0/fd/63 is a placeholder; the real pid is the stage's, and 63 is fdNetnsN (internal/stage/fds.go)"
+    "placeholder": "/proc/0/fd/68 is a placeholder; the real pid is the stage's, and 68 is fdNetnsN (internal/stage/fds.go)"
   }
 }

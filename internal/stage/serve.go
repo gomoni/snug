@@ -692,23 +692,35 @@ awaitInfo:
 			forkedSent, info.InitPID)
 	}
 
+	// On EVERY gated run, before this stage reports ready: bwrap answers
+	// --info-fd long before it has finished: MEASURED at that moment, the
+	// init's mount namespace held 816 mounts with the whole HOST TREE at
+	// /oldroot and a writable root, settling ~150ms later to 44 mounts rooted
+	// at /newroot, read-only.
+	//
+	// Two consumers. An engine that joined at the early moment and unshared
+	// would keep a private copy of the host tree FOREVER — in the one
+	// namespace the derived view exists to keep host-free. And P0's last look
+	// at pasta before the release byte (issue #605) is worth only as much as
+	// what is left between it and the payload's exec: reported at --info-fd
+	// time, the whole mount build still followed the look, and a pasta that
+	// died during it was a warning rather than the refusal the gate exists
+	// to give. Waited for here, what follows the look is bwrap's last steps
+	// after `--remount-ro /` up to its read on --block-fd.
+	if req.Gated {
+		if err := waitForSandboxMounts(info.InitPID, sandboxMountsTimeout); err != nil {
+			return abort(err)
+		}
+	}
+
 	// The engine, EAGERLY and inside this one request: it shares N with the
 	// sandbox, and on a gated run it starts while the payload is still parked,
 	// so "the engine is confined to N" is a precondition of the payload
 	// existing at all rather than a race against it (issue #63 Tier B, issue
 	// #125 C2). Absent EnginePodman means no container profile is selected and
-	// there is simply no engine in this run.
+	// there is simply no engine in this run. Every engine run is gated
+	// (enginefork.go refuses otherwise), so the mount wait above has run.
 	if req.EnginePodman != "" {
-		// WAIT FIRST, and this is not a nicety. bwrap answers --info-fd long
-		// before it has finished: MEASURED at that moment, the init's mount
-		// namespace held 816 mounts with the whole HOST TREE at /oldroot and a
-		// writable root, settling ~150ms later to 44 mounts rooted at
-		// /newroot, read-only. An engine that joined at the early moment and
-		// unshared would keep a private copy of the host tree FOREVER — in the
-		// one namespace the derived view exists to keep host-free.
-		if err := waitForSandboxMounts(info.InitPID, sandboxMountsTimeout); err != nil {
-			return abort(err)
-		}
 		if err := startEngine(netnsN, info.InitPID, req, p0); err != nil {
 			return abort(err)
 		}
@@ -834,8 +846,8 @@ func waitForSandboxMounts(initPID int, timeout time.Duration) error {
 			return fmt.Errorf("__stage-serve: the sandbox's mounts were not finished %s after "+
 				"bwrap reported its init (pid %d): its root mount is still writable, which means "+
 				"`--remount-ro /` has not run and the namespace may still hold the host tree.\n"+
-				"      Refusing to start the container engine rather than joining a half-built "+
-				"view (last error: %v)", timeout, initPID, err)
+				"      Refusing to release the payload or start a container engine into a "+
+				"half-built view (last error: %v)", timeout, initPID, err)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

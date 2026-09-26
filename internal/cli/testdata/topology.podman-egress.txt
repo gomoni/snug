@@ -62,12 +62,15 @@ TOPOLOGY
                   run whose engine never came up is a run whose payload never
                   existed. The same pipe's write end is passed as --sync-fd and
                   held by the sandbox's own pid 1, so snug being KILLED cannot
-                  release it either — only snug writing the byte can.
+                  release it either — only snug writing the byte can, and a
+                  TERM/INT/HUP snug catches first tears the sandbox down instead.
                   Residual: a snug SIGKILLed inside that window is measured to
                   leave nothing behind — the stage sees the lifeline close and
                   kills the parked init first — but a stage that cannot run code
                   at all (a SIGSTOPped tree) orphans that init, holding N and the
                   mount tree with a payload that does not exist and never will.
+                  With @net, snug also confirms the network helper is still
+                  running before the release; one that died first refuses the run.
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no
                   listener, and no descriptor for it in the payload's table. It

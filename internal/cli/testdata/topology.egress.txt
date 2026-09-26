@@ -33,6 +33,18 @@ TOPOLOGY
   subuid          none (one uid, mapped by the stage itself:
                   no /etc/subuid line, no newuidmap/newgidmap, no setuid binary
                   on this path)
+  payload gate    the payload is PARKED (bwrap --block-fd) from the moment its
+                  mount tree is built until snug has confirmed the network helper
+                  is still running, so a helper that died while the sandbox was
+                  built is a refused run, not a payload with loopback only. The
+                  same pipe's write end is passed as --sync-fd and held by the
+                  sandbox's own pid 1, so snug being KILLED cannot release it,
+                  and a TERM/INT/HUP snug catches first tears the sandbox down
+                  instead of releasing it.
+                  Residual: the helper dying between the release and the
+                  payload's exec, or later, is a warning (loopback only); a
+                  signal landing between snug's last look and the byte starts
+                  the payload and then stops it.
   control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
                   and the stage. UNREACHABLE from the sandbox: no pathname, no
                   listener, and no descriptor for it in the payload's table. It

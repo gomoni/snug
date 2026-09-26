@@ -63,7 +63,7 @@ type parkedSandbox struct {
 }
 
 // parked is the one gate this process can have. Armed only when the "start"
-// request said Gated: an ungated run (no container engine, so no --block-fd)
+// request said Gated: an ungated run (no engine and no @net, so no --block-fd)
 // keeps exactly the teardown it had before this file existed.
 var parked parkedSandbox
 

@@ -80,8 +80,9 @@ type Options struct {
 	// into this sandbox's own N — EAGERLY, after the network is confirmed and
 	// while bwrap's payload is parked on the gate, as a second long-lived child
 	// of the stage alongside bwrap (issue #63, Tier B; ENGINE-WIRING.md §1;
-	// issue #125 for the gate). It is ALSO what makes this run a gated one:
-	// Run emits --block-fd/--sync-fd if and only if this is non-nil. nil means no
+	// issue #125 for the gate). It is ALSO one of the two things that make a
+	// run gated: Run emits --block-fd/--sync-fd iff this is non-nil OR the
+	// policy is NetEgress (a pasta to check before the release). nil means no
 	// engine at all: an ordinary @net (or offline) run with no container
 	// profile selected. Only meaningful when p.Topology.NeedsStage() is true;
 	// internal/cli/container.go is the only caller that sets it, having
@@ -246,9 +247,9 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// reason for parking is gone and stays gone; --json-status-fd, readChildPID
 	// and the whole `parked` type went with it and are not coming back.
 	//
-	// --block-fd IS back, for a different reason, on container runs only (issue
-	// #125). A container engine has to be confirmed up before the payload
-	// exists, and unlike pasta it cannot be started before bwrap: the whole
+	// --block-fd IS back, for a different reason, on container runs (issue
+	// #125) and on every @net run (below). A container engine has to be
+	// confirmed up before the payload exists, and unlike pasta it cannot be started before bwrap: the whole
 	// point of Tier C is that the engine's mount view is DERIVED from the
 	// sandbox's, which bwrap has to have built first. So the payload is parked
 	// again — but the window is bounded by the engine's cold start (1-2s
@@ -280,16 +281,31 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// Note for anyone adding a flag near here: the args memfd below is a
 	// SNAPSHOT of `flags`, so anything appended after it is silently dropped —
 	// the same shape as the --seccomp-after-`--` bug.
+	//
+	// Every @net run is gated too, engine or not. pasta can die while bwrap
+	// builds the sandbox, and an ungated payload would then start with
+	// loopback only after asking for @net; gated, runStaged looks at pasta
+	// once more right before the release byte and refuses instead (invariant
+	// 5). The stage reports ready only once bwrap's mounts are finished
+	// (serve.go's waitForSandboxMounts), so what is left is the last of
+	// bwrap's setup plus the release->exec interval, where a death is
+	// watch()'s mid-run warning. MEASURED by the red team, pasta SIGKILLed
+	// at a delay after it appears: a payload still ran with pasta killed
+	// 13.5-24.2ms before the payload's own start timestamp (bash
+	// $EPOCHREALTIME, no fork for the timestamp), and up to 34.7ms by
+	// date(1). Offline runs without an engine have no helper to
+	// check and are not gated: that path has no stage, so there is nothing to
+	// write the byte.
 	var release *os.File // P0's copy of the block pipe's write end; nil ⇒ this run is not gated
-	if opts.EngineSpec != nil {
+	if runIsGated(p, opts) {
 		if !p.Topology.NeedsStage() {
-			// Not reachable from internal/cli — every container selection
-			// resolves to a stage — and refused rather than assumed, because
-			// the failure mode is a payload parked with nothing that will ever
-			// release it.
-			return 0, fmt.Errorf("refusing to run: a container engine was requested on a topology "+
-				"with no stage (%s), so bwrap's payload would be parked with nothing to start "+
-				"the engine that releases it", p.Topology.Netns)
+			// Not reachable from internal/cli — every container selection and
+			// every NetEgress policy resolves to a stage — and refused rather
+			// than assumed, because the failure mode is a payload parked with
+			// nothing that will ever release it.
+			return 0, fmt.Errorf("refusing to run: a gated run (container engine or @net) on a "+
+				"topology with no stage (%s), so bwrap's payload would be parked with nothing "+
+				"to release it", p.Topology.Netns)
 		}
 		blockR, blockW, perr := os.Pipe()
 		if perr != nil {
@@ -534,7 +550,9 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 //
 //	stage.Start   -> N exists, pinned by a descriptor, with nobody in it
 //	startPasta    -> pasta attaches to that empty N and configures snug0
-//	WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N
+//	configured    -> pasta's pid line: its configuration of snug0 is COMPLETE
+//	WaitNetReady  -> the stage confirms snug0 is UP and RUNNING, from inside N,
+//	                 and seals the host's addresses onto it
 //	StartSandbox  -> bwrap builds the sandbox; on a container run its payload
 //	                 PARKS here and the engine starts behind the gate
 //	release       -> only NOW does a payload exist
@@ -639,7 +657,21 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 			return 0, err
 		}
 		defer helper.stop()
-		helper.watch(opts.warn)
+
+		// pasta FINISHED, not merely snug0 up, before the stage is asked
+		// anything: the stage's "netready" seals the host's addresses onto
+		// snug0, and a seal that lands while pasta is still copying the same
+		// addresses there kills pasta with EEXIST (issue #605;
+		// policy.PastaReadyPath has the mechanism).
+		select {
+		case <-helper.configured():
+		case <-helper.died():
+			return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
+		case <-time.After(pastaConfigTimeout):
+			return 0, fmt.Errorf("pasta did not finish configuring the sandbox's network within %s.\n"+
+				"      snug will not start a payload that asked for @net without it.\n"+
+				"      Check that pasta runs on this host: pasta --version", pastaConfigTimeout)
+		}
 	}
 
 	// Raced against pasta dying (when there is a pasta to race), because the
@@ -664,6 +696,10 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		return 0, err
 	}
 
+	if err := helper.checkBeforeSandbox(release != nil); err != nil {
+		return 0, err
+	}
+
 	// Armed before StartSandbox, and here that is the fork of a GRANDchild:
 	// bwrap is forked by the stage, so P0 never learns its pid and st.Pid() is
 	// the only lever it has. Everything above this line — the stage, pasta,
@@ -675,9 +711,9 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	guard := armTeardown(opts, si, !terminalWillDeliver(p))
 	defer guard.stop()
 	// pasta is a descendant, so confirmTeardown's sweep kills it — and
-	// helper.watch is sitting on exactly that death, ready to report the
-	// sandbox as degraded. runStaged's `defer helper.stop()` is what normally
-	// claims the death, and on the signal path it has not run yet. Claim it
+	// helper.watch (armed once the payload is released) is sitting on that
+	// death, ready to report the sandbox as degraded. runStaged's
+	// `defer helper.stop()` is what normally claims the death, and on the signal path it has not run yet. Claim it
 	// here instead, before the first kill (issue #112).
 	guard.onSignal(helper.markStopping)
 
@@ -687,9 +723,32 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// forked into N and its socket answers. A failure means the stage has
 	// already killed bwrap and its init — invariant 5, with the payload never
 	// having existed rather than existing briefly on a doomed run.
-	info, err := st.StartSandbox(bwrap, argv, opts.EngineSpec, release != nil)
-	if err != nil {
-		return 0, err
+	//
+	// Raced against a caught signal, because on a gated run this is the long
+	// wait — the bwrap build, the mount settle and an engine's cold start —
+	// and the payload does not exist during any of it. A TERM/INT/HUP here
+	// tears the stage down at once rather than being held until after the
+	// release byte, which is when guard.wait would first have looked.
+	type startResult struct {
+		info bwrapinfo.Info
+		err  error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		info, err := st.StartSandbox(bwrap, argv, opts.EngineSpec, release != nil)
+		started <- startResult{info, err}
+	}()
+	var info bwrapinfo.Info
+	select {
+	case r := <-started:
+		if r.err != nil {
+			return 0, r.err
+		}
+		info = r.info
+	case sig := <-guard.sig:
+		code := guard.abortBeforePayload(st.Pid(), sig)
+		<-started // the stage is dead, so its control socket has closed
+		return code, nil
 	}
 
 	// Between the engine and the payload, and this is the reason the stage
@@ -702,6 +761,22 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	if opts.EngineSpec != nil && opts.OnEngineReady != nil {
 		if err := opts.OnEngineReady(); err != nil {
 			return 0, err
+		}
+	}
+
+	if release != nil {
+		if err := helper.checkBeforeRelease(opts.warn); err != nil {
+			return 0, err
+		}
+	}
+
+	// A signal caught at any point above is NEVER followed by the release.
+	// This is the last look; a signal landing between it and the write below
+	// is the residual, and guard.wait handles it as a signal to a payload
+	// that has just started (grace, then the sweep).
+	if release != nil {
+		if sig, ok := guard.caught(); ok {
+			return guard.abortBeforePayload(st.Pid(), sig), nil
 		}
 	}
 
@@ -949,6 +1024,66 @@ func fillMissingNamespaceIDs(pid int, namespaces map[string]uint64) {
 			continue
 		}
 		namespaces[kind] = st.Ino
+	}
+}
+
+// pastaConfigTimeout bounds how long P0 waits for pasta's pid line
+// (policy.PastaReadyPath). Equal to the stage's own interface bound, which it
+// replaces as the first wait a slow pasta meets.
+const pastaConfigTimeout = 10 * time.Second
+
+// runIsGated is Run's one predicate for emitting --block-fd/--sync-fd: a
+// container engine, or a pasta to check before the release.
+func runIsGated(p *policy.Policy, opts Options) bool {
+	return opts.EngineSpec != nil || p.Net.Mode == policy.NetEgress
+}
+
+// checkBeforeSandbox runs just before StartSandbox: a pasta that is ALREADY
+// dead is refused before bwrap is even forked. It does NOT arm watch(). Every
+// run with a pasta is gated (Run), so the payload does not exist until the
+// release byte, checkBeforeRelease is the last check, and watch is armed
+// THERE: armed here, a death while bwrap builds the sandbox or the engine
+// starts would print "the sandbox now has loopback only" for a sandbox that
+// is about to be refused and never runs.
+//
+// A pasta on an UNGATED run is refused outright: nothing could check it
+// between the bwrap build and the payload's exec, and that interval is the
+// silent downgrade the gate exists to close.
+func (h *netHelper) checkBeforeSandbox(gated bool) error {
+	if h != nil && !gated {
+		return fmt.Errorf("refusing to run: the network helper is running but this run has no " +
+			"payload gate, so nothing would check it between building the sandbox and starting " +
+			"the payload")
+	}
+	return helperDiedBeforePayload(h)
+}
+
+// checkBeforeRelease is the last check before the release byte: see
+// checkBeforeSandbox. A death after it is watch()'s mid-run warning — the
+// release->exec interval and everything after.
+func (h *netHelper) checkBeforeRelease(warn func(string)) error {
+	if err := helperDiedBeforePayload(h); err != nil {
+		return err
+	}
+	if h != nil {
+		h.watch(warn)
+	}
+	return nil
+}
+
+// helperDiedBeforePayload refuses a run whose pasta has already exited. nil
+// helper (no pasta on this run) or a live one is nil.
+func helperDiedBeforePayload(h *netHelper) error {
+	if h == nil {
+		return nil
+	}
+	select {
+	case <-h.died():
+		return fmt.Errorf("the network helper exited before the payload started, so the "+
+			"sandbox would have loopback only:\n      %s\n"+
+			"      snug will not run a payload that asked for @net without it; run it again", h.failure())
+	default:
+		return nil
 	}
 }
 

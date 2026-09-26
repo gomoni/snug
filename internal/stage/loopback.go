@@ -69,6 +69,12 @@ func bringUp(fd int, name string) error {
 // not start before the network it was promised actually works. IFF_RUNNING is
 // the kernel's own answer to "is the link operational".
 //
+// Neither flag says pasta is DONE: pasta raises the link before it copies the
+// host's addresses onto it. That is P0's wait, on pasta's pid line
+// (policy.PastaReadyPath), and it happens before "netready" is sent, so the
+// seal that follows this check never races pasta's own address adds (issue
+// #605).
+//
 // A missing interface is (false, nil), not an error: it is the ordinary state
 // while pasta is still starting, and the caller polls.
 func ifaceIsUp(fd int, name string) (bool, error) {
