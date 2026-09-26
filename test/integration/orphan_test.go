@@ -225,7 +225,7 @@ func orphanRun(t *testing.T, args []string, sig syscall.Signal, off time.Duratio
 		// that sleeps for 30s unless snug failed to start at all.
 		t.Fatalf("could not signal snug: %v\n%s", err, orphanLog(t, cmd))
 	}
-	_ = cmd.Wait()
+	orphanWait(t, cmd)
 	// Taken AFTER Wait returns, so it is genuinely "snug is gone". Everything
 	// below compares against this instant rather than against the existence of
 	// a file.
@@ -345,6 +345,103 @@ func orphanCmd(t *testing.T, args []string, proj, tok string) *exec.Cmd {
 	t.Cleanup(func() { log.Close() })
 	cmd.Stdout, cmd.Stderr = log, log
 	return cmd
+}
+
+// orphanWaitBudget bounds how long orphanRun waits for snug ITSELF to exit
+// once signalled, before treating the wait as hung rather than slow.
+//
+// Issue #616: in one full `make integration` run, cmd.Wait() on snug's own
+// process blocked for 3m43s at this exact call site with nothing captured —
+// the run only ended when go test's own -timeout panicked the whole process,
+// which dumps every goroutine but names no pid, no process state and nothing
+// about what snug or its descendants were doing. internal/sandbox/teardown.go
+// bounds its OWN internal wait — payloadGraceBudget (1s) plus
+// teardownPollBudget (250ms) — so an ordinary run of this test returns in low
+// seconds; this budget is an order of magnitude over that and two orders under
+// go test's 4m -timeout, so it fires long before either and still leaves
+// tens of seconds of margin against a briefly loaded host.
+const orphanWaitBudget = 20 * time.Second
+
+// orphanWait waits for snug (cmd) to exit, exactly as the plain `cmd.Wait()`
+// this replaces did on the ordinary path. Past orphanWaitBudget it instead
+// dumps snug and every descendant it can still find — cmdline, the signal
+// fields of /proc/<pid>/status, wchan and (where readable) stack — SIGKILLs
+// all of them, and fails the test with that dump attached. See orphanWaitBudget
+// for why: issue #616 measured a hang here with no diagnostic at all.
+func orphanWait(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(orphanWaitBudget):
+	}
+
+	snug := cmd.Process.Pid
+	tree := append([]int{snug}, descendantsOf(snug)...)
+	dump := dumpProcessTree(tree)
+	killAll(tree)
+	t.Fatalf("snug (pid %d) did not exit within %s of being signalled — issue #616's hang, "+
+		"where the identical wait blocked 3m43s in a full `make integration` run and left no "+
+		"trace of where snug was stuck. Dumped just before killing the tree:\n%s%s",
+		snug, orphanWaitBudget, dump, orphanLog(t, cmd))
+}
+
+// dumpProcessTree renders, for each pid, its cmdline, the signal-disposition
+// fields of /proc/<pid>/status (State/SigBlk/SigIgn/SigCgt), its wchan and —
+// where this process can read it — its kernel stack. Built for orphanWait's
+// hang dump: it says what a stuck pid was doing, not merely that it existed.
+func dumpProcessTree(pids []int) string {
+	var b strings.Builder
+	for _, pid := range pids {
+		fmt.Fprintf(&b, "  pid %d %v\n", pid, cmdlineOf(pid))
+		fmt.Fprintf(&b, "    status: %s\n", statusFieldsOf(pid, "State", "SigBlk", "SigIgn", "SigCgt"))
+		fmt.Fprintf(&b, "    wchan: %s\n", readTrimmed(fmt.Sprintf("/proc/%d/wchan", pid)))
+		if stack := readTrimmed(fmt.Sprintf("/proc/%d/stack", pid)); stack != "" {
+			b.WriteString("    stack:\n")
+			for line := range strings.SplitSeq(stack, "\n") {
+				fmt.Fprintf(&b, "      %s\n", line)
+			}
+		}
+	}
+	return b.String()
+}
+
+// statusFieldsOf reads the named fields out of /proc/<pid>/status, in the
+// order asked for. A field absent from the file (or the file unreadable) is
+// simply missing from the result rather than failing it — this is diagnostic
+// output attached to an already-failing test, not an assertion of its own.
+func statusFieldsOf(pid int, fields ...string) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	want := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		want[f] = true
+	}
+	var out []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		for _, f := range fields {
+			if v, cut := strings.CutPrefix(line, f+":"); cut && want[f] {
+				out = append(out, f+"="+strings.TrimSpace(v))
+			}
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func readTrimmed(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func orphanLog(t *testing.T, cmd *exec.Cmd) string {
