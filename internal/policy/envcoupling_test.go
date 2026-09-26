@@ -450,3 +450,37 @@ func TestEveryAnnotatedPathRefusesARelativeValue(t *testing.T) {
 		}
 	}
 }
+
+// A profile-authored coupling refusal composes {home}/{target} expansions
+// through vars, which are canonicalised host paths — the same class of
+// attacker-influenced bytes resolve.go's own refusals already escape with
+// VisibleText (issue #613). $HOME resolving through a symlink whose
+// destination carries a forging rune (planted by an earlier sandboxed run
+// with write access under $HOME, or a hostile mount) used to reach this
+// refusal unescaped.
+func TestCouplingRefusalEscapesAForgingRuneInTheExpandedValue(t *testing.T) {
+	env := newFakeEnv()
+	const forged = "FORGED-COUPLING-LINE"
+	forgedHome := "/home/u\n          reclaimed  " + forged + "\x1b[2K"
+	env.links["/home/u"] = forgedHome
+
+	reg := testRegistry()
+	reg["broken"] = &Profile{Name: "broken", Tmpfs: []string{"{home}/.config"}, Environ: EnvGrants{
+		Set: map[string]string{"XDG_DATA_HOME": "{home}/.local/share"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "broken"}, testCtx(), env)
+	if err == nil {
+		t.Fatal("a profile set a path-valued variable to something it does not grant")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, forged) {
+		t.Fatalf("the fixture's forged text never reached the refusal at all, so this test "+
+			"measures nothing: %v", err)
+	}
+	if i := strings.IndexFunc(msg, func(r rune) bool { return r != '\n' && IsForgingRune(r) }); i >= 0 {
+		t.Errorf("the coupling refusal printed a raw control character (%q) from $HOME's "+
+			"resolved value:\n%s", []rune(msg[i:])[0], strings.ReplaceAll(msg, "\x1b", "<ESC>"))
+	}
+	if !strings.Contains(msg, `\n`) {
+		t.Errorf("the escaped form of the newline never reached the refusal: %v", err)
+	}
+}

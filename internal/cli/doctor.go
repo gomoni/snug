@@ -332,7 +332,8 @@ func doctor(argv []string) int {
 		// bill of health or die on the way to printing one.
 		fmt.Printf("  ❌ %d profile file(s) did not load; snug will refuse to start a sandbox\n", len(bad))
 		for _, f := range bad {
-			fmt.Printf("     %s\n       %v\n", f.Path, f.Err)
+			fmt.Printf("     %s\n       %s\n", policy.VisibleText(f.Path),
+				strings.Join(badFileErrorLines(f), "\n       "))
 		}
 		ok = false
 	default:

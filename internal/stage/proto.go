@@ -232,9 +232,34 @@ func encode(v any) ([]byte, error) {
 		return nil, err
 	}
 	if len(b) > maxMessage {
-		return nil, fmt.Errorf("control message is %d bytes, over the %d ceiling", len(b), maxMessage)
+		return nil, fmt.Errorf("the %q message is %d bytes, over the %d byte ceiling%s",
+			messageOp(v), len(b), maxMessage, oversizeNote(v))
 	}
 	return b, nil
+}
+
+// messageOp names which of the protocol's request/event shapes grew past the
+// ceiling, so the error is not just a byte count with nothing to point a
+// reader at which of the several messages this connection can send it was.
+func messageOp(v any) string {
+	switch m := v.(type) {
+	case request:
+		return m.Op
+	case event:
+		return m.Op
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// oversizeNote calls out the one field on the "start" request a user actually
+// controls — the sandboxed command's own argv — since every other field on
+// every message shape is built by snug itself.
+func oversizeNote(v any) string {
+	if req, ok := v.(request); ok && req.Op == "start" {
+		return "; the sandboxed command's own argv is the part of this request a user controls"
+	}
+	return ""
 }
 
 // decodeStrict rejects an unknown field and rejects trailing data after the one

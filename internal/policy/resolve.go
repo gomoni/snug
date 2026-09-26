@@ -90,7 +90,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// unusableTarget, which is a marker and not a prefix, precisely so this
 	// stays a change to an exit code and not to what a user reads.
 	if ctx.Target == "" {
-		return nil, unusableTarget{errors.New("no target directory")}
+		return nil, unusableTarget{errors.New("no target directory: pass a directory as snug's " +
+			"positional argument")}
 	}
 	target, err := env.EvalSymlinks(ctx.Target)
 	if err != nil {
@@ -108,7 +109,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// add() while the GUEST side and anything derived from {home} were not.
 	// Fails closed, like the target.
 	if ctx.Home == "" {
-		return nil, fmt.Errorf("cannot determine $HOME")
+		return nil, fmt.Errorf("cannot determine $HOME: it is unset or empty; set $HOME to an " +
+			"absolute, existing directory")
 	}
 	home, err := env.EvalSymlinks(ctx.Home)
 	if err != nil {
@@ -246,7 +248,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 						return nil
 					}
 					if errors.Is(err, fs.ErrNotExist) {
-						return fmt.Errorf("profile %q grants %q which does not exist (mark it optional if that is expected)", name, host)
+						return fmt.Errorf("profile %q grants %q which does not exist%s\n"+
+							"      create it, or mark it optional if that is expected",
+							name, host, expansionNote(spec, vars))
 					}
 					return fmt.Errorf("profile %q: %s: %s", name, VisibleText(host), visibleErr(err))
 				}
@@ -1407,6 +1411,55 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 	return filepath.Clean(host), filepath.Clean(guest), nil
 }
 
+// expansionNote says where a refused host path came from when the grant was
+// written with variables: the grant as the profile spells it, and the value
+// of each variable in it. "" for a literal grant, whose path is already what
+// the author wrote. Without it the refusal names only the expanded path, and
+// a {target_parent} grant resolved against the wrong target reads like snug
+// expanding the variable wrongly (issue #613).
+func expansionNote(spec string, vars map[string]string) string {
+	if !strings.Contains(spec, "{") && !strings.HasPrefix(spec, "~/") {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n      the profile writes it as %q", spec)
+	seen := map[string]bool{}
+	name := func(key string) {
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		val, ok := vars[key]
+		if !ok {
+			return
+		}
+		switch key {
+		case "target_parent":
+			fmt.Fprintf(&b, "\n      {target_parent} is %q, the parent of the target %q", val, vars["target"])
+		case "target":
+			fmt.Fprintf(&b, "\n      {target} is %q, the directory snug was given", val)
+		default:
+			fmt.Fprintf(&b, "\n      {%s} is %q", key, val)
+		}
+	}
+	if strings.HasPrefix(spec, "~/") {
+		name("home")
+	}
+	for rest := spec; ; {
+		i := strings.Index(rest, "{")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(rest[i:], "}")
+		if j < 0 {
+			break
+		}
+		name(rest[i+1 : i+j])
+		rest = rest[i+j+1:]
+	}
+	return b.String()
+}
+
 // expandVars substitutes {name} from vars, in ONE PASS.
 //
 // The single pass is the substance, not an optimisation. The loop this replaced
@@ -1429,13 +1482,20 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 // Neither needs a hostile profile — a directory with a brace in its name is
 // enough — and both stop being expressible once the output is written once.
 func expandVars(s string, vars map[string]string) (string, error) {
+	var b strings.Builder
 	if strings.HasPrefix(s, "~/") {
-		s = vars["home"] + s[1:]
+		// $HOME is COMMITTED like any substituted value: a brace in the host's
+		// home path is data, never a placeholder the scan below expands.
+		b.WriteString(vars["home"])
+		s = s[1:]
 	}
 	if !strings.Contains(s, "{") {
-		return s, nil // the overwhelmingly common case, and no allocation
+		if b.Len() == 0 {
+			return s, nil // the overwhelmingly common case, and no allocation
+		}
+		b.WriteString(s)
+		return b.String(), nil
 	}
-	var b strings.Builder
 	for {
 		i := strings.Index(s, "{")
 		if i < 0 {

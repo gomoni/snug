@@ -447,7 +447,7 @@ func FilterFD() (*os.File, error) {
 func memfd(name string, data []byte) (*os.File, error) {
 	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC)
 	if err != nil {
-		return nil, fmt.Errorf("memfd_create: %w", err)
+		return nil, fmt.Errorf("staging %s: memfd_create: %w", name, err)
 	}
 	f := os.NewFile(uintptr(fd), name)
 	if _, err := f.Write(data); err != nil {
