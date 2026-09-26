@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -80,6 +82,9 @@ type netHelper struct {
 	done    chan struct{}
 	waitErr error
 
+	// configuredCh is closed by readReady when pasta's pid line arrives.
+	configuredCh chan struct{}
+
 	// stopping distinguishes "we are tearing down" from "pasta died on us", so
 	// a normal exit does not print an alarming warning at the end of every run.
 	stopping atomic.Bool
@@ -103,7 +108,15 @@ func startPasta(p *policy.Policy, target policy.PastaTarget) (*netHelper, error)
 	cmd.Env = []string{}
 	var errbuf strings.Builder
 	cmd.Stderr = &errbuf
-	cmd.Stdout = nil
+
+	// pasta's stdout is the readiness pipe: PastaArgs passes
+	// --pid policy.PastaReadyPath, which is pasta's own fd 1, so the pid line
+	// pasta writes there once pasta_ns_conf has returned arrives on readyR.
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("starting pasta: creating its readiness pipe: %w", err)
+	}
+	cmd.Stdout = readyW
 
 	// Pdeathsig: if snug is SIGKILLed, the kernel kills pasta too. Teardown
 	// must not depend on snug getting the chance to clean up.
@@ -124,27 +137,56 @@ func startPasta(p *policy.Policy, target policy.PastaTarget) (*netHelper, error)
 	// being in its own group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 
-	if err := cmd.Start(); err != nil {
+	// Bounds Wait's copy of stderr once pasta itself has exited: a descendant
+	// that inherited the pipe (a wrapper's background child, say) would
+	// otherwise hold died() — and teardown's stop() — open for as long as it
+	// lives. Measured: with a fake pasta that backgrounds `sleep 5` and exits,
+	// died() had not fired after 3s without this, and fired at 1.0s with it
+	// (TestPastaDeathIsReportedWhileADescendantHoldsItsStderr).
+	cmd.WaitDelay = time.Second
+
+	err = cmd.Start()
+	// pasta holds its own copy now; ours must go, or EOF on readyR could never
+	// report a pasta that exited without writing its pid.
+	readyW.Close()
+	if err != nil {
+		readyR.Close()
 		return nil, fmt.Errorf("starting pasta: %w", err)
 	}
 
-	h := &netHelper{cmd: cmd, stderr: &errbuf, done: make(chan struct{})}
+	h := &netHelper{cmd: cmd, stderr: &errbuf, done: make(chan struct{}),
+		configuredCh: make(chan struct{})}
+	go h.readReady(readyR)
 	go func() {
 		h.waitErr = cmd.Wait()
 		close(h.done)
 	}()
 
-	// Readiness is NOT checked here any more, and the caller must not assume it.
-	// pasta is now started against a namespace with no process in it, so there
-	// is no /proc/<pid>/net/dev to poll — internal/stage answers the question
-	// instead, through a socket it created inside the namespace before leaving
-	// it. See runStaged's ordering comment and stage.WaitNetReady.
-	//
-	// What this function still guarantees is only that pasta was EXECED. Its
-	// having exited is caught by watch(); its having failed to configure
-	// anything is caught by the stage.
+	// Readiness is NOT waited for here, and the caller must not assume it:
+	// configured() says pasta has finished, and died() says it never will.
+	// runStaged races the two before it lets the stage touch snug0.
 	return h, nil
 }
+
+// readReady closes configured once pasta has written a line to its pid file
+// (policy.PastaReadyPath), then drains the pipe until pasta exits so a later
+// write can never block it. EOF before a line means pasta is gone without
+// having configured anything; died() reports that, so nothing is closed here.
+func (h *netHelper) readReady(r *os.File) {
+	defer r.Close()
+	br := bufio.NewReader(r)
+	if line, err := br.ReadString('\n'); err == nil && strings.TrimSpace(line) != "" {
+		close(h.configuredCh)
+	} else {
+		return
+	}
+	_, _ = io.Copy(io.Discard, br)
+}
+
+// configured is closed once pasta reports that it has finished configuring the
+// namespace — addresses and routes of both families on snug0, not merely the
+// link up. See policy.PastaReadyPath for why "UP and RUNNING" is not this.
+func (h *netHelper) configured() <-chan struct{} { return h.configuredCh }
 
 func hasNonLoopback(procNetDev string) bool {
 	sc := bufio.NewScanner(strings.NewReader(procNetDev))

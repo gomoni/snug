@@ -84,7 +84,8 @@ type request struct {
 	Passthrough int `json:"passthrough,omitempty"`
 	// Gated says that the argv above carries bwrap's --block-fd and --sync-fd,
 	// so the sandbox's init will PARK before forking any payload and P0 holds
-	// the byte that releases it (issue #125, C2 gate).
+	// the byte that releases it (issue #125, C2 gate; every @net run too, so P0
+	// can refuse a pasta that died before the release, issue #605).
 	//
 	// It is a field rather than something P1 infers, because it names an
 	// OBLIGATION rather than a fact: a parked init has not yet armed

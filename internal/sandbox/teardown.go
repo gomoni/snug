@@ -91,10 +91,12 @@ import (
 //     with kill(2) is delivered to the handler.
 //
 // WHAT THOSE TWO LEAVE BEHIND CHANGED SHAPE WITH ISSUE #125's GATE, on
-// container runs only, and it is written down here rather than discovered
-// later. During the parked window — bwrap has built the sandbox and its init is
-// blocked on --block-fd while the container engine starts, 1-2s typically and
-// up to engineSocketWaitTimeout — a SIGKILL of P0 plays out like this,
+// every gated run (a container engine or @net), and it is written down here
+// rather than discovered later. During the parked window — bwrap has built the
+// sandbox and its init is blocked on --block-fd while the container engine
+// starts, 1-2s typically and up to engineSocketWaitTimeout; on an @net run
+// with no engine only until P0 has looked at pasta — a SIGKILL of P0 plays
+// out like this,
 // MEASURED end to end, 20 runs, with a fake engine that never binds its socket
 // so the window is the full 30s:
 //
@@ -682,6 +684,33 @@ func armTeardown(opts Options, init *sandboxInit, relay bool) *teardownGuard {
 func (g *teardownGuard) stop() {
 	signal.Stop(g.sig)
 	g.init.close()
+}
+
+// caught returns a signal the guard has already caught, without waiting.
+func (g *teardownGuard) caught() (os.Signal, bool) {
+	select {
+	case sig := <-g.sig:
+		return sig, true
+	default:
+		return nil, false
+	}
+}
+
+// abortBeforePayload is wait's caught-signal path for a run whose payload does
+// not exist yet — parked on the gate, or not forked at all. No grace: there is
+// nothing inside to give it to, and the only safe outcome is that the release
+// byte is never written. Returns 128+signal, as wait does.
+func (g *teardownGuard) abortBeforePayload(rootChildPid int, sig os.Signal) int {
+	var pinned *os.File
+	if fd, err := unix.PidfdOpen(rootChildPid, 0); err == nil {
+		pinned = os.NewFile(uintptr(fd), "pidfd-sandbox")
+		defer pinned.Close()
+	}
+	for _, fn := range g.beforeSweep {
+		fn()
+	}
+	confirmTeardown(pinned, g.opts.excludeSet(), g.opts.warn)
+	return 128 + int(sig.(syscall.Signal))
 }
 
 // wait races `wait` — however a topology blocks until its sandbox is done —
