@@ -17,6 +17,8 @@ defined in  builtin:base.toml
                    /etc/localtime
                    /etc/os-release
                    /etc/alternatives
+                   /etc/services
+                   /etc/protocols
   symlink          /bin -> usr/bin
                    /sbin -> usr/sbin
                    /lib -> usr/lib
@@ -26,7 +28,7 @@ defined in  builtin:base.toml
                    the host login name, uid, primary gid and group name —
                    already exposed by `id` and $USER — and nothing else; no
                    other account, no member list, no command table
-  optional         /opt /etc/ld.so.conf.d /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf /etc/crypto-policies /var/lib/ca-certificates /usr/share/ca-certificates /etc/localtime /etc/os-release /etc/alternatives
+  optional         /opt /etc/ld.so.conf.d /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf /etc/crypto-policies /var/lib/ca-certificates /usr/share/ca-certificates /etc/localtime /etc/os-release /etc/alternatives /etc/services /etc/protocols
 
 To see what this actually produces for a directory:
   snug --dry-run -p @sys <dir>

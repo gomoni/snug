@@ -67,6 +67,15 @@ ro = [
   "/etc/localtime",
   "/etc/os-release",
   "/etc/alternatives",
+
+  # port and protocol names, the static IANA tables the generated
+  # nsswitch.conf's `services:`/`protocols: files` lines read. Debian and
+  # Ubuntu ship them only in /etc (netbase); openSUSE ships them only under
+  # /usr/etc, already inside the /usr bind and reached by `usrfiles`, so both
+  # are optional. Measured on the ubuntu-24.04 CI runner: without them
+  # `getent services http` and `getent protocols tcp` both fail in a sandbox.
+  "/etc/services",
+  "/etc/protocols",
 ]
 # /etc/resolv.conf is the one generated /etc file that is UNCONDITIONAL — see
 # the KindData mount Resolve assigns directly into p.Mounts (net.go). identity
@@ -99,6 +108,8 @@ optional = [
   "/etc/localtime",
   "/etc/os-release",
   "/etc/alternatives",
+  "/etc/services",
+  "/etc/protocols",
 ]
 symlink = [
   { at = "/bin",   target = "usr/bin"   },

@@ -144,7 +144,9 @@ echo "x:x:0:0:x:/:/bin/sh" >> /etc/passwd 2>&1 && echo APPEND-OK || echo APPEND-
 // doc comment records: a shorter nsswitch.conf (passwd/group/hosts/networks
 // only) broke `getent services http` and `getent protocols tcp` on openSUSE
 // with exit 2 rather than falling back to a compiled-in default. The
-// `usrfiles` module on those two lines (plus rpc, ethers) is what fixes it.
+// `usrfiles` module on those two lines (plus rpc, ethers) is what fixes it
+// there; on Debian and Ubuntu the tables live only in /etc, and @sys's own
+// /etc/services and /etc/protocols grants are what answer `files`.
 func TestNSSServicesStillResolve(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
