@@ -119,7 +119,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	segs, prefix, libpod, ok := normaliseFull(r.URL.Path)
 	if !ok {
-		p.deny(w, "malformed path %q", r.URL.Path)
+		p.deny(w, "path %q contains a \".\" or \"..\" segment, which snug refuses outright "+
+			"rather than resolve", r.URL.Path)
 		return
 	}
 
@@ -266,7 +267,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case allowed(segs, r.Method):
 		p.forward(w, r, nil)
 	default:
-		p.deny(w, "endpoint %s /%s is not permitted", r.Method, strings.Join(segs, "/"))
+		p.deny(w, "endpoint %s /%s is not permitted; snug forwards a fixed allowlist of "+
+			"docker-compat routes and refuses the rest by default (see this proxy's own doc "+
+			"comment for what is modelled and why)", r.Method, strings.Join(segs, "/"))
 	}
 }
 
@@ -522,7 +525,8 @@ func (p *Proxy) handleImageCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if q.Get("fromImage") == "" {
-		p.deny(w, "images/create without fromImage is not a pull")
+		p.deny(w, "images/create without fromImage is not a pull; set ?fromImage=<image>"+
+			"[&tag=<tag>] to pull from a registry")
 		return
 	}
 	p.forward(w, r, nil)

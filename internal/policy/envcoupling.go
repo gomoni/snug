@@ -274,7 +274,7 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 	}
 	via := ""
 	if resolved != filepath.Clean(value) {
-		via = fmt.Sprintf(" (which resolves to %s through a symlink the profile creates)", resolved)
+		via = fmt.Sprintf(" (which resolves to %s through a symlink the profile creates)", VisibleText(resolved))
 	}
 	return fmt.Errorf("profile %q %ss %s=%s%s, which it does not grant.\n"+
 		"       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or\n"+
@@ -282,7 +282,7 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 		"       worse than an absent one, because every tool that reads it will believe it.\n"+
 		"       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an\n"+
 		"       empty directory), only that the profile naming it is the profile that granted it.",
-		profile, verb, name, value, via)
+		profile, verb, name, VisibleText(value), via)
 }
 
 // coversGuest is lexical containment on `/` boundaries, DOWNWARD with no depth

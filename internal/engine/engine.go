@@ -1194,7 +1194,7 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 	if err != nil {
 		return "", err
 	}
-	quotedTmp, err := tomlString(guestTmp)
+	quotedTmp, err := tomlString(guestTmp, "this run's own tmp directory")
 	if err != nil {
 		return "", fmt.Errorf("containers.conf image_copy_tmp_dir: %w", err)
 	}
@@ -1231,7 +1231,7 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 	// "disabled" ever dropped in favour of runc: that discards P5's
 	// measurement and moves the failure to the first controller write.
 	if ociRuntime != "" {
-		quotedRuntime, err := tomlString(ociRuntime)
+		quotedRuntime, err := tomlString(ociRuntime, "the OCI runtime name snug found")
 		if err != nil {
 			return "", fmt.Errorf("containers.conf runtime: %w", err)
 		}
@@ -1253,7 +1253,7 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 		// Copying podman's list into snug was the alternative and is worse: a
 		// copy of state that drifts silently on a podman upgrade.
 		if ociRuntimePath != "" {
-			quotedPath, err := tomlString(ociRuntimePath)
+			quotedPath, err := tomlString(ociRuntimePath, "the OCI runtime path snug found")
 			if err != nil {
 				return "", fmt.Errorf("containers.conf engine.runtimes: %w", err)
 			}
@@ -1288,13 +1288,18 @@ func (e *Engine) writeContainersConf(pol *policy.Policy, podman string, cgroupsD
 //
 // A quote is the hazard that matters: it closes the string early and the rest
 // of the line is read as TOML, silently authoring settings nobody wrote.
-func tomlString(v string) (string, error) {
+//
+// subject names where v came from, in the caller's own words — "the OCI
+// runtime path snug found", "this run's own tmp directory" — rather than a
+// fixed guess at which environment variable is responsible. A shared guess
+// used to name $TMPDIR/$XDG_DATA_HOME/$SNUG_PODMAN regardless of which of
+// this function's callers actually failed, which was wrong for most of them
+// (issue #613).
+func tomlString(v, subject string) (string, error) {
 	if strings.ContainsAny(v, "\"\\\n\r\x00") {
-		return "", fmt.Errorf("cannot render %q as a TOML string: it contains a quote, a "+
+		return "", fmt.Errorf("cannot render %s (%q) as a TOML string: it contains a quote, a "+
 			"backslash or a control character, which would close the string early and let the "+
-			"rest of the line be read as configuration.\n"+
-			"       This path comes from the environment snug was started with ($TMPDIR, "+
-			"$XDG_DATA_HOME or $SNUG_PODMAN); use one without those characters.", v)
+			"rest of the line be read as configuration", subject, v)
 	}
 	return fmt.Sprintf("%q", v), nil
 }
@@ -1525,7 +1530,7 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 		{"graphroot", guestStore},
 		{"runroot", guestRunroot},
 	} {
-		v, err := tomlString(kv.path)
+		v, err := tomlString(kv.path, "this run's own "+kv.key+" directory")
 		if err != nil {
 			return "", fmt.Errorf("storage.conf %s: %w", kv.key, err)
 		}
@@ -1965,7 +1970,7 @@ func helperBinariesDirs() string {
 	dirs := []string{"/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"}
 	quoted := make([]string, 0, len(dirs))
 	for _, d := range dirs {
-		v, err := tomlString(d)
+		v, err := tomlString(d, "a helper_binaries_dir entry")
 		if err != nil {
 			// UNREACHABLE, and now provably so: the three values above are
 			// literals in this file, and tomlString only refuses a quote, a

@@ -197,7 +197,9 @@ func MainSetup() error {
 	f.Close()
 
 	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		return fmt.Errorf("__stage-setup: unshare(CLONE_NEWNET): %w", err)
+		return fmt.Errorf("__stage-setup: unshare(CLONE_NEWNET): %w — check "+
+			"/proc/sys/user/max_net_namespaces and whether this process is already at the "+
+			"nesting limit", err)
 	}
 	after := threadNS("net")
 	if before == after || after == "" {

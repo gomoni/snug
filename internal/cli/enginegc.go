@@ -666,11 +666,11 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 	base, snugName, err := targetLockBase()
 	if err != nil {
 		return false, noop, fmt.Errorf("checking whether %s is live: %w — refusing rather than "+
-			"guessing", real, err)
+			"guessing", visibleValue(real), err)
 	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		return false, noop, fmt.Errorf("checking whether %s is live: opening %s: %w", real, base, err)
+		return false, noop, fmt.Errorf("checking whether %s is live: opening %s: %w", visibleValue(real), base, err)
 	}
 	defer root.Close()
 
@@ -683,7 +683,7 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 		// from now would create — the same reason lockTarget creates it.
 		snugRoot, _, serr := vdir.SecureSubdir(root, base, snugName)
 		if serr != nil {
-			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, serr)
+			return false, noop, fmt.Errorf("checking whether %s is live: %w", visibleValue(real), serr)
 		}
 		// LOCK_EX, where a run takes LOCK_SH: the exclusive request is what
 		// both detects a live run (flock refuses it while any shared holder
@@ -697,7 +697,7 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 				return true, noop, nil
 			}
 			snugRoot.Close()
-			return false, noop, fmt.Errorf("checking whether %s is live: %w", real, lerr)
+			return false, noop, fmt.Errorf("checking whether %s is live: %w", visibleValue(real), lerr)
 		}
 		if targetProvablyLive(snugRoot, snugPath, real) {
 			lock.Close()
@@ -720,7 +720,7 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 			// because there is nothing left for it to fail open ABOUT.
 			return false, noop, nil
 		}
-		return false, noop, fmt.Errorf("checking whether %s is live: %w", real, err)
+		return false, noop, fmt.Errorf("checking whether %s is live: %w", visibleValue(real), err)
 	}
 	defer snugRoot.Close()
 
@@ -733,7 +733,7 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 	}
 	if err != nil {
 		return false, noop, fmt.Errorf("checking whether %s is live: opening %s: %w",
-			real, filepath.Join(snugPath, name), err)
+			visibleValue(real), filepath.Join(snugPath, name), err)
 	}
 	defer f.Close()
 
@@ -742,7 +742,7 @@ func targetLive(real string, mode targetLiveMode) (live bool, unlock func(), err
 			return true, noop, nil
 		}
 		return false, noop, fmt.Errorf("checking whether %s is live: flock %s: %w",
-			real, filepath.Join(snugPath, name), flockErr)
+			visibleValue(real), filepath.Join(snugPath, name), flockErr)
 	}
 	unix.Flock(int(f.Fd()), unix.LOCK_UN)
 

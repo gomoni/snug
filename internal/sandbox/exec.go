@@ -232,7 +232,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	// expects either way.
 	infoR, infoW, err := os.Pipe()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating the --info-fd pipe: %w", err)
 	}
 	flags = append(flags, "--info-fd", strconv.Itoa(nextFD()))
 	extra = append(extra, infoW)
@@ -293,7 +293,7 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		}
 		blockR, blockW, perr := os.Pipe()
 		if perr != nil {
-			return 0, perr
+			return 0, fmt.Errorf("creating the --block-fd/--sync-fd gate pipe: %w", perr)
 		}
 		flags = append(flags, "--block-fd", strconv.Itoa(nextFD()))
 		extra = append(extra, blockR)

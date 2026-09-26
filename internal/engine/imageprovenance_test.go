@@ -596,12 +596,28 @@ func TestAnUnquotablePathIsRefusedRatherThanSubstituted(t *testing.T) {
 	// check must not be allowed to rot just because THIS file stopped feeding
 	// it one. Without this, 2a alone would pass on a tomlString that silently
 	// substituted.
-	if _, err := tomlString(`a"b`); err == nil {
+	if _, err := tomlString(`a"b`, "test value"); err == nil {
 		t.Error("tomlString accepted a value containing a quote; a config line would carry a " +
 			"placeholder, or close the string early and let the rest be read as TOML")
 	}
-	if _, err := tomlString("/plain/path"); err != nil {
+	if _, err := tomlString("/plain/path", "test value"); err != nil {
 		t.Errorf("tomlString refused an ordinary path, so the refusal above proves nothing: %v", err)
+	}
+
+	// 2c: issue #613. tomlString used to name a fixed, wrong guess at which
+	// environment variable was responsible ($TMPDIR/$XDG_DATA_HOME/
+	// $SNUG_PODMAN) regardless of which caller actually failed; it now takes
+	// the caller's own subject instead.
+	_, err = tomlString(`a"b`, "this is the caller's own subject")
+	if err == nil {
+		t.Fatal("tomlString accepted a value containing a quote")
+	}
+	if !strings.Contains(err.Error(), "this is the caller's own subject") {
+		t.Errorf("tomlString's refusal does not carry the caller's own subject: %v", err)
+	}
+	if strings.Contains(err.Error(), "TMPDIR") || strings.Contains(err.Error(), "SNUG_PODMAN") {
+		t.Errorf("tomlString's refusal still guesses a fixed environment variable rather than "+
+			"naming the caller's own subject: %v", err)
 	}
 }
 

@@ -871,17 +871,25 @@ func (p *Proxy) checkOne(source, dest string, ro bool) (mount, error) {
 	// can be swapped between here and podman's own resolution — which is why the
 	// RESOLVED path is what gets forwarded, so podman is asked for the thing we
 	// actually approved.
+	requested := source
 	real, err := resolveForwardable(source)
 	if err != nil {
 		return mount{}, fmt.Errorf("mount source %q cannot be resolved: %v", source, err)
 	}
+	resolvedNote := ""
 	if real != filepath.Clean(source) {
 		p.audit(fmt.Sprintf("mount source %s resolves to %s; judging the resolved path", source, real))
+		// Named here too, not just in the audit line above: the client sees
+		// only this response, and a bind that resolves through a symlink to
+		// something ungranted is refused for the RESOLVED path — leaving out
+		// the string the client actually wrote reads as snug expanding a
+		// bind wrongly rather than as the symlink rule it is (issue #613).
+		resolvedNote = fmt.Sprintf("mount source %q resolves to %q: ", requested, real)
 	}
 	source = real
 
 	if !p.hostPathVisible(source, !ro) {
-		return mount{}, fmt.Errorf("%s%s", p.bindRefusalReason(source, !ro), p.bindRefusalRemedy(!ro))
+		return mount{}, fmt.Errorf("%s%s%s", resolvedNote, p.bindRefusalReason(source, !ro), p.bindRefusalRemedy(!ro))
 	}
 
 	// The target graft, exact match (issue #376): source is already the

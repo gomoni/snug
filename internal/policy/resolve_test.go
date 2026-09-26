@@ -1813,3 +1813,22 @@ func TestEveryProfileStringSinkExpandsVariables(t *testing.T) {
 		})
 	}
 }
+
+// A `~/` spec commits $HOME the way `{home}` does: a brace in the host's home
+// path is data. Scanning the pasted home for placeholders bound a directory
+// the profile never named — HOME=/h/{target} turned `~/c` into /h/<target>/c
+// while `{home}/c` gave /h/{target}/c.
+func TestTildeCommitsHomeLikeTheHomeVariable(t *testing.T) {
+	vars := map[string]string{"home": "/h/{target}", "target": "/t"}
+	tilde, err := expandVars("~/c", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := expandVars("{home}/c", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tilde != "/h/{target}/c" || tilde != home {
+		t.Fatalf("~/c = %q, {home}/c = %q; both must be %q", tilde, home, "/h/{target}/c")
+	}
+}
