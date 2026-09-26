@@ -419,7 +419,8 @@ var ClaudeExecutingKeys = map[string]string{
 	// (h) Remote surfaces. Each either opens an outbound channel from inside
 	// the sandbox or names a remote peer; none is needed to run an agent
 	// against a directory, and `sshConfigs` additionally names an identity
-	// file that contradicts the agent-proxy identity pin (INDEX §9.1).
+	// file that contradicts the agent-proxy identity pin (base.toml's
+	// identity block; internal/sshproxy/proxy.go).
 	"sshConfigs":              "host/port/identity-file for `claude ssh` — a second, unpinned identity mechanism",
 	"sshHost":                 "remote peer",
 	"sshPort":                 "remote peer",

@@ -19,8 +19,8 @@ import (
 // runs it — profile.Load reads $XDG_CONFIG_HOME/snug/profiles.d unconditionally
 // (CLAUDE.md invariant 3's known gap, low severity because $XDG_CONFIG_HOME is
 // the host user's own environment variable rather than one the sandboxed
-// process controls, and unclosed today — the `--config` gate INDEX §2.7
-// describes is not built).
+// process controls, and unclosed today — the `--config` gate
+// policy.Profile's Trusted field describes is not built).
 func loadTestRegistry(t *testing.T) profile.Registry {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

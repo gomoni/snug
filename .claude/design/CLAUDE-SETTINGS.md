@@ -293,9 +293,9 @@ a credential, and each buys something a human would notice missing.
 That is three strings and seven booleans today. **The source of that count is
 `policy.ClaudeSettingAllowlist`, not this table** — the number "ten" is also
 written by hand into `base.toml`'s abuse block, into `claudeGuidance`'s injected
-text, into `stageClaudeSettings`' doc comment and into INDEX §9.3, and no test
-connects any of those copies to `len(ClaudeSettingAllowlist)`. CLAUDE.md's rule
-about a count in prose applies to all five: if this table and the code disagree,
+text and into `stageClaudeSettings`' doc comment, and no test connects any of
+those copies to `len(ClaudeSettingAllowlist)`. CLAUDE.md's rule about a count
+in prose applies to all four: if this table and the code disagree,
 **the code is right**, and the honest way to read the allowlist is
 `internal/policy/claudesettings.go`, where every row carries its own reason in a
 comment.
@@ -411,9 +411,9 @@ variable. See §4.1 — this is the finding.
    than one.
 4. The cost is already snug's stated position: `~/.claude.json`'s per-project
    `allowedTools` is deliberately not carried, "so a tool approved in a host
-   session is asked again in the sandbox" (INDEX §9.3, `claudeGuidance`,
-   `base.toml`). Dropping `permissions` is the same sentence about the same
-   thing, and failing towards *more* prompts is the safe direction.
+   session is asked again in the sandbox" (`claudeGuidance`, `base.toml`).
+   Dropping `permissions` is the same sentence about the same thing, and
+   failing towards *more* prompts is the safe direction.
 
 **(e) Path-valued — R-NOPATH.** `autoMemoryDirectory`, `plansDirectory`,
 `permissions.additionalDirectories`, `sshIdentityFile`, `claudeMdExcludes`,
@@ -470,7 +470,8 @@ about that decision belongs to the host's settings.
 *Reason:* each either opens an outbound channel from inside the sandbox or names
 a remote peer. None is needed to run an agent against a directory. `sshConfigs`
 additionally names an identity file that is not mounted — snug pins ssh identity
-through the agent proxy (INDEX §9.1) and a second mechanism would contradict it.
+through the agent proxy (base.toml's identity block; internal/sshproxy/proxy.go)
+and a second mechanism would contradict it.
 
 **(i) Credential-adjacent state.** `customApiKeyResponses` (records which API
 keys the user approved), `feedbackDrafts`, `asBuiltDebugKey`.
@@ -1041,7 +1042,7 @@ how the last three findings happened.
    with the session" is true on every host, and no `claudeSettingsBound`
    predicate is needed.
 2. **The sandbox's behaviour stops varying with host state**, which is the same
-   argument INDEX §9.3 makes for `~/.claude.json` being unconditional.
+   argument made above for `~/.claude.json` being unconditional.
 3. **"Absent" and "the filter carried nothing" become distinguishable.** The
    file is always there; the `CLAUDE` block says which keys it carried, or says
    that none of the allowlisted ones were present.

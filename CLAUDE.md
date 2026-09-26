@@ -195,8 +195,9 @@ with the tests passing:
   `-T none`. "The agent needs one key" is `identity.ssh.agent = "proxy"` with
   `identity.ssh.key` set, not the whole agent. Where the narrow grant is not
   built, **say so and leave it unbuilt** rather than shipping the wide one: today no
-  profile reaches a host-local service, and that cost is stated in INDEX §4.6
-  rather than papered over.
+  profile reaches a host-local service, and that cost is stated in
+  `internal/profile/profiles/base.toml`'s "THERE IS NO `network = \"host\"`"
+  comment rather than papered over.
 
   **An unrecognised value REFUSES; it is never read as the nearest thing it
   resembles.** `ParseNetMode` and `ParseSSHMode` each accept a named set and

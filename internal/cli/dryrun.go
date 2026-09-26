@@ -2155,7 +2155,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		// copies one interface, the seal writes every one, so the screen has
 		// to say so rather than leave "copied from the host" reading as the
 		// LAN address alone. Named by the red team as the gap between this
-		// screen and .claude/design/INDEX.md §4.5a.
+		// screen and base.toml's `@net` ABUSE (disclosure) comment.
 		fmt.Fprintf(out, "         address         copied from the host — and the seal below adds every\n")
 		fmt.Fprintf(out, "                         OTHER address the host owns, on every host interface, so\n")
 		fmt.Fprintf(out, "                         `ip addr` inside inventories the docker/podman/libvirt\n")
@@ -3343,9 +3343,10 @@ func partialLines(name string, beneath int, generated bool) []string {
 // TMPDIR pointing into it — no refusal, and nothing on screen saying so.
 //
 // Two things stop being true for that run, and the first is a documented count:
-// INDEX.md says the writable surface is EIGHT paths with /tmp among them, and
-// here it is seven. A user believing a guarantee that no longer holds is
-// invariant 5's whole subject, and the guarantee changed silently.
+// .claude/agents/sandbox-policy.md says the writable surface is NINE paths
+// with /tmp among them, and here it is eight. A user believing a guarantee
+// that no longer holds is invariant 5's whole subject, and the guarantee
+// changed silently.
 //
 // This says it rather than refusing it, which was a deliberate call: `snug
 // /tmp/x` is ordinary — `mktemp -d` targets are how the whole

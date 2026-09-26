@@ -77,10 +77,10 @@ coverage in every review.
   The gated capability went instead of the test, because CLAUDE.md's working
   agreement says a CLI flag is not a bound. **When you find a gate with no
   test, ask whether the gated thing should exist before you reach for the
-  test.** `TestHostAgentIsRefusedAndNamesAgentProxy`, `TestNoHostNetworkMode`
-  and `TestProfileShowSaysARemovedValueIsRefused` all live in `internal/cli`
-  rather than `test/integration`, because #411's complaint was about `make
-  gate` specifically.
+  test.** A refusal that needs no sandbox — an unresolved profile, a
+  malformed argv, a `--dry-run` render — belongs in `internal/cli` rather
+  than `test/integration`, because #411's complaint was about `make gate`
+  specifically.
 
   *The same shape hides in this suite's own helpers, where it costs diagnosis
   rather than security.* `requireInternet` was named for the internet and

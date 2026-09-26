@@ -13,29 +13,28 @@ import (
 	"testing"
 )
 
-// ── issue #224: INDEX.md listed a path variable that was never built ────────
+// ── issue #224: the design index listed a path variable that was never built ──
 //
-// `{target_ancestor:N}` appeared in INDEX.md twice — in §2's resolution
-// algorithm and in §12's summary — alongside the variables that exist, for the
-// whole life of the project. It was never implemented. A profile writing
-// `ro = ["{target_ancestor:2}"]` gets that literal string as a path.
+// `{target_ancestor:N}` appeared in the design index twice for the whole life
+// of the project, alongside the variables that exist. It was never
+// implemented. A profile writing `ro = ["{target_ancestor:2}"]` gets that
+// literal string as a path.
 //
 // This is the "documented but not implemented" shape CLAUDE.md names as
 // recurring, and it is the same list that records `--seccomp` being passed,
 // accepted and never installed. The file's own advice is the fix: when a comment
 // says "requires X", grep for X before believing it.
 //
-// Deleting the two mentions would have closed the ticket and left nothing to
-// stop the next one. So the doc and the code are now checked against each other:
-// the variables INDEX.md advertises must be exactly the ones `Resolve` builds.
+// Deleting the mentions would have closed the ticket and left nothing to
+// stop the next one. So README.md and the code are now checked against each
+// other: the variables README.md advertises must be exactly the ones
+// `Resolve` builds.
 //
-// WHAT THIS DELIBERATELY DOES NOT DO: assert that the doc never MENTIONS an
-// unbuilt variable. #224's own resolution keeps `{target_ancestor:N}` in the
-// file on purpose — it is the natural home for a `@parent-ro` variant, which is
-// what #179 wants, and a reader who finds no trace of it will design it twice.
-// What must not happen is it being listed as though it were live. So the check
-// is on the ADVERTISED LIST, and prose about a variable that does not exist is
-// fine as long as it says so.
+// WHAT THIS DELIBERATELY DOES NOT DO: assert that no document MENTIONS an
+// unbuilt variable — a reader who finds no trace of `{target_ancestor:N}`
+// anywhere will design it twice. What must not happen is it being listed as
+// though it were live. So the check is on the ADVERTISED LIST, and prose
+// about a variable that does not exist is fine as long as it says so.
 
 var pathVarLine = regexp.MustCompile(`(?m)^- Path variables: (.*)$`)
 
@@ -100,18 +99,18 @@ func resolvePathVars(t *testing.T) []string {
 	return got
 }
 
-func TestINDEXAdvertisesExactlyThePathVariablesResolveBuilds(t *testing.T) {
+func TestREADMEAdvertisesExactlyThePathVariablesResolveBuilds(t *testing.T) {
 	built := resolvePathVars(t)
 
-	index := filepath.Join("..", "..", ".claude", "design", "INDEX.md")
-	body, err := os.ReadFile(index)
+	readme := filepath.Join("..", "..", "README.md")
+	body, err := os.ReadFile(readme)
 	if err != nil {
-		t.Fatalf("cannot read %s: %v", index, err)
+		t.Fatalf("cannot read %s: %v", readme, err)
 	}
 	m := pathVarLine.FindSubmatch(body)
 	if m == nil {
 		t.Fatalf("no \"- Path variables:\" line in %s. It is the list this test grades; if it "+
-			"was renamed, update pathVarLine rather than deleting the check", index)
+			"was renamed, update pathVarLine rather than deleting the check", readme)
 	}
 	// Everything in `backticks` on that line, minus the tilde, which is a
 	// spelling rather than a named variable.
@@ -126,8 +125,8 @@ func TestINDEXAdvertisesExactlyThePathVariablesResolveBuilds(t *testing.T) {
 
 	for _, b := range built {
 		if !advertised[b] {
-			t.Errorf("Resolve builds {%s} and INDEX.md's path-variable list does not advertise "+
-				"it. A profile author reading the design doc would not know it exists", b)
+			t.Errorf("Resolve builds {%s} and README.md's path-variable list does not advertise "+
+				"it. A profile author reading the README would not know it exists", b)
 		}
 	}
 	for a := range advertised {
@@ -138,9 +137,9 @@ func TestINDEXAdvertisesExactlyThePathVariablesResolveBuilds(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("INDEX.md advertises {%s} as a live path variable and Resolve does not "+
+			t.Errorf("README.md advertises {%s} as a live path variable and Resolve does not "+
 				"build it. This is issue #224 happening again: `{target_ancestor:N}` was listed "+
-				"here for the life of the project and never existed, so a profile writing it "+
+				"as live for the life of the project and never existed, so a profile writing it "+
 				"got the literal string as a path. Either build it, or move it out of the "+
 				"advertised list and say it was never built", a)
 		}

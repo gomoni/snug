@@ -495,13 +495,36 @@ parked payload, so there is nothing for a dying snug to release, and
 `waitForNetDevice`.
 
 That holds for every run with no container engine. **With one** (issue #125) it
-does not: the engine's mount view is derived
-from the sandbox's, so bwrap must exist first, and its payload parks on
-`--block-fd` until the engine is confirmed. What makes that safe is a flag this
-document never had — `--sync-fd` on the SAME pipe, held open by the sandbox's own
-pid 1, so a dying snug still cannot release the payload (measured 5/5 → 0/5).
-INDEX §4.3 carries the measurement; nothing about the network's own ordering
-changes.
+does not: the engine's mount view is derived from the sandbox's, so bwrap must
+exist first, and its payload parks on `--block-fd` until the engine is
+confirmed; nothing about the network's own ordering changes.
+
+**`--block-fd` never travels alone.** `snug` passes `--block-fd R` and the
+payload parks after the whole mount tree is built and before any payload is
+forked; the engine starts behind it; `snug` writes one byte once the engine's
+socket answers. The old defect — a payload released early by a dying `snug` —
+is closed by the **second** flag: the SAME pipe's write end is passed as
+`--sync-fd W`, which `bwrap` keeps open in the sandbox's own pid 1 for the life
+of the run, so the parked read never sees EOF however violently anything
+outside dies. Measured on this host, 5 runs each: `--block-fd` alone, `SIGKILL`
+of the holder while parked → `PAYLOAD_RAN` **5/5**; with `--sync-fd` on the
+same pipe → **0/5**, release-by-byte still running the payload as the positive
+control. Do not substitute any other inherited descriptor: an arbitrary extra
+fd holds the pipe open just as well (0/5) and **leaks into the payload** —
+measured fd tables `0,1,2,4,5` against exactly `0,1,2` with `--sync-fd`. Two
+residuals follow and are written down rather than discovered: while parked,
+`bwrap` has **not yet armed `--die-with-parent`** on that init (measured —
+killing the outer `bwrap` leaves it alive and still releasable), so the stage
+kills it explicitly on every abort path and on its own teardown; and a
+`SIGKILL` of `snug` inside the parked window is **measured to leave nothing
+behind, 20/20** — `do_exit` closes the lifeline (`exit_files`) before it
+delivers the stage's `Pdeathsig` (`exit_notify`), the same ordering that makes
+`--block-fd` alone unsafe, so the stage's watcher wins the race and kills the
+parked init; with that one kill removed as the positive control, exactly one
+process survives, 5/5. The residual is therefore narrower than it looks and
+still real: a stage that cannot run code at all (a `SIGSTOP`ped tree) orphans
+that init, holding N and the mount tree. `internal/sandbox/teardown.go`'s
+residual paragraph states it in full.
 
 **What made it possible, having been recorded as a blocker.** Confirming the
 interface needed a process inside N to read `/proc/<pid>/net/dev`, and before

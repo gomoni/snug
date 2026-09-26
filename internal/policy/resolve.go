@@ -19,8 +19,9 @@ import (
 // Resolve failure, and there is exactly one thing that turns on the distinction:
 // the exit code.
 //
-// snug's codes are sysexits-style and documented as such (INDEX §11.1): 64 is a
-// usage error, 77 a policy conflict. `snug nosuchdir` is a usage error — the
+// snug's codes are sysexits-style and documented as such (internal/cli/main.go's
+// exit-code constants): 64 is a usage error, 77 a policy conflict. `snug
+// nosuchdir` is a usage error — the
 // human named a directory that is not there — and it exited 77 until this
 // sentinel existed, because run() maps every Resolve failure to exitPolicy. A
 // wrong code is not cosmetic here: 77 tells a script that snug REFUSED a policy,
@@ -678,7 +679,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// it fixes (OpenSSH refuses a root-owned config once one uid is mapped) has
 	// nothing to do with pinning an account, and gating it on identity left ssh
 	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
-	// and .claude/design/INDEX.md for the coverage rule this depends on.
+	// for the coverage rule this depends on.
 	replaceSystemSSHConfig(p, ctx, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may

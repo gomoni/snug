@@ -56,9 +56,9 @@ run:
 
 Two of these are load-bearing beyond recon:
 
-- **`/proc/asound` + `boot_id` falsify INDEX §5.3**, which says the generated
-  per-sandbox `/etc/machine-id` means "the sandbox cannot fingerprint the host." It
-  can, several ways, and `boot_id` lets two sandboxes prove they share a host.
+- **`/proc/asound` + `boot_id` mean the generated per-sandbox `/etc/machine-id`
+  does NOT stop the sandbox fingerprinting the host.** It can, several ways,
+  and `boot_id` lets two sandboxes prove they share a host.
 - **`/proc/interrupts` is a live keystroke-timing oracle against the *operator*.**
   DESIGN N5 declares side channels out of scope, but its wording does not name a
   channel that reports when the human at the keyboard is typing.
@@ -96,7 +96,7 @@ kernel bug — correct today) vs *snug-level* (a leak snug could close).
 | P3 | /proc | `/proc/keys` + `/proc/key-users` — host user's live keyring incl. Kerberos ccache. Key *use* is dead (seccomp), this is enumeration | Medium |
 | P4 | /proc | `/proc/kallsyms` + `/proc/modules`. Addresses zeroed **only** by host `kptr_restrict=1`; on `=0` this is a full KASLR base leak snug neither checks nor reports | Medium (High on an unhardened host) |
 | P5 | /proc | `/proc/interrupts` — operator keystroke/touchpad timing oracle; `/proc/bus/input/devices` names the hardware | Medium |
-| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. INDEX §5.3 now records the same (the machine-id "cannot fingerprint" claim it once carried is marked falsified there), so the contradiction this row flagged is closed | Medium |
+| P6 | /proc | Fingerprint set: `boot_id`, `btime`/`uptime`, `/proc/asound`, `/proc/bus/pci`, `/proc/partitions`, `loginuid`/`sessionid`/`attr/current`. `--unshare-all` does **not** unshare the time namespace, which is why `uptime`/`btime` leak. The generated per-sandbox machine-id does not stop this fingerprinting | Medium |
 | P7 | /proc | `/proc/self/mountinfo` — real host paths of every grant, launcher home, container storage layout. Inherent to guest==host path convention | Medium — **accept + document** |
 | P8 | /proc | Hardening-posture sysctls readable | Low |
 | P9 | /proc | Structural: procfs `rw`, no `hidepid=`, no `subset=pid`; `--remount-ro /` does not reach it. The cause behind every row above | Low as finding, High as cause |
@@ -268,13 +268,14 @@ demote-in-place.
   Y5.** One line; the only screen a human has for trusting snug.
 - **R8 — Bound the tmpfs (`--tmpfs /dev/shm` with `size=`). Closes D5.** A
   `KindTmpfs` mount at a deeper path — an addition, not a subtraction.
-- **R9 — Documentation, batched:** correct INDEX §5.2's `/dev` enumeration (name
-  `console` as a bind of the host pty, `core` as a symlink to `/proc/kcore`);
-  correct §5.3's fingerprint claim; rewrite the doc that says snug ships
-  `[profile.sysfs]` (it does not — state the stronger truth, and that a `/sys`
-  profile must enumerate leaves because **bwrap binds are recursive**); amend N5 to
-  name `/proc/interrupts`; add one sentence to the `@podman-socket` ABUSE comment;
-  add the time-namespace and `nodev`-on-ordinary-binds facts to CLAUDE.md.
+- **R9 — Documentation, batched:** correct the `/dev` enumeration wherever it
+  is stated (name `console` as a bind of the host pty, `core` as a symlink to
+  `/proc/kcore`); correct the fingerprint claim wherever it is stated; rewrite
+  the doc that says snug ships `[profile.sysfs]` (it does not — state the
+  stronger truth, and that a `/sys` profile must enumerate leaves because
+  **bwrap binds are recursive**); amend N5 to name `/proc/interrupts`; add one
+  sentence to the `@podman-socket` ABUSE comment; add the time-namespace and
+  `nodev`-on-ordinary-binds facts to CLAUDE.md.
 - **R10 — SHIPPED, and it is smaller than this line asked for.** A run where
   NONE of snug's own descriptors (0, 1, 2) is a terminal gets `--new-session`,
   as a second reason held apart from the TIOCSTI one so a kernel upgrade
@@ -315,7 +316,7 @@ demote-in-place.
   creating a user namespace (`unshare(CLONE_NEWUSER)` returning 0) with the
   filter on. `TestInt80FromANativeBinaryIsKilled` is the regression. Cost: a 32-bit
   binary does not run inside the sandbox, `--dry-run`'s SECCOMP block says so on
-  x86_64, and `--no-seccomp` lifts it. INDEX §5.4.
+  x86_64, and `--no-seccomp` lifts it.
 - **R12 — Close the invariant-3 gap.** S1, S2, D2, D3, Y2, Y3 are all gated on it;
   the combined payoff is a full host device tree, the outer process table, and
   cgroup kill/freeze over out-of-sandbox processes. The current TODO framing ("low
@@ -397,16 +398,6 @@ Each gets a **positive control** (the `pasta.avx2` lesson):
 
 ## Documentation defects found (not exploitable, but the shape that burned before)
 
-- INDEX §787: says snug "ships `[profile.sysfs] ro=["/sys"]`" and exports
-  `NPROC`-shaped env hints — **neither exists**. Reality is *stronger*, but a
-  reader will "wire up what's documented," i.e. `ro=["/sys"]`, which is exactly
-  Y2/Y3.
-- INDEX §5.2: synthetic `/dev` described as "null, zero, full,
-  random, urandom, tty, plus a private devpts" — also contains `console` (host
-  pty), `core → /proc/kcore`, `shm`, `ptmx`, `fd`, `std{in,out,err}`.
-- INDEX §5.3: generated machine-id ⇒ "cannot fingerprint the host" — false (P6).
-- INDEX §5.2: `--proc /proc` as "a fresh procfs bound to the sandbox's own PID
-  namespace" — true and incomplete; the host-global files are all there.
 - DESIGN N5: side channels list undersells `/proc/interrupts`.
 - `base.toml:255-267`: `@podman-socket` host resources "untouched and unreachable" —
   silent on host sysfs/procfs reaching the container (Y4).
@@ -423,7 +414,7 @@ and snug masks nothing, so a default sandbox hands a hostile payload the complet
 host kernel config, the boot cmdline with the root UUID, the host user's kernel
 keyring including a Kerberos ccache, all kernel symbol names, a live
 keystroke-timing oracle against the operator, and a stable hardware fingerprint
-that falsifies INDEX §5.3. **No escape — every write primitive is refused by
+the generated machine-id does not hide. **No escape — every write primitive is refused by
 kernel DAC and zero capabilities — but the read side leaks more than crun's
 default, which is an awkward place for a sandbox to be, and it is snug's to fix.**
 The two structural defects behind the worst cases are that a profile can displace

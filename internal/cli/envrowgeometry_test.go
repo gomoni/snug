@@ -193,9 +193,10 @@ func TestWrapMarkNeverSplitsAToken(t *testing.T) {
 //
 // The marks are snug's own words: `← not granted` is a verdict a human acts on.
 // The values beside them are a PROFILE's words, and a profile is a file whose
-// author snug does not vet (§1.4 — the author is trusted, the payload is not,
-// and the screen is what a human uses to tell one grant from another). A value
-// can contain `←`: visibleValue escapes control characters, and `←` is not one.
+// author snug does not vet (THREAT-MODEL.md §3.4 — the author is trusted, the
+// payload is not, and the screen is what a human uses to tell one grant from
+// another). A value can contain `←`: visibleValue escapes control characters,
+// and `←` is not one.
 //
 // So the two must be told apart by GEOMETRY, not by a glyph. Column 19 is taken
 // — a continuation BAND of a list variable renders pad("",16), exactly 19

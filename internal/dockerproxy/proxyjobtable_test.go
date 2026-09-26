@@ -2,15 +2,14 @@ package dockerproxy
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// TestINDEXProxyJobTableNamesLiveSymbols keeps §7.2's job table — what each of
-// the proxy's seven jobs guards, and whether it is the sole guard or
-// belt-and-braces after Tier C — pointed at code that exists.
+// TestProxyJobTableNamesLiveSymbols keeps the package doc comment's job
+// table — what each of the proxy's seven jobs guards, and whether it is the
+// sole guard or belt-and-braces after Tier C — pointed at code that exists.
 //
 // WHY THIS AND NOT MORE. Most of that table is judgement, and judgement is not
 // machine-checkable: no test can decide whether refusing `Devices` is still
@@ -26,11 +25,10 @@ import (
 // lives in. Renaming the symbol fails here; moving it between files fails here;
 // dropping the row for a job that still exists does not — that one needs a
 // human, and the seven-row count below is the flag that asks for one.
-func TestINDEXProxyJobTableNamesLiveSymbols(t *testing.T) {
-	index := filepath.Join("..", "..", ".claude", "design", "INDEX.md")
-	body, err := os.ReadFile(index)
+func TestProxyJobTableNamesLiveSymbols(t *testing.T) {
+	body, err := os.ReadFile("proxy.go")
 	if err != nil {
-		t.Fatalf("cannot read %s: %v", index, err)
+		t.Fatalf("cannot read proxy.go: %v", err)
 	}
 
 	table, rows := proxyJobTable(t, string(body))
@@ -40,7 +38,7 @@ func TestINDEXProxyJobTableNamesLiveSymbols(t *testing.T) {
 	// tidy-up — so it fails here and asks for a human.
 	const wantRows = 7
 	if rows != wantRows {
-		t.Errorf("§7.2's proxy-job table has %d body rows, want %d — one per job: bind filter, "+
+		t.Errorf("proxy.go's job table has %d body rows, want %d — one per job: bind filter, "+
 			"namespace modes, HostConfig refusals, injected values, endpoint allowlist, run "+
 			"label, audit", rows, wantRows)
 	}
@@ -66,24 +64,24 @@ func TestINDEXProxyJobTableNamesLiveSymbols(t *testing.T) {
 		{"isArchive", "proxy.go"},
 		{"isImageDelete", "proxy.go"},
 		{"isVolumeDelete", "proxy.go"},
-		{"HostPathVisible", filepath.Join("..", "policy", "graft.go")},
-		{"EngineCapBounding", filepath.Join("..", "policy", "enginecaps.go")},
-		{"VisibleText", filepath.Join("..", "policy", "forging.go")},
-		{"containerAudit", filepath.Join("..", "cli", "container.go")},
-		{"Cloneflags", filepath.Join("..", "stage", "enginefork.go")},
+		{"HostPathVisible", "../policy/graft.go"},
+		{"EngineCapBounding", "../policy/enginecaps.go"},
+		{"VisibleText", "../policy/forging.go"},
+		{"containerAudit", "../cli/container.go"},
+		{"Cloneflags", "../stage/enginefork.go"},
 	} {
 		if !namesSymbol(t, table, c.symbol) {
-			t.Errorf("§7.2's proxy-job table does not name %s, which the classifications rest "+
+			t.Errorf("proxy.go's job table does not name %s, which the classifications rest "+
 				"on — either the row was rewritten without it or this list is out of date",
 				c.symbol)
 		}
 		src, err := os.ReadFile(c.file)
 		if err != nil {
-			t.Errorf("§7.2's table names %s and %s cannot be read: %v", c.symbol, c.file, err)
+			t.Errorf("the table names %s and %s cannot be read: %v", c.symbol, c.file, err)
 			continue
 		}
 		if !namesSymbol(t, string(src), c.symbol) {
-			t.Errorf("§7.2's proxy-job table names %s as living in %s and it is not there. "+
+			t.Errorf("the job table names %s as living in %s and it is not there. "+
 				"A classification pointing at a symbol that moved reads as authoritative and "+
 				"grades nothing", c.symbol, c.file)
 		}
@@ -97,7 +95,7 @@ func TestINDEXProxyJobTableNamesLiveSymbols(t *testing.T) {
 		t.Errorf("the bind-filter row no longer cites %s", gate)
 	}
 	if _, err := os.Stat("bindfilter_test.go"); err != nil {
-		t.Errorf("§7.2 cites %s and bindfilter_test.go is gone: %v", gate, err)
+		t.Errorf("the table cites %s and bindfilter_test.go is gone: %v", gate, err)
 	}
 }
 
@@ -117,31 +115,32 @@ func namesSymbol(t *testing.T, text, symbol string) bool {
 	return re.MatchString(text)
 }
 
-// proxyJobTable returns §7.2's job table and its body-row count.
+// proxyJobTable returns the package doc comment's job table and its
+// body-row count.
 //
-// Located by its header row rather than by a section offset, so an edit
-// anywhere else in INDEX.md cannot silently point this test at a different
-// table. Fatal if it is not found: a sync test that grades an empty string
-// passes, and that reads as "the table is fine".
+// Located by its header row rather than by a byte offset, so an edit anywhere
+// else in proxy.go cannot silently point this test at a different table.
+// Every table line carries the `// ` comment prefix the source itself uses,
+// which is why the prefixes below are `"// |"` rather than `"|"`. Fatal if the
+// header is not found: a sync test that grades an empty string passes, and
+// that reads as "the table is fine".
 func proxyJobTable(t *testing.T, body string) (string, int) {
 	t.Helper()
-	const header = "| proxy job | what it guards | sole guard, or belt-and-braces |"
+	const header = "// | proxy job | what it guards | sole guard, or belt-and-braces |"
 	i := strings.Index(body, header)
 	if i < 0 {
-		t.Fatalf("no proxy-job table header in INDEX.md §7.2. If it was reworded, update this "+
-			"test rather than deleting the check; the header it looks for is:\n%s", header)
+		t.Fatalf("no proxy-job table header in proxy.go's package doc comment. If it was "+
+			"reworded, update this test rather than deleting the check; the header it looks "+
+			"for is:\n%s", header)
 	}
-	// TrimLeft, not a plain slice: the header row ends in a newline, so the
-	// first field of the split below would be the empty string and the loop
-	// would stop before reading a single row — which reads as "no rows".
 	rest := strings.TrimLeft(body[i+len(header):], "\n")
 	var table strings.Builder
 	rows := 0
 	for _, line := range strings.Split(rest, "\n") {
-		if !strings.HasPrefix(line, "|") {
+		if !strings.HasPrefix(line, "// |") {
 			break
 		}
-		if strings.HasPrefix(line, "|---") {
+		if strings.HasPrefix(line, "// |---") {
 			continue // the separator row
 		}
 		table.WriteString(line)

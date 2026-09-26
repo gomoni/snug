@@ -821,8 +821,9 @@ func findPodmanHelperIn(dirs []string, name string) string {
 //
 // rootlessport is deliberately absent, and the exclusion is MEASURED rather
 // than only reasoned. The reasoning: snug publishes no ports (the engine holds
-// no CAP_NET_ADMIN — INDEX §4.6), so a missing rootlessport changes nothing
-// this tool can do, and warning about it would be a warning nobody can act on.
+// no CAP_NET_ADMIN — policy.EngineCapBounding), so a missing rootlessport
+// changes nothing this tool can do, and warning about it would be a warning
+// nobody can act on.
 // The measurement: two independent hosts running the container tests GREEN with
 // no rootlessport anywhere in podmanHelperDirs — this one, and a second
 // development host checked for exactly this question. A required-set entry that

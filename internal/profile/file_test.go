@@ -720,10 +720,9 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 	}
 }
 
-// `@home`'s tmpfs list is quoted, by hand, in two documents:
-// .claude/design/INDEX.md §9's writable-surface paragraph and
-// .claude/agents/sandbox-policy.md's shadow-slot rule. When the list grew a
-// fifth entry ({home}/.local/share, PR #10) both kept saying seven, for a
+// `@home`'s tmpfs list is quoted, by hand, in
+// .claude/agents/sandbox-policy.md's writable-surface bullet. When the list
+// grew a fifth entry ({home}/.local/share, PR #10) it kept saying seven, for a
 // milestone, and nothing could fail — a count in prose is a copy of state held
 // here, with no link back to its source.
 //
@@ -753,10 +752,9 @@ func TestHomeTmpfsListIsPinnedToTheDocumentsQuotingIt(t *testing.T) {
 	}
 	if !slices.Equal(p.Tmpfs, want) {
 		t.Errorf("@home's tmpfs list changed:\n got %q\nwant %q\n\n"+
-			"That list is quoted by hand in .claude/design/INDEX.md §9 and "+
-			".claude/agents/sandbox-policy.md, and enumerated for real by "+
-			"test/integration/writablesurface_test.go:TestTheWritableSurfaceIsExactlyTheseNinePaths. "+
-			"Update both documents and this test together, or the count in prose goes stale "+
+			"That list is quoted by hand in .claude/agents/sandbox-policy.md, and enumerated "+
+			"for real by test/integration/writablesurface_test.go:TestTheWritableSurfaceIsExactlyTheseNinePaths. "+
+			"Update that document and this test together, or the count in prose goes stale "+
 			"again with nothing to catch it.", p.Tmpfs, want)
 	}
 }

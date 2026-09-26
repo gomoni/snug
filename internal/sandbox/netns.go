@@ -32,8 +32,8 @@ import (
 // once bwrap had reported the pid over --json-status-fd and parked its payload
 // on --block-fd. That handshake is gone — the netns now exists before bwrap
 // does, so there is nothing to park — and with it went both flags, both pipes,
-// readChildPID and the whole parked type. INDEX.md §4.3 records it as
-// superseded; do not re-derive the ordering from this diagram.
+// readChildPID and the whole parked type. Do not re-derive the ordering from
+// this diagram.
 //
 // The alternative — pasta creating the netns and spawning bwrap inside it — was
 // rejected because pasta's command mode builds a user namespace with exactly one

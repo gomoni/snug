@@ -134,8 +134,8 @@ func isPathValued(name string) bool {
 //
 // WHY REFUSING A RELATIVE VALUE IS A TYPE REFUSAL AND NOT A PERMISSION ONE,
 // written here because this is where the next reader meets it, and because
-// §1.4 says snug refuses in three shapes and "this grant is dangerous" is not
-// one of them.
+// THREAT-MODEL.md §3.4 says snug refuses in three shapes and "this grant is
+// dangerous" is not one of them.
 //
 // A profile is static text with a host-independent meaning. The sandbox's
 // working directory is `--chdir <target>`, which the profile did not choose,

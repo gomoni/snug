@@ -444,8 +444,9 @@ reaped the payload and before it sends `"exited"`.
 
 **"After it has reaped the payload" is the whole condition, and it now covers
 more exits than it used to.** A payload that handles `Ctrl-C` and exits inside
-the second `snug` gives it for that (INDEX.md §4.3, "What a signal buys the
-command inside") has exited *normally* — `Stage.Wait` returns an ordinary
+the second `snug` gives it for that (`payloadGraceBudget`,
+`internal/sandbox/teardown.go`; README "What dies when") has exited *normally*
+— `Stage.Wait` returns an ordinary
 status — so the stop below runs for it. What does not reach the stop is a
 payload that IGNORES the signal, whose grace expires and whose stage is then
 pidfd-SIGKILLed, and a `SIGKILL`ed `snug`, where no Go code runs anywhere. So

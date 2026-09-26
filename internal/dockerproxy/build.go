@@ -25,9 +25,8 @@ import (
 //   - that context tar was assembled by the client, INSIDE the sandbox, from
 //     files the sandbox can already read. It reaches nothing new, so it is
 //     forwarded unread. (Same for `--secret`: the CLI reads the file itself and
-//     ships the bytes in the tar under a generated name — INDEX §7.2's advice
-//     to reject type=secret was written before that was checked, and rejecting
-//     it would buy nothing.)
+//     ships the bytes in the tar under a generated name, so rejecting
+//     type=secret would buy nothing.)
 //
 // So the filter is a DEFAULT-DENY ALLOWLIST OVER THE QUERY STRING, which is the
 // same shape as allowed() and for the same reason: build options are a large,
