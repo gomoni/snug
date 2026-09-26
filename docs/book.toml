@@ -1,0 +1,11 @@
+[book]
+title = "snug user guide"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+no-section-label = true

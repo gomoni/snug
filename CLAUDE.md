@@ -86,17 +86,20 @@ Break any of these and the project has lost its point.
 `.claude/agents/` — use them; they carry the context that keeps the invariants
 intact. `.claude/design/` holds the design and research material they work from
 (INDEX.md, the pseudo-filesystem audit, the secrets analysis, parked designs).
-There is deliberately **no `docs/` tree**: a generated user guide was tried and
-removed, because the prose churned faster than the code it described and nobody
-was going to keep it honest. A by-hand markdown checklist was the exception, on
-the grounds that every line was a command with its expected output — and that
-was exactly the claim nothing enforced. A command plus the output it produced
-once is a copy of state: stale the moment the code moves, and the only thing
-that ever checked whether a line of it was still true was a human reading it.
 
-So the exemption belongs to `scripts/`, which is executable in the sense the
-checklist only claimed to be: `make verify` walks `scripts/NNNN-slug.sh` in
-numeric order, each prints what it asserted, and 79 is SKIP (**not** 77 — that
+**`docs/` is the user reference**, an mdBook (`mdbook build docs`): the
+configuration and profile format, for people using snug rather than building
+it. Its prose is hand-written and will make `.claude/design` directory obsolete
+in the future.
+
+### Near term plan
+Additionally every fact in it that the code decides will be held by a
+`TestBook*` Go test, so a change to a profile key, a mode value, a path
+variable or a builtin fails `make gate` until the book agrees and parts of the
+future documentation will be generated from source code as well.
+
+Checks that run the sandbox belong to `scripts/`: `make verify` walks
+`scripts/NNNN-slug.sh` in numeric order, each prints what it asserted, and 79 is SKIP (**not** 77 — that
 is snug's own `exitPolicy`, so a script ending on an uncaptured refusal would
 report SKIP). Two rules, and `scripts/README.md` is the index:
 
