@@ -585,6 +585,9 @@ environ.set on EDITOR has a value containing '\u202e'. Every screen a human read
 == env_name_snug_owned_ps1 ==
 environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox — and TERM, LANG and TZ come from the host, so refusing them only where the host has one would make the verdict depend on the host. Remove the line
 
+== env_pwd_bwrap_owned ==
+environ.set names PWD, which bwrap sets to the sandbox's working directory after every --setenv, so the payload never sees a profile's value and --dry-run would show one it does not have. Remove the line
+
 == env_set_on_a_list ==
 environ.set on PATH, which is a list — use environ.merge, or environ.prepend if the order matters. environ.set on a list would replace every other profile's entries, which snug does not allow
 
@@ -611,8 +614,65 @@ environ.merge on MY_TOOL_PATH, which snug has no entry for. A list verb needs th
        separator that variable is read with and what an EMPTY ELEMENT means to its
        consumer — ignored, the current directory, or an instruction that ADDS
        directories (§3.3) — and snug will not guess either from the shape of a value.
-       Use environ.set with the whole value, or add a row to
+       If its consumer reads ':'-joined absolute paths, declare it in this profile:
+         [profile.NAME.environ.types]
+         MY_TOOL_PATH = "path-list"
+       A declaration in a profile this one includes does not apply here. Otherwise
+       use environ.set with the whole value, or add a row to
        internal/policy/envtypes.go carrying the separator and the empty-element kind.
+
+== env_types_unknown_kind ==
+unknown environ type "paths" (want path or path-list)
+
+== env_types_no_kind ==
+environ.types gives GEM_PATH no type. Write GEM_PATH = "path" or GEM_PATH = "path-list"
+
+== env_types_bad_name ==
+environ.types names "MY-PATH", which contains "-". A variable name is [A-Za-z_][A-Za-z0-9_]* — the rule execve(2) and every shell already assume. Rename it
+
+== env_types_pwd ==
+environ.types names PWD, which bwrap sets to the sandbox's working directory after every --setenv. No profile line on it reaches the payload. Remove the line
+
+== env_types_snug_owned ==
+environ.types names PATH, which snug writes itself. snug types its own names: a declaration there is either redundant (PATH is already a ':' list a profile may merge onto without one) or a way to reach a scalar snug owns with a list verb. Remove the line
+
+== env_types_conditional ==
+environ.types names DOCKER_HOST, which snug writes, or which outranks what snug writes, when a feature is on (podman, identity, git = "extract", listen_names). A declared list would reach it through environ.merge, and snug judges a profile's claim on these names only as the single value its own replaces. Remove the line; to point the tool elsewhere, environ.set it in a selection that leaves the feature off
+
+== env_types_contradicts_roster_list ==
+environ.types declares LD_PRELOAD path-list, and snug's roster already types it: a list separated by ":" or " ", whose elements snug does not compose. A declaration supplies a fact for a name snug has NOT measured; it never overrides one snug has. Remove the line — the row decides which verbs LD_PRELOAD takes
+
+== env_types_contradicts_roster_scalar ==
+environ.types declares BASH_ENV path, and snug's roster already types it: a scalar path the grant-coupling rule deliberately does not check. A declaration supplies a fact for a name snug has NOT measured; it never overrides one snug has. Remove the line — the row decides which verbs BASH_ENV takes
+
+== env_types_unused_path_list ==
+environ.types declares GEM_PATH path-list, and this profile neither merges nor prepends it. A declaration applies to this profile's own lines only — not to a profile that includes this one, nor to one selected beside it — so here it does nothing. Remove it, or add the environ.merge line it was written for
+
+== env_types_unused_path ==
+environ.types declares MY_TOOL_ROOT path, and this profile does not environ.set it. A path declaration governs a value this profile WRITES — environ.inherit copies the host's value, which snug does not check — so here it does nothing. Remove it, or add the environ.set line it was written for
+
+== env_declared_list_set ==
+environ.set on GEM_PATH, which this profile declares path-list — a list. Use environ.merge, or environ.prepend if the order matters: environ.set on a list would replace every other profile's entries
+
+== env_declared_list_inherit ==
+environ.inherit on GEM_PATH, which this profile declares path-list — a list. Inheriting a host list wholesale imports directories the sandbox does not have, and a declared list cannot be sanitised either. Use environ.merge with the directories you mean
+
+== env_declared_list_sanitise ==
+environ.sanitise on GEM_PATH, which this profile declares path-list. snug does not know what an EMPTY element means to GEM_PATH's consumer — ignored, the current directory, or an instruction that ADDS directories (.claude/design/ENVIRONMENT-VARIABLES.md §3.3) — so it assumes the last, and under that a filter can add directories instead of removing them. Use environ.merge with the directories you mean, or add a row to internal/policy/envtypes.go carrying the measured empty-element kind
+
+== env_declared_path_merge ==
+environ.merge on MY_TOOL_ROOT, which this profile declares path — a scalar, not a list. Use environ.set, or declare it path-list if its consumer reads ':'-joined paths
+
+== env_declared_path_sanitise ==
+environ.sanitise on MY_TOOL_ROOT, which this profile declares path — a scalar. sanitise filters the ELEMENTS of a host list; use environ.inherit to take the host's value, or environ.set to write one
+
+== env_declared_list_separator_in_element ==
+environ.merge on GEM_PATH has the element "/a:/b", which contains ":" — a separator GEM_PATH is read with. Write the elements:
+         GEM_PATH = ["/a", "/b"]
+       snug never splits a value on a separator, so a hand-written one can smuggle in an empty element, which in a search path means the current directory
+
+== env_expanded_element_carries_separator ==
+profile "merger": environ.merge PATH entry "{target_parent}/bin" expands to "/w/pp:q/bin", which contains ":" — the separator PATH is read with — so the payload would see several elements, one of them relative and resolved against its working directory. A directory this expansion names has ":" in its name; run snug on a path without one, or write the element without that {var}
 
 == env_separator_in_a_merge_string ==
 environ.merge on PATH has the element "/usr/bin:/usr/sbin", which contains ":" — a separator PATH is read with. Write the elements:
@@ -724,4 +784,54 @@ profiles emacsy and envy disagree about EDITOR:
        A scalar has one value and snug will not choose: picking one would make
        the answer depend on the order profiles were folded, and the model has no
        such order. Select one of them, or make them agree.
+
+== env_declared_shape_list_vs_set ==
+GEM_PATH is typed two ways in this selection, and snug will not choose:
+         gems-a (environ.types) declares it path-list and merges ["/opt/gems-a"]
+         gemset (environ.set) writes it as one value: "/opt/other-gems"
+       A list and a single value cannot share a name: joining would make the single
+       value one element of a list it was never written as, and keeping it would
+       discard every element. Declare GEM_PATH = "path-list" in every profile that writes
+       it and use environ.merge, or drop one of gems-a, gemset from the selection.
+
+== env_declared_shape_list_vs_declared_path ==
+GEM_PATH is typed two ways in this selection, and snug will not choose:
+         gempath (environ.set) writes it as one value: "/opt/gems-b", declared path
+         gems-a (environ.types) declares it path-list and merges ["/opt/gems-a"]
+       A list and a single value cannot share a name: joining would make the single
+       value one element of a list it was never written as, and keeping it would
+       discard every element. Declare GEM_PATH = "path-list" in every profile that writes
+       it and use environ.merge, or drop one of gempath, gems-a from the selection.
+
+== env_declared_shape_list_vs_inherit_absent_on_host ==
+GEM_PATH is typed two ways in this selection, and snug will not choose:
+         geminherit (environ.inherit) takes the host's value as one value
+         gems-a (environ.types) declares it path-list and merges ["/opt/gems-a"]
+       A list and a single value cannot share a name: joining would make the single
+       value one element of a list it was never written as, and keeping it would
+       discard every element. Declare GEM_PATH = "path-list" in every profile that writes
+       it and use environ.merge, or drop one of geminherit, gems-a from the selection.
+
+== env_declared_path_uncoupled ==
+profile "liar" sets MY_TOOL_ROOT=/opt/tool, which it does not grant.
+       Add the path to that profile's ro/rw/tmpfs — or to a profile it includes — or
+       drop the variable: a variable naming a path that is not inside the sandbox is
+       worse than an absent one, because every tool that reads it will believe it.
+       snug is not checking that the path EXISTS (it cannot: a tmpfs grant creates an
+       empty directory), only that the profile naming it is the profile that granted it.
+
+== env_declared_relative_merge ==
+profile "relgems": environ.merge GEM_PATH entry "vendor/gems" must be an absolute path: a relative one is resolved against whatever directory the payload happens to be in, which is not something a profile can know
+
+== env_declaration_does_not_travel_through_include ==
+profile "ruby": environ.merge on GEM_PATH, which snug has no entry for. A list verb needs the
+       separator that variable is read with and what an EMPTY ELEMENT means to its
+       consumer — ignored, the current directory, or an instruction that ADDS
+       directories (§3.3) — and snug will not guess either from the shape of a value.
+       If its consumer reads ':'-joined absolute paths, declare it in this profile:
+         [profile.NAME.environ.types]
+         GEM_PATH = "path-list"
+       A declaration in a profile this one includes does not apply here. Otherwise
+       use environ.set with the whole value, or add a row to
+       internal/policy/envtypes.go carrying the separator and the empty-element kind.
 

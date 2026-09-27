@@ -78,12 +78,16 @@ type rawProfile struct {
 // Inherit and Sanitise are map[string]bool because the TOML spelling is
 // `NAME = true`: the profile supplies a name, never a value. `= false` is
 // refused by name rather than stored, or it would be a negation key that parsed.
+//
+// Types is map[string]string so toEnvTypes, not go-toml, refuses an unknown
+// kind — with the file, the profile and the key named.
 type rawEnviron struct {
 	Set      map[string]string `toml:"set"`
 	Merge    map[string]any    `toml:"merge"`
 	Prepend  map[string]any    `toml:"prepend"`
 	Inherit  map[string]bool   `toml:"inherit"`
 	Sanitise map[string]bool   `toml:"sanitise"`
+	Types    map[string]string `toml:"types"`
 }
 
 // rawIdentity is [profile.X.identity]: a container of per-tool blocks with no
@@ -388,8 +392,34 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 		if g.Sanitise, err = toNameSet(e.Sanitise, "sanitise", name, source); err != nil {
 			return g, err
 		}
+		if g.Types, err = toEnvTypes(e.Types, name, source); err != nil {
+			return g, err
+		}
 	}
 	return g, nil
+}
+
+// toEnvTypes turns `NAME = "path-list"` into the declared kind. The key is
+// quoted because its grammar is not checked yet — policy.ValidateEnvGrants does
+// that, after this.
+func toEnvTypes(in map[string]string, profile, source string) (map[string]policy.EnvKind, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]policy.EnvKind, len(in))
+	for _, key := range keys {
+		k, err := policy.ParseEnvKind(in[key])
+		if err != nil {
+			return nil, fmt.Errorf("%s: profile %q: environ.types %q: %w", source, profile, key, err)
+		}
+		out[key] = k
+	}
+	return out, nil
 }
 
 // toElementLists accepts a bare string as ONE element and an array as its

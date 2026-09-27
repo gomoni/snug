@@ -97,21 +97,26 @@ func mark(layer Registry) (Registry, error) {
 }
 
 // checkBuiltinEnvRoster refuses a builtin that writes a name snug's roster has
-// no entry for, at any verb, or a name snug fills itself when a feature is on.
+// no entry for, at any verb, a name snug fills itself when a feature is on, or
+// any environ.types declaration.
 //
 // EVERY VERB IS ENUMERATED HERE, deliberately and by hand, because the thing
 // that would defeat this rule is a sixth verb added to policy.EnvGrants and not
 // added to this switch — the shape CLAUDE.md keeps recording as "a rule written
-// once and applied to one of its two halves". The three list verbs are already
-// refused for everybody at parse time (a list verb needs the separator and the
-// empty-element kind, which only a roster row carries), so their arms here can
-// never fire today; they are present so that this function's answer does not
-// depend on that remaining true somewhere else.
+// once and applied to one of its two halves". The three list verbs are refused
+// at parse time for a name with neither a roster row nor a declaration in the
+// same profile, and a builtin cannot declare (checkBuiltinEnvTypes, first), so
+// their arms here fire only if one of those stops being true; they are present
+// so that this function's answer does not depend on that remaining true
+// somewhere else.
 //
 // The message names the fix and names it as a POLICY change, not a lookup-table
 // edit: a roster row is a grant, and it owes the sentence saying what the verb
 // lets the tool DO.
 func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
+	if err := checkBuiltinEnvTypes(name, g); err != nil {
+		return err
+	}
 	if err := checkBuiltinConditionalEnv(name, g); err != nil {
 		return err
 	}
@@ -148,6 +153,26 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 		"       saying what the verb lets the tool DO — a row there is a grant, and that is\n"+
 		"       the review this profile owes",
 		name, strings.Join(unchecked, ", "))
+}
+
+// checkBuiltinEnvTypes refuses a builtin carrying any environ.types
+// declaration, redundant ones included: a declaration of a rostered name passes
+// IsUncheckedEnv, so the roster gate below would not see it.
+func checkBuiltinEnvTypes(name policy.ProfileName, g policy.EnvGrants) error {
+	if len(g.Types) == 0 {
+		return nil
+	}
+	declared := make([]string, 0, len(g.Types))
+	for n := range g.Types {
+		declared = append(declared, n)
+	}
+	sort.Strings(declared)
+	return fmt.Errorf("profile %q declares environ.types for %s. A profile snug SHIPS does not declare a\n"+
+		"       type: a declaration is a human's statement about a tool on their own machine,\n"+
+		"       and there is no such human behind a profile compiled into the binary. Add a row\n"+
+		"       to internal/policy/envtypes.go with the measured separator and empty-element\n"+
+		"       kind — a row there is a grant, and that is the review this profile owes",
+		name, strings.Join(declared, ", "))
 }
 
 // checkBuiltinConditionalEnv refuses a builtin that writes a name snug fills

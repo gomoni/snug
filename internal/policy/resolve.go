@@ -530,6 +530,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	if err := checkConditionalEnv(p, set, names, selected); err != nil {
 		return nil, err
 	}
+	// A name no roster row types may be a declared list in one profile and a
+	// single value in another; that is refused here, over profile text, before
+	// any claim is folded into an entry.
+	decls, err := checkEnvShapeAgreement(set, names, selected)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman
 	// profile is selected, stage a dispatcher stub ahead of it on PATH rather
@@ -806,7 +813,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	//    whole mount set — including the authored mounts and every Replace
 	//    above. Conflicts are reported here rather than during the fold, so the
 	//    message can name every claimant (envresolve.go).
-	if err := p.applyEnvClaims(envClaims, env); err != nil {
+	if err := p.applyEnvClaims(envClaims, env, decls); err != nil {
 		return nil, err
 	}
 
@@ -1401,15 +1408,23 @@ func aGrantBinds(set map[ProfileName]*Profile, names []ProfileName, vars map[str
 }
 
 // splitSpec parses "path" or "host:guest" and expands {variables} in both.
+//
+// The ':' is found in the profile TEXT, before any {var} is expanded. A
+// variable's value is a host directory name and may contain ':' itself:
+// expanding first would split @parent-ro's `{target_parent}` on a target under
+// /w/x:/etc/proj into host /w/x, guest /etc — a sibling directory the selection
+// never granted, mounted over /etc. No variable name contains ':', so the first
+// one in the text is the author's.
 func splitSpec(spec string, vars map[string]string) (host, guest string, err error) {
-	s, err := expandVars(spec, vars)
-	if err != nil {
+	rawHost, rawGuest := spec, spec
+	if i := strings.Index(spec, ":"); i >= 0 {
+		rawHost, rawGuest = spec[:i], spec[i+1:]
+	}
+	if host, err = expandVars(rawHost, vars); err != nil {
 		return "", "", err
 	}
-	if i := strings.Index(s, ":"); i >= 0 {
-		host, guest = s[:i], s[i+1:]
-	} else {
-		host, guest = s, s
+	if guest, err = expandVars(rawGuest, vars); err != nil {
+		return "", "", err
 	}
 	if !filepath.IsAbs(host) || !filepath.IsAbs(guest) {
 		return "", "", fmt.Errorf("grant %q: both sides must be absolute paths", spec)

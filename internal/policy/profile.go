@@ -147,6 +147,10 @@ type EnvGrants struct {
 	Prepend  map[string][]string
 	Inherit  []string
 	Sanitise []string
+
+	// Types is the profile's environ.types: a kind for a name snug's roster
+	// has no row for, read by this profile's own verbs only (checkEnvTypes).
+	Types map[string]EnvKind
 }
 
 // Symlink is a symlink snug creates inside the sandbox (usr-merge, mostly).

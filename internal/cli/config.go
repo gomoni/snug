@@ -523,12 +523,14 @@ func uncheckedMark(name string, verb policy.EnvVerb) string {
 }
 
 // envMarks is this screen's half of the JOIN --dry-run's ENVIRONMENT block makes
-// on the same (name, verb) pair: the unchecked mark, then whatever
-// policy.EnvNote has to say about what the tool DOES with the value.
+// on the same (name, verb) pair: the unchecked mark, then the profile's own
+// environ.types declaration of the name (policy.DeclaredEnvNoteIn, naming prof
+// alone, since this screen renders one profile), then whatever policy.EnvNote
+// has to say about what the tool DOES with the value.
 //
-// Two marks here rather than three — grantMark has no counterpart on this
+// Three marks here rather than four — grantMark has no counterpart on this
 // screen, because `snug profile show` renders a profile with no target and so
-// has no mounts to judge a value against. The two that do apply keep --dry-run's
+// has no mounts to judge a value against. The three that do apply keep --dry-run's
 // order, so a reader moving between the screens reads the same row the same way.
 //
 // It is a function rather than two concatenations at each of the three call
@@ -536,11 +538,13 @@ func uncheckedMark(name string, verb policy.EnvVerb) string {
 // and forgotten at the other two is how a screen comes to say less than its
 // neighbour, and `snug profile show` is precisely where that happened last time
 // (the mark used to hang off a block that was removed).
-func envMarks(name string, verb policy.EnvVerb) string {
-	return uncheckedMark(name, verb) + policy.EnvNote(name, verb)
+func envMarks(name string, verb policy.EnvVerb, g policy.EnvGrants, prof policy.ProfileName) string {
+	return uncheckedMark(name, verb) + policy.DeclaredEnvNoteIn(name, verb, g, prof) + policy.EnvNote(name, verb)
 }
 
-// showEnviron renders the five environment verbs.
+// showEnviron renders prof's environ.types declarations, then the five
+// environment verbs. prof is the profile g belongs to, named in each row's
+// declaration mark.
 //
 // It renders ALL of them for the same reason `snug profile show` exists at all:
 // this line used to read `show("env", p.Env)` and never rendered `path` either,
@@ -551,7 +555,7 @@ func envMarks(name string, verb policy.EnvVerb) string {
 // The parse-time checks in policy.ValidateEnvGrants are part of the argument
 // for `snug profile show` reporting a verdict with no target; showing what it
 // checked is the other half.
-func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
+func showEnviron(prof policy.ProfileName, g policy.EnvGrants, show func(label string, vals []string)) {
 	pairs := func(label string, verb policy.EnvVerb, m map[string]string) {
 		names := make([]string, 0, len(m))
 		for k := range m {
@@ -560,7 +564,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+m[n]+envMarks(n, verb))
+			vals = append(vals, n+" = "+m[n]+envMarks(n, verb, g, prof))
 		}
 		show(label, vals)
 	}
@@ -572,7 +576,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 		sort.Strings(names)
 		vals := make([]string, 0, len(names))
 		for _, n := range names {
-			vals = append(vals, n+" = "+strings.Join(m[n], " ")+envMarks(n, verb))
+			vals = append(vals, n+" = "+strings.Join(m[n], " ")+envMarks(n, verb, g, prof))
 		}
 		show(label, vals)
 	}
@@ -581,7 +585,7 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	names := func(label string, verb policy.EnvVerb, in []string) {
 		vals := make([]string, 0, len(in))
 		for _, n := range in {
-			vals = append(vals, n+envMarks(n, verb))
+			vals = append(vals, n+envMarks(n, verb, g, prof))
 		}
 		show(label, vals)
 	}
@@ -593,6 +597,18 @@ func showEnviron(g policy.EnvGrants, show func(label string, vals []string)) {
 	// The mark's wording is deliberately the same "unchecked" the --dry-run mark
 	// uses: two words for one property is how a reader concludes there are two
 	// properties.
+	// A redundant declaration — of a name the roster already types — is
+	// admitted and inert, and the note on its line is the only place it shows.
+	types := make([]string, 0, len(g.Types))
+	for n := range g.Types {
+		types = append(types, n)
+	}
+	sort.Strings(types)
+	decls := make([]string, 0, len(types))
+	for _, n := range types {
+		decls = append(decls, n+" = "+g.Types[n].String()+policy.RedundantEnvDeclarationNote(n))
+	}
+	show("environ.types", decls)
 	pairs("environ.set", policy.VerbSet, g.Set)
 	lists("environ.merge", policy.VerbMerge, g.Merge)
 	lists("environ.prepend", policy.VerbPrepend, g.Prepend)
@@ -725,7 +741,7 @@ func profileCmd(args []string) int {
 		// Kind gating issues #169/#170 give KindTmpfs on --dry-run's
 		// FILESYSTEM block.
 		show("tmpfs", p.Tmpfs)
-		showEnviron(p.Environ, show)
+		showEnviron(p.Name, p.Environ, show)
 		for i, s := range p.Symlink {
 			head := ""
 			if i == 0 {

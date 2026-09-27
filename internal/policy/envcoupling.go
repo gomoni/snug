@@ -54,7 +54,7 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 	}
 
 	for _, k := range sortedMapKeys(g.Set) {
-		if err := checkCoupled(name, VerbSet, k, g.Set[k], vars, guests, links); err != nil {
+		if err := checkCoupled(name, VerbSet, k, g.Set[k], vars, guests, links, g.Types); err != nil {
 			return err
 		}
 	}
@@ -65,7 +65,7 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 		}
 		for _, k := range sortedListKeys(m) {
 			for _, raw := range m[k] {
-				if err := checkCoupled(name, verb, k, raw, vars, guests, links); err != nil {
+				if err := checkCoupled(name, verb, k, raw, vars, guests, links, g.Types); err != nil {
 					return err
 				}
 			}
@@ -85,21 +85,23 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 func writesAnyPath(g EnvGrants) bool {
 	for _, m := range []map[string][]string{g.Merge, g.Prepend} {
 		for k := range m {
-			if valueIsAPath(k) {
+			if valueIsAPath(k, g.Types) {
 				return true
 			}
 		}
 	}
 	for k := range g.Set {
-		if valueIsAPath(k) {
+		if valueIsAPath(k, g.Types) {
 			return true
 		}
 	}
 	return false
 }
 
-// isPathValued is the coupling rule's scope, and an UNROSTERED name is outside
-// it.
+// isPathValued is the coupling rule's scope, and an unrostered, UNDECLARED name
+// is outside it. A `path` or `path-list` declaration in the profile's own
+// environ.types puts the name in scope (typeWithin): the author supplied the
+// fact snug otherwise refuses to guess.
 //
 // READ THE NEXT PARAGRAPH AS SCOPED TO THIS FUNCTION, WHICH IS WHERE IT WAS NOT
 // READ. It defends the COUPLING rule's scope and it was quoted, once, to defend
@@ -110,11 +112,11 @@ func writesAnyPath(g EnvGrants) bool {
 //
 // That is not an oversight and it is the honest answer rather than the
 // convenient one: `path` is a fact snug holds about a name, and for a name with
-// no roster row snug holds no TYPE at all. The alternative is to decide a value
+// no roster row and no declaration snug holds no TYPE at all. The alternative is to decide a value
 // is a path because it starts with a '/', which is precisely the shape-sniffing
 // this file's header refuses ("the shape is the same for a search path, a URL, a
 // template language bash performs command substitution on, and a set of
-// delimiter characters"). So an unrostered value naming a path the profile does
+// delimiter characters"). So an unrostered, undeclared value naming a path the profile does
 // not grant is NOT refused, where the same value under a rostered path-valued
 // name would be. What that costs is one profile-lying case going unreported —
 // and --dry-run still marks that row `← unchecked`, and grantMark still says
@@ -122,8 +124,8 @@ func writesAnyPath(g EnvGrants) bool {
 // covers. What it would cost to close by guessing is a rule that refuses a
 // correct value for every name whose value merely looks like a path —
 // LESSOPEN's does, and it is a command line.
-func isPathValued(name string) bool {
-	t, known := typeOf(name)
+func isPathValued(name string, decl map[string]EnvKind) bool {
+	t, known, _ := typeWithin(name, decl)
 	return known && t.path
 }
 
@@ -195,8 +197,10 @@ func isPathValued(name string) bool {
 // marked `← not granted`, and still carries its own annotation. Only the
 // unrepresentable spelling is refused.
 //
-// IT READS THREE TABLES NOW, AND THE THIRD IS THE SAME LESSON A THIRD TIME
-// (redteam host round 3). Closing the pointer set closed the pointer set. It did
+// IT READS THREE TABLES AND THE PROFILE'S DECLARATION, AND THE THIRD TABLE IS
+// THE SAME LESSON A THIRD TIME (redteam host round 3). The declaration is read
+// with the roster, through typeWithin, and only for a name the roster lacks.
+// Closing the pointer set closed the pointer set. It did
 // not reach the git names that carry the identical power and are in neither
 // table — measured, INSIDE a running sandbox, at 8d17f85:
 //
@@ -224,25 +228,25 @@ func isPathValued(name string) bool {
 // The pointer clause stays even though every pointer is also shapePath today:
 // "a pointer is a path" should not become a fact that only holds while somebody
 // keeps writing the sentence.
-func valueIsAPath(name string) bool {
+func valueIsAPath(name string, decl map[string]EnvKind) bool {
 	if namesAPointerFile(name) {
 		return true
 	}
 	if n, ok := noteExact(name); ok && n.shape == shapePath {
 		return true
 	}
-	t, known := typeOf(name)
+	t, known, _ := typeWithin(name, decl)
 	return known && (t.path || t.pathNoGrant)
 }
 
 // checkCoupled is the verdict on one written value.
-func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string) error {
+func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string, decl map[string]EnvKind) error {
 	// TWO QUESTIONS, ASKED SEPARATELY. Coupling applies to the names the roster
 	// marks `path`; the absolute-path rule applies to every name whose value IS a
 	// path, which is a wider set (valueIsAPath). A name in the wider set only
 	// gets the second verdict and returns before the coverage walk below.
-	coupled := isPathValued(name)
-	if !coupled && !valueIsAPath(name) {
+	coupled := isPathValued(name, decl)
+	if !coupled && !valueIsAPath(name, decl) {
 		return nil
 	}
 	value, err := expandVars(raw, vars)
@@ -255,7 +259,7 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 	// it here. This is also the only path by which a relative `set` is refused:
 	// checkAbsoluteElement is called from the list verbs alone.
 	if !filepath.IsAbs(value) {
-		return checkAbsoluteElement(profile, name, verb, raw, value)
+		return checkAbsoluteElement(profile, name, verb, raw, value, decl)
 	}
 	if !coupled {
 		// Absolute is the whole of what snug checks for BASH_ENV, ENV and

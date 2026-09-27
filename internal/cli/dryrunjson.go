@@ -612,6 +612,12 @@ type jsonEnvVar struct {
 	// Dropped elements are NAMED, not counted, for the same reason the human
 	// block names them: "1 of 3 kept" does not let anyone check a filter.
 	Dropped []jsonEnvDrop `json:"dropped,omitempty"`
+	// DeclaredKind and DeclaredBy are reportEnvVar's: the environ.types kind
+	// behind an unrostered name and the profiles that declared it. Absent for a
+	// rostered or undeclared name; entries[].type_unknown stays true for a
+	// declared one, because the roster still has no row.
+	DeclaredKind string   `json:"declared_kind,omitempty"`
+	DeclaredBy   []string `json:"declared_by,omitempty"`
 }
 
 // jsonEnvEntry's field set was renamed one day after this format shipped
@@ -907,7 +913,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	}
 
 	for _, v := range rep.Environment {
-		jv := jsonEnvVar{Name: v.Name}
+		jv := jsonEnvVar{Name: v.Name, DeclaredKind: v.DeclaredKind, DeclaredBy: v.DeclaredBy}
 		for _, en := range v.Entries {
 			je := jsonEnvEntry{
 				Verb:         en.Verb,

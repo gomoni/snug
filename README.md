@@ -464,6 +464,21 @@ one — merging needs the separator, and what an empty element means to whoever
 reads the variable. `set` and `inherit` take any name: your profile has an author
 and a file path, and that is who takes it on.
 
+Unknown name, list of `:`-joined absolute paths? Declare it where you merge it:
+
+```toml
+[profile.ruby]
+ro = ["{home}/.gem"]        # a declared path is granted by the profile naming it
+[profile.ruby.environ.types]
+GEM_PATH = "path-list"      # or "path": one absolute path, must be granted
+[profile.ruby.environ.merge]
+GEM_PATH = ["{home}/.gem"]
+```
+
+Declaration covers that profile only. Never sanitised. Two profiles declaring it
+merge; one declaring, one `set`ting = error. Shipped profiles cannot declare.
+Screen says `← declared path-list by ruby` beside `← unchecked`.
+
 Whatever snug does know, it says on the row that grants it:
 
 ```console
@@ -477,7 +492,7 @@ checked nothing about the value. The sentence after it means snug measured what
 some tool does with that value — `internal/policy/testdata/annotations.txt` is
 the whole table, `GIT_SSH`, `RUSTC_WRAPPER`, `BASH_ENV`, `LD_*` and `GIT_CONFIG_*`
 among them. A profile snug **ships** is held tighter: it may not write an
-untyped name at all.
+untyped name at all, or declare one.
 
 Profile order never matters. Two profiles setting the same scalar to different
 values = **fatal error naming both**, never a silent winner — same rule as two

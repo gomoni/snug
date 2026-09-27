@@ -154,7 +154,10 @@ func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]str
 			if err != nil {
 				return err
 			}
-			if err := checkAbsoluteElement(name, k, VerbMerge, raw, v); err != nil {
+			if err := checkAbsoluteElement(name, k, VerbMerge, raw, v, g.Types); err != nil {
+				return err
+			}
+			if err := checkExpandedElement(name, k, VerbMerge, raw, v, g.Types); err != nil {
 				return err
 			}
 			c.addMerge(k, v, from)
@@ -168,7 +171,10 @@ func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]str
 			if err != nil {
 				return err
 			}
-			if err := checkAbsoluteElement(name, k, VerbPrepend, raw, v); err != nil {
+			if err := checkAbsoluteElement(name, k, VerbPrepend, raw, v, g.Types); err != nil {
+				return err
+			}
+			if err := checkExpandedElement(name, k, VerbPrepend, raw, v, g.Types); err != nil {
 				return err
 			}
 			seq = append(seq, v)
@@ -201,13 +207,41 @@ func collectEnv(c *envClaims, name ProfileName, g EnvGrants, vars map[string]str
 // permission is at valueIsAPath, in envcoupling.go. Widening it here is harmless
 // for the list verbs this is also called from: all three of those names are
 // scalars, so merge and prepend on them are refused on type grounds first.
-func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string) error {
-	if !valueIsAPath(name) || filepath.IsAbs(expanded) {
+// decl is the writing profile's own environ.types, so a name it declares is a
+// path here exactly as a rostered one is.
+func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string, decl map[string]EnvKind) error {
+	if !valueIsAPath(name, decl) || filepath.IsAbs(expanded) {
 		return nil
 	}
 	return fmt.Errorf("profile %q: environ.%s %s entry %q must be an absolute path: a "+
 		"relative one is resolved against whatever directory the payload happens to be "+
 		"in, which is not something a profile can know", profile, verb, name, raw)
+}
+
+// checkExpandedElement refuses an element whose EXPANSION contains the list's
+// separator. checkEnvElement reads the profile text, before any {var} is
+// expanded, so `{target_parent}/bin` passes it — and on a target whose parent is
+// /w/pp:q it expands to /w/pp:q/bin, which the consumer reads as /w/pp and the
+// RELATIVE q/bin, resolved against the payload's cwd, the target.
+// checkAbsoluteElement cannot see that: the whole string starts with '/'. {home} cannot carry
+// one (Resolve's passwd check refuses it); {target} and {target_parent} are host
+// directory names and can.
+func checkExpandedElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string, decl map[string]EnvKind) error {
+	t, known, _ := typeWithin(name, decl)
+	if !known || !t.list || raw == expanded {
+		return nil
+	}
+	for _, sep := range []string{t.sep, t.altSep} {
+		if sep == "" || !strings.Contains(expanded, sep) {
+			continue
+		}
+		return fmt.Errorf("profile %q: environ.%s %s entry %q expands to %q, which contains %q — "+
+			"the separator %s is read with — so the payload would see several elements, one of "+
+			"them relative and resolved against its working directory. A directory this "+
+			"expansion names has %q in its name; run snug on a path without one, or write the "+
+			"element without that {var}", profile, verb, name, raw, expanded, sep, name, sep)
+	}
+	return nil
 }
 
 // applyEnvClaims turns the accumulated claims into entries, in BAND order.
@@ -225,13 +259,23 @@ func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, e
 // mounts and every Replace — because `sanitise`'s predicate is "is this guest
 // path granted" and a filter that ran earlier would answer it against half a
 // policy.
-func (p *Policy) applyEnvClaims(c *envClaims, env Environ) error {
+//
+// decls is checkEnvShapeAgreement's verdict: the declared kind of every
+// unrostered name some profile in the selection declared. It supplies the type
+// of such a name, and it is stamped on the EnvVar so both screens can say who
+// declared it.
+func (p *Policy) applyEnvClaims(c *envClaims, env Environ, decls map[string]envDeclaration) error {
 	for _, name := range c.names() {
 		// An unrostered name can only have reached here through `set` or
-		// `inherit` — the list verbs refuse a name with no roster row, for
-		// everybody — so `known` being false and `t.list` being false are the
-		// same branch, not two.
+		// `inherit` — unless a profile declared it path-list;
+		// checkEnvShapeAgreement guarantees such a name carries no scalar claim,
+		// and sanitise is refused for it at parse, so sanitiseHostList never
+		// sees a declared type. So `known` being false and `t.list` being false
+		// are the same branch, not two.
 		t, known := typeOf(name)
+		if d, ok := decls[name]; ok && !known {
+			t, known = d.kind.envType(), true
+		}
 
 		if !known || !t.list {
 			claims := c.scalar[name]
@@ -289,6 +333,13 @@ func (p *Policy) applyEnvClaims(c *envClaims, env Environ) error {
 			from := append([]string(nil), profs...)
 			sort.Strings(from)
 			p.sanitiseHostList(name, t, from, env)
+		}
+	}
+	for name, d := range decls {
+		if v, ok := p.Env[name]; ok {
+			v.DeclaredKind = d.kind
+			v.DeclaredBy = append([]string(nil), d.by...)
+			p.Env[name] = v
 		}
 	}
 	return nil

@@ -169,6 +169,12 @@ type EnvVar struct {
 	Entries []EnvEntry
 
 	Dropped []EnvDrop
+
+	// DeclaredKind/DeclaredBy: the environ.types declaration behind an UNROSTERED
+	// name, and every profile in the selection that made it, sorted. Zero/nil for
+	// a rostered name (the row governs) and for an undeclared one.
+	DeclaredKind EnvKind
+	DeclaredBy   []string
 }
 
 // Value renders what the sandbox will actually see.
@@ -227,6 +233,15 @@ var SnugOwnedEnv = []string{
 	"TZ",
 	"USER",
 }
+
+// bwrapOwnedEnv is the one name inside the sandbox that neither snug nor a
+// profile writes: bwrap sets PWD to its working directory AFTER applying
+// --setenv, with or without --chdir. Measured on bubblewrap 0.12.0, run from
+// /tmp: `--clearenv --setenv PWD /opt/x --chdir /tmp printenv PWD` printed
+// /tmp, and so did the same line without --chdir. A profile's line on it would
+// be rendered by --dry-run and never reach the payload, so it is refused at
+// every verb and in environ.types, as SnugOwnedEnv is.
+var bwrapOwnedEnv = []string{"PWD"}
 
 // AuthorEnv writes one of snug's OWN scalars, modelled on Policy.Replace and
 // for the same reason: it and AuthorEnvList are the only writers of a VerbSnug

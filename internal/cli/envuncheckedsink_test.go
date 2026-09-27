@@ -348,6 +348,26 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 			"%d/%d/%d:\n%s", iU, iN, iG, three)
 	}
 
+	// 7. ALL FOUR, from declaredRegistry: LD_MY_LIBS has no roster row
+	// (unchecked), a profile declared it (declared), it is under the LD_ family
+	// (annotation), and ldlibs grants its one element only optionally, on a host
+	// that lacks it (not granted). `declared` sits second: it qualifies the name,
+	// as unchecked does, and says who supplied the type snug lacks.
+	dp, denv := resolveDeclared(t)
+	four := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, dp, denv) }), "LD_MY_LIBS")
+	idx := []int{
+		strings.Index(four, "unchecked"),
+		strings.Index(four, "declared path-list by ldlibs"),
+		strings.Index(four, "the dynamic loader reads this"),
+		strings.Index(four, "not granted"),
+	}
+	if slices.Contains(idx, -1) {
+		t.Fatalf("the four-statement row lost one of them (unchecked/declared/note/grant = %v):\n%s", idx, four)
+	}
+	if !slices.IsSorted(idx) {
+		t.Errorf("want unchecked < declared < annotation < grant mark, got %v:\n%s", idx, four)
+	}
+
 	// 5. PATH's shadow-slot mark still fires, and is not doubled with an
 	// unchecked mark it structurally cannot carry (PATH has a roster row).
 	//
@@ -383,7 +403,7 @@ func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 		Inherit: []string{"EDITOR", "MY_TOOL_TOKEN"},
 	}
 	got := map[string][]string{}
-	showEnviron(g, func(label string, vals []string) {
+	showEnviron("mine", g, func(label string, vals []string) {
 		if len(vals) > 0 {
 			got[label] = vals
 		}
@@ -454,7 +474,7 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 	}
 
 	var showLine string
-	showEnviron(policy.EnvGrants{Set: map[string]string{"MY_TOOL_MODE": "fast"}},
+	showEnviron("mine", policy.EnvGrants{Set: map[string]string{"MY_TOOL_MODE": "fast"}},
 		func(label string, vals []string) {
 			for _, v := range vals {
 				if strings.HasPrefix(v, "MY_TOOL_MODE") {
@@ -501,7 +521,7 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 // value comes from.
 func TestProfileShowRendersTheAnnotation(t *testing.T) {
 	got := map[string][]string{}
-	showEnviron(policy.EnvGrants{
+	showEnviron("mine", policy.EnvGrants{
 		Set:     map[string]string{"BASH_ENV": "{home}/init", "XDG_DATA_HOME": "{home}/.local/share"},
 		Inherit: []string{"BASH_ENV", "NO_COLOR"},
 	}, func(label string, vals []string) {

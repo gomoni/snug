@@ -830,10 +830,12 @@ func TestPrefixAnnotationsCoverExactlyTheirPrefix(t *testing.T) {
 //     in a scalar cannot start a line at all;
 //  2. the only profile text that reaches a line of its own is a continuation
 //     BAND of a LIST, rendered at indent 19;
-//  3. a list verb needs a roster row (checkUnrosteredName), and `merge`/
+//  3. a list verb needs a roster row or the profile's own `path-list`
+//     declaration (checkUnrosteredName, checkDeclaredVerbType), and `merge`/
 //     `prepend` additionally need `mergeable`;
-//  4. every mergeable list is `path: true` — THIS TEST — so checkAbsoluteElement
-//     refuses any element that does not begin with '/';
+//  4. every mergeable list is `path: true` — roster rows and every EnvKind
+//     alike, THIS TEST — so checkAbsoluteElement refuses any element that does
+//     not begin with '/';
 //  5. therefore a continuation line always begins with a slash at column 20, and
 //     can never begin with whitespace or with '←'.
 //
@@ -871,6 +873,27 @@ func TestEveryMergeableListIsPathValued(t *testing.T) {
 	if mergeable < 5 {
 		t.Fatalf("only %d mergeable lists in the roster; this test measured almost nothing", mergeable)
 	}
+	// Step 4 for the OTHER source of a type: every kind a profile may declare.
+	// A declared list is also never sanitisable — its empty-element kind is an
+	// assumption, not a measurement (EnvKind.envType).
+	declaredMergeable := 0
+	for _, k := range EnvKinds() {
+		tp := k.envType()
+		if tp.mergeable {
+			declaredMergeable++
+			if !tp.path {
+				t.Errorf("declared kind %s is mergeable and NOT path-valued; its merge elements "+
+					"would reach the continuation column with no leading '/' enforced", k)
+			}
+		}
+		if tp.list && tp.sanitisable {
+			t.Errorf("declared kind %s is a sanitisable list; snug has not measured what an "+
+				"empty element means to an undeclared consumer", k)
+		}
+	}
+	if declaredMergeable == 0 {
+		t.Fatal("no declared kind is mergeable, so the loop above checked nothing")
+	}
 	// THE BEHAVIOUR, not just the flag, because step 4 above is only worth
 	// anything if the refusal actually fires. One relative element per mergeable
 	// name, through the real resolver.
@@ -888,5 +911,15 @@ func TestEveryMergeableListIsPathValued(t *testing.T) {
 				"mark column while its ASCII indent does not — a profile's text wearing snug's "+
 				"own verdict", name)
 		}
+	}
+	// ...and through a declaration, which is how an unrostered name reaches
+	// merge at all.
+	reg := testRegistry()
+	reg["band"] = &Profile{Name: "band", Include: []ProfileName{"@target-rw"},
+		Environ: EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"\u2003← not granted"}}}}
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "band"}, testCtx(), newFakeEnv()); err == nil {
+		t.Error("a declared GEM_PATH merge accepted an element beginning with an em space and " +
+			"an arrow")
 	}
 }

@@ -329,6 +329,12 @@ type reportEnvVar struct {
 	Name    string
 	Entries []reportEnvEntry
 	Dropped []reportEnvDrop
+	// DeclaredKind and DeclaredBy are policy.EnvVar's: the environ.types kind
+	// ("path", "path-list") behind an unrostered name and every profile that
+	// declared it, sorted. Empty for a rostered or undeclared name. Per
+	// variable, not per entry — the declaration is about the NAME.
+	DeclaredKind string
+	DeclaredBy   []string
 }
 
 type reportEnvEntry struct {
@@ -723,6 +729,10 @@ func buildContainersReport(env policy.Environ, p *policy.Policy,
 
 func buildEnvReport(p *policy.Policy, v policy.EnvVar, env policy.Environ) reportEnvVar {
 	out := reportEnvVar{Name: v.Name}
+	if len(v.DeclaredBy) > 0 {
+		out.DeclaredKind = v.DeclaredKind.String()
+		out.DeclaredBy = append([]string(nil), v.DeclaredBy...)
+	}
 	for _, e := range v.Entries {
 		grant, inside := envGrantVerdict(p, v.Name, e.Value, env)
 		out.Entries = append(out.Entries, reportEnvEntry{

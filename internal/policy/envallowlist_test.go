@@ -17,10 +17,7 @@ import (
 // already recorded twice (npm_config_userconfig, and the inherit-exemption bug
 // it was found a level deeper than).
 //
-// It was written against `environ.declare`, the per-profile escape hatch that
-// existed for one milestone and was removed before it shipped. What survived
-// the removal is every assertion that was never about the hatch: the questions
-// above are the same questions, asked of the shape that shipped.
+// Declarations (environ.types) are exercised in envdeclare_test.go.
 
 // ── 1. the roster's reach, by verb ──────────────────────────────────────────
 
@@ -67,6 +64,38 @@ func TestUnrosteredNameIsRefusedAtEveryListVerb(t *testing.T) {
 	if !IsUncheckedEnv(name, VerbSet) || !IsUncheckedEnv(name, VerbInherit) {
 		t.Errorf("%s is carried at set/inherit but IsUncheckedEnv says snug knows it; the "+
 			"carry and the mark must be the same fact", name)
+	}
+
+	// THE DECLARED CONTROL. The same name, declared `path-list` in the same
+	// profile, reaches merge and prepend — and still not sanitise. Without this
+	// half, a build that ignored the declaration entirely would pass the
+	// refusals above, and one that let the declaration open sanitise too would
+	// pass everything else in this test.
+	declared := map[string]EnvKind{name: EnvKindPathList}
+	for _, tc := range []struct {
+		verb string
+		g    EnvGrants
+		ok   bool
+	}{
+		{"merge", EnvGrants{Types: declared, Merge: map[string][]string{name: {"/opt/x"}}}, true},
+		{"prepend", EnvGrants{Types: declared, Prepend: map[string][]string{name: {"/opt/x"}}}, true},
+		{"sanitise", EnvGrants{Types: declared, Merge: map[string][]string{name: {"/opt/x"}},
+			Sanitise: []string{name}}, false},
+	} {
+		err := ValidateEnvGrants(tc.g)
+		if tc.ok && err != nil {
+			t.Errorf("declared path-list: environ.%s %s refused: %v", tc.verb, name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("declared path-list: environ.%s %s accepted; a declaration never licenses "+
+				"sanitise", tc.verb, name)
+		}
+	}
+	// The declaration is the author's statement, not a roster row: the mark
+	// stays.
+	if !IsUncheckedEnv(name, VerbMerge) {
+		t.Errorf("%s reads as rostered at merge; a declared name is still one snug has no "+
+			"row for", name)
 	}
 }
 

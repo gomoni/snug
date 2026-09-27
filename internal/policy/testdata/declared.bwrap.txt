@@ -1,0 +1,70 @@
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--unshare-net
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--perms 0755
+--dir /home
+--symlink usr/bin /bin
+--dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
+--ro-bind /etc /etc
+--ro-bind-try /opt /opt
+--proc /proc
+--size 1073741824
+--tmpfs /tmp
+--ro-bind /usr /usr
+--ro-bind-data 10 /etc/group
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
+--size 1073741824
+--tmpfs /home/u
+--ro-bind /opt/gems-a /opt/gems-a
+--ro-bind /opt/gems-b /opt/gems-b
+--ro-bind /opt/tool /opt/tool
+--ro-bind-data 14 /proc/config.gz
+--ro-bind-data 15 /proc/key-users
+--ro-bind-data 16 /proc/keys
+--ro-bind /proc/sys /proc/sys
+--size 1073741824
+--tmpfs /home/u/.cache
+--size 1073741824
+--tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/proj
+--size 1073741824
+--tmpfs /home/u/.local/share
+--size 1073741824
+--tmpfs /home/u/.local/state
+--bind /home/u/proj/sub /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv GEM_PATH /opt/gems-a:/opt/gems-b
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv MY_TOOL_ROOT /opt/tool
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES @home,@sys,@target-rw,gems-a,gems-b,toolroot
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

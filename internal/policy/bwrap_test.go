@@ -83,6 +83,15 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// /tmp/t/001 and /tmp/t/001/proj, emitted depth-ascending and each
 		// an empty (snug anchor) tmpfs, before the target's own rw bind.
 		{"tmp-target", testDefaults, tmpTargetCtx(), func() *fakeEnv { return envWith("/tmp/t/001/proj/sub") }},
+		// The review artifact for environ.types. No builtin can declare a type
+		// (internal/profile's mark refuses one), so without this case the whole
+		// feature produces zero .bwrap.txt diff. The reviewable lines are
+		// `--setenv GEM_PATH /opt/gems-a:/opt/gems-b` — two declarers' merges
+		// joined on ':' in sorted order — and `--setenv MY_TOOL_ROOT /opt/tool`.
+		// declaredProbeEnv gives the host its own GEM_PATH and MY_TOOL_ROOT, so
+		// a host element reaching either operand would show here: nothing in
+		// the selection inherits or sanitises them.
+		{"declared", declaredProbeSelection(), testCtx(), declaredProbeEnv},
 	}
 
 	for _, tc := range cases {

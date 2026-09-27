@@ -1097,6 +1097,35 @@ func refusalRelativeAnnotatedPath(t testing.TB) error {
 	return err
 }
 
+// refusalExpandedElementCarriesSeparator is the redteam finding this branch
+// fixes: checkEnvElement reads a merge/prepend element's raw profile TEXT,
+// before any {var} is expanded, so `{target_parent}/bin` passes it clean —
+// and checkAbsoluteElement only asks whether the EXPANDED value starts with
+// '/', which it does. On a target whose parent directory is itself named with
+// a ':' the expansion carries the list's own separator, so a consumer
+// splitting PATH on ':' sees TWO elements, the second one relative and
+// resolved against the payload's cwd (the target). Measured, in a real
+// sandbox: a `git` planted at that relative name ran.
+//
+// The selection deliberately carries no @target-rw: {target} itself sits
+// under the colon-bearing parent, so splitSpec's own host:guest split (a
+// SEPARATE, unrelated behaviour: it runs on the EXPANDED spec) would refuse
+// {target} as "not absolute" before this check is ever reached — that is why
+// the granting profile below binds the colon-free ancestor "/w" rather than
+// {target_parent} directly.
+func refusalExpandedElementCarriesSeparator(t testing.TB) error {
+	reg := testRegistry()
+	reg["merger"] = &Profile{Name: "merger", RO: []string{"/w"}, Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"{target_parent}/bin"}}}}
+	ctx := testCtx()
+	ctx.Target = "/w/pp:q/proj"
+	env := newFakeEnv()
+	env.dirs["/w"] = true
+	env.dirs["/w/pp:q/proj"] = true
+	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "merger"}, ctx, env)
+	return err
+}
+
 // ── the review artifact ──────────────────────────────────────────────────────
 
 // TestGoldenRefusals pins the EXACT text of every refusal above. This change
@@ -1325,6 +1354,14 @@ func TestGoldenRefusals(t *testing.T) {
 		// and erases none, it reverses the order the rest of the line reads in.
 		{"env_value_bidi_override", refusalEnv(EnvGrants{Set: map[string]string{"EDITOR": "/usr/bin/vim\u202eDEGROF"}})},
 		{"env_name_snug_owned_ps1", refusalEnv(EnvGrants{Inherit: []string{"PS1"}})},
+		// PWD is not snug's OWN scalar (SnugOwnedEnv) — it is bwrap's: measured on
+		// bubblewrap 0.12.0, bwrap sets PWD from its working directory AFTER
+		// --setenv, with or without --chdir, so a profile's line on it never
+		// reaches the payload and --dry-run would show a value it does not have.
+		// checkEnvOwnership refuses it at every verb; `set` stands for all of
+		// them here — see TestProfileCannotWritePWD for set, inherit, merge,
+		// prepend and sanitise together.
+		{"env_pwd_bwrap_owned", refusalEnv(EnvGrants{Set: map[string]string{"PWD": "/x"}})},
 		// FIVE ENTRIES USED TO SIT HERE and they are gone rather than moved:
 		// GIT_SSH_COMMAND and BASH_FUNC_* and GIT_CONFIG_COUNT at `set`,
 		// PIP_INDEX_URL and BASH_ENV at `inherit`. Every one of them is now
@@ -1359,10 +1396,52 @@ func TestGoldenRefusals(t *testing.T) {
 		// with a name, a file and an author writing `set FOO = "x"` is already
 		// that author naming the hole, and every row it produces is marked
 		// `← unchecked` on both screens. What no profile can do is reach a LIST
-		// verb with it: a list verb needs the separator and the meaning of an
-		// empty element, and those are facts only a roster row carries. This row
-		// is the review artifact for that refusal.
+		// verb with it undeclared: a list verb needs the separator and the
+		// meaning of an empty element, and those come from a roster row or from
+		// the profile's own `path-list` declaration. This row is the review
+		// artifact for that refusal, and its text is where an author learns the
+		// declaration exists.
 		{"env_unrostered_merge", refusalEnv(EnvGrants{Merge: map[string][]string{"MY_TOOL_PATH": {"/opt/x"}}})},
+
+		// environ.types (envdeclare.go): the parse-time arms of checkEnvTypes, in
+		// its order, then checkDeclaredVerbType's, then the one element check a
+		// declared list shares with a rostered one.
+		{"env_types_unknown_kind", func(testing.TB) error { _, err := ParseEnvKind("paths"); return err }},
+		{"env_types_no_kind", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": envKindUnset},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems"}}})},
+		{"env_types_bad_name", refusalEnv(EnvGrants{Types: map[string]EnvKind{"MY-PATH": EnvKindPathList},
+			Merge: map[string][]string{"MY-PATH": {"/opt/x"}}})},
+		// checkEnvTypes' own bwrap-owned arm, distinct from checkEnvOwnership's
+		// (env_pwd_bwrap_owned above): a profile cannot even DECLARE a type for
+		// PWD, whether or not it goes on to write a verb on it.
+		{"env_types_pwd", refusalEnv(EnvGrants{Types: map[string]EnvKind{"PWD": EnvKindPath}})},
+		{"env_types_snug_owned", refusalEnv(EnvGrants{Types: map[string]EnvKind{"PATH": EnvKindPathList},
+			Merge: map[string][]string{"PATH": {"/opt/bin"}}})},
+		{"env_types_conditional", refusalEnv(EnvGrants{Types: map[string]EnvKind{"DOCKER_HOST": EnvKindPathList},
+			Merge: map[string][]string{"DOCKER_HOST": {"/run/x"}}})},
+		{"env_types_contradicts_roster_list", refusalEnv(EnvGrants{Types: map[string]EnvKind{"LD_PRELOAD": EnvKindPathList},
+			Merge: map[string][]string{"LD_PRELOAD": {"/opt/x.so"}}})},
+		{"env_types_contradicts_roster_scalar", refusalEnv(EnvGrants{Types: map[string]EnvKind{"BASH_ENV": EnvKindPath},
+			Set: map[string]string{"BASH_ENV": "/opt/init"}})},
+		{"env_types_unused_path_list", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList}})},
+		{"env_types_unused_path", refusalEnv(EnvGrants{Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+			Inherit: []string{"MY_TOOL_ROOT"}})},
+		{"env_declared_list_set", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems"}}, Set: map[string]string{"GEM_PATH": "/opt/gems"}})},
+		{"env_declared_list_inherit", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems"}}, Inherit: []string{"GEM_PATH"}})},
+		{"env_declared_list_sanitise", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems"}}, Sanitise: []string{"GEM_PATH"}})},
+		{"env_declared_path_merge", refusalEnv(EnvGrants{Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+			Set: map[string]string{"MY_TOOL_ROOT": "/opt/tool"}, Merge: map[string][]string{"MY_TOOL_ROOT": {"/opt/tool"}}})},
+		{"env_declared_path_sanitise", refusalEnv(EnvGrants{Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+			Set: map[string]string{"MY_TOOL_ROOT": "/opt/tool"}, Sanitise: []string{"MY_TOOL_ROOT"}})},
+		{"env_declared_list_separator_in_element", refusalEnv(EnvGrants{Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/a:/b"}}})},
+		// the same rule, one indirection further out: the separator is not in
+		// the profile's own TEXT, it appears only after {target_parent} expands
+		// against a host directory name that contains one.
+		{"env_expanded_element_carries_separator", refusalExpandedElementCarriesSeparator},
 
 		// hand-written separators (CALL 1 / §2.7 case 3)
 		{"env_separator_in_a_merge_string", refusalEnv(EnvGrants{Merge: map[string][]string{"PATH": {"/usr/bin:/usr/sbin"}}})},
@@ -1388,6 +1467,14 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_conditional_outranks", refusalConditionalEnvOutranks},
 		{"env_conditional_through_include", refusalConditionalEnvThroughInclude},
 		{"env_set_disagrees_with_inherit", refusalSetVsInherit},
+		// environ.types across a selection and through the resolver's own
+		// checks (producers in envdeclare_test.go).
+		{"env_declared_shape_list_vs_set", refusalDeclaredListVsSet},
+		{"env_declared_shape_list_vs_declared_path", refusalDeclaredListVsDeclaredPath},
+		{"env_declared_shape_list_vs_inherit_absent_on_host", refusalDeclaredListVsInheritAbsentOnHost},
+		{"env_declared_path_uncoupled", refusalDeclaredPathUncoupled},
+		{"env_declared_relative_merge", refusalDeclaredRelativeMerge},
+		{"env_declaration_does_not_travel_through_include", refusalDeclarationDoesNotTravelThroughInclude},
 	}
 
 	var b strings.Builder

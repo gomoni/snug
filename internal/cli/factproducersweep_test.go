@@ -158,6 +158,7 @@ var humanOnlyFacts = map[string]string{
 	// ── sentences whose fact the document already carries ────────────────
 	"grantMark":               "sentence for envGrantVerdict, which the report carries as Grant/GrantsInside",
 	"policy.UncheckedEnvNote": "sentence for policy.IsUncheckedEnv, which the report carries as TypeUnknown",
+	"policy.DeclaredEnvNote":  "sentence for EnvVar.DeclaredKind/DeclaredBy, which the report carries as DeclaredKind/DeclaredBy",
 	"dnsHostLabel":            "sentence for p.Net.DNSHost, which the report carries as Network.DNSHost",
 	"envLines":                "the human block's ROW model (marks, wrapping); reportEnvVar is the document's",
 	"targetAnnotation":        "the TARGET header's `←` mark, derived from mounts[], which the document carries in full",
@@ -181,7 +182,6 @@ var humanOnlyFacts = map[string]string{
 	// ── rendering ────────────────────────────────────────────────────────
 	"policy.VisibleText": "escaping for a terminal; the document runs escapeRawForgingRunes over itself instead",
 	"policy.JoinNames":   "joins profile names into a screen column; the document emits the array",
-	"policy.IsEnvList":   "decides whether a value is quoted on screen; the document emits the string",
 	"policy.Size": "a conversion, not a producer: policy.Size(n).String() renders a byte count as " +
 		"\"1 GiB\"/\"512 MiB\" for the FILESYSTEM block's tmpfs rows (issue #281); the document carries " +
 		"the same number raw, as mounts[].size_bytes",
