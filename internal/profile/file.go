@@ -349,6 +349,9 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := checkFeatureModes(r); err != nil {
+			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
@@ -373,6 +376,27 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		}
 	}
 	return reg, nil
+}
+
+// checkFeatureModes refuses a `network`, `podman` or `git` value no run can
+// use. Resolve refuses it too, but `snug profile show` and `snug profile list`
+// do not resolve, so without this the screen a human reads to decide whether
+// to select a profile rendered `podman  sockets` with the consequence row of
+// a running engine. The same shape as toIdentity's ParseSSHMode call: a second
+// CALL to the function that owns each accepted set, not a second list.
+// An unset `network` is "" and means the join floor; ParseNetMode does not
+// accept "" because Resolve never hands it one.
+func checkFeatureModes(r rawProfile) error {
+	if r.Network != "" {
+		if _, err := policy.ParseNetMode(r.Network); err != nil {
+			return err
+		}
+	}
+	if _, err := policy.ParsePodmanMode(r.Podman); err != nil {
+		return err
+	}
+	_, err := policy.ParseGitMode(r.Git)
+	return err
 }
 
 // toEnvGrants turns one profile's raw `environ` block into the value the

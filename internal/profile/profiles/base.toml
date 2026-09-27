@@ -821,8 +821,11 @@ NO_COLOR = true
 description = "Containers via a filtering proxy over a per-sandbox podman engine, offline unless @net is also selected."
 include = ["sys", "home"]
 podman = "socket"
-# podman reads its registries, signature policy and defaults from here. Without
-# it the client fails with an error that names none of that.
+# The engine's generated home has no registries.d, so containers/image looks
+# up signature lookaside in /etc/containers/registries.d, which this puts in
+# the engine's view (.claude/design/SIGNATURE-POLICY.md, "What is not
+# projected"). Optional: a host without the directory runs without it. This
+# grant, @sys and @home are what the bundle adds to `podman = "socket"`.
 ro = ["/etc/containers"]
 optional = ["/etc/containers"]
 
