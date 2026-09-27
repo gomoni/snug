@@ -54,10 +54,12 @@ GEM_PATH = ["{home}/.gem"]
   lines — not a profile that includes it, not one selected beside it — so no
   profile's verdict depends on another file.
 - **Refused:** a name snug writes (`SnugOwnedEnv`, and every conditional name or
-  name that outranks one); a kind that contradicts a roster row; a declaration
+  name that outranks one); a name any builtin profile writes, at any verb
+  (`checkTypesOfBuiltinNames`, internal/profile — the one package that holds the
+  builtins); a kind that contradicts a roster row; a declaration
   the profile does not use (`path-list` with no `merge`/`prepend`, `path` with no
   `set`).
-- **A compatible declaration of a rostered name is admitted and inert** — the row
+- **A compatible declaration of any other rostered name is admitted and inert** — the row
   governs, and `snug profile show` marks it redundant. So a row added later for a
   name somebody declared does not break their profile unless it contradicts them.
 - **Two profiles declaring the same `path-list` compose**: the merge band is the

@@ -651,9 +651,10 @@ func Load() (Registry, []BadFile, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	written := builtinEnvWriters(reg)
 	var bad []BadFile
 	for _, dir := range ConfigDirs() {
-		layer, layerBad, err := loadDir(dir)
+		layer, layerBad, err := loadDir(dir, written)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -681,7 +682,7 @@ func ConfigDirs() []string {
 	return dirs
 }
 
-func loadDir(dir string) (Registry, []BadFile, error) {
+func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -714,6 +715,9 @@ func loadDir(dir string) (Registry, []BadFile, error) {
 			continue
 		}
 		layer, err := parse(data, path, true)
+		if err == nil {
+			err = checkTypesOfBuiltinNames(layer, path, written)
+		}
 		if err != nil {
 			bad = append(bad, BadFile{Path: path, Err: err})
 			continue
@@ -723,4 +727,72 @@ func loadDir(dir string) (Registry, []BadFile, error) {
 		}
 	}
 	return reg, bad, nil
+}
+
+// builtinEnvWriters maps every environment name a builtin profile writes, at
+// any verb, to the first builtin (by name) that writes it.
+func builtinEnvWriters(builtins Registry) map[string]policy.ProfileName {
+	names := make([]policy.ProfileName, 0, len(builtins))
+	for n := range builtins {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	out := map[string]policy.ProfileName{}
+	add := func(env string, by policy.ProfileName) {
+		if _, ok := out[env]; !ok {
+			out[env] = by
+		}
+	}
+	for _, n := range names {
+		g := builtins[n].Environ
+		for env := range g.Set {
+			add(env, n)
+		}
+		for env := range g.Merge {
+			add(env, n)
+		}
+		for env := range g.Prepend {
+			add(env, n)
+		}
+		for _, env := range g.Inherit {
+			add(env, n)
+		}
+		for _, env := range g.Sanitise {
+			add(env, n)
+		}
+	}
+	return out
+}
+
+// checkTypesOfBuiltinNames refuses an environ.types declaration of a name a
+// builtin profile writes. Such a name is snug's: the builtin's line is the
+// type's statement already, and a declaration beside it is either the same
+// statement twice or a second, competing one. Names snug writes itself are
+// refused inside policy (checkEnvTypes); this is the half only this package
+// can answer, because it is the one that has the builtins.
+//
+// It reads the fixed, compiled-in builtin set — never the selection or the
+// other files installed — so a profile's verdict does not depend on what else
+// is on the machine.
+func checkTypesOfBuiltinNames(layer Registry, source string, written map[string]policy.ProfileName) error {
+	names := make([]policy.ProfileName, 0, len(layer))
+	for n := range layer {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	for _, n := range names {
+		declared := make([]string, 0, len(layer[n].Environ.Types))
+		for env := range layer[n].Environ.Types {
+			declared = append(declared, env)
+		}
+		sort.Strings(declared)
+		for _, env := range declared {
+			if by, ok := written[env]; ok {
+				return fmt.Errorf("%s: profile %q: environ.types names %s, which the builtin "+
+					"profile %s writes. A declaration types a name snug has not spoken for; "+
+					"this one snug types and writes itself. Remove the line", source, n, env, by)
+			}
+		}
+	}
+	return nil
 }

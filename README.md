@@ -476,7 +476,8 @@ GEM_PATH = ["{home}/.gem"]
 ```
 
 Declaration covers that profile only. Never sanitised. Two profiles declaring it
-merge; one declaring, one `set`ting = error. Shipped profiles cannot declare.
+merge; one declaring, one `set`ting = error. Names snug or a builtin profile
+writes cannot be declared. Shipped profiles cannot declare.
 Screen says `← declared path-list by ruby` beside `← unchecked`.
 
 Whatever snug does know, it says on the row that grants it:
