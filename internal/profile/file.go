@@ -7,7 +7,9 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -603,7 +605,8 @@ func (r Registry) merge(other Registry) error {
 	for _, n := range names {
 		if existing, ok := r[n]; ok {
 			return fmt.Errorf("profile %q in %s redefines the one from %s; "+
-				"pick a different name rather than shadowing it", n, other[n].Source, existing.Source)
+				"pick a different name rather than shadowing it", n,
+				policy.VisibleText(other[n].Source), policy.VisibleText(existing.Source))
 		}
 		r[n] = other[n]
 	}
@@ -626,8 +629,8 @@ func (r Registry) merge(other Registry) error {
 // known whenever the file is syntactically valid TOML: an unknown key, a bad
 // value and a refused name all leave it intact. NamesKnown is false when the
 // file could not be read or is not TOML at all; its names are then
-// unrecoverable, and a run that asks for a name nothing loaded refuses with
-// "cannot say" rather than "unknown profile".
+// unrecoverable, so it may define or redefine any name, and every run refuses
+// while it is there — per-selection refusal needs the names.
 type BadFile struct {
 	Path       string
 	Err        error
@@ -661,20 +664,19 @@ func definedNames(data []byte) ([]policy.ProfileName, bool) {
 // checkBadRedefinition keeps a redefinition hard when one side did not load.
 // Without it, a name defined in a good file and again in a file with an
 // unknown key would silently resolve to the good one — the question with no
-// answer, answered by whichever file happened to parse. Marked names are
-// skipped: a file cannot define one (checkName), so that file's fault is the
-// sigil, reported as its own error.
+// answer, answered by whichever file happened to parse. Marked names count: a
+// file spelling [profile."@sys"] did not load because of the sigil, and the
+// author still meant to replace @sys, so the builtin answering in its place
+// is the same silent answer.
 func checkBadRedefinition(reg Registry, bad []BadFile) error {
 	for _, f := range bad {
 		for _, n := range f.Defines {
-			if _, marked := n.CutMark(); marked {
-				continue
-			}
 			if existing, ok := reg[n]; ok {
 				return fmt.Errorf("profile %q in %s redefines the one from %s; "+
 					"pick a different name rather than shadowing it (%s did not load, "+
 					"and a profile it defines still claims the name)",
-					n, f.Path, existing.Source, f.Path)
+					n, policy.VisibleText(f.Path), policy.VisibleText(existing.Source),
+					policy.VisibleText(f.Path))
 			}
 		}
 	}
@@ -739,8 +741,14 @@ func ConfigDirs() []string {
 func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return reg, nil, nil // absent config dir is normal, not an error
+	}
+	if err != nil {
+		// Present but unlistable (EACCES, not a directory): every profile it
+		// holds is out of reach and none of their names can be known, so it
+		// is a BadFile with NamesKnown false, which refuses every run.
+		return reg, []BadFile{{Path: dir, Err: err}}, nil
 	}
 	names := []string{}
 	for _, e := range entries {

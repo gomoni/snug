@@ -88,3 +88,65 @@ func TestABadFileStillCannotRedefineALoadedName(t *testing.T) {
 		t.Errorf("control: want 1 bad file and no hard error, got bad=%v err=%v", bad, err)
 	}
 }
+
+// Red team F2 (#624): the redefinition refusals print file paths, which are
+// directory entries snug did not choose. A path carrying ESC and a newline
+// must reach the screen escaped, in both the good/good and good/bad message.
+func TestRedefinitionEscapesTheFilePaths(t *testing.T) {
+	for _, bodyB := range []string{
+		"[profile.foo]\nro = [\"/opt\"]\n",
+		"[profile.foo]\nbogus = 1\n",
+	} {
+		dir := t.TempDir()
+		pd := filepath.Join(dir, "snug", "profiles.d")
+		if err := os.MkdirAll(pd, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(pd, "a.toml"), "[profile.foo]\nrw = [\"/opt\"]\n")
+		write(t, filepath.Join(pd, "b\x1b[31mRED\nsnug: forged.toml"), bodyB)
+		t.Setenv("XDG_CONFIG_HOME", dir)
+
+		_, _, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "redefines") {
+			t.Fatalf("POSITIVE CONTROL: want a redefinition refusal, got %v", err)
+		}
+		if strings.ContainsAny(err.Error(), "\x1b\n") {
+			t.Errorf("a raw ESC or newline from a file name reached the refusal: %q", err)
+		}
+	}
+}
+
+// Red team (#624): a profiles.d that exists but cannot be listed holds
+// profiles whose names snug cannot know. It is a BadFile with NamesKnown
+// false, never an absent directory — which would let a same-named profile in
+// the other layer answer for it unrefused.
+func TestAnUnlistableProfilesDirIsABadFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists a mode-000 directory")
+	}
+	dir := t.TempDir()
+	pd := filepath.Join(dir, "snug", "profiles.d")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(pd, "x.toml"), "[profile.x]\nro = [\"/opt\"]\n")
+	if err := os.Chmod(pd, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(pd, 0o755) })
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	_, bad, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(bad) != 1 || bad[0].Path != pd || bad[0].NamesKnown {
+		t.Errorf("bad = %+v, want the directory recorded with NamesKnown false", bad)
+	}
+
+	// CONTROL: an absent directory is still normal.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, bad, err := Load(); err != nil || len(bad) != 0 {
+		t.Errorf("an absent profiles.d must not be a bad file: bad=%v err=%v", bad, err)
+	}
+}

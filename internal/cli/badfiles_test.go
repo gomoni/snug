@@ -87,15 +87,17 @@ func TestABadFileRefusesOnlyTheSelectionThatReachesIt(t *testing.T) {
 		}
 	}
 
-	// A file whose names are unrecoverable cannot be ruled out for a name the
-	// registry lacks, and cannot be ruled IN for one it holds.
+	// Red team F1 (#624): a file whose names are unrecoverable may define or
+	// redefine any name, so it refuses every run — including one whose
+	// selection loaded entirely, where a good file's definition would
+	// otherwise win over the unreadable one's unrefused.
 	syntax := []profile.BadFile{{Path: "/etc/snug/profiles.d/broken.toml", Err: fmt.Errorf("x")}}
-	if err := refuseBadSelection(reg, []policy.ProfileName{"@sys"}, syntax); err != nil {
-		t.Errorf("a loaded selection was refused over a syntax-broken sibling: %v", err)
-	}
-	if err := refuseBadSelection(reg, []policy.ProfileName{"work"}, syntax); err == nil ||
-		!strings.Contains(err.Error(), "cannot say") {
-		t.Errorf("an unknown name beside a syntax-broken file must say snug cannot tell, got %v", err)
+	for _, sel := range [][]policy.ProfileName{{"@sys"}, {"work"}} {
+		err := refuseBadSelection(reg, sel, syntax)
+		if err == nil || !strings.Contains(err.Error(), "broken.toml") ||
+			!strings.Contains(err.Error(), "cannot read which profiles they define") {
+			t.Errorf("selection %v beside a file whose names are unknown: got %v", sel, err)
+		}
 	}
 
 	// CONTROL: nothing wrong, nothing refused.

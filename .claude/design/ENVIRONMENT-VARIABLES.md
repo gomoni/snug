@@ -1354,9 +1354,11 @@ that used the old verb, not the registry. Diagnostic commands (`profile list`,
 selection, or an `include` it reaches, names a profile the file defines; any
 other run goes ahead with a note naming the file. The names a bad file defines
 are recovered whenever it is valid TOML, so `-p thatprofile` says *"defined in
-FILE, which did not load"* and quotes the error; for a file that is not TOML the
-names are unrecoverable and the refusal says snug cannot tell. A name a bad file
-defines that a good file also defines is a redefinition, refused at load.
+FILE, which did not load"* and quotes the error. A file whose names are
+unrecoverable — not TOML, not readable, or an unlistable `profiles.d` — refuses
+every run: it may define the name another file answers for. A name a bad file
+defines that a good file or a builtin also defines is a redefinition, refused at
+load.
 
 **(c) `PATH` entries are not deduplicated, and an ungranted directory is accepted
 in silence.** A profile with `path = ["/nonexistent/bin", "/bin"]`:

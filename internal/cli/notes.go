@@ -150,7 +150,7 @@ func (n *notes) render(w io.Writer) {
 	if len(n.all()) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "NOTES  (these also print on a real run under -v)")
+	fmt.Fprintln(w, "NOTES  (these also print on a real run; some only under -v)")
 	for _, nt := range n.all() {
 		for line := range strings.SplitSeq(strings.TrimRight(nt.text, "\n"), "\n") {
 			fmt.Fprintf(w, "  %s\n", line)

@@ -18,8 +18,12 @@ import (
 //     that selection includes, names a profile a bad file defines
 //     (refuseBadSelection). That file may be the one granting what was asked
 //     for, and a sandbox assembled without it is a silent downgrade —
-//     invariant 5's exact shape. A run whose selection lies entirely in files
-//     that loaded runs, and says which files did not (noteBadFiles).
+//     invariant 5's exact shape. A file whose names snug cannot recover (not
+//     readable, not TOML) refuses every run: it may define or redefine any
+//     name in the closure, and a good file's definition of that name would
+//     then win unrefused. A run whose selection lies entirely in files that
+//     loaded, beside bad files whose names are all known, runs and says which
+//     files did not load (noteBadFiles).
 //   - a diagnostic command reports and continues (reportBadFiles), because "what
 //     still works" is the question it is being asked.
 
@@ -32,6 +36,9 @@ import (
 func refuseBadSelection(reg profile.Registry, selected []policy.ProfileName, bad []profile.BadFile) error {
 	if len(bad) == 0 {
 		return nil
+	}
+	if err := refuseNamelessBadFiles(bad); err != nil {
+		return err
 	}
 	seen := map[policy.ProfileName]bool{}
 	queue := slices.Clone(selected)
@@ -49,6 +56,36 @@ func refuseBadSelection(reg profile.Registry, selected []policy.ProfileName, bad
 		queue = append(queue, p.Include...)
 	}
 	return nil
+}
+
+// refuseNamelessBadFiles refuses while any bad file's names are unknown. It
+// names each such file, the error, and the diagnostic that still works — the
+// person reading this needs somewhere to go that is not "snug is broken".
+func refuseNamelessBadFiles(bad []profile.BadFile) error {
+	var nameless []profile.BadFile
+	for _, f := range bad {
+		if !f.NamesKnown {
+			nameless = append(nameless, f)
+		}
+	}
+	if len(nameless) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d profile file(s) in the search path did not load, and snug cannot read "+
+		"which profiles they define:\n", len(nameless))
+	for _, f := range nameless {
+		fmt.Fprintf(&b, "         %s\n", policy.VisibleText(f.Path))
+		for _, line := range badFileErrorLines(f) {
+			fmt.Fprintf(&b, "           %s\n", line)
+		}
+	}
+	b.WriteString("       snug will not start a sandbox while one is there: it may define a profile\n")
+	b.WriteString("       this run selects, or redefine one another file loaded, and a sandbox built\n")
+	b.WriteString("       from whatever happened to load is a guess.\n")
+	b.WriteString("       Fix or move the file. `snug profile list` and `snug doctor` still work and\n")
+	b.WriteString("       show what did load.")
+	return fmt.Errorf("%s", b.String())
 }
 
 // noteBadFiles is the run that goes ahead: its selection is whole, and a file
