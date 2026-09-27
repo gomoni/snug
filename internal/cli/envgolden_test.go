@@ -311,6 +311,12 @@ func TestGoldenEnvironment(t *testing.T) {
 		// lands …`; and an unmarked control with no symlink on the way at all.
 		{"hostlink-marks", append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "hlmarks"),
 			envGoldenCtx(), false, hostlinkMarksRegistry, hostlinkMarksEnv},
+		// environ.types, which no builtin may carry, so this is the only
+		// committed render of the `← declared` mark. GEM_PATH: two declarers,
+		// both named, and an element with a space rendered quoted; MY_TOOL_ROOT:
+		// a declared scalar path; LD_MY_LIBS: all four marks on one row, in
+		// their fixed order. See declaredRegistry.
+		{"declared", declaredSelection(), envGoldenCtx(), false, declaredRegistry, declaredEnv},
 	}
 
 	for _, tc := range cases {

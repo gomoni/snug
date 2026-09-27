@@ -78,12 +78,16 @@ type rawProfile struct {
 // Inherit and Sanitise are map[string]bool because the TOML spelling is
 // `NAME = true`: the profile supplies a name, never a value. `= false` is
 // refused by name rather than stored, or it would be a negation key that parsed.
+//
+// Types is map[string]string so toEnvTypes, not go-toml, refuses an unknown
+// kind — with the file, the profile and the key named.
 type rawEnviron struct {
 	Set      map[string]string `toml:"set"`
 	Merge    map[string]any    `toml:"merge"`
 	Prepend  map[string]any    `toml:"prepend"`
 	Inherit  map[string]bool   `toml:"inherit"`
 	Sanitise map[string]bool   `toml:"sanitise"`
+	Types    map[string]string `toml:"types"`
 }
 
 // rawIdentity is [profile.X.identity]: a container of per-tool blocks with no
@@ -388,8 +392,34 @@ func toEnvGrants(r rawProfile, name, source string) (policy.EnvGrants, error) {
 		if g.Sanitise, err = toNameSet(e.Sanitise, "sanitise", name, source); err != nil {
 			return g, err
 		}
+		if g.Types, err = toEnvTypes(e.Types, name, source); err != nil {
+			return g, err
+		}
 	}
 	return g, nil
+}
+
+// toEnvTypes turns `NAME = "path-list"` into the declared kind. The key is
+// quoted because its grammar is not checked yet — policy.ValidateEnvGrants does
+// that, after this.
+func toEnvTypes(in map[string]string, profile, source string) (map[string]policy.EnvKind, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]policy.EnvKind, len(in))
+	for _, key := range keys {
+		k, err := policy.ParseEnvKind(in[key])
+		if err != nil {
+			return nil, fmt.Errorf("%s: profile %q: environ.types %q: %w", source, profile, key, err)
+		}
+		out[key] = k
+	}
+	return out, nil
 }
 
 // toElementLists accepts a bare string as ONE element and an array as its
@@ -621,9 +651,10 @@ func Load() (Registry, []BadFile, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	written := builtinEnvWriters(reg)
 	var bad []BadFile
 	for _, dir := range ConfigDirs() {
-		layer, layerBad, err := loadDir(dir)
+		layer, layerBad, err := loadDir(dir, written)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -651,7 +682,7 @@ func ConfigDirs() []string {
 	return dirs
 }
 
-func loadDir(dir string) (Registry, []BadFile, error) {
+func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -684,6 +715,9 @@ func loadDir(dir string) (Registry, []BadFile, error) {
 			continue
 		}
 		layer, err := parse(data, path, true)
+		if err == nil {
+			err = checkTypesOfBuiltinNames(layer, path, written)
+		}
 		if err != nil {
 			bad = append(bad, BadFile{Path: path, Err: err})
 			continue
@@ -693,4 +727,72 @@ func loadDir(dir string) (Registry, []BadFile, error) {
 		}
 	}
 	return reg, bad, nil
+}
+
+// builtinEnvWriters maps every environment name a builtin profile writes, at
+// any verb, to the first builtin (by name) that writes it.
+func builtinEnvWriters(builtins Registry) map[string]policy.ProfileName {
+	names := make([]policy.ProfileName, 0, len(builtins))
+	for n := range builtins {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	out := map[string]policy.ProfileName{}
+	add := func(env string, by policy.ProfileName) {
+		if _, ok := out[env]; !ok {
+			out[env] = by
+		}
+	}
+	for _, n := range names {
+		g := builtins[n].Environ
+		for env := range g.Set {
+			add(env, n)
+		}
+		for env := range g.Merge {
+			add(env, n)
+		}
+		for env := range g.Prepend {
+			add(env, n)
+		}
+		for _, env := range g.Inherit {
+			add(env, n)
+		}
+		for _, env := range g.Sanitise {
+			add(env, n)
+		}
+	}
+	return out
+}
+
+// checkTypesOfBuiltinNames refuses an environ.types declaration of a name a
+// builtin profile writes. Such a name is snug's: the builtin's line is the
+// type's statement already, and a declaration beside it is either the same
+// statement twice or a second, competing one. Names snug writes itself are
+// refused inside policy (checkEnvTypes); this is the half only this package
+// can answer, because it is the one that has the builtins.
+//
+// It reads the fixed, compiled-in builtin set — never the selection or the
+// other files installed — so a profile's verdict does not depend on what else
+// is on the machine.
+func checkTypesOfBuiltinNames(layer Registry, source string, written map[string]policy.ProfileName) error {
+	names := make([]policy.ProfileName, 0, len(layer))
+	for n := range layer {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	for _, n := range names {
+		declared := make([]string, 0, len(layer[n].Environ.Types))
+		for env := range layer[n].Environ.Types {
+			declared = append(declared, env)
+		}
+		sort.Strings(declared)
+		for _, env := range declared {
+			if by, ok := written[env]; ok {
+				return fmt.Errorf("%s: profile %q: environ.types names %s, which the builtin "+
+					"profile %s writes. A declaration types a name snug has not spoken for; "+
+					"this one snug types and writes itself. Remove the line", source, n, env, by)
+			}
+		}
+	}
+	return nil
 }

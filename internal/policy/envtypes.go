@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -69,7 +70,8 @@ const (
 // THE ZERO VALUE IS A REAL ROW, NOT A MISS, and that distinction is what the
 // roster rests on. `envType{}` means "a scalar, both `set` and `inherit`" —
 // EDITOR is one — while a name that is not in envTypes at all has no type at
-// all, which is what the three LIST verbs need and what a builtin may not write.
+// all, unless its own profile declares one (typeWithin) — which is what the
+// three LIST verbs need and what a builtin may not write.
 // The two are told apart by the map lookup's second return and by nothing else,
 // which is why typeOf returns it: a `known` FIELD could be forgotten on a new
 // row, and a forgotten field would read as a row that grants nothing rather than
@@ -146,13 +148,14 @@ type envType struct {
 //     REVIEW requirement, and a review requirement is something snug can impose
 //     on its own material and cannot impose on a file someone else wrote: there
 //     is no human standing behind a profile compiled into the binary.
-//   - The three LIST verbs take no name that is not here, from anybody: a list
-//     verb needs the separator and the empty-element kind, and neither is
-//     something a profile can supply without snug sniffing the shape of a value.
-//     That is snug declining an operation it cannot perform correctly.
+//   - The three LIST verbs take no name that is neither here nor declared
+//     `path-list` by the same profile: a list verb needs the separator and the
+//     empty-element kind, and a profile supplies them only by naming the one
+//     shape snug fixes them for, never by snug sniffing a value. That is snug
+//     declining an operation it cannot perform correctly.
 //
 // A profile a HUMAN wrote may write a name with no row here at `set` and
-// `inherit`. It is carried, and every entry it produces is marked `← unchecked`
+// `inherit`, and, declared `path-list`, at `merge` and `prepend`. It is carried, and every entry it produces is marked `← unchecked`
 // on both screens (IsUncheckedEnv) — plus whatever envNotes has to say about it,
 // which is a second and independent statement.
 //
@@ -178,20 +181,26 @@ type envType struct {
 // TestAnnotatedEnvPairsAShippedProfileWritesArePinned (internal/profile) exists
 // to make visible.
 //
-// THERE IS NO ESCAPE HATCH AND THERE MUST NOT BE ONE. `environ.declare` existed
-// for one milestone — a per-profile name set licensing `set` and `inherit` for a
-// name with no row — and it was removed, deliberately, before it shipped. The
-// argument that killed it: `environ.set MY_VAR = "x"` in a profile with a name,
-// a file path and an author ALREADY is that author declaring the name and taking
-// responsibility; EnvEntry.From records it and --dry-run renders it, so the
-// hatch made them sign twice. The disclosure it was justified by never depended
-// on it either — IsUncheckedEnv derives the mark from THIS TABLE, not from a
-// Declare list, so deleting the hatch left the `← unchecked` row rendering
-// unchanged on both sinks. It also bought nothing across profiles: it
-// deliberately did not travel through `include`, and two profiles disagreeing
-// about a scalar already fails on the conflict rule. And it added a failure mode
-// of its own — snug adding a roster row later would break every profile that had
-// declared that name.
+// ONE KEY DECLARES A TYPE, AND IT IS NARROW ON PURPOSE: `environ.types`
+// (EnvKind). It gives a name this roster has no row for the kind `path` or
+// `path-list`, and the kind fixes every other fact (EnvKind.envType). It is not
+// a way round this table: a declaration of a rostered name is admitted only
+// where the row already permits everything it licenses (compatibleWith), and
+// the row then governs; a declaration of a name snug writes is refused; a
+// profile snug ships may not carry one (internal/profile's mark); and it applies
+// to the declaring profile's own lines only — not through `include`, not to a
+// profile selected beside it — so no profile's verdict depends on another file.
+// What it adds is the one list shape an unknown consumer can be handed safely:
+// ':'-joined absolute paths, merged, never sanitised, because snug assumes an
+// empty element there is an instruction and under that assumption a filter can
+// ADD directories.
+//
+// A NAME SET WITHOUT A TYPE IS NOT BUILT. `environ.set MY_VAR = "x"` in a file
+// with a name, a path and an author already is the declaration — EnvEntry.From
+// records it and --dry-run renders it — and the `← unchecked` mark derives from
+// THIS TABLE, so a second list of names would make the author sign twice for
+// the same row. A declaration earns its key only by supplying a FACT a refused
+// verb needs.
 //
 // envNotes and envNotePrefixes below are a SEPARATE table and are read
 // independently of this one: EnvNote reads those, checkEnvVerbType reads this.
@@ -356,23 +365,6 @@ var envTypes = map[string]envType{
 	"GOFLAGS": {list: true, sep: " ", empty: emptyNA},
 }
 
-// IsEnvList reports whether snug treats this name as a LIST — several elements
-// joined by a separator — rather than as one scalar value.
-//
-// Exported for the renderer, which needs it to know whether the space in a value
-// is part of the value or a gap between two of them. That is not a cosmetic
-// question: a list element containing a space renders identically to two
-// elements, and the same ambiguity in checkPrependAgreement's key silently
-// deleted a profile's entry (seqKey). A scalar has no such reading — PS1 is
-// mostly spaces — so the renderer must not quote one.
-//
-// It answers from the same table typeOf reads, because a second opinion about
-// what a name IS is how the screen and the resolver come to disagree.
-func IsEnvList(name string) bool {
-	t, known := typeOf(name)
-	return known && t.list
-}
-
 // typeOf returns what snug knows about a name, and WHETHER IT KNOWS IT. The
 // second return is the roster membership test and there is deliberately no
 // other one: a caller that ignores it is reading a zero envType as fact, which
@@ -407,6 +399,20 @@ func typeOf(name string) (envType, bool) {
 		}
 	}
 	return envType{}, false
+}
+
+// typeWithin is what ONE profile's text may treat name as: the roster row if
+// snug has one, else that profile's own declaration. It never reads another
+// profile, so no verdict it feeds depends on the selected set. typeOf stays
+// roster-only on purpose — see checkEnvOwnership, IsUncheckedEnv.
+func typeWithin(name string, decl map[string]EnvKind) (t envType, known, declared bool) {
+	if t, ok := typeOf(name); ok {
+		return t, true, false
+	}
+	if k, ok := decl[name]; ok && k != envKindUnset {
+		return k.envType(), true, true
+	}
+	return envType{}, false, false
 }
 
 // snugKnowsEnvName reports whether snug has a TYPE for a name — a roster row,
@@ -2249,8 +2255,12 @@ func EnvNote(name string, verb EnvVerb) string {
 //
 // Checked at PARSE time, so `snug profile show` reports it too and the verdict
 // on a profile never depends on the host that happens to be reading it (§2.3).
-func checkEnvName(name string, verb EnvVerb) error {
-	v := verb.String()
+func checkEnvName(name string, verb EnvVerb) error { return checkEnvNameAt(name, verb.String()) }
+
+// checkEnvNameAt is checkEnvName for any key of the environ block, the verbs'
+// and environ.types' alike; where is the key as a message spells it.
+func checkEnvNameAt(name, where string) error {
+	v := where
 	if name == "" {
 		return fmt.Errorf("environ.%s has an entry with an empty name. A variable with no "+
 			"name cannot be set; delete the line", v)
@@ -2324,7 +2334,15 @@ func checkEnvName(name string, verb EnvVerb) error {
 // The two verbs that WOULD replace a list wholesale, set and inherit, are
 // refused for it by the type rules instead, with a message naming the verb to
 // use — which is the message §2.1 asks for, and better than this one.
+//
+// Reads typeOf, NEVER typeWithin: a declared list would otherwise exempt HOME
+// from this check.
 func checkEnvOwnership(name string, verb EnvVerb) error {
+	if slices.Contains(bwrapOwnedEnv, name) {
+		return fmt.Errorf("environ.%s names %s, which bwrap sets to the sandbox's working "+
+			"directory after every --setenv, so the payload never sees a profile's value "+
+			"and --dry-run would show one it does not have. Remove the line", verb, name)
+	}
 	if t, known := typeOf(name); known && t.list {
 		return nil
 	}
@@ -2346,10 +2364,14 @@ func checkEnvOwnership(name string, verb EnvVerb) error {
 // checkEnvVerbType refuses a verb the variable's TYPE does not accept, and a
 // name the roster does not carry at all where that verb needs a type. The error
 // names the right verb, because "wrong verb" without "use this one" leaves the
-// author guessing (§2.1).
-func checkEnvVerbType(name string, verb EnvVerb) error {
+// author guessing (§2.1). decl is the profile's own environ.types, consulted
+// only for a name the roster does not carry.
+func checkEnvVerbType(name string, verb EnvVerb, decl map[string]EnvKind) error {
 	t, known := typeOf(name)
 	if !known {
+		if k, ok := decl[name]; ok {
+			return checkDeclaredVerbType(name, verb, k)
+		}
 		return checkUnrosteredName(name, verb)
 	}
 	switch verb {
@@ -2423,15 +2445,30 @@ func checkEnvVerbType(name string, verb EnvVerb) error {
 // with this same predicate — see the roster's own comment for why the two halves
 // differ.
 //
-// The three LIST verbs structurally cannot: a list verb needs the SEPARATOR and
-// the meaning of an EMPTY ELEMENT, and neither is something a profile can hand
-// over — inferring them from the shape of a value is exactly what this file
-// exists not to do (see the header comment, and §3.3, where the same column
-// decides that MANPATH may not be sanitised at all). That refusal is for
-// everybody, builtin and user profile alike.
+// The three LIST verbs cannot without a declaration; `sanitise` cannot at all:
+// a list verb needs the SEPARATOR and the meaning of an EMPTY ELEMENT, and a
+// profile supplies them only by declaring the one shape snug fixes them for
+// (EnvKind, checkDeclaredVerbType) — inferring them from the shape of a value is
+// exactly what this file exists not to do (see the header comment, and §3.3,
+// where the same column decides that MANPATH may not be sanitised at all). This
+// function is reached only for a name the profile did not declare, and its
+// refusal is for everybody, builtin and user profile alike.
 func checkUnrosteredName(name string, verb EnvVerb) error {
 	if verb == VerbSet || verb == VerbInherit {
 		return nil
+	}
+	if verb == VerbMerge || verb == VerbPrepend {
+		return fmt.Errorf("environ.%s on %s, which snug has no entry for. A list verb needs the\n"+
+			"       separator that variable is read with and what an EMPTY ELEMENT means to its\n"+
+			"       consumer — ignored, the current directory, or an instruction that ADDS\n"+
+			"       directories (§3.3) — and snug will not guess either from the shape of a value.\n"+
+			"       If its consumer reads ':'-joined absolute paths, declare it in this profile:\n"+
+			"         [profile.NAME.environ.types]\n"+
+			"         %s = \"path-list\"\n"+
+			"       A declaration in a profile this one includes does not apply here. Otherwise\n"+
+			"       use environ.set with the whole value, or add a row to\n"+
+			"       internal/policy/envtypes.go carrying the separator and the empty-element kind.",
+			verb, name, name)
 	}
 	return fmt.Errorf("environ.%s on %s, which snug has no entry for. A list verb needs the\n"+
 		"       separator that variable is read with and what an EMPTY ELEMENT means to its\n"+
@@ -2454,15 +2491,11 @@ func checkUnrosteredName(name string, verb EnvVerb) error {
 // The reason is §4.3, measured: a hand-written separator can produce an EMPTY
 // element, and an empty element in PATH is the current working directory, which
 // inside snug is the target — the one writable thing a hostile payload controls.
-func checkEnvElement(name string, verb EnvVerb, value string) error {
-	// SCOPE, SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED: this check protects
-	// ROSTERED NAMES ONLY, and it must, because the separator it looks for is a
-	// fact only a roster row carries. For a name snug has no row for there is no
-	// separator to smuggle and no list verb to smuggle it into —
-	// checkUnrosteredName refuses all three outright, which is the same fact
-	// arriving from the other direction. If a list verb ever becomes reachable
-	// for an unrostered name, this function goes blind in the same commit.
-	t, known := typeOf(name)
+func checkEnvElement(name string, verb EnvVerb, value string, decl map[string]EnvKind) error {
+	// SCOPE: this reads typeWithin, so a list this profile declares is covered;
+	// a name with neither a row nor a declaration has no list verb to smuggle a
+	// separator into (env_declared_list_separator_in_element).
+	t, known, _ := typeWithin(name, decl)
 	if !known || !t.list {
 		return nil
 	}
@@ -2580,9 +2613,10 @@ func quoteVisible(s string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(fmt.Sprintf("%q", s), `"`), `"`)
 }
 
-// ValidateEnvGrants is the parse-time half of the environment rules: the name
-// grammar, verb/type agreement, snug-owned and forbidden names, and
-// hand-written separators. Everything here is a property of the profile TEXT,
+// ValidateEnvGrants is the parse-time half of the environment rules: the
+// environ.types declarations first (checkEnvTypes), then the name grammar,
+// verb/type agreement read against the roster or the profile's own
+// declaration, snug-owned names, and hand-written separators. Everything here is a property of the profile TEXT,
 // so the verdict is the same on every host — which is the whole reason it runs
 // here and not in Resolve (§2.5, and §4.4's defect adopted as a design).
 //
@@ -2591,14 +2625,17 @@ func quoteVisible(s string) string {
 //
 // Exported so internal/profile can call it while the type table stays snug's.
 func ValidateEnvGrants(g EnvGrants) error {
+	if err := checkEnvTypes(g); err != nil {
+		return err
+	}
 	for _, name := range sortedMapKeys(g.Set) {
-		if err := checkEnvEntry(name, VerbSet); err != nil {
+		if err := checkEnvEntry(name, VerbSet, g.Types); err != nil {
 			return err
 		}
 		if err := checkEnvValue(name, VerbSet, g.Set[name]); err != nil {
 			return err
 		}
-		if err := checkEnvElement(name, VerbSet, g.Set[name]); err != nil {
+		if err := checkEnvElement(name, VerbSet, g.Set[name], g.Types); err != nil {
 			return err
 		}
 	}
@@ -2608,26 +2645,26 @@ func ValidateEnvGrants(g EnvGrants) error {
 			m = g.Prepend
 		}
 		for _, name := range sortedListKeys(m) {
-			if err := checkEnvEntry(name, verb); err != nil {
+			if err := checkEnvEntry(name, verb, g.Types); err != nil {
 				return err
 			}
 			for _, v := range m[name] {
 				if err := checkEnvValue(name, verb, v); err != nil {
 					return err
 				}
-				if err := checkEnvElement(name, verb, v); err != nil {
+				if err := checkEnvElement(name, verb, v, g.Types); err != nil {
 					return err
 				}
 			}
 		}
 	}
 	for _, name := range sortedCopy(g.Inherit) {
-		if err := checkEnvEntry(name, VerbInherit); err != nil {
+		if err := checkEnvEntry(name, VerbInherit, g.Types); err != nil {
 			return err
 		}
 	}
 	for _, name := range sortedCopy(g.Sanitise) {
-		if err := checkEnvEntry(name, VerbSanitise); err != nil {
+		if err := checkEnvEntry(name, VerbSanitise, g.Types); err != nil {
 			return err
 		}
 	}
@@ -2637,15 +2674,15 @@ func ValidateEnvGrants(g EnvGrants) error {
 // checkEnvEntry is the whole parse-time verdict on one (name, verb) pair, in
 // the order that produces the most useful message: what the name IS, then who
 // owns it, then whether the verb fits its type — the last of which is also where
-// a name with no roster row meets a LIST verb.
-func checkEnvEntry(name string, verb EnvVerb) error {
+// a name with no roster row meets a LIST verb, or the profile's own declaration.
+func checkEnvEntry(name string, verb EnvVerb, decl map[string]EnvKind) error {
 	if err := checkEnvName(name, verb); err != nil {
 		return err
 	}
 	if err := checkEnvOwnership(name, verb); err != nil {
 		return err
 	}
-	return checkEnvVerbType(name, verb)
+	return checkEnvVerbType(name, verb, decl)
 }
 
 func sortedMapKeys(m map[string]string) []string {

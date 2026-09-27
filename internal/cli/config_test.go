@@ -120,7 +120,7 @@ func TestProfileShowRendersEveryEnvironVerb(t *testing.T) {
 		Sanitise: []string{"PKG_CONFIG_PATH"},
 	}
 	got := map[string][]string{}
-	showEnviron(g, func(label string, vals []string) {
+	showEnviron("mine", g, func(label string, vals []string) {
 		if len(vals) > 0 {
 			got[label] = vals
 		}

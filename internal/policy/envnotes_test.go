@@ -199,7 +199,7 @@ func TestGoldenEnvAnnotations(t *testing.T) {
 			}
 		}
 		rel := "accepted"
-		if valueIsAPath(name) {
+		if valueIsAPath(name, nil) {
 			rel = "REFUSED"
 		}
 		fmt.Fprintf(&b, "%-24s %-9s %-12s %s\n", name, shape, roster, rel)

@@ -29,12 +29,49 @@ owns the variable types; snug never splits a string on a separator.
 | `environ.inherit` | profile | any | copy host value verbatim |
 | `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
 
-There is no sixth key. `environ.declare` — a NAME SET licensing `set` and
-`inherit` for a name snug's roster has no row for — was designed, built and
-removed before it shipped: `environ.set MY_VAR = "x"` in a profile with a name, a
-file path and an author already IS that author declaring the name, `EnvEntry.From`
-records it and `--dry-run` renders it, so the hatch made them sign twice. See
-§2.1 for what governs an unrostered name instead.
+One more key, and it is not a verb: `environ.types`. It gives a name snug's
+roster (§3) has no row for one of two kinds, and the kind fixes every fact a verb
+reads (`EnvKind` in `internal/policy/envdeclare.go`):
+
+| kind | shape | separator | checks | `set` / `inherit` | `merge` / `prepend` | `sanitise` | empty element |
+|---|---|---|---|---|---|---|---|
+| `path` | scalar | — | coupling + absolute (§2.5) | ✓ / ✓ | ✗ | ✗ | — |
+| `path-list` | list | `:` | coupling + absolute, per element | ✗ / ✗ | ✓ | ✗ | assumed an instruction (MANPATH's, §3.3) |
+
+```toml
+[profile.ruby]
+ro = ["{home}/.gem"]   # coupling: the profile naming a path grants it
+[profile.ruby.environ.types]
+# A hostile process inside the sandbox can use this to do nothing it cannot
+# already do with `export`: it grants no path, device or socket, and changes only
+# which verbs this profile's own lines may use on GEM_PATH.
+GEM_PATH = "path-list"
+[profile.ruby.environ.merge]
+GEM_PATH = ["{home}/.gem"]
+```
+
+- **Own profile only.** A declaration licenses the declaring profile's own
+  lines — not a profile that includes it, not one selected beside it — so no
+  profile's verdict depends on another file.
+- **Refused:** a name snug writes (`SnugOwnedEnv`, and every conditional name or
+  name that outranks one); a name any builtin profile writes, at any verb
+  (`checkTypesOfBuiltinNames`, internal/profile — the one package that holds the
+  builtins); a kind that contradicts a roster row; a declaration
+  the profile does not use (`path-list` with no `merge`/`prepend`, `path` with no
+  `set`).
+- **A compatible declaration of any other rostered name is admitted and inert** — the row
+  governs, and `snug profile show` marks it redundant. So a row added later for a
+  name somebody declared does not break their profile unless it contradicts them.
+- **Two profiles declaring the same `path-list` compose**: the merge band is the
+  sorted union, and `DeclaredBy` names both.
+- **A list and a single value across one selection is refused**, naming every
+  claimant: one profile's `path-list` against another's `set` or `inherit` of the
+  same name, judged from profile text so the verdict is the same on every host.
+- **A profile snug ships cannot declare**, redundantly or otherwise.
+
+There is no key naming a set of names without a type: `environ.set MY_VAR = "x"`
+in a file with a name, a path and an author already is the declaration, so a
+name list would make the author sign twice.
 
 **And a sixth thing that is not a verb: snug's own authorship.** **snug is not
 bound by the verbs' rules when writing its own variables.** There are two kinds,
@@ -264,14 +301,11 @@ environ.set   on PATH    →  PATH is a list — use environ.merge, or environ.p
                             does not allow.
 ```
 
-~~Unknown name default to **scalar** — conservative reading: a scalar merges with
-nothing, so it can only conflict, never silently combine.~~ **Amended by issue
-#44.** "Conservative" was the wrong word: the table reported a TYPE for a name it
-had never been taught, and three red-team rounds found three sets of names it had
-not been taught about while the space it was chasing ("every variable some tool,
-in some version, turns into an exec") stayed unbounded. `envTypes` is now the
-ROSTER, and it answers one question — **what IS this variable** — for two kinds
-of profile:
+An unknown name has no type; it is not a scalar by default. Three red-team
+rounds found three sets of names a default type had never been taught about,
+while the space it was chasing ("every variable some tool, in some version, turns
+into an exec") stayed unbounded. `envTypes` is the ROSTER, and it answers one
+question — **what IS this variable** — for two kinds of profile:
 
 - **A profile snug SHIPS may write only a name with a row.** Enforced in
   `internal/profile`'s `mark` — the one place the `@` mark is added, for the same
@@ -286,10 +320,12 @@ of profile:
   `--dry-run` and in `snug profile show`, from the same predicate. Nothing about
   the name is claimed, and the screens say so.
 
-The three LIST verbs take no name with no row, from anybody: `merge`, `prepend`
-and `sanitise` need the separator and the meaning of an empty element, which is
-exactly what a roster row carries and a profile cannot supply — inferring them
-from the shape of a value is what §3 exists not to do. Everything else applies to
+The three LIST verbs take no name with neither a row nor a `path-list`
+declaration in the same profile (§1.1); `sanitise` takes no declared name at all.
+`merge`, `prepend` and `sanitise` need the separator and the meaning of an empty
+element, which is exactly what a roster row carries and what a profile supplies
+only by declaring the one shape snug fixes them for — inferring them from the
+shape of a value is what §3 exists not to do. Everything else applies to
 an unrostered name unchanged: the grammar, `checkEnvOwnership`, and the
 control-character rule on the value. See `internal/policy/envtypes.go` — the code
 is the list, and this paragraph is a summary of it.
@@ -863,24 +899,25 @@ about what a human may have:
 
 | kind | what it says | where |
 |---|---|---|
-| **ownership** | snug writes this name itself — in every run, or (resolve time) in this selection | `checkEnvOwnership`, `SnugOwnedEnv`; `checkConditionalEnv`, `conditionalEnvs` |
-| **type** | snug cannot carry out this verb on this variable correctly | `checkEnvVerbType`, `checkUnrosteredName` |
+| **ownership** | snug writes this name itself — in every run, or (resolve time) in this selection | `checkEnvOwnership`, `SnugOwnedEnv`; `checkConditionalEnv`, `conditionalEnvs`; `checkEnvTypes`'s owned and conditional arms |
+| **type** | snug cannot carry out this verb on this variable correctly | `checkEnvVerbType`, `checkUnrosteredName`, `checkDeclaredVerbType` |
 | **transport** | this name or value would corrupt a mechanism or forge a screen row | `checkEnvName`, `checkEnvValue`, `checkEnvElement` |
 
 Ownership is narrower than it looks and deliberately so: a rostered LIST returns
 `nil` early, which is what lets a profile `merge` onto `PATH`. It is "snug's
 SCALARS are untouchable", not "snug's names are". Type is the one that keeps
 `LD_PRELOAD` unreachable at every verb, and it does so without a denylist. And
-`checkEnvElement` reads the roster for the separator, so it protects **rostered
-names only** — for a name snug has no row for there is no separator to smuggle,
-and no list verb to smuggle it into.
+`checkEnvElement` reads the roster, or the profile's own declaration, for the
+separator — for a name with neither there is no separator to smuggle, and no list
+verb to smuggle it into.
 
-**Three statements, one row, fixed order.** A rendered row can now carry up to
-three marks, and none replaces another — this is the same defect two independent
+**Four statements, one row, fixed order.** A rendered row can carry up to four
+marks, and none replaces another — this is the same defect two independent
 reviews found one commit earlier, one indirection out:
 
 ```
 unchecked   about the NAME    snug has no roster row, so no type
+declared    about the NAME    a profile in this selection typed it (environ.types)
 annotation  about the VALUE   what the tool will DO with it
 not granted about the VALUE   spelled like an absolute path, nothing inside covers it
 ```
@@ -949,8 +986,8 @@ Both tables use the same marks:
 
 **Read every ✗ below against §2.9: half of them are annotations, not refusals.**
 A ✗ that says *snug cannot carry out this verb correctly* — `merge` on a scalar,
-`sanitise` on `MANPATH`, `inherit` on any list, any list verb on a name with no
-row — is still a refusal, and comes from `checkEnvVerbType`. A ✗ that said *a
+`sanitise` on `MANPATH`, `inherit` on any list, any list verb on a name with
+neither a row nor a declaration, `sanitise` on any declared name — is still a refusal, and comes from `checkEnvVerbType`. A ✗ that said *a
 profile may not take this from the host* is an **annotation** now: the `inherit ✗`
 column on `XDG_*`, `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG` and
 `PIP_CONFIG_FILE` marked the roster's `noInherit` bit, which the model does not
@@ -1058,6 +1095,7 @@ annotated with this measurement.
 | `INFOPATH` | `:` | trailing only = system default | ⚠ | ⚠ |
 | `TERMINFO_DIRS` | `:` | = the system location | ✓ | ⚠ |
 | `GOFLAGS` | **space** | n/a | ✗ | ✗ |
+| (declared `path-list`, §1.1) | `:` | unknown ⇒ treated as `MANPATH`'s | ✓ | ✗ |
 
 **The discriminator for `sanitise` is this column, not the type.** An empty
 element is safe where it is *ignored*, hazardous where it means *CWD*, and
@@ -1426,6 +1464,18 @@ Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. S
   this format want, but it is a full language with imports, and invariant 3 say
   trusted profile set come from outside the sandboxed material. **Borrow CUE's
   semantics; do not take the dependency.**
+- *A separator key on `environ.types`* — the separator and the empty-element
+  kind are measurements of a consumer, and a key would have the author state them
+  unmeasured. `path-list` fixes `:` and the worst-case empty element instead.
+- *Declared `sanitise`, or a declared empty-element kind* — a guess. Whether a
+  list may be filtered is not derivable from its shape: `PATH` and `PYTHONPATH`
+  share separator and path-ness, and one is sanitisable while the other is not.
+- *Types in `config.toml`, or a registry-level `[types]` table* — `config.toml`
+  holds preferences, never grants; and a table read by every profile would make
+  one file's verdict depend on another's.
+- *A name set without a type* (`environ.declare`) — `environ.set` in a file with
+  an author already declares the name; a list of names makes that author sign
+  twice and supplies no fact a refused verb needs.
 
 ---
 

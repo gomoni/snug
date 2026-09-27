@@ -756,21 +756,24 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// the difference this branch introduced, not a difference in what snug
 		// knows.
 		//
-		// THREE STATEMENTS, ONE ORDER, and none of them replaces another. The
+		// FOUR STATEMENTS, ONE ORDER, and none of them replaces another. The
 		// third arrived with the annotation table (issue #44's second pass), and
 		// it is inserted between the other two rather than beside them:
 		//
 		//   unchecked   about the NAME — snug has no roster row, so no type
+		//   declared    about the NAME — a profile in this selection typed it
+		//               (environ.types)
 		//   EnvNote     about what the tool DOES with the value
 		//   grantMark   about the VALUE as a path — nothing inside covers it
 		//
 		// The order is narrowest-scope-last and is fixed by
 		// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark. `unchecked` comes
-		// first because it qualifies everything after it. The note comes before
-		// grantMark because it is about the variable's MEANING, while grantMark
-		// is about this one string.
+		// first because it qualifies everything after it, and `declared` follows
+		// it because it says who supplied the type snug lacks. The note comes
+		// before grantMark because it is about the variable's MEANING, while
+		// grantMark is about this one string.
 		//
-		// They ARE THREE LINES rather than one, and that is the second half of the
+		// They ARE SEPARATE LINES rather than one, and that is the second half of the
 		// same argument: three statements concatenated onto one row of an aligned
 		// table produced a 277-column line whose last mark — the verdict about this
 		// very value — was unreadable (see markIndent). The ORDER is unchanged; only
@@ -786,6 +789,7 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// claimed here while this sink still held its own copy of the unchecked
 		// string and the other sink held a second — see policy.UncheckedEnvNote.
 		add(policy.UncheckedEnvNote(v.Name, e.Verb))
+		add(policy.DeclaredEnvNote(v.DeclaredKind, v.DeclaredBy, e.Verb))
 		add(policy.EnvNote(v.Name, e.Verb))
 		add(grantMark(p, v.Name, e.Value, env))
 		// The collapse key is unchanged in MEANING — it was the concatenated mark
@@ -794,10 +798,10 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// set of marks under it.
 		if n := len(out); n > 0 && out[n-1].verb == verb && out[n-1].from == from &&
 			slices.Equal(out[n-1].marks, marks) {
-			out[n-1].values = append(out[n-1].values, elementValue(v.Name, e.Value))
+			out[n-1].values = append(out[n-1].values, elementValue(v, e.Value))
 			continue
 		}
-		out = append(out, envLine{values: []string{elementValue(v.Name, e.Value)},
+		out = append(out, envLine{values: []string{elementValue(v, e.Value)},
 			verb: verb, from: from, marks: marks})
 	}
 	return out
@@ -813,8 +817,12 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 // disagreeing profiles compare equal and silently deleted one's entry (seqKey,
 // envresolve.go); this is the display half of it. Fixing only the key would
 // leave the screen unable to show what the key now distinguishes.
-func elementValue(name, s string) string {
-	if policy.IsEnvList(name) && strings.ContainsAny(s, " \t") {
+//
+// It reads v.List, what the resolver made of the name — roster row or a
+// profile's path-list declaration — so the screen and the resolver cannot
+// disagree about which values are lists.
+func elementValue(v policy.EnvVar, s string) string {
+	if v.List && strings.ContainsAny(s, " \t") {
 		return fmt.Sprintf("%q", s)
 	}
 	return visibleValue(s)

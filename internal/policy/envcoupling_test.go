@@ -74,6 +74,28 @@ func TestCouplingVerdictDoesNotDependOnTheSelectedSet(t *testing.T) {
 	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "namer-including"}, testCtx(), newFakeEnv()); err != nil {
 		t.Fatalf("control: an INCLUDED grant must satisfy the rule: %v", err)
 	}
+
+	// THE SAME QUESTION FOR A DECLARED NAME. A declaration puts an unrostered
+	// name in the rule's scope, read from the profile's own text (typeWithin),
+	// so toolroot — which declares MY_TOOL_ROOT a path AND grants it — must not
+	// launder a second profile that declares it and grants nothing.
+	reg["declnamer"] = &Profile{Name: "declnamer", Environ: EnvGrants{
+		Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+		Set:   map[string]string{"MY_TOOL_ROOT": "/opt/tool"}}}
+	_, err = Resolve(reg, []ProfileName{"@sys", "@target-rw", "declnamer"}, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("a profile naming a declared path it does not grant was accepted")
+	}
+	_, err2 = Resolve(reg, []ProfileName{"@sys", "@target-rw", "declnamer", "toolroot"}, testCtx(), newFakeEnv())
+	if err2 == nil || err.Error() != err2.Error() {
+		t.Errorf("selecting toolroot changed declnamer's verdict:\n  %v\n  %v", err, err2)
+	}
+	reg["declnamer-including"] = &Profile{Name: "declnamer-including", Include: []ProfileName{"toolroot"},
+		Environ: EnvGrants{Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+			Set: map[string]string{"MY_TOOL_ROOT": "/opt/tool"}}}
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "declnamer-including"}, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("control: a declared path covered by an INCLUDED grant must satisfy the rule: %v", err)
+	}
 }
 
 // A symlink is resolved first and is never a grant itself. On a usr-merged host

@@ -123,6 +123,10 @@ func newFakeEnv() *fakeEnv {
 			// the sanitise-C fixtures (nested-bin) need this to exist so it can be
 			// GRANTED as well as named (§2.5's coupling rule).
 			"/home/u/.local/bin/tool": true,
+			// What gems-a, gems-b and toolroot grant, so the monotonicity and
+			// commutativity sweeps over testRegistry() resolve them rather than
+			// skipping them on "does not exist".
+			"/opt/gems-a": true, "/opt/gems-b": true, "/opt/tool": true,
 		},
 		links:        map[string]string{},
 		symlinkErrs:  map[string]error{},
@@ -373,6 +377,19 @@ func testRegistry() map[ProfileName]*Profile {
 		// still needs SOME runtime grant to be legal. /opt exists in every
 		// fakeEnv and is not /usr, which is the point.
 		"runtime-bin": {Name: "runtime-bin", RO: []string{"/opt:/bin"}},
+		// environ.types. Two profiles declaring the same unrostered list and
+		// merging into it — the one shape a declaration composes across — and
+		// one declaring a scalar path. In the commutativity set, so a
+		// DeclaredBy that depended on fold order would show in canon().
+		"gems-a": {Name: "gems-a", RO: []string{"/opt/gems-a"}, Environ: EnvGrants{
+			Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems-a"}}}},
+		"gems-b": {Name: "gems-b", RO: []string{"/opt/gems-b"}, Environ: EnvGrants{
+			Types: map[string]EnvKind{"GEM_PATH": EnvKindPathList},
+			Merge: map[string][]string{"GEM_PATH": {"/opt/gems-b"}}}},
+		"toolroot": {Name: "toolroot", RO: []string{"/opt/tool"}, Environ: EnvGrants{
+			Types: map[string]EnvKind{"MY_TOOL_ROOT": EnvKindPath},
+			Set:   map[string]string{"MY_TOOL_ROOT": "/opt/tool"}}},
 	}
 }
 
@@ -457,6 +474,9 @@ func canon(p *Policy) string {
 			shape = fmt.Sprintf("list sep=%q", v.Sep)
 		}
 		fmt.Fprintf(&b, "env %s %s\n", name, shape)
+		if v.DeclaredKind != 0 || v.DeclaredBy != nil {
+			fmt.Fprintf(&b, "env %s declared %s by %v\n", name, v.DeclaredKind, v.DeclaredBy)
+		}
 		for i, e := range v.Entries {
 			fmt.Fprintf(&b, "env %s [%d] %s %s %v %q\n", name, i, e.Value, e.Verb, e.From, e.Note)
 		}
@@ -484,7 +504,8 @@ func canon(p *Policy) string {
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
 	all := []ProfileName{"@sys", "@home", "@target-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
-		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too"}
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too",
+		"gems-a", "gems-b", "toolroot"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
