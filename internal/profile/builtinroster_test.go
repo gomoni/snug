@@ -268,7 +268,7 @@ func TestNoBuiltinInheritsAnEditorVariable(t *testing.T) {
 // is asserted through the dedicated guard's message, not the roster's, so it
 // keeps holding if one of these names ever gains a roster row.
 func TestMarkRefusesABuiltinThatWritesAConditionallyOwnedName(t *testing.T) {
-	for _, name := range policy.ConditionalEnvNames() {
+	for _, name := range policy.ConditionalEnvClaimed() {
 		for verb, g := range map[string]policy.EnvGrants{
 			"set":     {Set: map[string]string{name: "/run/x"}},
 			"inherit": {Inherit: []string{name}},
@@ -278,7 +278,7 @@ func TestMarkRefusesABuiltinThatWritesAConditionallyOwnedName(t *testing.T) {
 				t.Errorf("mark() accepted a builtin that %ss %s", verb, name)
 				continue
 			}
-			if !strings.Contains(err.Error(), "snug writes itself when a feature is on") ||
+			if !strings.Contains(err.Error(), "outranks what snug writes, when a feature is on") ||
 				!strings.Contains(err.Error(), name) {
 				t.Errorf("%s %s refused by something other than the conditional guard: %v", verb, name, err)
 			}

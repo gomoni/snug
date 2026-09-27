@@ -688,7 +688,7 @@ profiles seta, setb and setc disagree about MY_EDITOR:
 == env_conditional_podman ==
 DOCKER_HOST has two authors in this selection, and snug will not choose:
          mine (environ.set) says "unix:///run/docker.sock"
-         @podman-socket sets podman = "socket", so snug writes DOCKER_HOST: it points the container clients at its filtering proxy
+         @podman-socket sets podman = "socket", so snug points the container clients at its filtering proxy
        Keeping the profile's value would leave snug's feature pointing nowhere;
        keeping snug's would discard a line the profile wrote. Remove the line, or
        drop @podman-socket from the selection.
@@ -696,10 +696,26 @@ DOCKER_HOST has two authors in this selection, and snug will not choose:
 == env_conditional_inherit_absent_on_host ==
 SSH_AUTH_SOCK has two authors in this selection, and snug will not choose:
          agent (environ.inherit) takes the host's value
-         pinned sets identity.ssh.agent = "proxy", so snug writes SSH_AUTH_SOCK: it points ssh at its one-key agent proxy
+         pinned sets identity.ssh.agent = "proxy", so snug points ssh at its one-key agent proxy
        Keeping the profile's value would leave snug's feature pointing nowhere;
        keeping snug's would discard a line the profile wrote. Remove the line, or
        drop pinned from the selection.
+
+== env_conditional_outranks ==
+GH_TOKEN outranks what snug writes in this selection, and snug will not choose:
+         side (environ.set) says "ghp_other"
+         work sets identity.gh.user, so snug points gh at the config it generates for that one account
+       Keeping the profile's value would leave snug's feature pointing nowhere;
+       keeping snug's would discard a line the profile wrote. Remove the line, or
+       drop work from the selection.
+
+== env_conditional_through_include ==
+DOCKER_HOST has two authors in this selection, and snug will not choose:
+         mine (environ.set) says "unix:///run/docker.sock"
+         @podman-socket sets podman = "socket", so snug points the container clients at its filtering proxy
+       Keeping the profile's value would leave snug's feature pointing nowhere;
+       keeping snug's would discard a line the profile wrote. Remove the line, or
+       drop inc from the selection.
 
 == env_set_disagrees_with_inherit ==
 profiles emacsy and envy disagree about EDITOR:

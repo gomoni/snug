@@ -151,7 +151,8 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 }
 
 // checkBuiltinConditionalEnv refuses a builtin that writes a name snug fills
-// itself when a profile key turns a feature on (policy.ConditionalEnvNames).
+// itself when a profile key turns a feature on, or a name that outranks one
+// (policy.ConditionalEnvClaimed).
 //
 // Every one of them is snug's NARROWED version of a hole: SSH_AUTH_SOCK at a
 // one-key agent proxy, DOCKER_HOST at a filtering container proxy,
@@ -165,7 +166,7 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 // for the coupling rule's sake.
 func checkBuiltinConditionalEnv(name policy.ProfileName, g policy.EnvGrants) error {
 	var hit []string
-	for _, n := range policy.ConditionalEnvNames() {
+	for _, n := range policy.ConditionalEnvClaimed() {
 		if _, ok := g.Set[n]; ok {
 			hit = append(hit, n+" (environ.set)")
 		}
@@ -176,7 +177,7 @@ func checkBuiltinConditionalEnv(name policy.ProfileName, g policy.EnvGrants) err
 	if len(hit) == 0 {
 		return nil
 	}
-	return fmt.Errorf("profile %q hands over %s, which snug writes itself when a feature is on.\n"+
+	return fmt.Errorf("profile %q hands over %s, which snug writes, or which outranks what snug writes, when a feature is on.\n"+
 		"       snug's own value is the narrowed version of that hole — a one-key agent proxy,\n"+
 		"       a filtering container proxy, a generated config. A profile snug SHIPS pointing\n"+
 		"       the name elsewhere would ship the wide version. Turn the feature on instead",

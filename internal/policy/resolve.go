@@ -527,7 +527,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	// Every field a conditional name's predicate reads is final here, and no
 	// conditional writer has run yet. See envconditional.go.
-	if err := checkConditionalEnv(p, set, names); err != nil {
+	if err := checkConditionalEnv(p, set, names, selected); err != nil {
 		return nil, err
 	}
 

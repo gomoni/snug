@@ -35,6 +35,8 @@ CLAUDE_CODE_OAUTH_TOKEN  set       ← the value IS the agent's credential, and 
 CLAUDE_CODE_OAUTH_TOKEN  inherit   ← the value IS the agent's credential, and every process in the sandbox reads it out of /proc/self/environ; @claude stages a credentials FILE instead, for that reason
 CLAUDE_CODE_PROCESS_WRAPPER set       ← this profile chooses an argv PREFIX for the agent's supervisor and every session and worker it hosts, so the value runs in place of each process the agent spawns (documented, not measured on this host)
 CLAUDE_CODE_PROCESS_WRAPPER inherit   ← the agent's supervisor and every session and worker it hosts run behind this argv prefix, chosen on the host, outside any profile
+CONTAINER_CONNECTION     set       ← podman talks to the named connection from its containers.conf in place of CONTAINER_HOST (measured, podman 6.0.2), so it decides which engine runs the payload's containers
+CONTAINER_CONNECTION     inherit   ← podman talks to the named connection from its containers.conf in place of CONTAINER_HOST (measured, podman 6.0.2), so it decides which engine runs the payload's containers
 CONTAINER_HOST           set       ← podman's client sends every request to the engine at this URL, which runs whatever container it asks for, mounts included, and it dials an ssh:// URL itself (measured, podman 6.0.2); podman = "socket" puts snug's filtering proxy here instead
 CONTAINER_HOST           inherit   ← podman's client sends every request to the engine at this URL, which runs whatever container it asks for, mounts included, and it dials an ssh:// URL itself (measured, podman 6.0.2); podman = "socket" puts snug's filtering proxy here instead
 DOCKER_BUILDKIT          set       ← 1 makes `docker build` boot a BuildKit builder and negotiate mounts over a session snug's proxy does not inspect; podman = "socket" writes 0
@@ -53,8 +55,16 @@ GETCONF_DIR              set       ← getconf takes its specification directory
 GETCONF_DIR              inherit   ← getconf takes its specification directory from here, and for a spec it does not implement natively it EXECUTES a program from it (documented, not measured)
 GH_CONFIG_DIR            set       ← gh reads its tokens from hosts.yml in this directory, and a `!` alias in its config.yml is a shell command gh runs (measured, gh 2.96.0)
 GH_CONFIG_DIR            inherit   ← taking the host's value points gh back at the host's config, tokens included; identity.gh.user mints one token for one account instead
+GH_ENTERPRISE_TOKEN      set       ← gh uses this token for an Enterprise host in place of the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)
+GH_ENTERPRISE_TOKEN      inherit   ← gh uses this token for an Enterprise host in place of the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)
 GH_HOST                  set       ← the host gh sends its requests to, with the token hosts.yml holds for that host in the Authorization header (measured, gh 2.96.0)
 GH_HOST                  inherit   ← the host gh sends its requests to, with the token hosts.yml holds for that host in the Authorization header (measured, gh 2.96.0)
+GH_TOKEN                 set       ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
+GH_TOKEN                 inherit   ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
+GITHUB_ENTERPRISE_TOKEN  set       ← gh uses this token for an Enterprise host in place of the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)
+GITHUB_ENTERPRISE_TOKEN  inherit   ← gh uses this token for an Enterprise host in place of the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)
+GITHUB_TOKEN             set       ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
+GITHUB_TOKEN             inherit   ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
 GIT_ALLOW_PROTOCOL       set       ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
 GIT_ALLOW_PROTOCOL       inherit   ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
 GIT_ASKPASS              set       ← git runs this to ask for a credential, so it is handed whatever it asks for and its answer is used (measured, git 2.55.0, with the control)
@@ -101,6 +111,8 @@ LISTEN_FDNAMES           set       ← names the descriptors LISTEN_FDS counts, 
 LISTEN_FDNAMES           inherit   ← names the descriptors LISTEN_FDS counts, colon-separated and in order; listen_names makes snug write it (measured alongside LISTEN_FDS)
 LISTEN_FDS               set       ← a socket-activated server takes this many listening descriptors from fd 3 on as its own; listen_names makes snug write it with the descriptors behind it (measured: the descriptor arrives at fd 3 with acceptconn=1)
 LISTEN_FDS               inherit   ← a socket-activated server takes this many listening descriptors from fd 3 on as its own; listen_names makes snug write it with the descriptors behind it (measured: the descriptor arrives at fd 3 with acceptconn=1)
+LISTEN_PID               set       ← a socket-activated server takes the LISTEN_FDS descriptors only if this is its own pid; listen_names makes snug's staged script export it
+LISTEN_PID               inherit   ← a socket-activated server takes the LISTEN_FDS descriptors only if this is its own pid; listen_names makes snug's staged script export it
 LOCPATH                  set       ← glibc reads compiled locale DATA from here — collation, case folding, the decimal separator, the message translations — so a locale here changes what every process computes and prints; it is data, and nothing in the directory is loaded as code (measured, glibc 2.43, with the control)
 LOCPATH                  inherit   ← glibc reads compiled locale DATA from here — collation, case folding, the decimal separator, the message translations — so a locale here changes what every process computes and prints; it is data, and nothing in the directory is loaded as code (measured, glibc 2.43, with the control)
 MAKEFLAGS                set       ← make evaluates this before any rule, and `--eval=$(shell …)` runs a command (measured, GNU make 4.x)
@@ -235,6 +247,7 @@ CDPATH                   -         path         REFUSED
 CLASSPATH                path      path         REFUSED
 CLAUDE_CODE_OAUTH_TOKEN  opaque    (no row)     accepted
 CLAUDE_CODE_PROCESS_WRAPPER program   (no row)     accepted
+CONTAINER_CONNECTION     opaque    (no row)     accepted
 CONTAINER_HOST           opaque    (no row)     accepted
 DOCKER_BUILDKIT          opaque    (no row)     accepted
 DOCKER_CONFIG            path      path         REFUSED
@@ -244,7 +257,11 @@ ENV                      path      pathNoGrant  REFUSED
 GCONV_PATH               path      (no row)     REFUSED
 GETCONF_DIR              path      (no row)     REFUSED
 GH_CONFIG_DIR            path      (no row)     REFUSED
+GH_ENTERPRISE_TOKEN      opaque    (no row)     accepted
 GH_HOST                  opaque    (no row)     accepted
+GH_TOKEN                 opaque    (no row)     accepted
+GITHUB_ENTERPRISE_TOKEN  opaque    (no row)     accepted
+GITHUB_TOKEN             opaque    (no row)     accepted
 GIT_ALLOW_PROTOCOL       opaque    (no row)     accepted
 GIT_ASKPASS              program   (no row)     accepted
 GIT_COMMON_DIR           path      (no row)     REFUSED
@@ -273,6 +290,7 @@ LD_PRELOAD               path      path         REFUSED
 LESSOPEN                 program   -            accepted
 LISTEN_FDNAMES           opaque    (no row)     accepted
 LISTEN_FDS               opaque    (no row)     accepted
+LISTEN_PID               opaque    (no row)     accepted
 LOCPATH                  path      (no row)     REFUSED
 MAKEFLAGS                opaque    (no row)     accepted
 MALLOC_TRACE             path      (no row)     REFUSED

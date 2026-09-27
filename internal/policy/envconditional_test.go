@@ -157,7 +157,7 @@ func TestConditionalEnvListenFDsRefused(t *testing.T) {
 // Every name in the table is legal profile TEXT: the parse-time verdict does
 // not depend on the selection, so none of them may be refused there.
 func TestConditionalEnvNamesPassParseTime(t *testing.T) {
-	for _, n := range ConditionalEnvNames() {
+	for _, n := range ConditionalEnvClaimed() {
 		if err := ValidateEnvGrants(EnvGrants{Inherit: []string{n}}); err != nil {
 			t.Errorf("inherit %s refused at parse time: %v", n, err)
 		}
@@ -165,7 +165,76 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 			t.Errorf("%s is both unconditionally and conditionally owned", n)
 		}
 	}
-	if len(ConditionalEnvNames()) != 9 {
-		t.Errorf("ConditionalEnvNames() = %v, want the nine of issue #621", ConditionalEnvNames())
+	// Ten written (the nine of issue #621 plus LISTEN_PID, which the #621 red
+	// team found exported by the staged door script), five that outrank them.
+	if got := len(ConditionalEnvNames()); got != 10 {
+		t.Errorf("ConditionalEnvNames() = %v, want 10 names", ConditionalEnvNames())
+	}
+	if got := len(ConditionalEnvClaimed()); got != 15 {
+		t.Errorf("ConditionalEnvClaimed() = %v, want 15 names", ConditionalEnvClaimed())
+	}
+}
+
+// Red team #621, F1: LISTEN_PID is exported by the staged door script, not by
+// AuthorEnv, and a profile's value rendered on --dry-run while the payload got
+// its own pid. It is the same conflict as LISTEN_FDS.
+func TestConditionalEnvListenPIDRefused(t *testing.T) {
+	reg := testRegistry()
+	reg["door"] = &Profile{Name: "door", ListenNames: []string{"web"},
+		Environ: EnvGrants{Set: map[string]string{"LISTEN_PID": "1"}}}
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "door"}, testCtx(), newFakeEnv()); err == nil {
+		t.Fatal("LISTEN_PID beside listen_names resolved; the staged script overwrites it and " +
+			"--dry-run shows the profile's value")
+	}
+}
+
+// refusalConditionalEnvOutranks: red team #621, F2. GH_TOKEN is not a name snug
+// writes, but gh reads it in place of the token in the hosts.yml snug
+// generates for identity.gh.user — so a profile's GH_TOKEN makes gh act as a
+// different account than the pin, with no name of snug's in the conflict.
+func refusalConditionalEnvOutranks(t testing.TB) error {
+	reg := testRegistry()
+	reg["work"] = &Profile{Name: "work", Identity: &Identity{
+		Git: IdentityGit{Name: "A", Email: "a@example.com"},
+		Gh:  IdentityGh{User: "pinneduser"}}}
+	reg["side"] = &Profile{Name: "side", Environ: EnvGrants{Set: map[string]string{"GH_TOKEN": "ghp_other"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "side", "work"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func TestConditionalEnvOutrankingNamesRefused(t *testing.T) {
+	if err := refusalConditionalEnvOutranks(t); err == nil {
+		t.Error("GH_TOKEN beside identity.gh.user resolved; gh then ignores the pinned token")
+	}
+	reg := conditionalReg()
+	reg["conn"] = &Profile{Name: "conn", Environ: EnvGrants{Set: map[string]string{"CONTAINER_CONNECTION": "evil"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "@podman-socket", "conn"},
+		testCtxWithPodmanShim(), newFakeEnv())
+	if err == nil {
+		t.Error("CONTAINER_CONNECTION beside @podman-socket resolved; podman then bypasses the proxy")
+	}
+	// CONTROL: without the feature, both are an ordinary unrostered `set`.
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "conn"}, testCtx(), newFakeEnv()); err != nil {
+		t.Errorf("CONTAINER_CONNECTION without podman was refused: %v", err)
+	}
+}
+
+// refusalConditionalEnvThroughInclude: red team #621, F3. The owner arrives
+// through an include, so the fix line must name the SELECTED profile that
+// pulls it in — the only one the user can drop.
+func refusalConditionalEnvThroughInclude(t testing.TB) error {
+	reg := conditionalReg()
+	reg["inc"] = &Profile{Name: "inc", Include: []ProfileName{"@podman-socket"}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "inc", "mine"}, testCtxWithPodmanShim(), newFakeEnv())
+	return err
+}
+
+func TestConditionalEnvFixNamesTheSelectedProfile(t *testing.T) {
+	err := refusalConditionalEnvThroughInclude(t)
+	if err == nil {
+		t.Fatal("DOCKER_HOST beside an included @podman-socket resolved")
+	}
+	if !strings.Contains(err.Error(), "drop inc from the selection") {
+		t.Errorf("the fix does not name the selected profile that includes the owner: %v", err)
 	}
 }

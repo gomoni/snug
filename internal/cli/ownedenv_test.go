@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -74,7 +75,7 @@ func TestSnugOwnedEnvIsExactlyWhatSnugWrites(t *testing.T) {
 	// POSITIVE CONTROL: a static pass that silently found nothing would compare
 	// two empty sets and pass. Name three writers on opposite sides of the
 	// Resolve boundary, so a broken parse or a wrong directory fails loudly.
-	for _, must := range []string{"HOME", "PATH", "DOCKER_HOST"} {
+	for _, must := range []string{"HOME", "PATH", "DOCKER_HOST", "LISTEN_PID"} {
 		if !found[must] {
 			t.Errorf("the AST pass did not see the writer for %s; it is scanning the wrong "+
 				"files or matching the wrong call", must)
@@ -98,8 +99,11 @@ func goFilesIn(t *testing.T, dir string) []string {
 	return out
 }
 
+// stagedExport matches an `export NAME=` line in a script literal.
+var stagedExport = regexp.MustCompile(`(?m)^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=`)
+
 // collectAuthoredNames records the first argument of every AuthorEnv and
-// AuthorEnvList call in one file.
+// AuthorEnvList call in one file, and every name a script literal exports.
 //
 // A non-literal first argument is a HARD FAILURE rather than something to skip.
 // A computed name cannot be checked by anything here, and an unchecked name is
@@ -112,6 +116,19 @@ func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
 		t.Fatalf("parsing %s: %v", path, err)
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
+		// A script snug stages is a writer too: httpDoorShim's
+		// `export LISTEN_PID=$$` sets a name no AuthorEnv call mentions, and
+		// the #621 red team found it in neither list — a profile's LISTEN_PID
+		// rendered on --dry-run and the payload got the script's. Only a line
+		// that STARTS with `export` counts, so prose about one does not.
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			if body, err := strconv.Unquote(lit.Value); err == nil {
+				for _, m := range stagedExport.FindAllStringSubmatch(body, -1) {
+					into[m[1]] = true
+				}
+			}
+			return true
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true

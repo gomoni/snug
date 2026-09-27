@@ -47,6 +47,7 @@ owned, every run       HOME SHELL USER LOGNAME TMPDIR PS1 PATH
                        SNUG SNUG_PROFILES SNUG_TARGET
 owned, host value      TERM TZ LANG
 conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES
+                       httpdoor.go  LISTEN_PID            ← exported by the staged door script
                        identity.go  SSH_AUTH_SOCK GH_CONFIG_DIR GH_HOST          ← after Resolve
                        container.go CONTAINER_HOST DOCKER_HOST DOCKER_BUILDKIT   ← after Resolve
 ```
@@ -56,7 +57,7 @@ conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES
   host has a value, and are owned all the same: a verdict keyed on that would
   pass a profile on one host and refuse it on another (§4.4), so the only
   host-independent verdict is the unconditional one.
-- **Conditional** (`conditionalEnvs`, nine names): snug writes one only when a
+- **Conditional** (`conditionalEnvs`, ten names): snug writes one only when a
   profile key turns its feature on — `podman`, `identity.ssh.agent = "proxy"`,
   `identity.gh.user`, `git = "extract"` or an identity, `listen_names`. In any
   other selection a profile may `set` or `inherit` it, annotated (§2.9). In a
@@ -68,13 +69,18 @@ conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES
   on a host with an empty git config; `identity.gh.user` writes no
   `GH_CONFIG_DIR` on a dry run with no token), and the claim is the profile's
   **text**, never what the host held (an `inherit` the host cannot satisfy is
-  still a claim). A profile snug ships may write none of the nine
+  still a claim). The same conflict covers the names a tool reads **in place
+  of** snug's: `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
+  `GITHUB_ENTERPRISE_TOKEN` beat the token in the `hosts.yml` snug generates,
+  `CONTAINER_CONNECTION` beats `CONTAINER_HOST` (measured, gh 2.96.0 and
+  podman 6.0.2) — a profile's line on one redirects the feature exactly as a
+  line on the name would. A profile snug ships may write none of them
   (`checkBuiltinConditionalEnv`): snug's own value is the narrowed version of
   the hole — a one-key agent proxy, a filtering container proxy, a generated
   config — and a shipped profile pointing the name elsewhere would ship the wide
   version.
 
-Why conditional and not owned: owning these nine protected nobody hostile.
+Why conditional and not owned: owning these protected nobody hostile.
 `environ.*` comes only from the trusted profile set (invariant 3), and the
 payload can export `DOCKER_HOST` for itself. What ownership did protect is kept
 by the conflict — without it a profile's line on a slot snug fills is discarded

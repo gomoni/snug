@@ -1586,6 +1586,39 @@ var envNotes = map[string]envNote{
 	// Tried: no docker client is installed on the host this was written on.
 	"DOCKER_BUILDKIT": both(shapeOpaque, "1 makes `docker build` boot a BuildKit builder and negotiate "+
 		"mounts over a session snug's proxy does not inspect; podman = \"socket\" writes 0"),
+	// Names snug does NOT write that the tool reads IN PLACE OF one snug does
+	// (conditionalEnvs' `outranks`). Measured on the host, gh 2.96.0, with a
+	// hosts.yml holding PINNEDTOKEN for github.com, then PINNEDGHE for a GHE host:
+	//
+	//	GH_CONFIG_DIR=d                     gh auth token  -> PINNEDTOKEN  (control)
+	//	GH_TOKEN=OTHER     GH_CONFIG_DIR=d  gh auth token  -> OTHER
+	//	GITHUB_TOKEN=GHTOK GH_CONFIG_DIR=d  gh auth token  -> GHTOK
+	//	GH_HOST=ghe GH_ENTERPRISE_TOKEN=ENT      ...       -> ENT   (control PINNEDGHE)
+	//	GH_HOST=ghe GITHUB_ENTERPRISE_TOKEN=GENT ...       -> GENT
+	"GH_TOKEN": both(shapeOpaque, "gh uses this token for github.com in place of the one in hosts.yml, "+
+		"so it decides which account gh acts as (measured, gh 2.96.0)"),
+	"GITHUB_TOKEN": both(shapeOpaque, "gh uses this token for github.com in place of the one in "+
+		"hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)"),
+	"GH_ENTERPRISE_TOKEN": both(shapeOpaque, "gh uses this token for an Enterprise host in place of the "+
+		"one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)"),
+	"GITHUB_ENTERPRISE_TOKEN": both(shapeOpaque, "gh uses this token for an Enterprise host in place of "+
+		"the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)"),
+	// Measured on the host, podman 6.0.2, CONTAINERS_CONF naming a connection
+	// "evil" at unix:///nonexistent/b.sock:
+	//
+	//	CONTAINER_HOST=…/a.sock CONTAINER_CONNECTION=evil podman --remote info -> dials b.sock
+	//	CONTAINER_HOST=…/a.sock                           podman --remote info -> dials a.sock (control)
+	"CONTAINER_CONNECTION": both(shapeOpaque, "podman talks to the named connection from its "+
+		"containers.conf in place of CONTAINER_HOST (measured, podman 6.0.2), so it decides which "+
+		"engine runs the payload's containers"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST: sd_listen_fds(3) — a server takes
+	// the LISTEN_FDS descriptors only when LISTEN_PID is its own pid. Tried:
+	// no sd_listen_fds consumer on the host. What WAS measured, by the #621
+	// red-team round: a profile's LISTEN_PID=1 beside listen_names rendered on
+	// --dry-run and reached the payload as its own pid, because the staged
+	// script (httpDoorShim) exports it after bwrap's --setenv.
+	"LISTEN_PID": both(shapeOpaque, "a socket-activated server takes the LISTEN_FDS descriptors only "+
+		"if this is its own pid; listen_names makes snug's staged script export it"),
 	// MEASURED INSIDE A RUNNING SANDBOX — redteam host round 2, which is also the
 	// round that upgraded this row from "documented". /usr/bin/npm is still the
 	// broken libalternatives shim on this host ("npm-default: No such file or
