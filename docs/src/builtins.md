@@ -3,11 +3,18 @@
 
 # Built-in profiles
 
-Profiles snug ships. Each section is the output of `snug profile show NAME`.
-`snug --dry-run -p NAME DIR` shows what one produces for a directory.
+`snug` ships a few built-in profiles. Their names start with `@`, and no user
+profile can redefine them. Some profile keys (`network`, `dns`, `nss`, `git`, `podman`)
+have a built-in profile that sets them, such as `@net` or `@podman-socket`: a
+user-friendly way to grant the feature together with the settings it needs.
 
-Every run starts with `@sys` `@home` `@target-rw`, unless `config.toml` or
-`--no-defaults` changes that. See [Selecting profiles](configuration.md#selecting-profiles).
+See [Feature keys and built-ins](profiles.md#feature-keys-and-built-ins).
+
+By default every sandbox includes the `@sys` `@home` `@target-rw` profiles, unless
+`config.toml` or `--no-defaults` changes that. See [Selecting profiles](configuration.md#selecting-profiles).
+
+Each section below is the output of `snug profile show NAME`. To see what a profile
+produces for a directory, run `snug --dry-run -p NAME DIR`.
 
 ## `@claude`
 

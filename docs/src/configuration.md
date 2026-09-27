@@ -16,8 +16,18 @@ There are three layers.
 - A profile name defined twice, in any two files or layers, is an error naming both
   files. A later layer adds names; it **never** redefines one.
 - A built-in profile cannot be shadowed by system or user profiles.
-- A file that fails to parse stops every run and `--dry-run`. `snug profile
-  list` and `snug config` report the file and continue with the rest.
+- A file that is valid TOML but fails snug's checks, such as an unknown key,
+  makes the profiles it defines unselectable. A run or `--dry-run` that
+  selects or includes one refuses, naming the file. Other runs go ahead and
+  print a note naming it.
+- A file that is not valid TOML or cannot be read, or a `profiles.d` that
+  cannot be listed, stops every run: snug cannot tell which profiles it
+  defines.
+- A file that fails snug's checks still claims the names it defines. A name
+  that another file or a built-in also defines is an error, as above, for
+  every command.
+- Otherwise `snug profile list` and `snug config` report a failed file,
+  continue with the rest, and exit with status 77.
 
 ### Profiles are never read from a target directory
 
