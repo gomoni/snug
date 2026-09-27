@@ -3,6 +3,7 @@ package profile
 import (
 	"embed"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -96,7 +97,7 @@ func mark(layer Registry) (Registry, error) {
 }
 
 // checkBuiltinEnvRoster refuses a builtin that writes a name snug's roster has
-// no entry for, at any verb.
+// no entry for, at any verb, or a name snug fills itself when a feature is on.
 //
 // EVERY VERB IS ENUMERATED HERE, deliberately and by hand, because the thing
 // that would defeat this rule is a sixth verb added to policy.EnvGrants and not
@@ -111,6 +112,9 @@ func mark(layer Registry) (Registry, error) {
 // edit: a roster row is a grant, and it owes the sentence saying what the verb
 // lets the tool DO.
 func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
+	if err := checkBuiltinConditionalEnv(name, g); err != nil {
+		return err
+	}
 	var unchecked []string
 	note := func(n string, verb policy.EnvVerb) {
 		if policy.IsUncheckedEnv(n, verb) {
@@ -144,4 +148,37 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 		"       saying what the verb lets the tool DO — a row there is a grant, and that is\n"+
 		"       the review this profile owes",
 		name, strings.Join(unchecked, ", "))
+}
+
+// checkBuiltinConditionalEnv refuses a builtin that writes a name snug fills
+// itself when a profile key turns a feature on (policy.ConditionalEnvNames).
+//
+// Every one of them is snug's NARROWED version of a hole: SSH_AUTH_SOCK at a
+// one-key agent proxy, DOCKER_HOST at a filtering container proxy,
+// GIT_CONFIG_GLOBAL at a whitelisted generated file. A human's own profile may
+// point one elsewhere in a selection that leaves the feature off, and gets the
+// annotation saying what that grants. A profile snug SHIPS doing it would be
+// snug shipping the wide version of a hole it already built the narrow one of.
+//
+// It does not lean on the roster gate below: that holds only while none of
+// these names has a roster row, and a row is something a later change may add
+// for the coupling rule's sake.
+func checkBuiltinConditionalEnv(name policy.ProfileName, g policy.EnvGrants) error {
+	var hit []string
+	for _, n := range policy.ConditionalEnvNames() {
+		if _, ok := g.Set[n]; ok {
+			hit = append(hit, n+" (environ.set)")
+		}
+		if slices.Contains(g.Inherit, n) {
+			hit = append(hit, n+" (environ.inherit)")
+		}
+	}
+	if len(hit) == 0 {
+		return nil
+	}
+	return fmt.Errorf("profile %q hands over %s, which snug writes itself when a feature is on.\n"+
+		"       snug's own value is the narrowed version of that hole — a one-key agent proxy,\n"+
+		"       a filtering container proxy, a generated config. A profile snug SHIPS pointing\n"+
+		"       the name elsewhere would ship the wide version. Turn the feature on instead",
+		name, strings.Join(hit, ", "))
 }

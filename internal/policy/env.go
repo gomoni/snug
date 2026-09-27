@@ -195,27 +195,26 @@ func (v EnvVar) Value() string {
 // collapsed to nothing.
 func (v EnvVar) Present() bool { return len(v.Entries) > 0 }
 
-// SnugOwnedEnv is every variable name snug writes itself. No profile may write
-// one, and snug is not bound by the verbs' rules when writing them (§1.1).
+// SnugOwnedEnv is every variable name snug writes itself in EVERY run, or from
+// a host value in every run that has one. No profile may write one, and snug is
+// not bound by the verbs' rules when writing them (§1.1).
+//
+// The names snug writes only when a profile key turns a feature on are NOT here:
+// they are conditionalEnvs (envconditional.go), refused at resolve time as a
+// conflict with the selection that turns the feature on. TERM, LANG and TZ ARE
+// here although snug writes them only when the host has a value: a verdict keyed
+// on that would pass a profile on one host and refuse it on another (§4.4), so
+// the only host-independent verdict is the unconditional one.
 //
 // It exists as DATA, not as a derivation, because the check that uses it runs at
 // parse time and parse time cannot run a resolve. What keeps it honest is
 // internal/cli/ownedenv_test.go: a static pass over every AuthorEnv/AuthorEnvList
-// call in the tree, asserting that set equals this one exactly. Do not maintain
-// this list by hand-counting the writers — an earlier draft of the design did,
-// and missed the six that run AFTER Resolve, which are the dangerous half
-// (environ.set DOCKER_HOST = "ssh://..." makes the client exec ssh).
+// call in the tree, asserting that set equals this one plus the conditional
+// names exactly. Do not maintain either list by hand-counting the writers — an
+// earlier draft of the design did, and missed the six that run AFTER Resolve.
 var SnugOwnedEnv = []string{
-	"CONTAINER_HOST",
-	"DOCKER_BUILDKIT",
-	"DOCKER_HOST",
-	"GH_CONFIG_DIR",
-	"GH_HOST",
-	"GIT_CONFIG_GLOBAL",
 	"HOME",
 	"LANG",
-	"LISTEN_FDNAMES",
-	"LISTEN_FDS",
 	"LOGNAME",
 	"PATH",
 	"PS1",
@@ -223,7 +222,6 @@ var SnugOwnedEnv = []string{
 	"SNUG",
 	"SNUG_PROFILES",
 	"SNUG_TARGET",
-	"SSH_AUTH_SOCK",
 	"TERM",
 	"TMPDIR",
 	"TZ",
@@ -237,7 +235,9 @@ var SnugOwnedEnv = []string{
 //
 // It REPLACES rather than joins. That is not a carve-out sneaked in for
 // convenience — snug is explicitly not bound by the verbs' rules for the names
-// it owns (§1.1), and a profile cannot reach these names at all.
+// it owns (§1.1). A profile cannot reach an owned name at all, and cannot reach
+// a conditional one in a selection that makes snug write it
+// (checkConditionalEnv), so there is never a profile entry here to replace.
 func (p *Policy) AuthorEnv(name, value string) {
 	p.Env[name] = EnvVar{Name: name, Entries: []EnvEntry{{Value: value, Verb: VerbSnug}}}
 }

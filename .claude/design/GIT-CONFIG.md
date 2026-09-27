@@ -321,7 +321,8 @@ cannot dereference `envp` to see the variable at all (the same wall `clone3`
 hit); `LD_PRELOAD` needs cgo, which `.claude/design/NOCGO.md` rules out, and is
 itself one of the names snug annotates and never authors — that table refuses
 nothing since ENVIRONMENT-VARIABLES.md §2.9, but it was never what stopped snug
-writing `LD_PRELOAD` either: snug writes only `SnugOwnedEnv`. See issue #26 for
+writing `LD_PRELOAD` either: snug writes only `SnugOwnedEnv` and the
+feature-conditional names beside it. See issue #26 for
 the full measurement set.
 
 **What snug does own, and asserts mechanically:** the environment snug itself

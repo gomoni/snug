@@ -1382,6 +1382,9 @@ func TestGoldenRefusals(t *testing.T) {
 		{"env_two_prepends", refusalTwoPrepends},
 		{"env_prepend_order_disagreement", refusalPrependOrder},
 		{"env_two_sets_disagree", refusalTwoSets},
+		// issue #621: a profile's line on a slot the selection makes snug fill.
+		{"env_conditional_podman", refusalConditionalEnvPodman},
+		{"env_conditional_inherit_absent_on_host", refusalConditionalEnvInherit},
 		{"env_set_disagrees_with_inherit", refusalSetVsInherit},
 	}
 

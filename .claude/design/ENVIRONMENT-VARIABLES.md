@@ -37,16 +37,50 @@ records it and `--dry-run` renders it, so the hatch made them sign twice. See
 §2.1 for what governs an unrostered name instead.
 
 **And a sixth thing that is not a verb: snug's own authorship.** **snug is not
-bound by the verbs' rules when writing its own variables.** The list is twenty
-keys, and it must be **derived from the code rather than retyped** — an earlier
-draft retyped it, gave the count as nineteen, and missed six:
+bound by the verbs' rules when writing its own variables.** There are two kinds,
+split by what the write is conditional on, and both lists must be **derived from
+the code rather than retyped** — an earlier draft retyped one, gave the count as
+nineteen, and missed six:
 
 ```
-resolve.go   HOME SHELL USER LOGNAME TMPDIR PS1 PATH TERM TZ LANG
-             SNUG SNUG_PROFILES SNUG_TARGET GIT_CONFIG_GLOBAL
-identity.go  SSH_AUTH_SOCK GH_CONFIG_DIR GH_HOST          ← written AFTER Resolve
-container.go CONTAINER_HOST DOCKER_HOST DOCKER_BUILDKIT   ← written AFTER Resolve
+owned, every run       HOME SHELL USER LOGNAME TMPDIR PS1 PATH
+                       SNUG SNUG_PROFILES SNUG_TARGET
+owned, host value      TERM TZ LANG
+conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES
+                       identity.go  SSH_AUTH_SOCK GH_CONFIG_DIR GH_HOST          ← after Resolve
+                       container.go CONTAINER_HOST DOCKER_HOST DOCKER_BUILDKIT   ← after Resolve
 ```
+
+- **Owned** (`SnugOwnedEnv`, thirteen names): no profile may write one, in any
+  run, refused at parse time. `TERM`, `TZ` and `LANG` are written only when the
+  host has a value, and are owned all the same: a verdict keyed on that would
+  pass a profile on one host and refuse it on another (§4.4), so the only
+  host-independent verdict is the unconditional one.
+- **Conditional** (`conditionalEnvs`, nine names): snug writes one only when a
+  profile key turns its feature on — `podman`, `identity.ssh.agent = "proxy"`,
+  `identity.gh.user`, `git = "extract"` or an identity, `listen_names`. In any
+  other selection a profile may `set` or `inherit` it, annotated (§2.9). In a
+  selection that turns the feature on, a profile's line on it is a **symmetric
+  conflict** naming the profile's line and the profiles whose key made snug the
+  author — the shape two `set`s of one scalar already have. Two rules make that
+  verdict the same on every host: the predicate reads the **selection**, never
+  whether snug wrote the name (`git = "extract"` writes no `GIT_CONFIG_GLOBAL`
+  on a host with an empty git config; `identity.gh.user` writes no
+  `GH_CONFIG_DIR` on a dry run with no token), and the claim is the profile's
+  **text**, never what the host held (an `inherit` the host cannot satisfy is
+  still a claim). A profile snug ships may write none of the nine
+  (`checkBuiltinConditionalEnv`): snug's own value is the narrowed version of
+  the hole — a one-key agent proxy, a filtering container proxy, a generated
+  config — and a shipped profile pointing the name elsewhere would ship the wide
+  version.
+
+Why conditional and not owned: owning these nine protected nobody hostile.
+`environ.*` comes only from the trusted profile set (invariant 3), and the
+payload can export `DOCKER_HOST` for itself. What ownership did protect is kept
+by the conflict — without it a profile's line on a slot snug fills is discarded
+with no trace (invariant 5): replaced outright by `AuthorEnv` for the six
+written after `Resolve`, carried beside snug's entry and never used for the
+three written inside it.
 
 **Ownership refuses the verbs that REPLACE a value, not every verb.** An earlier
 draft said flatly "no profile may write a name snug writes" and listed `PATH` —
@@ -63,14 +97,13 @@ one of those is true:
   which already say a list takes neither.
 
 What stays unconditional is **the base `PATH`**, not the variable. `PATH` is the
-only list among the twenty owned names — verified — so the exemption is exactly
+only list among the names snug writes — verified — so the exemption is exactly
 one variable wide, and `TestPATHIsSharedButNotReplaceable` pins both halves.
 
-The six post-`Resolve` writers are the dangerous half. A hand-maintained list
-that omits them makes `environ.set DOCKER_HOST = "ssh://attacker/..."` legal on
-any run where no podman profile is selected — and §3.2 records that `ssh://`
-makes the client **exec `ssh`**. So the refusal must be asserted equal to the set
-of keys snug actually writes, with a test that fails when a new writer appears.
+`internal/cli/ownedenv_test.go` asserts the owned list plus the conditional list
+equals the set of names every `AuthorEnv`/`AuthorEnvList` call writes, so a new
+writer fails the build until it is placed in one of them; and that every
+conditional name snug authored has its predicate true on that policy.
 
 This is not an exemption invented for convenience; it is the distinction the
 codebase already draws for mounts and CLAUDE.md already states: *a profile
@@ -824,7 +857,7 @@ about what a human may have:
 
 | kind | what it says | where |
 |---|---|---|
-| **ownership** | snug writes this name itself | `checkEnvOwnership`, `SnugOwnedEnv` |
+| **ownership** | snug writes this name itself — in every run, or (resolve time) in this selection | `checkEnvOwnership`, `SnugOwnedEnv`; `checkConditionalEnv`, `conditionalEnvs` |
 | **type** | snug cannot carry out this verb on this variable correctly | `checkEnvVerbType`, `checkUnrosteredName` |
 | **transport** | this name or value would corrupt a mechanism or forge a screen row | `checkEnvName`, `checkEnvValue`, `checkEnvElement` |
 
@@ -933,15 +966,14 @@ worse than an absent value.
 |---|---|---|---|---|
 | `HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*` | yes/no | **—** | **✗** | snug's (§1.1); no profile may write them |
 | `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice — **legal at both verbs, with no identity-conditional refusal, and ANNOTATED at both** (§2.9). What a profile snug SHIPS does with them is a separate question, answered below |
-| `TERM` | no | ⚠ | ✓ | the standard exception to authoring: the host terminal is a fact snug cannot know |
-| `LANG`, `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
-| `TZ` | **sort of** | ⚠ | ⚠ | **two-branch grammar — see below** |
+| `TERM`, `LANG`, `TZ` | no / no / **sort of** | **—** | **✗** | snug's (§1.1), copied from the host when it has one; `TZ` has a **two-branch grammar — see below** |
+| `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
 | `NO_COLOR`, `CI` | no | ⚠ | ⚠ | **flags: empty is not unset.** `NO_COLOR` is "set to any value, including empty", so the usual "drop it if empty" rule inverts |
 | `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` | yes | ✓ | **✗ → annotated** | must name a granted path; empty **is** unset per spec (§3.4) |
 | `XDG_RUNTIME_DIR` | yes | ⚠ | **✗ → annotated** | carries obligations, not just a value — mode 0700, owned by the user |
-| `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | **—** | **✗** | authored by the machinery that creates the socket or file |
+| `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | ✓ | ✓ | conditional (§1.1): snug's when the identity or `git` key turns its feature on, a conflict for a profile then; otherwise annotated — a raw agent socket signs with every key it holds, the two pointers name a command table |
 | `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗ → annotated** | "generate, don't bind" — the value is a path, never a credential. No annotation at `set`: authoring a pointer is the mechanism, not the hazard |
-| `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | **—** | **✗** | `ssh://` makes the client exec `ssh`; scalar-shaped, parsed, exec-capable |
+| `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | ✓ | ✓ | conditional (§1.1): snug's filtering proxy when `podman` is on, a conflict for a profile then; otherwise annotated — the engine at the URL runs whatever container it is asked for. podman dials an `ssh://` URL itself (measured, podman 6.0.2) and does not read `DOCKER_HOST` at all |
 
 **The three names are legal at both verbs for anybody, and `@claude` — the one
 shipped profile that touches the environment — inherits `PAGER` and neither of
@@ -994,9 +1026,11 @@ env -i TZDIR=/nonexistent TZ=Asia/Tokyo date -d @0 +"%z %Z"  →  +0000 Asia
 ```
 
 `Asia` became a timezone abbreviation with a zero offset. Every timestamp in the
-sandbox is silently wrong, on no channel at all. A profile that sets `TZ` without
-granting `/usr/share/zoneinfo` has made a guarantee it does not keep — invariant
-5 says that is worse than refusing, which is why the cell is `⚠` and not `✓`.
+sandbox is silently wrong, on no channel at all. A value a profile chose without
+granting `/usr/share/zoneinfo` would be a guarantee it does not keep — invariant
+5 says that is worse than refusing. No profile chooses one: `TZ` is owned, and
+snug copies the host's. `TZDIR`, which decides where the name is looked up, is
+annotated with this measurement.
 
 ### 3.3 Lists, and the empty-element column that decides `sanitise`
 

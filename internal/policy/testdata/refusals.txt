@@ -574,7 +574,7 @@ environ.set names "1PATH", which starts with a digit. A variable name is [A-Za-z
 environ.set names "MY-VAR", which contains "-". A variable name is [A-Za-z_][A-Za-z0-9_]* — the rule execve(2) and every shell already assume. Rename it
 
 == env_name_snug_owned ==
-environ.set names SNUG_PROFILES, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
+environ.set names SNUG_PROFILES, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox — and TERM, LANG and TZ come from the host, so refusing them only where the host has one would make the verdict depend on the host. Remove the line
 
 == env_value_c1_csi ==
 environ.set on EDITOR has a value containing '\u009b'. Every screen a human reads to decide whether to trust a sandbox renders a value on one line; a control character forges rows in it or erases them from the terminal. Remove it
@@ -583,7 +583,7 @@ environ.set on EDITOR has a value containing '\u009b'. Every screen a human read
 environ.set on EDITOR has a value containing '\u202e'. Every screen a human reads to decide whether to trust a sandbox renders a value on one line; a directional formatting character reverses the rest of the line, so it renders as content it does not contain. Remove it
 
 == env_name_snug_owned_ps1 ==
-environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, and SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox. Remove the line
+environ.inherit names PS1, which snug writes itself. No profile may write a name snug writes: HOME, PATH and SHELL have no safe absent state, PS1 is executed by bash, SNUG* is what --dry-run is read against — a profile that could set one could lie to the artifact a human reads to decide whether to trust the sandbox — and TERM, LANG and TZ come from the host, so refusing them only where the host has one would make the verdict depend on the host. Remove the line
 
 == env_set_on_a_list ==
 environ.set on PATH, which is a list — use environ.merge, or environ.prepend if the order matters. environ.set on a list would replace every other profile's entries, which snug does not allow
@@ -684,6 +684,22 @@ profiles seta, setb and setc disagree about MY_EDITOR:
        A scalar has one value and snug will not choose: picking one would make
        the answer depend on the order profiles were folded, and the model has no
        such order. Select one of them, or make them agree.
+
+== env_conditional_podman ==
+DOCKER_HOST has two authors in this selection, and snug will not choose:
+         mine (environ.set) says "unix:///run/docker.sock"
+         @podman-socket sets podman = "socket", so snug writes DOCKER_HOST: it points the container clients at its filtering proxy
+       Keeping the profile's value would leave snug's feature pointing nowhere;
+       keeping snug's would discard a line the profile wrote. Remove the line, or
+       drop @podman-socket from the selection.
+
+== env_conditional_inherit_absent_on_host ==
+SSH_AUTH_SOCK has two authors in this selection, and snug will not choose:
+         agent (environ.inherit) takes the host's value
+         pinned sets identity.ssh.agent = "proxy", so snug writes SSH_AUTH_SOCK: it points ssh at its one-key agent proxy
+       Keeping the profile's value would leave snug's feature pointing nowhere;
+       keeping snug's would discard a line the profile wrote. Remove the line, or
+       drop pinned from the selection.
 
 == env_set_disagrees_with_inherit ==
 profiles emacsy and envy disagree about EDITOR:

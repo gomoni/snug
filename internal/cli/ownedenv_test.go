@@ -18,13 +18,15 @@ import (
 
 // ── the ownership set, checked two ways ──────────────────────────────────────
 //
-// policy.SnugOwnedEnv is the list of names no profile may write. It has to
-// exist as DATA because the refusal that consults it runs at parse time, and
-// parse time cannot run a resolve. A hand-maintained list is exactly what the
-// design warns against: an earlier draft retyped it and missed the six writers
-// that run AFTER Resolve — DOCKER_HOST, CONTAINER_HOST, SSH_AUTH_SOCK and
-// friends — which are the dangerous half, because `environ.set DOCKER_HOST =
-// "ssh://attacker/..."` makes the client exec ssh (§1.1, §3.2).
+// Every name snug writes is in exactly one of two lists. policy.SnugOwnedEnv is
+// the names no profile may write in any run, refused at parse time.
+// policy.ConditionalEnvNames is the names snug fills only when a profile key
+// turns a feature on — DOCKER_HOST with podman, SSH_AUTH_SOCK with the agent
+// proxy — refused at resolve time as a conflict with that selection (issue
+// #621). A name snug writes that is in NEITHER list is one a profile may set
+// beside snug's value, and snug silently discards one of the two. An earlier
+// draft of the design retyped the list by hand and missed the six writers that
+// run AFTER Resolve, which is why the lists are checked against the code.
 //
 // Two tests, and NEITHER alone is enough. The static one below reads every
 // AuthorEnv/AuthorEnvList call in the tree and asserts set equality, so a new
@@ -56,15 +58,16 @@ func TestSnugOwnedEnvIsExactlyWhatSnugWrites(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := append([]string(nil), policy.SnugOwnedEnv...)
+	want := append(append([]string(nil), policy.SnugOwnedEnv...), policy.ConditionalEnvNames()...)
 	sort.Strings(want)
 
 	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("policy.SnugOwnedEnv does not match the names snug actually writes.\n"+
-			"  writes: %s\n  list:   %s\n"+
-			"A name snug writes but does not own is one a profile may set — and for the "+
-			"post-Resolve writers that means a profile choosing where a client connects. "+
-			"Fix the LIST, and only then ask whether the new writer should exist.",
+		t.Errorf("policy.SnugOwnedEnv + policy.ConditionalEnvNames() does not match the names "+
+			"snug actually writes.\n  writes: %s\n  lists:  %s\n"+
+			"A name snug writes but does not claim is one a profile may set beside snug's "+
+			"value, and one of the two is discarded with no trace. Fix the LISTS — a "+
+			"feature-conditional writer is a conditionalEnvs row with its selection "+
+			"predicate — and only then ask whether the new writer should exist.",
 			strings.Join(got, " "), strings.Join(want, " "))
 	}
 
@@ -137,7 +140,10 @@ func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
 
 // TestResolvedPolicyAuthorsOnlyOwnedNames is the executed half. It resolves
 // every builtin profile with a pinned identity and runs the container writer,
-// then asserts that everything marked as snug's own authorship is in the list.
+// then asserts that everything marked as snug's own authorship is owned, or is
+// conditional with its predicate TRUE on this policy — a conditional name
+// authored with its predicate false is one the resolve-time conflict does not
+// guard, so a profile's line beside it would be discarded.
 //
 // What it does NOT reach, said plainly rather than left to be assumed:
 // SSH_AUTH_SOCK (startIdentity binds a socket it has to create first) and
@@ -181,9 +187,10 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	}
 	authored := p.AuthoredEnvNames()
 	for _, n := range authored {
-		if !owned[n] {
-			t.Errorf("snug authored %q, which is not in policy.SnugOwnedEnv — a profile is "+
-				"free to write it, and snug will silently overwrite whatever it wrote", n)
+		if !owned[n] && !policy.ConditionalEnvOn(p, n) {
+			t.Errorf("snug authored %q, which is neither in policy.SnugOwnedEnv nor a "+
+				"conditional name whose predicate holds on this policy — a profile is free "+
+				"to write it here, and one of the two values is silently discarded", n)
 		}
 	}
 
@@ -205,4 +212,32 @@ func slicesHas(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestNoConditionalNameAuthoredWithoutItsFeature is the negative: a selection
+// that turns no feature on authors none of the conditional names, so a
+// profile's line on one reaches the sandbox under its own verb.
+func TestNoConditionalNameAuthoredWithoutItsFeature(t *testing.T) {
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg),
+		[]policy.ProfileName{"@sys", "@target-rw"}, envGoldenCtx(), newEnvFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authored := p.AuthoredEnvNames()
+	for _, n := range policy.ConditionalEnvNames() {
+		if policy.ConditionalEnvOn(p, n) {
+			t.Errorf("control: %s's feature is on in @sys @target-rw", n)
+		}
+		if slicesHas(authored, n) {
+			t.Errorf("snug authored %s in a selection that turns its feature off", n)
+		}
+	}
+	// POSITIVE CONTROL: the policy did author something.
+	if !slicesHas(authored, "HOME") {
+		t.Errorf("control: HOME not authored (authored: %v)", authored)
+	}
 }
