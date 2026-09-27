@@ -954,12 +954,14 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"changes how the sandbox's network stack segments packets, never what it can "+
 				"reach — a pasta cosmetic, exposed for pathological networks"))
 	}
-	if p.Podman != "" {
+	// An explicit "off" is the base state: its row would print the consequence
+	// of a feature that is not on.
+	if m, err := policy.ParsePodmanMode(p.Podman); p.Podman != "" && (err != nil || m != policy.PodmanOff) {
 		show("podman", capRows(p.Podman,
 			"starts a container engine and delegates your whole subuid range, "+
 				"even with no network profile selected"))
 	}
-	if p.Git != "" {
+	if m, err := policy.ParseGitMode(p.Git); p.Git != "" && (err != nil || m != policy.GitOff) {
 		show("git", capRows(p.Git,
 			"~/.gitconfig is REGENERATED from a whitelist, never bound - it names "+
 				"programs git would run"))

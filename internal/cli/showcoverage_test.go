@@ -104,12 +104,19 @@ PROBE_ENV = "probe-value"
 // showProbe writes the fixture into a private profiles.d and renders it.
 func showProbe(t *testing.T) string {
 	t.Helper()
+	return showProfileText(t, probeProfile, "probe")
+}
+
+// showProfileText writes text as the only file in a private profiles.d and
+// renders `profile show name`.
+func showProfileText(t *testing.T, text, name string) string {
+	t.Helper()
 	dir := t.TempDir()
 	pd := filepath.Join(dir, "snug", "profiles.d")
 	if err := os.MkdirAll(pd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(pd, "probe.toml"), []byte(probeProfile), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pd, "probe.toml"), []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -120,13 +127,13 @@ func showProbe(t *testing.T) string {
 		t.Fatal(err)
 	}
 	os.Stdout = f
-	code := profileCmd([]string{"show", "probe"})
+	code := profileCmd([]string{"show", name})
 	os.Stdout = orig
 	f.Close()
 	if code != 0 {
 		b, _ := os.ReadFile(f.Name())
-		t.Fatalf("`profile show probe` exited %d — the fixture no longer parses, so every "+
-			"assertion below would grade an empty screen:\n%s", code, b)
+		t.Fatalf("`profile show %s` exited %d — the fixture no longer parses, so every "+
+			"assertion below would grade an empty screen:\n%s", name, code, b)
 	}
 	b, err := os.ReadFile(f.Name())
 	if err != nil {
@@ -263,6 +270,28 @@ func TestProfileShowRendersNoCapabilityRowsForAPathOnlyProfile(t *testing.T) {
 	for label := range capabilityLabels {
 		if strings.Contains(got, "  "+label+" ") {
 			t.Errorf("@sys grants no %s and must not render a %s row:\n%s", label, label, got)
+		}
+	}
+}
+
+// TestProfileShowRendersNoRowForAnExplicitOff fails if `podman = "off"` or
+// `git = "off"` renders the consequence of the feature being on. Resolve reads
+// both as the base state — no engine, no subuid range, no generated
+// ~/.gitconfig — so the row would tell a human a profile grants what it does not.
+func TestProfileShowRendersNoRowForAnExplicitOff(t *testing.T) {
+	got := showProfileText(t, `
+[profile.offs]
+description = "offs description"
+podman = "off"
+git    = "off"
+`, "offs")
+	if !strings.Contains(got, "offs description") {
+		t.Fatalf("PRECONDITION: the profile did not render at all:\n%s", got)
+	}
+	for _, consequence := range []string{"subuid", "container engine", ".gitconfig"} {
+		if strings.Contains(got, consequence) {
+			t.Errorf("an explicit off rendered %q, the consequence of the feature being on:\n%s",
+				consequence, got)
 		}
 	}
 }
