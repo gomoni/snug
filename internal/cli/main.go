@@ -539,12 +539,6 @@ func run(cfg config) int {
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
-	// FATAL here, and only here-shaped commands. See internal/cli/badfiles.go: this
-	// is the path that starts a sandbox, and a sandbox assembled from whichever
-	// profile files happened to parse is a silent downgrade.
-	if err := refuseBadFiles(bad); err != nil {
-		return refuse(cfg, exitPolicy, err)
-	}
 
 	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
 	// @git` means "the usual sandbox, plus my git config" — which is both what
@@ -557,6 +551,14 @@ func run(cfg config) int {
 		selected = nil
 	}
 	selected = append(selected, cfg.profiles...)
+
+	// A profile file that did not load refuses the run only when this
+	// selection reaches a profile it defines; see internal/cli/badfiles.go.
+	// Otherwise the run goes ahead and names the file.
+	if err := refuseBadSelection(reg, selected, bad); err != nil {
+		return refuse(cfg, exitPolicy, err)
+	}
+	noteBadFiles(notes, bad)
 
 	target := cfg.target
 	if target == "" {

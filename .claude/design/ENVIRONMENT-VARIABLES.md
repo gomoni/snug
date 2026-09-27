@@ -1346,30 +1346,19 @@ One caveat the fix had to keep straight: the collapse is inverted for lists,
 where unset and empty both mean absent, so `sanitiseHostList` keeps its own
 check rather than sharing a helper (§2.6).
 
-**(b) One unparseable file in `profiles.d` disables the entire registry,
-builtins included.** `Load()` returns on the first bad file rather than
-collecting. Measured with a single file containing one unknown key:
-
-```
-snug profile list        →  the parse error, and nothing else
-snug --dry-run -p @sys . →  the same error; @sys is unreachable
-```
-
-So a file the user may not have edited takes down `@sys`, and `snug profile list`
-— the one command that would tell them what still works — is exactly what stops
-working. This is a live outage path, and it is also what would make any future
-change to the variable type table frightening: reclassifying one name turns into
-a total registry failure on every host whose profile used the old verb.
-
-The shape of the fix, which is the interesting part: **diagnostic commands
-(`profile list`, `config`, `doctor`) should report the broken file loudly and
-continue with what did load; anything that runs a sandbox stays fatal.** One
-caveat or it becomes a silent downgrade — `unknown profile` must consult the
-skipped-file record, so `-p thatprofile` says *"the file defining it failed to
-parse"* rather than *"unknown profile"*.
-
-**Closed by `99d5c10` (Step 12a)**, including the caveat: a name defined only by
-a file that failed to parse is reported as such, not as unknown.
+**(b) A profile file that does not load is one file's problem.** `Load()`
+collects it as a `BadFile` and keeps every other file and the builtins, so
+reclassifying a name in the variable type table costs the profiles in the files
+that used the old verb, not the registry. Diagnostic commands (`profile list`,
+`config`, `doctor`) report the file and continue. A run refuses only when its
+selection, or an `include` it reaches, names a profile the file defines; any
+other run goes ahead with a note naming the file. The names a bad file defines
+are recovered whenever it is valid TOML, so `-p thatprofile` says *"defined in
+FILE, which did not load"* and quotes the error. A file whose names are
+unrecoverable — not TOML, not readable, or an unlistable `profiles.d` — refuses
+every run: it may define the name another file answers for. A name a bad file
+defines that a good file or a builtin also defines is a redefinition, refused at
+load.
 
 **(c) `PATH` entries are not deduplicated, and an ungranted directory is accepted
 in silence.** A profile with `path = ["/nonexistent/bin", "/bin"]`:

@@ -67,7 +67,7 @@ func runSplit(t *testing.T, env []string, args ...string) (stdout, stderr string
 // at its --dry-run branch before warnAboutPodmanClient and before the
 // /etc/resolv.conf probe, because those belong to an engine --dry-run never
 // starts — so a note only the REAL path reaches has nothing to render on the
-// dry-run screen, and "NOTES (these also print on a real run under -v)" would
+// dry-run screen, and "NOTES (these also print on a real run; ...)" would
 // be a lie if it appeared there anyway.
 func TestQuietRunsAreQuiet(t *testing.T) {
 	budget(t)

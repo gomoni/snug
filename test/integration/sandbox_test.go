@@ -3284,11 +3284,13 @@ func TestAUserProfileCannotClaimTheBuiltinSigil(t *testing.T) {
 			"or the refusals below are not attributable to the sigil (exit %d):\n%s", code, out)
 	}
 
-	// Impersonating a builtin, and inventing a new marked name, are both refused
-	// — and refused at LOAD, so it is not a question of which name gets selected.
+	// Impersonating a builtin, and inventing a new marked name, are both
+	// refused. The file does not load (the sigil), so selecting the name it
+	// spells refuses; for @sys the builtin answering in its place would be a
+	// silent substitute, so that one is a redefinition, refused at load (#624).
 	for _, name := range []string{"@sys", "@mine"} {
 		cfg := write("[profile.\"" + name + "\"]\nro = [\"/\"]\n")
-		out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+cfg), "--dry-run", "-p", "@sys", proj)
+		out, code := cli(t, baseEnv("XDG_CONFIG_HOME="+cfg), "--dry-run", "-p", name, proj)
 		if code == 0 {
 			t.Errorf("a user profile named %q was loaded; it would be indistinguishable "+
 				"from one snug ships:\n%s", name, out)

@@ -7,7 +7,9 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -603,31 +605,82 @@ func (r Registry) merge(other Registry) error {
 	for _, n := range names {
 		if existing, ok := r[n]; ok {
 			return fmt.Errorf("profile %q in %s redefines the one from %s; "+
-				"pick a different name rather than shadowing it", n, other[n].Source, existing.Source)
+				"pick a different name rather than shadowing it", n,
+				policy.VisibleText(other[n].Source), policy.VisibleText(existing.Source))
 		}
 		r[n] = other[n]
 	}
 	return nil
 }
 
-// BadFile is a profile file that would not parse, kept rather than returned as
-// the whole answer.
+// BadFile is a profile file that would not load, kept rather than returned as
+// the whole answer: one stale file in profiles.d must not take the builtins,
+// and every other file, down with it.
 //
-// Load used to stop at the first one, and the consequence was measured: a single
-// stale file in profiles.d took down the ENTIRE registry, builtins included, so
-// `snug --dry-run -p @sys .` reported that error and `snug profile list` — the
-// one command that would tell the user what still works — was exactly what
-// stopped working. A file the user may not have edited disabled @sys.
+// What a caller does with it is split by consequence. A diagnostic command
+// reports the file and continues with what did load. A command that runs a
+// sandbox refuses when its selection, or anything that selection includes,
+// names a profile the file defines — a sandbox assembled without the grant it
+// asked for is a silent downgrade (invariant 5) — and otherwise runs with a
+// note naming the file.
 //
-// The split is by consequence, not by severity. A command that RUNS A SANDBOX
-// stays fatal on any bad file: the file that did not parse may be the one
-// granting what was asked for, and a sandbox assembled from what happened to
-// load is a silent downgrade (invariant 5). A DIAGNOSTIC command reports the
-// file loudly and continues with what did load, because "what still works" is
-// the question being asked.
+// Defines is how a run tells the two apart. It holds every profile name the
+// file's [profile.*] tables spell, recovered by a lenient re-read, so it is
+// known whenever the file is syntactically valid TOML: an unknown key, a bad
+// value and a refused name all leave it intact. NamesKnown is false when the
+// file could not be read or is not TOML at all; its names are then
+// unrecoverable, so it may define or redefine any name, and every run refuses
+// while it is there — per-selection refusal needs the names.
 type BadFile struct {
-	Path string
-	Err  error
+	Path       string
+	Err        error
+	Defines    []policy.ProfileName
+	NamesKnown bool
+}
+
+// definedNames recovers the profile names a file that failed to load spells,
+// without judging them. The decode is deliberately lenient — no
+// DisallowUnknownFields, values as `any` — because its only job is to answer
+// "which names did this file mean to define", and every error the strict
+// decode already reported. A name the grammar cannot hold at all is dropped:
+// nothing can select it.
+func definedNames(data []byte) ([]policy.ProfileName, bool) {
+	var raw struct {
+		Profile map[string]any `toml:"profile"`
+	}
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return nil, false
+	}
+	names := make([]policy.ProfileName, 0, len(raw.Profile))
+	for k := range raw.Profile {
+		if n, err := policy.NewProfileName(k); err == nil {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return names, true
+}
+
+// checkBadRedefinition keeps a redefinition hard when one side did not load.
+// Without it, a name defined in a good file and again in a file with an
+// unknown key would silently resolve to the good one — the question with no
+// answer, answered by whichever file happened to parse. Marked names count: a
+// file spelling [profile."@sys"] did not load because of the sigil, and the
+// author still meant to replace @sys, so the builtin answering in its place
+// is the same silent answer.
+func checkBadRedefinition(reg Registry, bad []BadFile) error {
+	for _, f := range bad {
+		for _, n := range f.Defines {
+			if existing, ok := reg[n]; ok {
+				return fmt.Errorf("profile %q in %s redefines the one from %s; "+
+					"pick a different name rather than shadowing it (%s did not load, "+
+					"and a profile it defines still claims the name)",
+					n, policy.VisibleText(f.Path), policy.VisibleText(existing.Source),
+					policy.VisibleText(f.Path))
+			}
+		}
+	}
+	return nil
 }
 
 // Load assembles the registry from the trusted layers, in precedence order:
@@ -663,6 +716,9 @@ func Load() (Registry, []BadFile, error) {
 			return nil, nil, err
 		}
 	}
+	if err := checkBadRedefinition(reg, bad); err != nil {
+		return nil, nil, err
+	}
 	return reg, bad, nil
 }
 
@@ -685,8 +741,14 @@ func ConfigDirs() []string {
 func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []BadFile, error) {
 	reg := Registry{}
 	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return reg, nil, nil // absent config dir is normal, not an error
+	}
+	if err != nil {
+		// Present but unlistable (EACCES, not a directory): every profile it
+		// holds is out of reach and none of their names can be known, so it
+		// is a BadFile with NamesKnown false, which refuses every run.
+		return reg, []BadFile{{Path: dir, Err: err}}, nil
 	}
 	names := []string{}
 	for _, e := range entries {
@@ -719,7 +781,8 @@ func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []Bad
 			err = checkTypesOfBuiltinNames(layer, path, written)
 		}
 		if err != nil {
-			bad = append(bad, BadFile{Path: path, Err: err})
+			defines, known := definedNames(data)
+			bad = append(bad, BadFile{Path: path, Err: err, Defines: defines, NamesKnown: known})
 			continue
 		}
 		if err := reg.merge(layer); err != nil {

@@ -330,7 +330,7 @@ func doctor(argv []string) int {
 		// Named, not counted, and not fatal: doctor is the command someone runs
 		// to find out WHY, so it has to name the file rather than report a clean
 		// bill of health or die on the way to printing one.
-		fmt.Printf("  ❌ %d profile file(s) did not load; snug will refuse to start a sandbox\n", len(bad))
+		fmt.Printf("  ❌ %d profile file(s) did not load; a run selecting a profile from one refuses\n", len(bad))
 		for _, f := range bad {
 			fmt.Printf("     %s\n       %s\n", policy.VisibleText(f.Path),
 				strings.Join(badFileErrorLines(f), "\n       "))
