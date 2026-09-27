@@ -185,33 +185,39 @@ func TestAnIllegalNameInDefaultsIsFatalRatherThanIgnored(t *testing.T) {
 // TestAnAtNamedProfilesDEntryIsRefusedEndToEnd is the wiring
 // internal/profile/namegrammar_test.go:TestNameGrammarIsEnforcedByParse never
 // reached: that test drives parse() directly and stops at "this file did not
-// parse". Nothing before this test ran the REAL BINARY against a profiles.d
-// file carrying an @-marked table key and checked its exit code — grepping
-// this suite and internal/cli for a profile named "@x" finds nothing. Writing
-// [profile."@x"] into a user's own profiles.d is exactly the file
-// refuseBadFiles (internal/cli/badfiles.go) exists to make fatal for a real
-// run: the bad file might be the one granting what this run asked for, so a
-// sandbox assembled from whatever else loaded would be a silent downgrade
-// (invariant 5).
+// parse". This runs the REAL BINARY against a profiles.d file carrying an
+// @-marked table key. Selecting the name it spells refuses, naming the file
+// (internal/cli/badfiles.go): a sandbox assembled without the profile asked
+// for would be a silent downgrade (invariant 5). A run that does not select
+// it goes ahead and names the file (#624).
 func TestAnAtNamedProfilesDEntryIsRefusedEndToEnd(t *testing.T) {
 	budget(t)
 	proj, _ := target(t)
 	env := envProfileLayer(t, "atnamed.toml", "[profile.\"@x\"]\nro = [\"/usr\"]\n", os.Getenv("PATH"))
 
-	out, code := cli(t, env, "--dry-run", proj)
+	out, code := cli(t, env, "--dry-run", "-p", "@x", proj)
 	if code == 0 {
-		t.Fatalf("snug --dry-run started despite a profiles.d file carrying an @-marked table "+
-			"key (exit 0):\n%s", out)
+		t.Fatalf("snug --dry-run -p @x started although the only file spelling @x did not "+
+			"load (exit 0):\n%s", out)
 	}
 	if code != exitPolicyCode {
 		t.Errorf("want exit %d, got %d:\n%s", exitPolicyCode, code, out)
 	}
-	if !strings.Contains(out, "did not load") {
-		t.Errorf("the refusal does not say the file failed to load:\n%s", out)
+	if !strings.Contains(out, "did not load") || !strings.Contains(out, "atnamed.toml") {
+		t.Errorf("the refusal does not name the file that failed to load:\n%s", out)
 	}
 	if strings.Contains(out, "FILESYSTEM") {
 		t.Errorf("a --dry-run that refuses to start must not also render the FILESYSTEM block — "+
 			"a screen naming grants alongside a fatal refusal reads as \"it ran anyway\":\n%s", out)
+	}
+
+	// The run that does not select it: exit 0, and the file named anyway.
+	out, code = cli(t, env, "--dry-run", proj)
+	if code != 0 {
+		t.Errorf("a run selecting nothing from atnamed.toml exited %d, want 0:\n%s", code, out)
+	}
+	if !strings.Contains(out, "atnamed.toml") {
+		t.Errorf("a run past a file that did not load does not name it:\n%s", out)
 	}
 
 	// POSITIVE CONTROL: `snug profile list`, the diagnostic command, still

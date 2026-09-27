@@ -43,6 +43,11 @@ const (
 
 	// noteAside: true, useful, and not urgent. Quiet by default.
 	noteAside
+
+	// noteBroken: part of the trusted configuration did not load, so a
+	// profile somebody wrote cannot be selected. Unconditional, like
+	// noteEscape: the file's owner learns of it here or at the refusal.
+	noteBroken
 )
 
 // note holds the finished text, not a format string and its arguments. The
@@ -83,6 +88,9 @@ func newNotes(live io.Writer, verbose bool) *notes {
 // escape records a hole in the sandbox. Always printed.
 func (n *notes) escape(format string, args ...any) { n.add(noteEscape, format, args...) }
 
+// broken records trusted configuration that did not load. Always printed.
+func (n *notes) broken(format string, args ...any) { n.add(noteBroken, format, args...) }
+
 // aside records a run detail. Printed with -v, and on the --dry-run and
 // --explain screens.
 func (n *notes) aside(format string, args ...any) { n.add(noteAside, format, args...) }
@@ -96,7 +104,7 @@ func (n *notes) add(kind noteKind, format string, args ...any) {
 	if n.live == nil {
 		return
 	}
-	if kind == noteEscape || n.verbose {
+	if kind != noteAside || n.verbose {
 		fmt.Fprint(n.live, text)
 	}
 }

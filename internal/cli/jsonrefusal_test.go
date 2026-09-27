@@ -93,14 +93,16 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 	t.Setenv("HOME", home)
 	stubHostAccount(t, home)
 
-	// A config directory with a profile file that does not parse. Set per
-	// case, not here: every other case needs a config directory that LOADS.
+	// A config directory with a profile file that does not load: valid TOML
+	// with a key snug does not know. Set per case, not here: every other case
+	// needs a config directory that LOADS. The case selects the profile it
+	// defines, because a run that does not reach it is not refused (#624).
 	badCfg := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(badCfg, "snug", "profiles.d"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(badCfg, "snug", "profiles.d", "bad.toml"),
-		[]byte("this is not toml {{{\n"), 0o644); err != nil {
+		[]byte("[profile.future]\nnet_hosts = [\"github.com\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	goodCfg := t.TempDir()
@@ -141,8 +143,8 @@ func TestEveryRefusalClassProducesAParseableDocument(t *testing.T) {
 		says string
 	}{
 		{
-			name:    "unparseable profile file",
-			cfg:     config{dryRun: true, json: true, target: proj},
+			name:    "selected profile from a file that did not load",
+			cfg:     config{dryRun: true, json: true, target: proj, profiles: []policy.ProfileName{"future"}},
 			xdg:     badCfg,
 			code:    77,
 			outcome: "refused",

@@ -317,8 +317,10 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(badCfg, "snug", "profiles.d"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Valid TOML with a key snug does not know, and the case selects the
+	// profile it defines: a run that does not reach it is not refused (#624).
 	if err := os.WriteFile(filepath.Join(badCfg, "snug", "profiles.d", "bad.toml"),
-		[]byte("this is not toml {{{\n"), 0o644); err != nil {
+		[]byte("[profile.future]\nnet_hosts = [\"github.com\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -343,9 +345,9 @@ func TestDryRunJSONRedirectIsNeverZeroBytes(t *testing.T) {
 		code int
 	}{
 		{
-			name: "unparseable profile file",
+			name: "selected profile from a file that did not load",
 			env:  append(os.Environ(), "XDG_CONFIG_HOME="+badCfg, "SNUG_TEST=1"),
-			args: []string{"--dry-run", "--json", proj},
+			args: []string{"--dry-run", "--json", "-p", "future", proj},
 			says: "did not load",
 			code: 77,
 		},
