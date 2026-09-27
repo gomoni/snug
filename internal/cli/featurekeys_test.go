@@ -9,8 +9,11 @@ import (
 
 // The rule #627 settled: a feature key (`network`, `dns`, `nss`, `podman`,
 // `git`) makes snug AUTHOR something — a generated file, a helper, a proxy —
-// and never binds a host path; a builtin that sets one is that key plus the
-// ordinary grants and includes the feature needs. Both spellings stay: the key
+// and never binds a host path at Resolve; a builtin that sets one is that key
+// plus the ordinary grants and includes the feature needs. The one bind a key
+// causes is podman's: after Resolve the CLI binds the per-run proxy socket snug
+// itself created (BindSocket in container.go), never host material a profile
+// could name. These tests call policy.Resolve, so they do not cover that bind. Both spellings stay: the key
 // is the primitive a user builds unusual sandboxes from, the builtin the
 // ready-made bundle. These two tests hold the rule, so a future key or builtin
 // that breaks it fails here rather than in a doc nobody re-reads.
