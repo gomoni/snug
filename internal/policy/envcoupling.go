@@ -221,10 +221,9 @@ func isPathValued(name string) bool {
 // asked of every annotation that is ever ADDED, since the column has no valid
 // zero value (TestEveryAnnotationSaysWhatItsValueIS).
 //
-// The pointer clause stays even though every writable pointer is also
-// shapePath — GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are snug's own and carry no
-// annotation at all, and "a pointer is a path" should not become a fact that
-// only holds while somebody keeps writing the sentence.
+// The pointer clause stays even though every pointer is also shapePath today:
+// "a pointer is a path" should not become a fact that only holds while somebody
+// keeps writing the sentence.
 func valueIsAPath(name string) bool {
 	if namesAPointerFile(name) {
 		return true

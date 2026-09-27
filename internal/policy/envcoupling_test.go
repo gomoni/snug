@@ -257,9 +257,11 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 
 	checked, owned := 0, 0
 	for _, p := range inlineConfigPointers {
-		// A pointer snug OWNS (GIT_CONFIG_GLOBAL, GH_CONFIG_DIR) is refused at
-		// every verb by ownership, which is the stronger statement — counted, not
-		// skipped silently, so that a pointer quietly becoming writable shows up.
+		// A pointer snug OWNED would be refused at every verb by ownership —
+		// counted, not skipped silently, so that a pointer quietly becoming
+		// unwritable shows up. None is today: GIT_CONFIG_GLOBAL and GH_CONFIG_DIR
+		// are snug's only in a selection that turns their feature on
+		// (conditionalEnvs), and that verdict is a resolve-time conflict.
 		if err := ValidateEnvGrants(EnvGrants{Set: map[string]string{p.name: "/opt/x"}}); err != nil {
 			owned++
 			continue
@@ -289,15 +291,16 @@ func TestEveryPointerRefusesARelativeValue(t *testing.T) {
 		}
 	}
 
-	// POSITIVE CONTROLS: the loop saw the whole table, and the two owned names are
-	// still exactly two (TestEveryPointerSaysWhatTheFileItNamesIs counts the same
-	// pair for the same reason).
+	// POSITIVE CONTROLS: the loop saw the whole table, and no pointer is owned
+	// (TestEveryPointerSaysWhatTheFileItNamesIs counts the same for the same
+	// reason).
 	if checked < 5 {
 		t.Fatalf("only %d writable pointers were checked; this test measures almost nothing", checked)
 	}
-	if owned != 2 {
-		t.Errorf("%d pointers are unwritable by any profile, want 2 (GIT_CONFIG_GLOBAL and "+
-			"GH_CONFIG_DIR, both in SnugOwnedEnv)", owned)
+	if owned != 0 {
+		t.Errorf("%d pointers are unwritable by any profile, want 0: a pointer snug fills "+
+			"itself is a conditionalEnvs name, refused only in a selection that turns its "+
+			"feature on", owned)
 	}
 	// AND THE RULE MUST NOT HAVE WIDENED INTO THE COUPLING RULE. An ABSOLUTE
 	// pointer value that nothing grants stays accepted for the unrostered name:

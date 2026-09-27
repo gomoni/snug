@@ -261,3 +261,35 @@ func TestNoBuiltinInheritsAnEditorVariable(t *testing.T) {
 			"this assertion rather than deleting it.")
 	}
 }
+
+// TestMarkRefusesABuiltinThatWritesAConditionallyOwnedName: a name snug fills
+// itself when a feature is on (issue #621) is a human profile's to write in a
+// selection that leaves the feature off — never a shipped profile's. The rule
+// is asserted through the dedicated guard's message, not the roster's, so it
+// keeps holding if one of these names ever gains a roster row.
+func TestMarkRefusesABuiltinThatWritesAConditionallyOwnedName(t *testing.T) {
+	for _, name := range policy.ConditionalEnvClaimed() {
+		for verb, g := range map[string]policy.EnvGrants{
+			"set":     {Set: map[string]string{name: "/run/x"}},
+			"inherit": {Inherit: []string{name}},
+		} {
+			_, err := mark(Registry{"leaky": &policy.Profile{Name: "leaky", Environ: g}})
+			if err == nil {
+				t.Errorf("mark() accepted a builtin that %ss %s", verb, name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "outranks what snug writes, when a feature is on") ||
+				!strings.Contains(err.Error(), name) {
+				t.Errorf("%s %s refused by something other than the conditional guard: %v", verb, name, err)
+			}
+		}
+	}
+	// No shipped profile writes one today; the sweep is the regression.
+	reg, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins(): %v", err)
+	}
+	if len(reg) == 0 {
+		t.Fatal("control: Builtins() returned nothing")
+	}
+}

@@ -131,11 +131,11 @@ func TestGoldenEnvAnnotations(t *testing.T) {
 			s := strings.TrimSpace(EnvNote(p.name, verb))
 			switch {
 			case !legal(p.name, verb):
-				// GIT_CONFIG_GLOBAL and GH_CONFIG_DIR are in SnugOwnedEnv, so
-				// ownership refuses them at every verb and no sentence about them
-				// can reach a screen. Printing one unqualified would read as a
-				// live warning about a name no profile can write; printing nothing
-				// would hide that the row is covered by something else entirely.
+				// A pointer ownership refused at every verb could carry no
+				// sentence that reaches a screen. Printing one unqualified would
+				// read as a live warning about a name no profile can write;
+				// printing nothing would hide that the row is covered by
+				// something else entirely. No pointer is owned today.
 				s = "(no profile may write this name — ownership, or its type)"
 			case s == "":
 				s = "(nothing)"
@@ -340,9 +340,9 @@ func TestTheRosterAndTheAnnotationAgreeAboutTheValueShape(t *testing.T) {
 	}
 
 	// A POINTER is a path by definition (inlineConfigPointer's own doc), so any
-	// pointer carrying an annotation must say so. The two that carry none are
-	// snug's own (SnugOwnedEnv), and valueIsAPath keeps its namesAPointerFile
-	// clause precisely so that fact does not depend on someone writing a sentence.
+	// pointer carrying an annotation must say so. Every pointer carries one
+	// today, and valueIsAPath keeps its namesAPointerFile clause precisely so that
+	// fact does not depend on someone writing a sentence.
 	for _, p := range inlineConfigPointers {
 		n, ok := noteExact(p.name)
 		if !ok {
@@ -513,15 +513,13 @@ func TestEveryPointerSaysWhatTheFileItNamesIs(t *testing.T) {
 	}
 
 	// The ownership arm is an assertion, not a skip. GIT_CONFIG_GLOBAL and
-	// GH_CONFIG_DIR are in SnugOwnedEnv — snug authors them itself — so no
-	// profile reaches them at any verb and they carry no annotation by the rule
-	// that snug's own names stay out of that table. If a THIRD pointer ever lands
-	// here, someone has either made a writable pointer owned or made an owned one
-	// writable, and both are worth stopping to think about.
-	if owned != 2 {
-		t.Errorf("%d pointers are unwritable by any profile, want 2 (GIT_CONFIG_GLOBAL and "+
-			"GH_CONFIG_DIR, both in SnugOwnedEnv). A pointer that quietly stopped being "+
-			"writable no longer needs its sentence; one that started being writable needs one", owned)
+	// GH_CONFIG_DIR are snug's only in a selection that turns their feature on
+	// (conditionalEnvs); in every other a profile may write them, so they carry
+	// sentences like every writable pointer. If a pointer ever lands here, someone
+	// has made a writable pointer owned, which is worth stopping to think about.
+	if owned != 0 {
+		t.Errorf("%d pointers are unwritable by any profile, want 0. A pointer that quietly "+
+			"stopped being writable no longer needs its sentence", owned)
 	}
 	// POSITIVE CONTROL: the loop actually examined the pointers rather than
 	// finding an empty list.

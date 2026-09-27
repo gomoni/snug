@@ -525,6 +525,12 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.ListenNames = sortedKeys(httpDoors)
 	}
 
+	// Every field a conditional name's predicate reads is final here, and no
+	// conditional writer has run yet. See envconditional.go.
+	if err := checkConditionalEnv(p, set, names, selected); err != nil {
+		return nil, err
+	}
+
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman
 	// profile is selected, stage a dispatcher stub ahead of it on PATH rather
 	// than leave a binary that fails cryptically from inside. Gated on

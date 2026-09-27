@@ -438,10 +438,9 @@ func startContainersScreen(pol *policy.Policy) (containerRun, error) {
 }
 
 // containerEnv points the client at the proxy. A function of its own so it can
-// be exercised without starting an engine: these three names are half of the
-// post-Resolve writers, and those are the dangerous half of the ownership set —
-// a profile allowed to write DOCKER_HOST = "ssh://you@host/..." would make the
-// client exec ssh (§1.1, §3.2).
+// be exercised without starting an engine. A profile may write these three
+// names only in a selection with no podman, so nothing here replaces a line a
+// profile wrote (policy.checkConditionalEnv).
 func containerEnv(pol *policy.Policy) {
 	// podman's own CLI reads CONTAINER_HOST; DOCKER_HOST is set too so anything
 	// speaking the compat API finds the same proxy. snug targets podman.
