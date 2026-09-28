@@ -359,8 +359,8 @@ func TestTheRosterAndTheAnnotationAgreeAboutTheValueShape(t *testing.T) {
 // from becoming one by accident.
 //
 // The failure mode is specific and was measured while this change was being
-// made: internal/profile's checkBuiltinEnvRoster is written on IsUncheckedEnv,
-// and IsUncheckedEnv used to answer from the roster OR the (then forbidden, now
+// made: internal/profile's checkBuiltinEnvRoster is written on IsUnknownEnv,
+// and IsUnknownEnv used to answer from the roster OR the (then forbidden, now
 // annotated) exact-name table. Folding the annotation table in there after it
 // stopped refusing would have made every annotated name — sixty of them,
 // GIT_SSH_COMMAND and RUSTC_WRAPPER included — a name a profile snug SHIPS may
@@ -371,8 +371,8 @@ func TestAnAnnotationDoesNotMakeANameCheckedForABuiltin(t *testing.T) {
 		if EnvNote(name, VerbSet) == "" {
 			t.Fatalf("fixture: %s is supposed to be annotated; this test measures nothing", name)
 		}
-		if !IsUncheckedEnv(name, VerbSet) {
-			t.Errorf("IsUncheckedEnv(%s, set) = false, but %s has no ROSTER row. The predicate "+
+		if !IsUnknownEnv(name, VerbSet) {
+			t.Errorf("IsUnknownEnv(%s, set) = false, but %s has no ROSTER row. The predicate "+
 				"must answer from the roster alone: internal/profile's checkBuiltinEnvRoster is "+
 				"written on it, so a name that reads as `checked` here is a name a profile snug "+
 				"SHIPS may hand to the payload", name, name)
@@ -383,8 +383,8 @@ func TestAnAnnotationDoesNotMakeANameCheckedForABuiltin(t *testing.T) {
 	// @claude inherits it, so if this side broke, every shipped profile would
 	// fail at Builtins().
 	for _, name := range []string{"EDITOR", "BASH_ENV", "CARGO_HOME"} {
-		if IsUncheckedEnv(name, VerbSet) {
-			t.Errorf("IsUncheckedEnv(%s, set) = true; it has a roster row, and an annotation "+
+		if IsUnknownEnv(name, VerbSet) {
+			t.Errorf("IsUnknownEnv(%s, set) = true; it has a roster row, and an annotation "+
 				"beside a row must not remove the row", name)
 		}
 	}
@@ -463,7 +463,7 @@ func TestPointerExemptionsAgreeBetweenTheTwoTables(t *testing.T) {
 // is a grant. So the pointer can be aimed inside the one directory the payload
 // owns, and the sentence that would have said what the file does was exempted
 // away — measured, four of five names rendering NO mark at all and the fifth
-// only `← unchecked`:
+// only `← unknown`:
 //
 //	CARGO_HOME/config.toml  [build] rustc-wrapper   -> ran, cargo 1.97.1, uid 1000
 //	DOCKER_CONFIG/config.json {"credsStore":"evil"} -> docker-credential-evil ran

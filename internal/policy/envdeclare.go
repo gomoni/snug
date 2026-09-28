@@ -20,7 +20,7 @@ import (
 // misreads (a ';'- or space-reading consumer sees one nonexistent path), or,
 // for a consumer whose elements do not compose, every declared element loaded
 // into every process as that author — rendered on --dry-run as
-// `← unchecked` and `← declared path-list by <profile>`. A declared code
+// `← unknown` and `← declared path-list by <profile>`. A declared code
 // search list pointing at a writable directory is the human-profile residual
 // the shadow-slot rule already accepts; a shipped profile cannot declare.
 type EnvKind uint8

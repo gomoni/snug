@@ -106,7 +106,7 @@ var stagedExport = regexp.MustCompile(`(?m)^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)
 // AuthorEnvList call in one file, and every name a script literal exports.
 //
 // A non-literal first argument is a HARD FAILURE rather than something to skip.
-// A computed name cannot be checked by anything here, and an unchecked name is
+// A computed name cannot be checked by anything here, and an unknown name is
 // precisely the hole this pair of tests exists to close — so the rule is: write
 // the literal.
 func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
@@ -181,7 +181,7 @@ func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	}
 
 	// Every builtin, with no exception list — see the same sweep in
-	// envuncheckedsink_test.go for why a skipped name is a gap rather than a
+	// envunknownsink_test.go for why a skipped name is a gap rather than a
 	// tidy-up.
 	var sel []policy.ProfileName
 	for name := range reg {

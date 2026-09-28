@@ -217,7 +217,7 @@ func TestProfileShowCapabilityRowsCarryTheirConsequence(t *testing.T) {
 //
 // SCOPED TO THE CAPABILITY ROWS, and that is a limit worth stating rather than
 // hiding: the screen already emits longer lines elsewhere — `defined in` renders
-// a full path, and an `environ.set` row carries the unchecked mark — and
+// a full path, and an `environ.set` row carries the unknown mark — and
 // widening this test to the whole screen would either fail on those or force a
 // number large enough to prove nothing. What is asserted is the part this change
 // authors.

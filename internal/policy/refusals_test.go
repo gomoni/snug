@@ -1395,7 +1395,7 @@ func TestGoldenRefusals(t *testing.T) {
 		// A name with no roster row is CARRIED at `set` and `inherit` — a profile
 		// with a name, a file and an author writing `set FOO = "x"` is already
 		// that author naming the hole, and every row it produces is marked
-		// `← unchecked` on both screens. What no profile can do is reach a LIST
+		// `← unknown` on both screens. What no profile can do is reach a LIST
 		// verb with it undeclared: a list verb needs the separator and the
 		// meaning of an empty element, and those come from a roster row or from
 		// the profile's own `path-list` declaration. This row is the review

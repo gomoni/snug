@@ -352,18 +352,14 @@ type reportEnvEntry struct {
 	// beside it reading as approval. See ValueNote for the fact "note" used to
 	// be mistaken for.
 	AuthoredBy string
-	// TypeUnknown is policy.IsUncheckedEnv(name, verb): snug has no TYPE for
+	// TypeUnknown is policy.IsUnknownEnv(name, verb): snug has no TYPE for
 	// this NAME — no roster row, so nothing is known about whether it is a
 	// scalar or a list, its separator, or what an empty element means. It is
 	// an ENVIRONMENT property and belongs on an entry — issue #52's brief
 	// listed it under mounts, where there is no such mark and putting one
 	// would be inventing a field.
-	//
-	// RENAMED from "Unchecked" for the same reason as AuthoredBy: the human
-	// screen's `← unchecked` mark carries its own gloss on the same line, so
-	// the label can stay short; a JSON key has no room for a gloss, so the
-	// key has to BE the gloss instead. See policy.UncheckedEnvNote's doc
-	// comment for the other half of this cross-reference.
+	// The screens render the same predicate as `← unknown`; see
+	// policy.UnknownEnvNote.
 	TypeUnknown bool
 	// ValueNote is policy.EnvNote(name, verb)'s text, stripped of the
 	// "  ← " prefix that is dryrun.go's rendering convention rather than part
@@ -740,10 +736,10 @@ func buildEnvReport(p *policy.Policy, v policy.EnvVar, env policy.Environ) repor
 			Verb:       e.Verb.String(),
 			From:       e.From,
 			AuthoredBy: e.Note,
-			// The same predicate the `← unchecked` mark uses, from
+			// The same predicate the `← unknown` mark uses, from
 			// internal/policy so the two screens and this format cannot
 			// disagree about what "no type for this name" means.
-			TypeUnknown: policy.IsUncheckedEnv(v.Name, e.Verb),
+			TypeUnknown: policy.IsUnknownEnv(v.Name, e.Verb),
 			ValueNote:   envValueNoteText(v.Name, e.Verb),
 			// envGrantVerdict returns insideCount == 0 for every grant other
 			// than grantNotGranted, so this is never a stray count attached

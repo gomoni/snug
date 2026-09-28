@@ -636,9 +636,8 @@ type jsonEnvEntry struct {
 	From       []string `json:"from"`
 	// AuthoredBy is policy.EnvEntry.Note — see reportEnvEntry.AuthoredBy.
 	AuthoredBy string `json:"authored_by"`
-	// TypeUnknown is policy.IsUncheckedEnv — see reportEnvEntry.TypeUnknown
-	// and policy.UncheckedEnvNote's doc comment for why this key and the
-	// screen's `← unchecked` mark are worded differently on purpose.
+	// TypeUnknown is policy.IsUnknownEnv, the screens' `← unknown` mark —
+	// see reportEnvEntry.TypeUnknown and policy.UnknownEnvNote.
 	TypeUnknown bool `json:"type_unknown"`
 	// ValueNote is policy.EnvNote's text — see reportEnvEntry.ValueNote and
 	// policy.EnvNote's doc comment.

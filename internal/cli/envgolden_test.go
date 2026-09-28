@@ -245,7 +245,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		// in the registry. Only the marks case uses it, and it has to: no shipped
 		// profile carries a three-mark row, and no shipped profile ever should —
 		// checkBuiltinEnvRoster refuses a builtin writing an unrostered name, so
-		// `← unchecked` cannot appear beside a builtin at all. The screen that
+		// `← unknown` cannot appear beside a builtin at all. The screen that
 		// renders three marks at once was therefore asserted only inside a test's
 		// string comparisons and had no committed artifact until this case.
 		reg func(*testing.T) map[policy.ProfileName]*policy.Profile
@@ -292,7 +292,7 @@ func TestGoldenEnvironment(t *testing.T) {
 		// The MARKS screen, and the reason it is a golden rather than a handful of
 		// strings.Contains: this is the layout a human reads when a profile hands
 		// over something snug has a measurement about. It carries, in one render,
-		// a three-mark row (GIT_SSH_COMMAND: unchecked + annotation + not
+		// a three-mark row (GIT_SSH_COMMAND: unknown + annotation + not
 		// granted), a two-mark rostered row (BASH_ENV), a one-mark pointer row
 		// (CARGO_HOME, F1), PATH's shadow-slot mark on a multi-band variable, and
 		// the unmarked controls. Before the mark lines were split out, the

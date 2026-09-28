@@ -10,11 +10,11 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// ── issue #44: the roster sweep, and the "unchecked" mark at every sink ─────
+// ── issue #44: the roster sweep, and the "unknown" mark at every sink ─────
 //
 // The roster (internal/policy/envtypes.go) is what a shipped profile is held
 // to: internal/profile's `mark` refuses a builtin that hands over a name the
-// screen would mark `← unchecked`, so every name a builtin writes must have a
+// screen would mark `← unknown`, so every name a builtin writes must have a
 // row. This file is the regression test that makes the NEXT roster deletion
 // fail loudly — a name deleted from envtypes.go while a builtin still inherits
 // or sets it — instead of shipping quietly and breaking at runtime the way
@@ -30,8 +30,8 @@ import (
 
 // TestEveryBuiltinEnvVarHasARosterRow resolves every shipped profile at once
 // (mirroring TestResolvedPolicyAuthorsOnlyOwnedNames's fixture) and asserts
-// that nothing in the result reads as "unchecked". `mark` refuses a builtin
-// that writes such a name, so an unchecked entry here can only mean a roster
+// that nothing in the result reads as "unknown". `mark` refuses a builtin
+// that writes such a name, so an unknown entry here can only mean a roster
 // row was deleted out from under a profile that still relies on it — and this
 // sweep runs over the RESOLVED policy rather than over the grant blocks, so it
 // also covers a name that reaches the environment by some route mark() does
@@ -60,11 +60,11 @@ func TestEveryBuiltinEnvVarHasARosterRow(t *testing.T) {
 	for name, v := range p.Env {
 		for _, e := range v.Entries {
 			checked++
-			if policy.IsUncheckedEnv(name, e.Verb) {
+			if policy.IsUnknownEnv(name, e.Verb) {
 				t.Errorf("%s (environ.%s, from %v) has no roster row. internal/profile's "+
 					"mark refuses a builtin that writes one, so this is either a roster row "+
 					"deleted out from under a profile that still writes this name, or "+
-					"IsUncheckedEnv itself misreporting a snug-authored entry",
+					"IsUnknownEnv itself misreporting a snug-authored entry",
 					name, e.Verb, e.From)
 			}
 		}
@@ -99,11 +99,11 @@ func leakyEnvRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	return m
 }
 
-// TestDryRunMarksAnUnrosteredNameAsUnchecked drives the real --dry-run
-// rendering path (describeEnvironment -> envLines -> policy.IsUncheckedEnv),
+// TestDryRunMarksAnUnrosteredNameAsUnknown drives the real --dry-run
+// rendering path (describeEnvironment -> envLines -> policy.IsUnknownEnv),
 // the same function envgolden_test.go's goldens exercise, rather than a
 // re-implementation of it.
-func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
+func TestDryRunMarksAnUnrosteredNameAsUnknown(t *testing.T) {
 	m := leakyEnvRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "leaky", "@claude")
 	env := newEnvFakeEnv()
@@ -121,8 +121,8 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 		t.Fatalf("MY_TOOL_MODE never reached the ENVIRONMENT block, so this test measures "+
 			"nothing:\n%s", got)
 	}
-	if !strings.Contains(got, "unchecked: snug has no type for this name") {
-		t.Errorf("an unrostered name was not marked unchecked in --dry-run:\n%s", got)
+	if !strings.Contains(got, "unknown: snug has no type for this name") {
+		t.Errorf("an unrostered name was not marked unknown in --dry-run:\n%s", got)
 	}
 
 	// NEGATIVE CONTROL: PAGER is a roster row (@claude inherits it, and the
@@ -132,7 +132,7 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	// positive assertion above too.
 	//
 	// THIS CONTROL WAS ONE COMMIT FROM BEING UNFAILABLE. It used to scan for a
-	// LINE containing both the name and "unchecked", which was the right
+	// LINE containing both the name and "unknown", which was the right
 	// question while every mark was concatenated onto its row. Once each mark
 	// became its own indented line (dryrun.go's markIndent) no line can contain
 	// both, so the loop would have reported "not marked" for every possible
@@ -144,22 +144,22 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 		t.Fatalf("PAGER's row carries no annotation at all, so the negative control below "+
 			"cannot distinguish a working mark from a missing one:\n%s", pager)
 	}
-	if strings.Contains(pager, "unchecked") {
-		t.Errorf("PAGER, a rostered name, was marked unchecked:\n%s", pager)
+	if strings.Contains(pager, "unknown") {
+		t.Errorf("PAGER, a rostered name, was marked unknown:\n%s", pager)
 	}
 }
 
-// ── the unchecked mark JOINS the grant mark, it does not replace it ─────────
+// ── the unknown mark JOINS the grant mark, it does not replace it ─────────
 //
 // REGRESSION (redteam + independent review, 2026-08-15): dryrun.go's envLines
-// used to REPLACE grantMark's verdict with the unchecked mark for an
+// used to REPLACE grantMark's verdict with the unknown mark for an
 // unrostered name. Measured on the base commit, the identical profile text rendered
-// `← not granted` before the roster flip and only `← unchecked` after it — the
+// `← not granted` before the roster flip and only `← unknown` after it — the
 // screen LOST the statement that a declared name's value does not resolve to
 // anything inside the sandbox. It also inverted the pair between two kinds of
 // entry: a ROSTERED code-carrying scalar (`set BASH_ENV = "/var/lib/x"`) kept
 // its "not granted" verdict, while the UNROSTERED sibling lost its own. The fix
-// concatenates: the unchecked mark first, then whatever grantMark returns.
+// concatenates: the unknown mark first, then whatever grantMark returns.
 //
 // markJoinRegistry builds one profile that exercises every combination this
 // test needs, so all of it is checked against a single --dry-run render:
@@ -170,14 +170,14 @@ func TestDryRunMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 //     MY_TOOL_UNGRANTED. This is the
 //     POSITIVE CONTROL: it is what distinguishes "both marks fire correctly"
 //     from "the mark string happens to contain both substrings" — a rostered
-//     name must show `not granted` with no `unchecked` anywhere on its line, on
+//     name must show `not granted` with no `unknown` anywhere on its line, on
 //     the SAME value that produces both marks for an unrostered name.
 //   - GIT_SSH_COMMAND:   UNROSTERED, ANNOTATED and ungranted: the only row that
 //     carries all THREE statements, which is what fixes their order.
 //   - PATH:              merged with the fixture $HOME, a writable tmpfs, so the
-//     shadow-slot mark fires. PATH has a roster row, so IsUncheckedEnv can never
+//     shadow-slot mark fires. PATH has a roster row, so IsUnknownEnv can never
 //     be true for it, and this line asserts the writable mark is not doubled up
-//     with an unchecked mark it structurally cannot carry.
+//     with an unknown mark it structurally cannot carry.
 func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	t.Helper()
 	reg, err := profile.Builtins()
@@ -228,7 +228,7 @@ func markJoinRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 // alone, and every assertion of the form "this row carries mark M" would have
 // gone one of two ways: fail, or — far worse — become UNFAILABLE. The negative
 // controls are the unfailable half: `no line contains both the name and
-// "unchecked"` is trivially true once the two are never on one line, so the
+// "unknown"` is trivially true once the two are never on one line, so the
 // assertion that a rostered name is NOT marked would have passed on a build
 // that marked every name in the table. A test that cannot fail is worse than
 // no test.
@@ -260,7 +260,7 @@ func rowFor(t *testing.T, rendered, want string) string {
 	return rows[0]
 }
 
-func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
+func TestUnknownMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	m := markJoinRegistry(t)
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "markjoin")
 	env := newEnvFakeEnv()
@@ -275,28 +275,28 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	// (dryrun.go's markIndent) — and strings.Index over the joined row reads it
 	// the same way a human does, top to bottom.
 	ungranted := rowFor(t, got, "MY_TOOL_UNGRANTED")
-	if !strings.Contains(ungranted, "unchecked") || !strings.Contains(ungranted, "not granted") {
+	if !strings.Contains(ungranted, "unknown") || !strings.Contains(ungranted, "not granted") {
 		t.Errorf("unrostered+ungranted row lost one of the two marks:\n%s", ungranted)
 	}
-	if i, j := strings.Index(ungranted, "unchecked"), strings.Index(ungranted, "not granted"); i < 0 || j < 0 || i > j {
-		t.Errorf("want `unchecked` before `not granted` on the unrostered+ungranted row, got:\n%s", ungranted)
+	if i, j := strings.Index(ungranted, "unknown"), strings.Index(ungranted, "not granted"); i < 0 || j < 0 || i > j {
+		t.Errorf("want `unknown` before `not granted` on the unrostered+ungranted row, got:\n%s", ungranted)
 	}
 
-	// 2. Unrostered name, GRANTED value: unchecked, and no "not granted" — proves
+	// 2. Unrostered name, GRANTED value: unknown, and no "not granted" — proves
 	// the join is a real rendering of grantMark's actual verdict, not a constant
 	// pair of marks that happens to contain both substrings.
 	granted := rowFor(t, got, "MY_TOOL_GRANTED")
-	if !strings.Contains(granted, "unchecked") {
-		t.Errorf("unrostered+granted row lost the unchecked mark:\n%s", granted)
+	if !strings.Contains(granted, "unknown") {
+		t.Errorf("unrostered+granted row lost the unknown mark:\n%s", granted)
 	}
 	if strings.Contains(granted, "not granted") {
 		t.Errorf("unrostered+granted row wrongly claims not granted:\n%s", granted)
 	}
 
-	// 3. Unrostered name, non-path value: unchecked alone.
+	// 3. Unrostered name, non-path value: unknown alone.
 	mode := rowFor(t, got, "MY_TOOL_MODE")
-	if !strings.Contains(mode, "unchecked") {
-		t.Errorf("unrostered+non-path line lost the unchecked mark:\n%s", mode)
+	if !strings.Contains(mode, "unknown") {
+		t.Errorf("unrostered+non-path line lost the unknown mark:\n%s", mode)
 	}
 	if strings.Contains(mode, "not granted") || strings.Contains(mode, "writable") {
 		t.Errorf("unrostered+non-path line acquired a grant verdict it cannot have "+
@@ -304,19 +304,19 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	}
 
 	// 4. POSITIVE CONTROL: rostered scalar (BASH_ENV), same ungranted value as
-	// case 1. Must show `not granted` and NO `unchecked` — this is what proves
+	// case 1. Must show `not granted` and NO `unknown` — this is what proves
 	// cases 1-3 are not passing because the mark string is a constant that
-	// happens to contain "unchecked" and "not granted" together.
+	// happens to contain "unknown" and "not granted" together.
 	bashEnv := rowFor(t, got, "BASH_ENV")
 	if !strings.Contains(bashEnv, "not granted") {
 		t.Errorf("control: rostered BASH_ENV with an ungranted path must show not-granted:\n%s", bashEnv)
 	}
-	if strings.Contains(bashEnv, "unchecked") {
-		t.Errorf("control: rostered BASH_ENV must never carry the unchecked mark:\n%s", bashEnv)
+	if strings.Contains(bashEnv, "unknown") {
+		t.Errorf("control: rostered BASH_ENV must never carry the unknown mark:\n%s", bashEnv)
 	}
 	// …and it carries the THIRD statement, the annotation, beside the grant
 	// verdict rather than instead of it. BASH_ENV is the ideal witness: rostered
-	// (so no unchecked mark), annotated (bash sources the file), and pointed at a
+	// (so no unknown mark), annotated (bash sources the file), and pointed at a
 	// path nothing grants (so grantMark fires). Two marks on one line, and the
 	// annotation first.
 	if !strings.Contains(bashEnv, "SOURCES this file") {
@@ -329,47 +329,47 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 
 	// 6. ALL THREE AT ONCE, which is the case no single line above covers and the
 	// one the ordering rule exists for. GIT_SSH_COMMAND has no roster row
-	// (unchecked), has an annotation (git runs it as the transport), and its
+	// (unknown), has an annotation (git runs it as the transport), and its
 	// value is an absolute path nothing grants (not granted). The order is fixed:
-	// unchecked, then the annotation, then the grant verdict — widest claim
+	// unknown, then the annotation, then the grant verdict — widest claim
 	// first. Anything that REPLACES rather than appends loses one of the three,
 	// which is the defect two independent reviews already found once on this
 	// exact line of code.
 	three := rowFor(t, got, "GIT_SSH_COMMAND")
-	iU := strings.Index(three, "unchecked")
+	iU := strings.Index(three, "unknown")
 	iN := strings.Index(three, "git runs this as the transport")
 	iG := strings.Index(three, "not granted")
 	if iU < 0 || iN < 0 || iG < 0 {
-		t.Fatalf("the three-statement row lost one of them (unchecked=%d note=%d grant=%d):\n%s",
+		t.Fatalf("the three-statement row lost one of them (unknown=%d note=%d grant=%d):\n%s",
 			iU, iN, iG, three)
 	}
 	if !(iU < iN && iN < iG) {
-		t.Errorf("want unchecked < annotation < grant mark on the three-statement row, got "+
+		t.Errorf("want unknown < annotation < grant mark on the three-statement row, got "+
 			"%d/%d/%d:\n%s", iU, iN, iG, three)
 	}
 
 	// 7. ALL FOUR, from declaredRegistry: LD_MY_LIBS has no roster row
-	// (unchecked), a profile declared it (declared), it is under the LD_ family
+	// (unknown), a profile declared it (declared), it is under the LD_ family
 	// (annotation), and ldlibs grants its one element only optionally, on a host
 	// that lacks it (not granted). `declared` sits second: it qualifies the name,
-	// as unchecked does, and says who supplied the type snug lacks.
+	// as unknown does, and says who supplied the type snug lacks.
 	dp, denv := resolveDeclared(t)
 	four := rowFor(t, captureFile(t, func(f io.Writer) { describeEnvironment(f, dp, denv) }), "LD_MY_LIBS")
 	idx := []int{
-		strings.Index(four, "unchecked"),
+		strings.Index(four, "unknown"),
 		strings.Index(four, "declared path-list by ldlibs"),
 		strings.Index(four, "the dynamic loader reads this"),
 		strings.Index(four, "not granted"),
 	}
 	if slices.Contains(idx, -1) {
-		t.Fatalf("the four-statement row lost one of them (unchecked/declared/note/grant = %v):\n%s", idx, four)
+		t.Fatalf("the four-statement row lost one of them (unknown/declared/note/grant = %v):\n%s", idx, four)
 	}
 	if !slices.IsSorted(idx) {
-		t.Errorf("want unchecked < declared < annotation < grant mark, got %v:\n%s", idx, four)
+		t.Errorf("want unknown < declared < annotation < grant mark, got %v:\n%s", idx, four)
 	}
 
 	// 5. PATH's shadow-slot mark still fires, and is not doubled with an
-	// unchecked mark it structurally cannot carry (PATH has a roster row).
+	// unknown mark it structurally cannot carry (PATH has a roster row).
 	//
 	// Anchored on the NAME, not on the mark text. It used to be the other way
 	// round — `lineFor(t, got, "writable from inside")` — which was fine while a
@@ -381,13 +381,13 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 	if !strings.Contains(pathRow, "writable from inside") {
 		t.Fatalf("expected the writable-from-inside mark under the PATH row, got:\n%s", pathRow)
 	}
-	if strings.Contains(pathRow, "unchecked") {
-		t.Errorf("PATH is rostered, so IsUncheckedEnv can never fire for it; the writable mark "+
+	if strings.Contains(pathRow, "unknown") {
+		t.Errorf("PATH is rostered, so IsUnknownEnv can never fire for it; the writable mark "+
 			"must not be joined with one anyway:\n%s", pathRow)
 	}
 }
 
-// TestProfileShowMarksAnUnrosteredNameAsUnchecked drives showEnviron directly —
+// TestProfileShowMarksAnUnrosteredNameAsUnknown drives showEnviron directly —
 // the same entry point TestProfileShowRendersEveryEnvironVerb in config_test.go
 // uses — with a grant block carrying both unrostered and rostered names, in two
 // different verbs, so the mark can be shown to be selective rather than blanket.
@@ -396,8 +396,8 @@ func TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark(t *testing.T) {
 // a block `snug profile show` no longer renders: when `environ.declare` was
 // removed, a mark attached to that block would have vanished from this screen
 // while --dry-run kept it. Both screens now read the same predicate
-// (policy.IsUncheckedEnv) through the same wording.
-func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
+// (policy.IsUnknownEnv) through the same wording.
+func TestProfileShowMarksAnUnrosteredNameAsUnknown(t *testing.T) {
 	g := policy.EnvGrants{
 		Set:     map[string]string{"MY_TOOL_MODE": "fast", "XDG_DATA_HOME": "{home}/.local/share"},
 		Inherit: []string{"EDITOR", "MY_TOOL_TOKEN"},
@@ -424,22 +424,22 @@ func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	}
 
 	// POSITIVE: an unrostered name carries the mark, at both scalar verbs.
-	if v := line("environ.set", "MY_TOOL_MODE"); !strings.Contains(v, "unchecked") {
-		t.Errorf("environ.set rendered %q with no unchecked mark", v)
+	if v := line("environ.set", "MY_TOOL_MODE"); !strings.Contains(v, "unknown") {
+		t.Errorf("environ.set rendered %q with no unknown mark", v)
 	}
-	if v := line("environ.inherit", "MY_TOOL_TOKEN"); !strings.Contains(v, "unchecked") {
-		t.Errorf("environ.inherit rendered %q with no unchecked mark", v)
+	if v := line("environ.inherit", "MY_TOOL_TOKEN"); !strings.Contains(v, "unknown") {
+		t.Errorf("environ.inherit rendered %q with no unknown mark", v)
 	}
 
 	// NEGATIVE CONTROL, and it is what tells a selective mark apart from a
 	// blanket one: a ROSTERED name in each of the same two blocks must NOT
 	// carry it. A version of the mark that fired for every profile-written
 	// name would pass both assertions above.
-	if v := line("environ.set", "XDG_DATA_HOME"); strings.Contains(v, "unchecked") {
-		t.Errorf("environ.set marked the rostered XDG_DATA_HOME unchecked: %q", v)
+	if v := line("environ.set", "XDG_DATA_HOME"); strings.Contains(v, "unknown") {
+		t.Errorf("environ.set marked the rostered XDG_DATA_HOME unknown: %q", v)
 	}
-	if v := line("environ.inherit", "EDITOR"); strings.Contains(v, "unchecked") {
-		t.Errorf("environ.inherit marked the rostered EDITOR unchecked: %q", v)
+	if v := line("environ.inherit", "EDITOR"); strings.Contains(v, "unknown") {
+		t.Errorf("environ.inherit marked the rostered EDITOR unknown: %q", v)
 	}
 
 	// The value survives the mark: the row still says what it grants.
@@ -448,8 +448,8 @@ func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 	}
 }
 
-// TestBothScreensSpellTheUncheckedMarkIdentically compares the two sinks' output
-// against each other rather than against policy.UncheckedEnvNote, which would be
+// TestBothScreensSpellTheUnknownMarkIdentically compares the two sinks' output
+// against each other rather than against policy.UnknownEnvNote, which would be
 // tautological now that both call it: what is being pinned is that neither sink
 // may go back to holding its own copy of the string.
 //
@@ -461,16 +461,16 @@ func TestProfileShowMarksAnUnrosteredNameAsUnchecked(t *testing.T) {
 // between the screens could have failed either. The literal below is the third
 // party to that comparison and is what makes this a ratchet rather than a
 // consistency check between two copies of the same mistake.
-func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
-	const want = "  ← unchecked: snug has no type for this name"
+func TestBothScreensSpellTheUnknownMarkIdentically(t *testing.T) {
+	const want = "  ← unknown: snug has no type for this name"
 
 	// The wording is load-bearing and not free to churn: a row for an
 	// unrostered-but-annotated name carries this mark AND a sentence about what
 	// the tool does with the value, so this half must not read as a denial that
 	// the other half exists. "no entry for this name" did, and that is what it
-	// replaced. See policy.UncheckedEnvNote.
-	if got := policy.UncheckedEnvNote("MY_TOOL_MODE", policy.VerbSet); got != want {
-		t.Errorf("policy.UncheckedEnvNote = %q, want %q", got, want)
+	// replaced. See policy.UnknownEnvNote.
+	if got := policy.UnknownEnvNote("MY_TOOL_MODE", policy.VerbSet); got != want {
+		t.Errorf("policy.UnknownEnvNote = %q, want %q", got, want)
 	}
 
 	var showLine string
@@ -509,7 +509,7 @@ func TestBothScreensSpellTheUncheckedMarkIdentically(t *testing.T) {
 }
 
 // TestProfileShowRendersTheAnnotation is the SECOND sink for the annotation, and
-// it exists for the reason this file already records about the unchecked mark: a
+// it exists for the reason this file already records about the unknown mark: a
 // mark added to --dry-run and forgotten on `snug profile show` leaves the two
 // screens saying different things about the identical profile text, and this
 // screen is the one read BEFORE selecting a profile — the earlier of the two

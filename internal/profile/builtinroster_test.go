@@ -34,7 +34,7 @@ func TestMarkRefusesABuiltinThatWritesAnUnrosteredName(t *testing.T) {
 	}
 	if _, err := mark(leaky); err == nil {
 		t.Fatal("mark() accepted a profile writing a name snug's roster has no entry for; a " +
-			"profile snug SHIPS may not hand over a name the screen would mark `← unchecked` — " +
+			"profile snug SHIPS may not hand over a name the screen would mark `← unknown` — " +
 			"that mark says a human took responsibility, and there is no human for a " +
 			"compiled-in profile")
 	} else if !strings.Contains(err.Error(), "MY_TOOL_MODE") {

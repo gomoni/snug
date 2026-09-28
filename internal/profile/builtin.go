@@ -69,11 +69,11 @@ func Builtins() (Registry, error) {
 // one sweep going red.
 //
 // THE RULE IS WRITTEN WITH THE PREDICATE THAT DRAWS THE SCREEN'S MARK,
-// policy.IsUncheckedEnv, and that is the whole point of the shape. A profile a
+// policy.IsUnknownEnv, and that is the whole point of the shape. A profile a
 // human wrote may write a name snug has no entry for; it is carried, and every
-// row it produces renders `← unchecked` in --dry-run and in `snug profile show`.
+// row it produces renders `← unknown` in --dry-run and in `snug profile show`.
 // A profile snug SHIPS may not, and the sentence saying so is *a profile snug
-// ships may not hand over a name the screen would mark unchecked* — one
+// ships may not hand over a name the screen would mark unknown* — one
 // predicate with two consumers, rather than a roster-membership function beside
 // the mark for the two to drift apart on. That drift is not hypothetical here:
 // policy.typeOf folds case for names under a case-folding prefix, so an
@@ -120,10 +120,10 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 	if err := checkBuiltinConditionalEnv(name, g); err != nil {
 		return err
 	}
-	var unchecked []string
+	var unknown []string
 	note := func(n string, verb policy.EnvVerb) {
-		if policy.IsUncheckedEnv(n, verb) {
-			unchecked = append(unchecked, fmt.Sprintf("%s (environ.%s)", n, verb))
+		if policy.IsUnknownEnv(n, verb) {
+			unknown = append(unknown, fmt.Sprintf("%s (environ.%s)", n, verb))
 		}
 	}
 	for n := range g.Set {
@@ -141,23 +141,23 @@ func checkBuiltinEnvRoster(name policy.ProfileName, g policy.EnvGrants) error {
 	for _, n := range g.Sanitise {
 		note(n, policy.VerbSanitise)
 	}
-	if len(unchecked) == 0 {
+	if len(unknown) == 0 {
 		return nil
 	}
-	sort.Strings(unchecked)
+	sort.Strings(unknown)
 	return fmt.Errorf("profile %q hands over %s, which snug's roster has no entry for.\n"+
 		"       A profile snug SHIPS may not hand over a name the screen would mark\n"+
-		"       `← unchecked`: that mark says a human took responsibility for a name snug\n"+
+		"       `← unknown`: that mark says a human took responsibility for a name snug\n"+
 		"       knows nothing about, and there is no such human for a profile compiled into\n"+
 		"       the binary. Add a row to internal/policy/envtypes.go, with the sentence\n"+
 		"       saying what the verb lets the tool DO — a row there is a grant, and that is\n"+
 		"       the review this profile owes",
-		name, strings.Join(unchecked, ", "))
+		name, strings.Join(unknown, ", "))
 }
 
 // checkBuiltinEnvTypes refuses a builtin carrying any environ.types
 // declaration, redundant ones included: a declaration of a rostered name passes
-// IsUncheckedEnv, so the roster gate below would not see it.
+// IsUnknownEnv, so the roster gate below would not see it.
 func checkBuiltinEnvTypes(name policy.ProfileName, g policy.EnvGrants) error {
 	if len(g.Types) == 0 {
 		return nil

@@ -119,7 +119,7 @@ func writesAnyPath(g EnvGrants) bool {
 // delimiter characters"). So an unrostered, undeclared value naming a path the profile does
 // not grant is NOT refused, where the same value under a rostered path-valued
 // name would be. What that costs is one profile-lying case going unreported —
-// and --dry-run still marks that row `← unchecked`, and grantMark still says
+// and --dry-run still marks that row `← unknown`, and grantMark still says
 // `← not granted` where the value is spelled like an absolute path nothing
 // covers. What it would cost to close by guessing is a rule that refuses a
 // correct value for every name whose value merely looks like a path —
@@ -185,7 +185,7 @@ func isPathValued(name string, decl map[string]EnvKind) bool {
 //
 // WHY A PREDICATE AND NOT A ROSTER ROW. Adding `"GIT_CONFIG_SYSTEM": {path:
 // true}` to envTypes would fix the same two lines and would ALSO open the builtin
-// gate: internal/profile's checkBuiltinEnvRoster is written on IsUncheckedEnv,
+// gate: internal/profile's checkBuiltinEnvRoster is written on IsUnknownEnv,
 // which answers from the roster alone, so a row here makes the name one a profile
 // snug SHIPS may write. That gate is deliberate and this fix must not touch it —
 // so the fact "snug's own tables call this a pointer at a FILE" is read from the

@@ -182,16 +182,16 @@ func TestProfileShowRendersEnvironTypes(t *testing.T) {
 	if !strings.Contains(gem, "← declared path-list by ruby") {
 		t.Errorf("GEM_PATH's merge row carries no declared mark: %q", gem)
 	}
-	if i, j := strings.Index(gem, "unchecked"), strings.Index(gem, "declared"); i < 0 || j < 0 || i > j {
-		t.Errorf("want unchecked before declared on %q", gem)
+	if i, j := strings.Index(gem, "unknown"), strings.Index(gem, "declared"); i < 0 || j < 0 || i > j {
+		t.Errorf("want unknown before declared on %q", gem)
 	}
 	// NEGATIVE: the redundant declaration's row is governed by the roster, so
-	// it is neither unchecked nor declared.
-	if strings.Contains(py, "declared") || strings.Contains(py, "unchecked") {
+	// it is neither unknown nor declared.
+	if strings.Contains(py, "declared") || strings.Contains(py, "unknown") {
 		t.Errorf("PYTHONPATH (rostered, redundantly declared) rendered %q", py)
 	}
-	// NEGATIVE: an undeclared unrostered row is unchecked and not declared.
-	if v := got["environ.set"]; len(v) != 1 || !strings.Contains(v[0], "unchecked") || strings.Contains(v[0], "declared") {
+	// NEGATIVE: an undeclared unrostered row is unknown and not declared.
+	if v := got["environ.set"]; len(v) != 1 || !strings.Contains(v[0], "unknown") || strings.Contains(v[0], "declared") {
 		t.Errorf("environ.set MY_TOOL_MODE rendered %q", v)
 	}
 }

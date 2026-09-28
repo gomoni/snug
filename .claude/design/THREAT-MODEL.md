@@ -299,7 +299,7 @@ annotations.
 and every measurement it holds is owed to the human as an annotation on
 `--dry-run` and `snug profile show`. The two failure modes are asymmetric and
 must stay so: **incomplete is expected and honest** — a name snug has never
-been taught about renders `← unchecked`, and the absence of a mark must never
+been taught about renders `← unknown`, and the absence of a mark must never
 read as approval; **wrong is a defect** — a row saying a value is inert when
 it is executed is a lie in the one artifact a human uses to decide whether to
 run the sandbox.

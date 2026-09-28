@@ -478,17 +478,17 @@ GEM_PATH = ["{home}/.gem"]
 Declaration covers that profile only. Never sanitised. Two profiles declaring it
 merge; one declaring, one `set`ting = error. Names snug or a builtin profile
 writes cannot be declared. Shipped profiles cannot declare.
-Screen says `← declared path-list by ruby` beside `← unchecked`.
+Screen says `← declared path-list by ruby` beside `← unknown`.
 
 Whatever snug does know, it says on the row that grants it:
 
 ```console
 $ snug profile show mytools
-  environ.set      GIT_SSH = /opt/tools/bin/ssh  ← unchecked: snug has no type for this name  ← git runs this as the transport for every fetch and push
-  environ.inherit  COLORTERM  ← unchecked: snug has no type for this name
+  environ.set      GIT_SSH = /opt/tools/bin/ssh  ← unknown: snug has no type for this name  ← git runs this as the transport for every fetch and push
+  environ.inherit  COLORTERM  ← unknown: snug has no type for this name
 ```
 
-Two separate statements, neither a refusal. `unchecked` means no type, so snug
+Two separate statements, neither a refusal. `unknown` means no type, so snug
 checked nothing about the value. The sentence after it means snug measured what
 some tool does with that value — `internal/policy/testdata/annotations.txt` is
 the whole table, `GIT_SSH`, `RUSTC_WRAPPER`, `BASH_ENV`, `LD_*` and `GIT_CONFIG_*`
@@ -736,7 +736,7 @@ grant is a profile you can read on a screen instead.
 What snug owes you is that the screen does not lie. Every grant traces to one
 profile that named it, nothing is visible that no profile granted, and a row
 says what snug knows about the value — including when it knows nothing
-(`← unchecked`). So read `--dry-run`, not the profile's name.
+(`← unknown`). So read `--dry-run`, not the profile's name.
 
 snug refuses three things, and none of them is "too dangerous for you":
 

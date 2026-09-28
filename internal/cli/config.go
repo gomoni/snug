@@ -508,22 +508,22 @@ func configCmd(args []string) int {
 	return 0
 }
 
-// uncheckedMark is `snug profile show`'s half of the mark --dry-run's
+// unknownMark is `snug profile show`'s half of the mark --dry-run's
 // ENVIRONMENT block draws on the same (name, verb) pair, and both the decision
 // and the WORDING come from internal/policy — because two screens deciding
 // separately what "snug knows this name" means is how one of them comes to lie,
 // and two screens spelling the same decision differently is how a reader learns
-// to distrust both. The string was held here once; see policy.UncheckedEnvNote.
+// to distrust both. The string was held here once; see policy.UnknownEnvNote.
 //
 // It is a fact about ONE name, so it goes on that name's own line rather than
 // once per block: a heading is read as decoration by the time the eye reaches
 // the third row, and a block can mix rostered and unrostered names freely.
-func uncheckedMark(name string, verb policy.EnvVerb) string {
-	return policy.UncheckedEnvNote(name, verb)
+func unknownMark(name string, verb policy.EnvVerb) string {
+	return policy.UnknownEnvNote(name, verb)
 }
 
 // envMarks is this screen's half of the JOIN --dry-run's ENVIRONMENT block makes
-// on the same (name, verb) pair: the unchecked mark, then the profile's own
+// on the same (name, verb) pair: the unknown mark, then the profile's own
 // environ.types declaration of the name (policy.DeclaredEnvNoteIn, naming prof
 // alone, since this screen renders one profile), then whatever policy.EnvNote
 // has to say about what the tool DOES with the value.
@@ -539,7 +539,7 @@ func uncheckedMark(name string, verb policy.EnvVerb) string {
 // neighbour, and `snug profile show` is precisely where that happened last time
 // (the mark used to hang off a block that was removed).
 func envMarks(name string, verb policy.EnvVerb, g policy.EnvGrants, prof policy.ProfileName) string {
-	return uncheckedMark(name, verb) + policy.DeclaredEnvNoteIn(name, verb, g, prof) + policy.EnvNote(name, verb)
+	return unknownMark(name, verb) + policy.DeclaredEnvNoteIn(name, verb, g, prof) + policy.EnvNote(name, verb)
 }
 
 // showEnviron renders prof's environ.types declarations, then the five
@@ -594,7 +594,7 @@ func showEnviron(prof policy.ProfileName, g policy.EnvGrants, show func(label st
 	// as two more kinds of filesystem grant; the prefix is what says these are
 	// the environment, and it is also the string somebody will grep for.
 	//
-	// The mark's wording is deliberately the same "unchecked" the --dry-run mark
+	// The mark's wording is deliberately the same "unknown" the --dry-run mark
 	// uses: two words for one property is how a reader concludes there are two
 	// properties.
 	// A redundant declaration — of a name the roster already types — is
