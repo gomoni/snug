@@ -226,8 +226,8 @@ func TestDeclarationNeverOverridesTheRoster(t *testing.T) {
 		t.Errorf("a redundant declaration was stamped on PYTHONPATH (%v by %v); the row governs, "+
 			"and --dry-run would claim a profile typed a name snug types", v.DeclaredKind, v.DeclaredBy)
 	}
-	if IsUncheckedEnv("PYTHONPATH", VerbMerge) {
-		t.Error("a redundant declaration made PYTHONPATH read as unchecked")
+	if IsUnknownEnv("PYTHONPATH", VerbMerge) {
+		t.Error("a redundant declaration made PYTHONPATH read as unknown")
 	}
 }
 
@@ -352,7 +352,7 @@ func TestDeclaredPathIsCoupled(t *testing.T) {
 		t.Fatalf("control: the UNdeclared name was refused, so the refusal above is not about "+
 			"the declaration: %v", err)
 	}
-	if !IsUncheckedEnv("MY_TOOL_ROOT", VerbSet) {
+	if !IsUnknownEnv("MY_TOOL_ROOT", VerbSet) {
 		t.Error("control: MY_TOOL_ROOT reads as rostered")
 	}
 	if v := p.Env["MY_TOOL_ROOT"]; v.DeclaredBy != nil {
@@ -444,8 +444,8 @@ func TestTwoProfilesDeclaringTheSameListCompose(t *testing.T) {
 		t.Errorf("DeclaredBy = %v, want [gems-a gems-b gems-both]", v.DeclaredBy)
 	}
 	// The mark is still true: snug's roster has no row for GEM_PATH.
-	if !IsUncheckedEnv("GEM_PATH", VerbMerge) {
-		t.Error("a declared name stopped reading as unchecked; the declaration is the author's " +
+	if !IsUnknownEnv("GEM_PATH", VerbMerge) {
+		t.Error("a declared name stopped reading as unknown; the declaration is the author's " +
 			"statement, not a roster row")
 	}
 }

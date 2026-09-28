@@ -142,9 +142,9 @@ type envType struct {
 //   - A profile snug SHIPS may write ONLY a name that has a row here. That is
 //     enforced structurally in internal/profile's `mark` — the one door a
 //     profile passes through to become snug's — expressed with the same
-//     IsUncheckedEnv predicate the screen draws its mark from. So "a builtin may
+//     IsUnknownEnv predicate the screen draws its mark from. So "a builtin may
 //     not write a name snug has no row for" and "no builtin row renders as
-//     unchecked" are one sentence, not two rules that can drift apart. This is a
+//     unknown" are one sentence, not two rules that can drift apart. This is a
 //     REVIEW requirement, and a review requirement is something snug can impose
 //     on its own material and cannot impose on a file someone else wrote: there
 //     is no human standing behind a profile compiled into the binary.
@@ -155,8 +155,8 @@ type envType struct {
 //     declining an operation it cannot perform correctly.
 //
 // A profile a HUMAN wrote may write a name with no row here at `set` and
-// `inherit`, and, declared `path-list`, at `merge` and `prepend`. It is carried, and every entry it produces is marked `← unchecked`
-// on both screens (IsUncheckedEnv) — plus whatever envNotes has to say about it,
+// `inherit`, and, declared `path-list`, at `merge` and `prepend`. It is carried, and every entry it produces is marked `← unknown`
+// on both screens (IsUnknownEnv) — plus whatever envNotes has to say about it,
 // which is a second and independent statement.
 //
 // IT USED TO SAY: "a name that is not here is a SCALAR". The table then reported
@@ -197,7 +197,7 @@ type envType struct {
 //
 // A NAME SET WITHOUT A TYPE IS NOT BUILT. `environ.set MY_VAR = "x"` in a file
 // with a name, a path and an author already is the declaration — EnvEntry.From
-// records it and --dry-run renders it — and the `← unchecked` mark derives from
+// records it and --dry-run renders it — and the `← unknown` mark derives from
 // THIS TABLE, so a second list of names would make the author sign twice for
 // the same row. A declaration earns its key only by supplying a FACT a refused
 // verb needs.
@@ -404,7 +404,7 @@ func typeOf(name string) (envType, bool) {
 // typeWithin is what ONE profile's text may treat name as: the roster row if
 // snug has one, else that profile's own declaration. It never reads another
 // profile, so no verdict it feeds depends on the selected set. typeOf stays
-// roster-only on purpose — see checkEnvOwnership, IsUncheckedEnv.
+// roster-only on purpose — see checkEnvOwnership, IsUnknownEnv.
 func typeWithin(name string, decl map[string]EnvKind) (t envType, known, declared bool) {
 	if t, ok := typeOf(name); ok {
 		return t, true, false
@@ -420,11 +420,11 @@ func typeWithin(name string, decl map[string]EnvKind) (t envType, known, declare
 //
 // IT READ THE ANNOTATION TABLE TOO, AND THAT HAD TO CHANGE WITH IT. While that
 // table was `forbiddenEnv`, an entry in it was an opinion about the name
-// ("refused at this verb") and folding it in here kept IsUncheckedEnv from
+// ("refused at this verb") and folding it in here kept IsUnknownEnv from
 // reporting a REFUSED name as one snug knew nothing about — defensive only,
 // since a refused pair never reached a screen. Once the same table stopped
 // refusing, keeping it here would have quietly widened something else entirely:
-// internal/profile's checkBuiltinEnvRoster is written on IsUncheckedEnv, so
+// internal/profile's checkBuiltinEnvRoster is written on IsUnknownEnv, so
 // every annotated name — GIT_SSH_COMMAND, RUSTC_WRAPPER, PS4, sixty of them —
 // would have become a name a profile snug SHIPS may write, in the same commit
 // that stopped refusing them for everybody else. Annotation must not become
@@ -432,7 +432,7 @@ func typeWithin(name string, decl map[string]EnvKind) (t envType, known, declare
 // carrying `environ.set GIT_SSH_COMMAND`; without it, it refuses.
 //
 // So the two tables answer two questions and this predicate asks only one. A
-// name may be annotated and still unchecked, and a row that renders both marks
+// name may be annotated and still unknown, and a row that renders both marks
 // is saying two true things: snug has no type for this name, and here is what
 // the tool does with the value.
 //
@@ -444,7 +444,7 @@ func snugKnowsEnvName(name string) bool {
 	return ok
 }
 
-// IsUncheckedEnv reports whether one (name, verb) pair is one snug carried
+// IsUnknownEnv reports whether one (name, verb) pair is one snug carried
 // without knowing what the variable IS — no roster row, so no type.
 //
 // It is not "snug has nothing to say about this name": envNotes may still have a
@@ -459,7 +459,7 @@ func snugKnowsEnvName(name string) bool {
 //   - internal/profile's `mark` REFUSES a builtin that produces a true here.
 //
 // So the rule a profile snug ships is held to is written as "may not hand over a
-// name the screen would mark unchecked" rather than as a second roster-membership
+// name the screen would mark unknown" rather than as a second roster-membership
 // test beside this one. One predicate cannot disagree with itself; two would,
 // eventually, and this file already records that failure twice over case-folded
 // spellings (prefixCaseFold, noteFor).
@@ -471,17 +471,17 @@ func snugKnowsEnvName(name string) bool {
 // The verb is a parameter rather than a caller-side condition because snug's
 // OWN names are mostly absent from the roster too — ownership refuses them for
 // every verb, which is the stronger statement — so a name-only predicate would
-// mark HOME, PATH and SNUG_PROFILES as unchecked on the screen a human reads to
+// mark HOME, PATH and SNUG_PROFILES as unknown on the screen a human reads to
 // decide whether to trust the sandbox. VerbSnug is snug's authorship and is
-// never unchecked.
-func IsUncheckedEnv(name string, verb EnvVerb) bool {
+// never unknown.
+func IsUnknownEnv(name string, verb EnvVerb) bool {
 	if verb == VerbSnug {
 		return false
 	}
 	return !snugKnowsEnvName(name)
 }
 
-// UncheckedEnvNote renders IsUncheckedEnv for a screen, or "" when the pair is
+// UnknownEnvNote renders IsUnknownEnv for a screen, or "" when the pair is
 // one snug has a type for. It is EnvNote's shape on purpose: both marks are
 // prepended to a row by both screens, so both are one function returning either
 // the rendered text or nothing.
@@ -506,17 +506,13 @@ func IsUncheckedEnv(name string, verb EnvVerb) bool {
 // about what the tool DOES with the value.
 //
 // The machine format (internal/cli's --dry-run --json) carries this predicate
-// as jsonEnvEntry's `type_unknown` rather than `unchecked`: the screen's mark
-// carries its own gloss on the same line ("← unchecked: snug has no type for
-// this name"), so the label can stay compact, and a JSON key has no room for a
-// gloss — so the key has to BE the gloss instead. Same fact, different
-// vocabulary for the medium, on purpose; see jsonEnvEntry's doc comment for
-// the other half of this cross-reference.
-func UncheckedEnvNote(name string, verb EnvVerb) string {
-	if !IsUncheckedEnv(name, verb) {
+// as jsonEnvEntry's `type_unknown`, and the user guide calls such a name
+// "unknown": one word for one property on every screen and in the book.
+func UnknownEnvNote(name string, verb EnvVerb) string {
+	if !IsUnknownEnv(name, verb) {
 		return ""
 	}
-	return "  ← unchecked: snug has no type for this name"
+	return "  ← unknown: snug has no type for this name"
 }
 
 // envNote is snug's ANNOTATION for one variable name: what a tool DOES with the
@@ -574,7 +570,7 @@ type envNote struct {
 // the fact goes in a column of it and cannot be added without the sentence, or
 // the sentence without the fact. The ROSTER would have been the natural home —
 // this is a type fact — and it cannot be, because a roster row is what opens the
-// builtin gate (IsUncheckedEnv -> checkBuiltinEnvRoster), and giving GIT_DIR a
+// builtin gate (IsUnknownEnv -> checkBuiltinEnvRoster), and giving GIT_DIR a
 // row would make it a name a profile snug SHIPS may write. That gate is
 // deliberate and this fix must not touch it, which is the same reasoning
 // valueIsAPath already applies to the pointer table.
@@ -632,7 +628,7 @@ const (
 
 // String is what testdata/annotations.txt and the refusals print. It is one word
 // per shape and it lives here rather than at the golden, for the reason
-// UncheckedEnvNote gives at length: a second copy of the wording is how two
+// UnknownEnvNote gives at length: a second copy of the wording is how two
 // sinks come to disagree about a fact neither of them owns.
 func (s valueShape) String() string {
 	switch s {
@@ -1670,7 +1666,7 @@ var envNotes = map[string]envNote{
 	//                               EXECUTED it as the transport
 	//   credential.helper = "!…" -> the same shape
 	// It has no roster row, so a row carrying this sentence also carries
-	// `← unchecked`: two true statements answering two questions.
+	// `← unknown`: two true statements answering two questions.
 	//
 	// THE `host` SENTENCE IS NOT DECORATION AND IT IS NOT THE FAMILY'S. For one
 	// milestone this entry had `authored` only, and noteFor's fall-through then
@@ -2210,7 +2206,7 @@ func noteFor(name string, verb EnvVerb) string {
 // this sentence, on --dry-run and on `snug profile show`. That is the point, not
 // a regression.
 //
-// ONE FUNCTION, N CONSUMERS, for the same reason IsUncheckedEnv is one predicate
+// ONE FUNCTION, N CONSUMERS, for the same reason IsUnknownEnv is one predicate
 // with three: two screens deciding separately what snug has to say about a name
 // is how one of them comes to say nothing. Today the consumers are --dry-run's
 // ENVIRONMENT block (internal/cli/dryrun.go's envLines) and `snug profile show`
@@ -2220,12 +2216,12 @@ func noteFor(name string, verb EnvVerb) string {
 // The mark JOINS the others rather than replacing them, and a row can carry
 // three statements at once — envLines fixes the order:
 //
-//	unchecked   about the NAME:  snug has no roster row for it
+//	unknown     about the NAME:  snug has no roster row for it
 //	this note   about what the tool DOES with the value
 //	grantMark   about the VALUE as a path: nothing inside covers it
 //
 // VerbSnug returns "" because snug's own authorship is not something to warn a
-// reader about — the same carve-out IsUncheckedEnv makes, for the same reason.
+// reader about — the same carve-out IsUnknownEnv makes, for the same reason.
 //
 // The machine format carries this text as jsonEnvEntry's `value_note`
 // (internal/cli/dryrunjson.go), not `annotation`: it pairs with `type_unknown`
@@ -2439,8 +2435,8 @@ func checkEnvVerbType(name string, verb EnvVerb, decl map[string]EnvKind) error 
 //
 // `set` and `inherit` need no fact about the name to be carried out: the whole
 // value is written, or the host's whole value is copied. So they return nil
-// here, and what the reader gets instead of a refusal is the `← unchecked` mark
-// on every screen (IsUncheckedEnv). The one place this IS a refusal is a profile
+// here, and what the reader gets instead of a refusal is the `← unknown` mark
+// on every screen (IsUnknownEnv). The one place this IS a refusal is a profile
 // snug ships, and that is enforced one layer up, at internal/profile's `mark`,
 // with this same predicate — see the roster's own comment for why the two halves
 // differ.

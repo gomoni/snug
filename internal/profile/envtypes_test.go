@@ -9,7 +9,7 @@ import (
 
 // TestBuiltinCarryingEnvironTypesIsRefused would catch a profile snug ships
 // declaring a type. The redundant case is the one the roster gate beside it
-// cannot see: XDG_CONFIG_HOME has a row, so IsUncheckedEnv is false for it and
+// cannot see: XDG_CONFIG_HOME has a row, so IsUnknownEnv is false for it and
 // checkBuiltinEnvRoster's own loop passes — only checkBuiltinEnvTypes stops it.
 func TestBuiltinCarryingEnvironTypesIsRefused(t *testing.T) {
 	for _, tc := range []struct {

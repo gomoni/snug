@@ -17,7 +17,7 @@ import (
 //
 // Two properties, and only one of them is about legibility.
 //
-// A row of that block can carry three marks at once — `← unchecked` about the
+// A row of that block can carry three marks at once — `← unknown` about the
 // NAME, the annotation about what the tool DOES with the value, and
 // `← not granted` about the VALUE as a path. Concatenated onto one line of a
 // fixed-column table they produced, measured on this host before the fix:

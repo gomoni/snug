@@ -61,8 +61,8 @@ func TestUnrosteredNameIsRefusedAtEveryListVerb(t *testing.T) {
 				"marked, not refused: %v", tc.verb, name, err)
 		}
 	}
-	if !IsUncheckedEnv(name, VerbSet) || !IsUncheckedEnv(name, VerbInherit) {
-		t.Errorf("%s is carried at set/inherit but IsUncheckedEnv says snug knows it; the "+
+	if !IsUnknownEnv(name, VerbSet) || !IsUnknownEnv(name, VerbInherit) {
+		t.Errorf("%s is carried at set/inherit but IsUnknownEnv says snug knows it; the "+
 			"carry and the mark must be the same fact", name)
 	}
 
@@ -93,7 +93,7 @@ func TestUnrosteredNameIsRefusedAtEveryListVerb(t *testing.T) {
 	}
 	// The declaration is the author's statement, not a roster row: the mark
 	// stays.
-	if !IsUncheckedEnv(name, VerbMerge) {
+	if !IsUnknownEnv(name, VerbMerge) {
 		t.Errorf("%s reads as rostered at merge; a declared name is still one snug has no "+
 			"row for", name)
 	}
@@ -107,8 +107,8 @@ func TestUnrosteredNameIsRefusedAtEveryListVerb(t *testing.T) {
 // refuse nothing, so the way past them is to be handed over with nothing said —
 // and the two rules are still applied independently: EnvNote reads the
 // annotation tables, checkEnvVerbType reads the roster. A name with no row in
-// either is carried and marked `unchecked`; a name with no ROSTER row but an
-// annotation is carried, marked unchecked, AND told about, which is two true
+// either is carried and marked `unknown`; a name with no ROSTER row but an
+// annotation is carried, marked unknown, AND told about, which is two true
 // statements rather than a contradiction.
 //
 // The verdict a user profile gets is no longer a refusal, so what an attacker
@@ -132,10 +132,10 @@ func TestUnrosteredNameStillMeetsTheAnnotationTables(t *testing.T) {
 				"these three has a roster row, so the annotation is the only thing standing "+
 				"between this row and a human reading it as ordinary", tc.name, tc.why)
 		}
-		// …and the unchecked mark is still there too, from the roster, which is
+		// …and the unknown mark is still there too, from the roster, which is
 		// what the builtin gate is written on. Both marks, not one instead of the
 		// other.
-		if !IsUncheckedEnv(tc.name, VerbSet) {
+		if !IsUnknownEnv(tc.name, VerbSet) {
 			t.Errorf("%s reads as CHECKED. An annotation is not a roster row: if it were, a "+
 				"profile snug SHIPS could write this name", tc.name)
 		}
@@ -219,7 +219,7 @@ func TestUnrosteredNameStillRefusesAControlCharacterValue(t *testing.T) {
 // roster lookup would treat two of the three spellings of NPM_CONFIG_USERCONFIG
 // as unrostered. All three must resolve to the same row, at every verb, and none
 // may read as a name snug has never heard of — which is now visible directly
-// through IsUncheckedEnv, the predicate that draws the screen's mark AND is what
+// through IsUnknownEnv, the predicate that draws the screen's mark AND is what
 // internal/profile's `mark` holds a builtin to.
 func TestCaseFoldedSpellingsOfARosteredNameAgree(t *testing.T) {
 	spellings := []string{
@@ -252,14 +252,14 @@ func TestCaseFoldedSpellingsOfARosteredNameAgree(t *testing.T) {
 				"and the lower-case spelling is the exact one that slipped through the last "+
 				"time this rule was written for one of its two case halves", name)
 		}
-		// unchecked: false in every spelling. If the roster lookup ever
+		// unknown: false in every spelling. If the roster lookup ever
 		// regresses to an exact-string match, npm_config_userconfig and
 		// Npm_Config_Userconfig would read as "snug has no entry for this
 		// name" — the screen would say snug knew nothing about a name it has a
 		// row for, and internal/profile's `mark` would refuse a builtin
 		// writing the folded spelling of a name it permits in the canonical one.
-		if IsUncheckedEnv(name, VerbSet) {
-			t.Errorf("IsUncheckedEnv(%q) is true — a case-folded spelling of a name the roster "+
+		if IsUnknownEnv(name, VerbSet) {
+			t.Errorf("IsUnknownEnv(%q) is true — a case-folded spelling of a name the roster "+
 				"already governs must not read as one snug has never heard of", name)
 		}
 	}

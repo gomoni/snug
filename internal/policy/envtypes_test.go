@@ -41,7 +41,7 @@ func TestValidEnvGrantsAreAccepted(t *testing.T) {
 		// carried anyway — which is the case a user profile exists for: a
 		// profile inheriting its own tool's SECRET must not have to write the
 		// secret into the profile file, so `inherit` takes the name and the
-		// value still comes from the host. Its row renders `← unchecked`.
+		// value still comes from the host. Its row renders `← unknown`.
 		{"inherit scalars", EnvGrants{
 			Inherit: []string{"ANTHROPIC_API_KEY", "EDITOR", "NO_COLOR"}}},
 		// The list form of inherit, on a list whose empty element is ignored.
@@ -58,7 +58,7 @@ func TestValidEnvGrantsAreAccepted(t *testing.T) {
 		// A name snug has no roster row for. It is a scalar, because `set`
 		// writes the whole value and needs no fact about the name to do it —
 		// what issue #44 changed is that the row now says so on every screen
-		// (`← unchecked`) instead of the type table silently reporting a type
+		// (`← unknown`) instead of the type table silently reporting a type
 		// it does not have. The LIST verbs are the ones that need the fact, and
 		// they refuse it: TestUnrosteredNameIsRefusedAtEveryListVerb.
 		{"unrostered name as a scalar", EnvGrants{

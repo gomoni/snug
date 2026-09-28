@@ -156,16 +156,16 @@ func TestEveryFactProducerTheHumanScreenCallsIsAlsoInTheReport(t *testing.T) {
 // gap it describes.
 var humanOnlyFacts = map[string]string{
 	// ── sentences whose fact the document already carries ────────────────
-	"grantMark":               "sentence for envGrantVerdict, which the report carries as Grant/GrantsInside",
-	"policy.UncheckedEnvNote": "sentence for policy.IsUncheckedEnv, which the report carries as TypeUnknown",
-	"policy.DeclaredEnvNote":  "sentence for EnvVar.DeclaredKind/DeclaredBy, which the report carries as DeclaredKind/DeclaredBy",
-	"dnsHostLabel":            "sentence for p.Net.DNSHost, which the report carries as Network.DNSHost",
-	"envLines":                "the human block's ROW model (marks, wrapping); reportEnvVar is the document's",
-	"targetAnnotation":        "the TARGET header's `←` mark, derived from mounts[], which the document carries in full",
-	"homeAnnotation":          "the HOME header's `←` mark, same derivation as targetAnnotation",
-	"pathAnnotation":          "targetAnnotation/homeAnnotation's shared body",
-	"mountedAt":               "pathAnnotation's deepest-covering-mount lookup over mounts[]",
-	"writableBelow":           "pathAnnotation's `writable below` clause over mounts[]",
+	"grantMark":              "sentence for envGrantVerdict, which the report carries as Grant/GrantsInside",
+	"policy.UnknownEnvNote":  "sentence for policy.IsUnknownEnv, which the report carries as TypeUnknown",
+	"policy.DeclaredEnvNote": "sentence for EnvVar.DeclaredKind/DeclaredBy, which the report carries as DeclaredKind/DeclaredBy",
+	"dnsHostLabel":           "sentence for p.Net.DNSHost, which the report carries as Network.DNSHost",
+	"envLines":               "the human block's ROW model (marks, wrapping); reportEnvVar is the document's",
+	"targetAnnotation":       "the TARGET header's `←` mark, derived from mounts[], which the document carries in full",
+	"homeAnnotation":         "the HOME header's `←` mark, same derivation as targetAnnotation",
+	"pathAnnotation":         "targetAnnotation/homeAnnotation's shared body",
+	"mountedAt":              "pathAnnotation's deepest-covering-mount lookup over mounts[]",
+	"writableBelow":          "pathAnnotation's `writable below` clause over mounts[]",
 
 	// ── gaps, named rather than silently absent ──────────────────────────
 	"policy.SortedGitKeys":             "#332 F1f: the host-derived GIT facts have no JSON representation yet",

@@ -632,14 +632,14 @@ func pad(s string, n int) string {
 
 // The geometry of a mark line, and both numbers are load-bearing.
 //
-// WIDTH. A row can carry three marks at once — `← unchecked` about the NAME, the
+// WIDTH. A row can carry three marks at once — `← unknown` about the NAME, the
 // annotation about what the tool DOES, and `← not granted` about the VALUE — and
 // concatenating all three onto one line of a fixed-column table produced, measured
 // on this host before this change:
 //
-//	277  GIT_CONFIG_KEY_0 …  ← unchecked …  ← GIT_CONFIG_*: git reads this at the …
+//	277  GIT_CONFIG_KEY_0 …  ← unknown …  ← GIT_CONFIG_*: git reads this at the …
 //	272  NPM_CONFIG_SCRIPT_SHELL …
-//	264  GIT_SSH  /var/lib/toolchain/ssh  set  worst  ← unchecked …  ← git runs this …  ← not granted
+//	264  GIT_SSH  /var/lib/toolchain/ssh  set  worst  ← unknown …  ← git runs this …  ← not granted
 //
 // At 80 columns that is 3–4 UNINDENTED wrapped fragments in the middle of a
 // 20-row aligned table, with `← not granted` — the one verdict about that value —
@@ -672,7 +672,7 @@ const (
 // The caller hands over the mark exactly as internal/policy rendered it, leading
 // spaces and all: that "  ← " prefix is `snug profile show`'s business (it
 // concatenates), so this sink trims rather than asking policy for a second
-// spelling. One wording, two screens — see policy.UncheckedEnvNote.
+// spelling. One wording, two screens — see policy.UnknownEnvNote.
 func wrapMark(mark string) []string {
 	s := strings.TrimLeft(mark, " ")
 	if s == "" {
@@ -708,7 +708,7 @@ func wrapMark(mark string) []string {
 // marks is a SLICE and not a concatenated string, which is the whole of the
 // rendering fix: the three statements a row can carry are three statements, and
 // they render as three lines. The order is fixed by envLines and asserted by
-// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark.
+// TestUnknownMarkJoinsRatherThanReplacesTheGrantMark.
 type envLine struct {
 	values []string
 	verb   string
@@ -729,7 +729,7 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 				marks = append(marks, s)
 			}
 		}
-		// THE UNCHECKED MARK JOINS THE GRANT MARK; it does not replace it, and
+		// THE UNKNOWN MARK JOINS THE GRANT MARK; it does not replace it, and
 		// the first draft of this change had it the other way round.
 		//
 		// The argument for replacing was that `← not granted` is a claim about a
@@ -738,14 +738,14 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// (envcoupling.go's isPathValued). Two independent reviews measured what
 		// that actually did, and it removed information the screen had on the
 		// base commit: the identical profile text rendered `← not granted`
-		// before the flip and only `← unchecked` after it, so a human reading
+		// before the flip and only `← unknown` after it, so a human reading
 		// --dry-run stopped being told that the path a profile just handed the
 		// sandbox does not exist inside it. It also inverted the pair — a
 		// ROSTERED code-carrying scalar (`set BASH_ENV = "/var/lib/x"`) kept the
 		// verdict while the UNROSTERED one lost it.
 		//
 		// The two marks are two different statements and both are true
-		// independently. `unchecked` is about the NAME: snug has no roster row,
+		// independently. `unknown` is about the NAME: snug has no roster row,
 		// so nothing about this variable's meaning was checked. `not granted` is
 		// about this VALUE as a string: it is spelled like an absolute path and
 		// no mount covers it. grantMark presumes no type it did not already
@@ -760,14 +760,14 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// third arrived with the annotation table (issue #44's second pass), and
 		// it is inserted between the other two rather than beside them:
 		//
-		//   unchecked   about the NAME — snug has no roster row, so no type
+		//   unknown     about the NAME — snug has no roster row, so no type
 		//   declared    about the NAME — a profile in this selection typed it
 		//               (environ.types)
 		//   EnvNote     about what the tool DOES with the value
 		//   grantMark   about the VALUE as a path — nothing inside covers it
 		//
 		// The order is narrowest-scope-last and is fixed by
-		// TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark. `unchecked` comes
+		// TestUnknownMarkJoinsRatherThanReplacesTheGrantMark. `unknown` comes
 		// first because it qualifies everything after it, and `declared` follows
 		// it because it says who supplied the type snug lacks. The note comes
 		// before grantMark because it is about the variable's MEANING, while
@@ -780,15 +780,15 @@ func envLines(p *policy.Policy, v policy.EnvVar, env policy.Environ) []envLine {
 		// the geometry is.
 		//
 		// The two can co-occur, and that is not a contradiction: `set
-		// PIP_INDEX_URL` has no roster row (unchecked — snug has no type for it)
+		// PIP_INDEX_URL` has no roster row (unknown — snug has no type for it)
 		// and matches an annotated family (PIP_*: outranks the config file pip
 		// reads). Both sentences are true and they answer different questions.
 		//
 		// Both strings come from internal/policy, so `snug profile show` renders
 		// the identical text: one property, one wording, two screens. That was
-		// claimed here while this sink still held its own copy of the unchecked
-		// string and the other sink held a second — see policy.UncheckedEnvNote.
-		add(policy.UncheckedEnvNote(v.Name, e.Verb))
+		// claimed here while this sink still held its own copy of the unknown
+		// string and the other sink held a second — see policy.UnknownEnvNote.
+		add(policy.UnknownEnvNote(v.Name, e.Verb))
 		add(policy.DeclaredEnvNote(v.DeclaredKind, v.DeclaredBy, e.Verb))
 		add(policy.EnvNote(v.Name, e.Verb))
 		add(grantMark(p, v.Name, e.Value, env))

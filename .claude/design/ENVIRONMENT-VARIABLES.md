@@ -310,13 +310,13 @@ question — **what IS this variable** — for two kinds of profile:
 - **A profile snug SHIPS may write only a name with a row.** Enforced in
   `internal/profile`'s `mark` — the one place the `@` mark is added, for the same
   reason the mark itself lives there — and expressed with
-  `policy.IsUncheckedEnv`, the predicate the screens draw their mark from, so the
+  `policy.IsUnknownEnv`, the predicate the screens draw their mark from, so the
   rule reads *a profile snug ships may not hand over a name the screen would mark
-  unchecked*. A roster row is where the sentence saying what the variable lets a
+  unknown*. A roster row is where the sentence saying what the variable lets a
   tool DO gets reviewed, and a shipped profile owes that review because there is
   no human standing behind it.
 - **A profile a HUMAN wrote may write a name with no row**, at `set` and
-  `inherit`. It is carried, and every entry it produces renders `← unchecked` in
+  `inherit`. It is carried, and every entry it produces renders `← unknown` in
   `--dry-run` and in `snug profile show`, from the same predicate. Nothing about
   the name is claimed, and the screens say so.
 
@@ -916,20 +916,20 @@ marks, and none replaces another — this is the same defect two independent
 reviews found one commit earlier, one indirection out:
 
 ```
-unchecked   about the NAME    snug has no roster row, so no type
+unknown     about the NAME    snug has no roster row, so no type
 declared    about the NAME    a profile in this selection typed it (environ.types)
 annotation  about the VALUE   what the tool will DO with it
 not granted about the VALUE   spelled like an absolute path, nothing inside covers it
 ```
 
-Widest claim first. `unchecked` and the annotation can co-occur and do not
+Widest claim first. `unknown` and the annotation can co-occur and do not
 contradict each other: `set PIP_INDEX_URL` has no type row (so snug has no
 opinion about what the variable IS) and matches an annotated family (so snug does
 have one about what pip does with it). Pinned by
-`TestUncheckedMarkJoinsRatherThanReplacesTheGrantMark`, which drives a fixture
+`TestUnknownMarkJoinsRatherThanReplacesTheGrantMark`, which drives a fixture
 carrying all three at once (`GIT_SSH_COMMAND`, unrostered, annotated, ungranted).
 
-**An annotation must never become a grant, and `IsUncheckedEnv` is where that
+**An annotation must never become a grant, and `IsUnknownEnv` is where that
 nearly happens.** Answering from the roster OR the forbidden table is harmless
 only while that table refuses, because a refused pair never reaches a screen.
 `internal/profile`'s `checkBuiltinEnvRoster` is written on that predicate, so

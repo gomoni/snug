@@ -217,10 +217,10 @@ and every measurement it holds is owed to the human as an annotation on
   sight; `EDITOR=…` does not. A name snug has a roster row for whose value is
   executed, rendering with no annotation saying so, is a lie by omission and is
   worth more than a refusal would have been. A name snug has NO row for must
-  render `← unchecked` — if an unrostered name reaches the payload with no mark,
+  render `← unknown` — if an unrostered name reaches the payload with no mark,
   that is a finding, because the absence of a mark reads as approval.
 - The annotation catalogue being wrong, as opposed to incomplete. Incomplete is
-  expected and is what the `unchecked` mark exists to make honest; *wrong* —
+  expected and is what the `unknown` mark exists to make honest; *wrong* —
   a row that says a value is inert when you measured it running — is a finding.
 
 ## What NOT to attack — the standard library is not the target
