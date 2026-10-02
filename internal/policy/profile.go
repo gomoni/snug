@@ -30,6 +30,15 @@ const Sigil = "@"
 // exclude. The grant language cannot express negation, which is one of the
 // three legs monotonicity stands on. Adding such a field is not a feature, it
 // is a change of model.
+//
+// A profile key never subtracts from a sibling. A narrower capability is a new
+// VALUE of the granting key (`network = "egress"` stays full egress;
+// host-limited egress would be another value), or a grant value that is invalid
+// without its companion (`identity.ssh.agent = "proxy"` needs
+// `identity.ssh.key`; `identity.gh.host` needs `identity.gh.user`). The one
+// displacement is snug's own: a KindData file snug generates (`nss`,
+// `identity`, `dns`) replaces a grant at its guest path, as invariant 1 already
+// states. `TestKeyAbsenceNeverWidens` holds it.
 type Profile struct {
 	// Name and Include are ProfileName, not string: both are profile names, and
 	// the type is what says they went through the grammar. Note the asymmetry

@@ -4,6 +4,10 @@
 // it is what stops a future or foreign key (a `mask`, a `deny`, an `exclude`)
 // from being silently ignored while the human who wrote it believes the sandbox
 // is tighter than it is.
+//
+// An unknown body key could only ever be a grant, which is why refusing it is
+// enough: a profile key never subtracts from a sibling (see policy.Profile and
+// TestKeyAbsenceNeverWidens).
 package profile
 
 import (

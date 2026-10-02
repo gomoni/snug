@@ -51,6 +51,11 @@ Break any of these and the project has lost its point.
      write separately. Access joins by max, so `ro /proj` + `rw /proj/src`
      leaves `.git` read-only without any rule mentioning `.git`.
 
+   The same holds between keys: a profile key never subtracts from a sibling.
+   A narrower capability is a new VALUE of the granting key, or a grant value
+   that is invalid without its companion, and `TestKeyAbsenceNeverWidens`
+   holds it.
+
 3. **The trusted profile set comes from outside the sandboxed material.**
    Repo-local config is never auto-loaded. A hostile repo shipping `.snug/` is
    an attacker granting themselves permissions — a complete defeat of the threat
