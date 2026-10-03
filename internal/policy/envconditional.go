@@ -115,6 +115,16 @@ var conditionalEnvs = []conditionalEnv{
 		by:     func(prof *Profile) bool { return len(prof.ListenNames) > 0 },
 		writes: "hands the payload its listening descriptors",
 	},
+	{
+		names: []string{"BROWSER"},
+		key:   func(prof *Profile) string { return fmt.Sprintf("browser = %q", prof.Browser) },
+		on:    func(p *Policy) bool { return p.Browser != BrowserOff },
+		by: func(prof *Profile) bool {
+			m, err := ParseBrowserMode(prof.Browser)
+			return prof.Browser != "" && err == nil && m != BrowserOff
+		},
+		writes: "points Claude Code's browser opener at snug's login bridge",
+	},
 }
 
 // ConditionalEnvNames is every name snug writes for a feature, sorted.

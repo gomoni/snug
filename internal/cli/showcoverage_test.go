@@ -51,6 +51,7 @@ var probes = map[string]string{
 	"ListenNames": "probe-door",
 	"MTU":         "1428",
 	"Podman":      "socket",
+	"Browser":     "claude-login",
 	"Git":         "extract",
 	"Identity":    "probe-key",
 	"Environ":     "PROBE_ENV",
@@ -84,6 +85,7 @@ plugins  = ["probe-plugin"]
 listen_names = ["probe-door"]
 mtu      = 1428
 podman   = "socket"
+browser  = "claude-login"
 git      = "extract"
 
 [profile.probe.identity.ssh]

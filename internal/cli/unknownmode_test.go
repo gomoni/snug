@@ -86,6 +86,11 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 				"key = \"" + pub + "\"\n",
 			says: []string{"forward-everything", "proxy", "none"},
 		},
+		{
+			name: "browser",
+			body: "[profile.p]\nbrowser = \"claude\"\n",
+			says: []string{"claude", "off", "claude-login"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			write(t, tc.body)

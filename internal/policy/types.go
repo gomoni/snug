@@ -462,6 +462,9 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// Browser is "off" | "claude-login", joined by max — see BrowserMode.
+	Browser BrowserMode
+
 	// NSS is the OR-fold of every selected profile's `nss` key (issue #612).
 	// It gates Resolve's own generated /etc/passwd, /etc/group and
 	// /etc/nsswitch.conf — see the `if p.NSS` branch in Resolve.
@@ -746,6 +749,47 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 		return PodmanBuild, nil
 	default:
 		return 0, fmt.Errorf("unknown podman mode %q (want off, socket or build)", s)
+	}
+}
+
+// BrowserMode is "off" | "claude-login", joined by max like every other
+// feature scalar. It is an ordinary feature key a user profile sets — there is
+// no builtin that turns it on, and @claude does not (issue #455, maintainer
+// decision D1): the hole exists only where a profile spells `browser =
+// "claude-login"` itself, never merely by riding along with `@claude -p @net`.
+type BrowserMode uint8
+
+const (
+	BrowserOff BrowserMode = iota
+	// BrowserClaudeLogin stages /snug/bin/snug-browser and points BROWSER at
+	// it, so Claude Code execs the shim with the login URL as its one
+	// argument instead of a real opener. Resolve refuses it outside a
+	// selection that also grants egress and a shell — see resolve.go.
+	BrowserClaudeLogin
+)
+
+func (m BrowserMode) Join(o BrowserMode) BrowserMode {
+	if o > m {
+		return o
+	}
+	return m
+}
+
+func (m BrowserMode) String() string {
+	if m == BrowserClaudeLogin {
+		return "claude-login"
+	}
+	return "off"
+}
+
+func ParseBrowserMode(s string) (BrowserMode, error) {
+	switch s {
+	case "", "off":
+		return BrowserOff, nil
+	case "claude-login":
+		return BrowserClaudeLogin, nil
+	default:
+		return 0, fmt.Errorf("unknown browser mode %q (want off or claude-login)", s)
 	}
 }
 

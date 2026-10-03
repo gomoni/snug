@@ -961,6 +961,11 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"starts a container engine and delegates your whole subuid range, "+
 				"even with no network profile selected"))
 	}
+	if m, err := policy.ParseBrowserMode(p.Browser); p.Browser != "" && (err != nil || m != policy.BrowserOff) {
+		show("browser", capRows(p.Browser,
+			"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
+				"it in YOUR browser only if it is exactly the Claude login page snug pins"))
+	}
 	if m, err := policy.ParseGitMode(p.Git); p.Git != "" && (err != nil || m != policy.GitOff) {
 		show("git", capRows(p.Git,
 			"~/.gitconfig is REGENERATED from a whitelist, never bound - it names "+

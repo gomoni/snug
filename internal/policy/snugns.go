@@ -66,6 +66,16 @@ const StagedBinDir = SnugDir + "/bin"
 const (
 	ContainerSocketGuest = SnugDir + "/podman.sock"
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
+
+	// BrowserFIFOGuest is where snug binds the FIFO the login-bridge shim
+	// writes to — a profile's browser = "claude-login" only, never present
+	// otherwise. sh can `>` a FIFO but cannot speak AF_UNIX, which is why this
+	// is a FIFO and not a third socket beside the two above (issue #455).
+	BrowserFIFOGuest = SnugDir + "/browser.fifo"
+
+	// BrowserShimGuest is /snug/bin/snug-browser, the `/bin/sh` script
+	// browser = "claude-login" points BROWSER at.
+	BrowserShimGuest = StagedBinDir + "/snug-browser"
 )
 
 // EngineDir is the ONE place inside SnugDir a GRAFT may land: the engine's own

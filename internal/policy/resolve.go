@@ -198,6 +198,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	var identityOwner, gitOwner ProfileName
 	var mtuOwner ProfileName
+	var browserOwner ProfileName
 	pluginAllow := map[string]bool{}
 	httpDoors := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -460,6 +461,16 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			p.Podman = p.Podman.Join(mode)
 		}
+		if prof.Browser != "" {
+			mode, err := ParseBrowserMode(prof.Browser)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if mode > p.Browser {
+				browserOwner = name
+			}
+			p.Browser = p.Browser.Join(mode)
+		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 		p.NSS = p.NSS || prof.NSS
 
@@ -600,6 +611,31 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		// --dry-run can see them.
 		p.AuthorEnv("LISTEN_FDS", strconv.Itoa(len(p.ListenNames)))
 		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
+	}
+
+	// The login-bridge shim (issue #455). browser is an ordinary feature key —
+	// no builtin sets it, @claude included (maintainer decision D1) — so the
+	// hole exists only in a selection that spells browser = "claude-login"
+	// itself. Refused rather than granted-but-useless outside egress: the
+	// bridge relays the callback into the sandbox's own netns and the token
+	// exchange needs the internet, so a selection without @net would stage a
+	// BROWSER that can never complete a login.
+	if p.Browser != BrowserOff {
+		if p.Net.Mode != NetEgress {
+			return nil, fmt.Errorf("profile %q sets browser = %q, but nothing in this "+
+				"selection grants the network: the callback is relayed into the sandbox's "+
+				"own network namespace and the token exchange needs the internet. Add -p "+
+				"@net.", browserOwner, p.Browser)
+		}
+		if !p.shellIsVisible() {
+			return nil, BrowserBridgeShellError(httpDoorShimShell)
+		}
+		perm := uint32(0755)
+		p.Replace(Mount{
+			Guest: BrowserShimGuest, Kind: KindData, Access: AccessRO,
+			Perms: &perm, Content: []byte(browserBridgeShim), From: []string{"(snug)"},
+		})
+		p.AuthorEnv("BROWSER", BrowserShimGuest)
 	}
 
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid

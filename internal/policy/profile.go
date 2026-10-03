@@ -102,6 +102,10 @@ type Profile struct {
 	// Podman is "off" | "socket" | "build", joined by max like every other scalar.
 	Podman string
 
+	// Browser is "off" | "claude-login", joined by max like every other
+	// scalar. See BrowserMode: it is an ordinary key, not a builtin.
+	Browser string
+
 	// Git is "off" | "extract", joined by max. "extract" reconstructs the
 	// sandbox's git config from the host's — whitelisted keys only, never a
 	// bind. See gitextract.go for why binding the file is the wrong shape.

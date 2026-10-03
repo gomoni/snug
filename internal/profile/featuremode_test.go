@@ -19,6 +19,8 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 		{"git", "extracted", "extract or off"},
 		{"network", "host", "isolated or egress"},
 		{"network", "egress ", "isolated or egress"},
+		{"browser", "claude", "off or claude-login"},
+		{"browser", "Claude-Login", "off or claude-login"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			_, err := parse([]byte("[profile.x]\n"+tc.key+" = "+strconv.Quote(tc.value)+"\n"), "mine.toml", true)
@@ -40,6 +42,7 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 	for _, body := range []string{
 		"", `podman = "off"`, `podman = "socket"`, `podman = "build"`,
 		`git = "off"`, `git = "extract"`, `network = "isolated"`, `network = "egress"`,
+		`browser = "off"`, `browser = "claude-login"`,
 	} {
 		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err != nil {
 			t.Errorf("accepted spelling %q refused: %v", body, err)
