@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -608,6 +610,324 @@ func TestResolveIsMonotone(t *testing.T) {
 			}
 		}
 	}
+}
+
+// maximalProfile sets every field a profile file can set, each to a value that
+// resolves against newFakeEnv and testCtx. TestKeyAbsenceNeverWidens drops one
+// key at a time from it.
+//
+// It grants NONE of the paths snug generates as KindData (/etc/passwd,
+// /etc/group, /etc/nsswitch.conf, /etc/resolv.conf, ~/.gitconfig,
+// ~/.ssh/config, ~/.ssh/known_hosts). A generated file replaces a grant at its
+// guest path, which invariant 1 states as the one displacement, so a fixture
+// that granted one would see it vanish under nss, dns or identity and the test
+// would be grading the exception instead of the rule. It includes @target-rw (which brings @home) rather
+// than @sys for the same reason: @sys sets nss, which would make dropping nss
+// here a no-op.
+//
+// /opt/a is in both ro and rw so that dropping rw LOWERS an access instead of
+// removing a mount; without it no drop reaches the access comparison.
+//
+// A fresh value per call, because every drop mutates the profile it is given.
+func maximalProfile() *Profile {
+	return &Profile{
+		Name:        "maximal",
+		Description: "every key set",
+		Include:     []ProfileName{"@target-rw"},
+		RO:          []string{"/usr", "/opt/tool", "/opt/gems-a", "/opt/tools/bin", "/opt/first/bin", "/opt/a"},
+		RW:          []string{"/opt/a"},
+		Tmpfs:       []string{"/scratch"},
+		Symlink:     []Symlink{{At: "/bin", Target: "usr/bin"}},
+		Optional:    []string{"/opt/tool"},
+		Plugins:     []string{"caveman", "superpowers"},
+		ListenNames: []string{"web"},
+		Network:     "egress",
+		DNS:         true,
+		MTU:         1400,
+		NSS:         true,
+		Podman:      "socket",
+		Git:         "extract",
+		Identity: &Identity{
+			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
+			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
+				SigningKey: "/home/u/.ssh/sign.pub"},
+			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
+		},
+		Environ: EnvGrants{
+			Set:      map[string]string{"MY_TOOL_ROOT": "/opt/tool"},
+			Merge:    map[string][]string{"PATH": {"/opt/tools/bin"}, "GEM_PATH": {"/opt/gems-a"}},
+			Prepend:  map[string][]string{"PATH": {"/opt/first/bin"}},
+			Inherit:  []string{"EDITOR"},
+			Sanitise: []string{"PKG_CONFIG_PATH"},
+			Types: map[string]EnvKind{
+				"GEM_PATH":     EnvKindPathList,
+				"MY_TOOL_ROOT": EnvKindPath,
+			},
+		},
+	}
+}
+
+// keyDrop removes one TOML key from a profile. zeroes is the Go field path it
+// is meant to empty, which every_field_is_dropped checks rather than trusts.
+type keyDrop struct {
+	key    string
+	zeroes string
+	apply  func(*Profile)
+}
+
+func keyDrops() []keyDrop {
+	return []keyDrop{
+		{"description", "Description", func(p *Profile) { p.Description = "" }},
+		{"include", "Include", func(p *Profile) { p.Include = nil }},
+		{"ro", "RO", func(p *Profile) { p.RO = nil }},
+		{"rw", "RW", func(p *Profile) { p.RW = nil }},
+		{"tmpfs", "Tmpfs", func(p *Profile) { p.Tmpfs = nil }},
+		{"symlink", "Symlink", func(p *Profile) { p.Symlink = nil }},
+		{"optional", "Optional", func(p *Profile) { p.Optional = nil }},
+		{"plugins", "Plugins", func(p *Profile) { p.Plugins = nil }},
+		{"listen_names", "ListenNames", func(p *Profile) { p.ListenNames = nil }},
+		{"network", "Network", func(p *Profile) { p.Network = "" }},
+		{"dns", "DNS", func(p *Profile) { p.DNS = false }},
+		{"mtu", "MTU", func(p *Profile) { p.MTU = 0 }},
+		{"nss", "NSS", func(p *Profile) { p.NSS = false }},
+		{"podman", "Podman", func(p *Profile) { p.Podman = "" }},
+		{"git", "Git", func(p *Profile) { p.Git = "" }},
+		{"identity.ssh.host", "Identity.SSH.Host", func(p *Profile) { p.Identity.SSH.Host = "" }},
+		{"identity.ssh.key", "Identity.SSH.Key", func(p *Profile) { p.Identity.SSH.Key = "" }},
+		{"identity.ssh.agent", "Identity.SSH.Agent", func(p *Profile) { p.Identity.SSH.Agent = "" }},
+		{"identity.git.name", "Identity.Git.Name", func(p *Profile) { p.Identity.Git.Name = "" }},
+		{"identity.git.email", "Identity.Git.Email", func(p *Profile) { p.Identity.Git.Email = "" }},
+		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
+		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
+		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
+		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},
+		{"environ.merge", "Environ.Merge", func(p *Profile) { p.Environ.Merge = nil }},
+		{"environ.prepend", "Environ.Prepend", func(p *Profile) { p.Environ.Prepend = nil }},
+		{"environ.inherit", "Environ.Inherit", func(p *Profile) { p.Environ.Inherit = nil }},
+		{"environ.sanitise", "Environ.Sanitise", func(p *Profile) { p.Environ.Sanitise = nil }},
+		{"environ.types", "Environ.Types", func(p *Profile) { p.Environ.Types = nil }},
+	}
+}
+
+// profileLeaves flattens a Profile into dotted Go field path -> value,
+// descending into structs and the Identity pointer and stopping at every other
+// kind, so a slice or map is one leaf.
+func profileLeaves(v reflect.Value, prefix string, out map[string]reflect.Value) {
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			out[prefix] = v
+			return
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		out[prefix] = v
+		return
+	}
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		if prefix != "" {
+			name = prefix + "." + name
+		}
+		profileLeaves(v.Field(i), name, out)
+	}
+}
+
+// provenanceFields are the Profile fields that are not keys of a profile body.
+var provenanceFields = map[string]string{
+	"Name":    "the table's own name, not a key inside it",
+	"Source":  "the file the profile came from, set by the loader",
+	"Trusted": "set by the loader from the layer the file came from",
+}
+
+// TestKeyAbsenceNeverWidens holds the rule that a profile key never subtracts
+// from a sibling: removing any one key from a profile that sets all of them
+// either makes the profile refuse, or yields a policy whose grants are a subset
+// of the full profile's. It would catch a key whose presence narrows something
+// another key grants, which is a restriction operation by another name, and a
+// new key that nobody added a drop for (every_field_is_dropped).
+//
+// Not covered, so nobody reads more into it. mtu is not compared: it is not a
+// join (see the comment on the prof.MTU arm in Resolve), so no value of it is
+// wider than another. The one displacement is snug's own: a generated KindData
+// file replaces a grant at its guest path, and the fixture avoids granting any
+// such path so the test does not grade that exception. environ.types is the
+// one key whose absence removes a VALIDATION instead of a grant: merge on an
+// unrostered name refuses without it, and a path declared for a set value stops
+// being checked. This test holds it only as far as "resolves to a subset or
+// refuses". identity.ssh.key with agent = "proxy" is refused in internal/cli
+// (identity.go), not by Resolve, so that drop takes the subset arm here. A
+// drop that refuses passes, so a key that another key requires is
+// not shown harmless on its own; the subset arm is what carries the claim, and
+// the -v log says which drops took the refusal arm.
+func TestKeyAbsenceNeverWidens(t *testing.T) {
+	resolveWith := func(t *testing.T, p *Profile) (*Policy, error) {
+		t.Helper()
+		reg := testRegistry()
+		reg[p.Name] = p
+		return Resolve(reg, []ProfileName{p.Name}, testCtx(), newFakeEnv())
+	}
+
+	full, err := resolveWith(t, maximalProfile())
+	if err != nil {
+		t.Fatalf("the full fixture does not resolve, so every drop below would be compared "+
+			"against nothing: %v", err)
+	}
+
+	for _, d := range keyDrops() {
+		t.Run(d.key, func(t *testing.T) {
+			p := maximalProfile()
+			d.apply(p)
+			got, err := resolveWith(t, p)
+			if err != nil {
+				t.Logf("refused (a refusal is a pass): %v", firstLine(err.Error()))
+				return
+			}
+
+			for guest, m := range got.Mounts {
+				if m.Anchor {
+					continue // derived from the mount set, not granted; see TestResolveIsMonotone
+				}
+				if IsProcfsClosurePath(guest) && ProcfsClosuresSkipped(full) {
+					continue // TestResolveIsMonotone's named exception, seen from the other side
+				}
+				f, ok := full.Mounts[guest]
+				if !ok {
+					t.Errorf("dropping %s GRANTED %s (%s), absent from the full profile", d.key, guest, m.Kind)
+					continue
+				}
+				if f.Kind != m.Kind {
+					t.Errorf("dropping %s turned %s from %s into %s", d.key, guest, f.Kind, m.Kind)
+				}
+				if f.Access < m.Access {
+					t.Errorf("dropping %s gave %s %s where the full profile has %s", d.key, guest, m.Access, f.Access)
+				}
+			}
+
+			for name, v := range got.Env {
+				fv, ok := full.Env[name]
+				if !ok {
+					t.Errorf("dropping %s ADDED the variable %s", d.key, name)
+					continue
+				}
+				have := map[string]bool{}
+				for _, e := range fv.Entries {
+					have[e.Value] = true
+				}
+				for _, e := range v.Entries {
+					if e.Verb == VerbSnug {
+						continue // SNUG_PROFILES reports the selection, as in TestEnvIsMonotoneAsASet
+					}
+					if !have[e.Value] {
+						t.Errorf("dropping %s ADDED the %s entry %q", d.key, name, e.Value)
+					}
+				}
+			}
+
+			if got.Net.Mode.Join(full.Net.Mode) != full.Net.Mode {
+				t.Errorf("dropping %s raised the network mode from %s to %s", d.key, full.Net.Mode, got.Net.Mode)
+			}
+			if got.Net.DNS && !full.Net.DNS {
+				t.Errorf("dropping %s turned DNS on", d.key)
+			}
+			if got.NSS && !full.NSS {
+				t.Errorf("dropping %s turned NSS on", d.key)
+			}
+			if got.Podman.Join(full.Podman) != full.Podman {
+				t.Errorf("dropping %s raised podman from %s to %s", d.key, full.Podman, got.Podman)
+			}
+			if got.Git.Join(full.Git) != full.Git {
+				t.Errorf("dropping %s raised git from %s to %s", d.key, full.Git, got.Git)
+			}
+			if got.Topology.Netns > full.Topology.Netns || got.Topology.Subuid > full.Topology.Subuid {
+				t.Errorf("dropping %s raised the topology from %s to %s", d.key, full.Topology, got.Topology)
+			}
+			for _, n := range got.PluginAllowlist {
+				if !slices.Contains(full.PluginAllowlist, n) {
+					t.Errorf("dropping %s ADDED plugin %q", d.key, n)
+				}
+			}
+			for _, n := range got.ListenNames {
+				if !slices.Contains(full.ListenNames, n) {
+					t.Errorf("dropping %s ADDED listen name %q", d.key, n)
+				}
+			}
+			if got.Identity != nil {
+				gv := reflect.ValueOf(got.Identity).Elem()
+				var fv reflect.Value
+				if full.Identity != nil {
+					fv = reflect.ValueOf(full.Identity).Elem()
+				}
+				for _, f := range identityFields {
+					g := gv.FieldByIndex(f.Index).String()
+					if g == "" {
+						continue
+					}
+					if !fv.IsValid() || fv.FieldByIndex(f.Index).String() != g {
+						t.Errorf("dropping %s changed identity.%s to %q", d.key, f.Key, g)
+					}
+				}
+			}
+		})
+	}
+
+	// Without this, a key added to Profile would sit outside the sweep: the loop
+	// above only visits the drops somebody wrote.
+	t.Run("every_field_is_dropped", func(t *testing.T) {
+		maxLeaves := map[string]reflect.Value{}
+		profileLeaves(reflect.ValueOf(maximalProfile()), "", maxLeaves)
+
+		dropped := map[string]bool{}
+		for _, d := range keyDrops() {
+			if dropped[d.zeroes] {
+				t.Errorf("two drops claim %s", d.zeroes)
+			}
+			dropped[d.zeroes] = true
+			if _, ok := maxLeaves[d.zeroes]; !ok {
+				t.Errorf("%s: %q is not a leaf of Profile", d.key, d.zeroes)
+				continue
+			}
+			p := maximalProfile()
+			d.apply(p)
+			after := map[string]reflect.Value{}
+			profileLeaves(reflect.ValueOf(p), "", after)
+			for path, was := range maxLeaves {
+				if path == d.zeroes {
+					if !after[path].IsZero() {
+						t.Errorf("%s does not zero %s", d.key, path)
+					}
+					continue
+				}
+				if !reflect.DeepEqual(was.Interface(), after[path].Interface()) {
+					t.Errorf("%s also changed %s; one drop per key", d.key, path)
+				}
+			}
+		}
+
+		for path, v := range maxLeaves {
+			if why, ok := provenanceFields[path]; ok {
+				if why == "" {
+					t.Errorf("%s is exempt with no reason", path)
+				}
+				continue
+			}
+			if v.IsZero() {
+				t.Errorf("maximalProfile leaves %s zero, so dropping it proves nothing", path)
+			}
+			if !dropped[path] {
+				t.Errorf("Profile.%s has no drop in keyDrops. A key a profile can set that this "+
+					"test never removes is a key whose absence nobody checked: add its drop, "+
+					"and read what the subset check says about it", path)
+			}
+		}
+	})
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // Pins the SCOPE of TestResolveIsMonotone, which is narrower than it looks.
