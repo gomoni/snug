@@ -133,6 +133,21 @@ type Options struct {
 	// Snapshotted by the caller before sandbox.Run: the reaper is armed before
 	// the stage exists, so its pid is already fixed by then.
 	ExcludeFromTeardown []int
+
+	// RelaySockets is how many unconnected AF_INET stream sockets the stage
+	// creates INSIDE the sandbox's network namespace for the login browser
+	// bridge, at most three. Zero on every run without it. Only the staged arm
+	// has a stage to make them, so Run refuses a nonzero count on a policy
+	// whose topology needs none, and refuses one with OnRelaySockets nil: a
+	// socket requested and then held by nobody is a request nobody meant.
+	RelaySockets int
+
+	// OnRelaySockets receives those sockets, already verified by the stage
+	// package from this side (count, AF_INET, SOCK_STREAM, and SIOCGSKNS naming
+	// the sandbox's own netns), close-on-exec, and owned by the callee from
+	// then on. Called once, after the network is confirmed and before bwrap is
+	// forked, so no payload exists yet; never called when RelaySockets is 0.
+	OnRelaySockets func([]*os.File)
 }
 
 // RunInfo is what a running sandbox reports about itself, once, at startup:
@@ -154,6 +169,17 @@ const infoFDTimeout = 10 * time.Second
 // Run executes the policy and returns the payload's exit code verbatim, so
 // `snug ... -- make test` is usable in a pipeline.
 func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
+	if opts.RelaySockets != 0 {
+		if !p.Topology.NeedsStage() {
+			return 0, fmt.Errorf("%d login relay socket(s) requested on a run with no stage: only "+
+				"the stage can create a socket in the sandbox's network namespace, and this policy "+
+				"has none (the login browser bridge needs @net)", opts.RelaySockets)
+		}
+		if opts.OnRelaySockets == nil {
+			return 0, fmt.Errorf("sandbox.Options.RelaySockets is %d but OnRelaySockets is nil — "+
+				"nothing would hold the sockets", opts.RelaySockets)
+		}
+	}
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return 0, fmt.Errorf("bubblewrap (bwrap) is not installed — snug cannot run without it")
@@ -681,19 +707,37 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 	// turning a 300ms error into a ten-second one that a human interrupts
 	// before reading. An offline podman run has no pasta to race against, so
 	// it simply waits.
-	ready := make(chan error, 1)
-	go func() { ready <- st.WaitNetReady(netReadyTimeout, netIface, hostAddrs) }()
+	type netReady struct {
+		relay []*os.File
+		err   error
+	}
+	ready := make(chan netReady, 1)
+	go func() {
+		relay, err := st.WaitNetReady(netReadyTimeout, netIface, hostAddrs, opts.RelaySockets)
+		ready <- netReady{relay, err}
+	}()
+	var r netReady
 	if helper != nil {
 		select {
-		case err := <-ready:
-			if err != nil {
-				return 0, err
-			}
+		case r = <-ready:
 		case <-helper.died():
+			// WaitNetReady is still running; whatever it hands back after
+			// this point is closed rather than left open with no holder.
+			go func() {
+				for _, f := range (<-ready).relay {
+					f.Close()
+				}
+			}()
 			return 0, fmt.Errorf("pasta exited before the network came up: %s", helper.failure())
 		}
-	} else if err := <-ready; err != nil {
-		return 0, err
+	} else {
+		r = <-ready
+	}
+	if r.err != nil {
+		return 0, r.err
+	}
+	if len(r.relay) > 0 {
+		opts.OnRelaySockets(r.relay)
 	}
 
 	if err := helper.checkBeforeSandbox(release != nil); err != nil {

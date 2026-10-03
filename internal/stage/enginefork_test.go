@@ -69,7 +69,7 @@ func startEngineRefusalFixture(t *testing.T, spec *EngineSpec, gated bool) (err 
 		"--", "/bin/sleep", "30",
 	}
 
-	if werr := st.WaitNetReady(5*time.Second, "lo", nil); werr != nil {
+	if _, werr := st.WaitNetReady(5*time.Second, "lo", nil, 0); werr != nil {
 		t.Fatalf("PRECONDITION: netready failed: %v", werr)
 	}
 

@@ -203,7 +203,11 @@ func MainServe() error {
 				iface = NetIfaceName
 			}
 			ev := event{Op: "netready"}
-			if err := waitForIface(fdNetSock, iface, netReadyTimeout); err != nil {
+			var relay []int
+			if req.RelaySockets < 0 || req.RelaySockets > maxRelaySockets {
+				ev.Err = fmt.Sprintf("refusing a \"netready\" asking for %d login relay sockets: "+
+					"this stage creates between 0 and %d", req.RelaySockets, maxRelaySockets)
+			} else if err := waitForIface(fdNetSock, iface, netReadyTimeout); err != nil {
 				ev.Err = err.Error()
 			} else if iface == NetIfaceName {
 				// ONLY the snug0 arm, never "lo" (the podman-socket-only
@@ -219,7 +223,22 @@ func MainServe() error {
 					ev.Err = err.Error()
 				}
 			}
-			if err := sendEvent(control, ev); err != nil {
+			if ev.Err == "" && req.RelaySockets > 0 {
+				var err error
+				if relay, err = relaySocketsInN(fdNetnsN, req.RelaySockets); err != nil {
+					ev.Err = err.Error()
+				} else if err := waitNoThreadInNamespace(pinned, relayThreadGoneTimeout); err != nil {
+					closeFDs(relay)
+					relay, ev.Err = nil, err.Error()
+				} else {
+					ev.RelaySockets = len(relay)
+				}
+			}
+			// This process's copies are closed whether or not the send
+			// succeeded, so P1 holds no relay socket past this line.
+			err := sendEventFDs(control, ev, relay)
+			closeFDs(relay)
+			if err != nil {
 				return fmt.Errorf("__stage-serve: reporting netready: %w", err)
 			}
 			if ev.Err != "" {
