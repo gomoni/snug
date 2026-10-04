@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gomoni/snug/internal/engine"
+	"github.com/gomoni/snug/internal/loginbridge"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
 	"github.com/gomoni/snug/internal/stage"
@@ -117,12 +118,14 @@ type Report struct {
 
 	NotGranted []string
 
-	Network     reportNetwork
-	Topology    reportTopology
-	Containers  *reportContainers // nil when no engine runs
-	Environment []reportEnvVar
-	Seccomp     reportSeccomp
-	NewSession  bool
+	Network reportNetwork
+	// BrowserBridge is nil when the policy's browser key is off.
+	BrowserBridge *reportBrowserBridge
+	Topology      reportTopology
+	Containers    *reportContainers // nil when no engine runs
+	Environment   []reportEnvVar
+	Seccomp       reportSeccomp
+	NewSession    bool
 	// NewSessionWhy is the reason set behind NewSession — rendered, never
 	// summarised, because "the sandbox is out of your terminal" is true for
 	// two different reasons that cost different things.
@@ -219,6 +222,20 @@ type reportNetwork struct {
 	// it — the fix for the addresses pasta itself does not copy onto snug0
 	// (the host's link-local, and any second alias on another interface).
 	HostAddressesSealed bool
+}
+
+// reportBrowserBridge is the login bridge as a fact about this run, nil when
+// the policy's browser key is off. Mode is the key's own spelling. Opener is
+// xdg-open's resolved path; when browserPreflight would refuse the run,
+// Opener is empty and OpenerError carries its message, so a screen never
+// shows a bridge a real run would not start.
+type reportBrowserBridge struct {
+	Mode        string
+	Opener      string
+	OpenerError string
+	FIFO        string
+	MaxOpens    int
+	MaxRelays   int
 }
 
 type reportTopology struct {
@@ -489,6 +506,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 			"contradicting network.host_loopback and network.abstract_sockets elsewhere in this " +
 			"document."
 	}
+	rep.BrowserBridge = buildBrowserBridgeReport(env, p)
 	rep.BwrapExec = execResolution("bwrap")
 	rep.Pasta = buildPastaReport(p)
 	for _, name := range p.EnvNames() {
@@ -611,6 +629,28 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 		n.DNSHost = p.Net.DNSHost()
 	}
 	return n
+}
+
+// buildBrowserBridgeReport reads the host through the injected Environ and
+// asks browserPreflight, the function a real run asks, so the screen and the
+// refusal cannot disagree about whether the opener exists.
+func buildBrowserBridgeReport(env policy.Environ, p *policy.Policy) *reportBrowserBridge {
+	if p.Browser == policy.BrowserOff {
+		return nil
+	}
+	b := &reportBrowserBridge{
+		Mode:      p.Browser.String(),
+		FIFO:      policy.BrowserFIFOGuest,
+		MaxOpens:  loginbridge.MaxOpensPerRun,
+		MaxRelays: loginbridge.MaxRelaysPerRun,
+	}
+	opener, err := browserPreflight(env)
+	if err != nil {
+		b.OpenerError = err.Error()
+	} else {
+		b.Opener = opener
+	}
+	return b
 }
 
 func buildTopologyReport(p *policy.Policy) reportTopology {

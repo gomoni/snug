@@ -1,0 +1,39 @@
+NETWORK  egress — private netns (one per sandbox) with a pasta helper.
+         host loopback   UNREACHABLE (--map-host-loopback none, -T none, -U none)
+         abstract unix   UNREACHABLE (netns-scoped)
+         pathname sockets (X11, D-Bus, Wayland, ssh-agent) — see FILESYSTEM,
+                         not this block; a directory grant can expose one
+         egress          full, IPv4 + IPv6
+         dns             NONE — no resolver is named inside; lookups fail fast
+                         (this profile grants egress but never asked for DNS)
+         host -> sandbox CLOSED — nothing is forwarded into this
+                         namespace. A door a human can open is declared with
+                         listen_names in a profile; see below.
+         address         copied from the host — and the seal below adds every
+                         OTHER address the host owns, on every host interface, so
+                         `ip addr` inside inventories the docker/podman/libvirt
+                         bridges and a VPN's internal address as well as the LAN
+                         one. Accepted disclosure, and it is wider than one address.
+         host's own IPs  UNREACHABLE, by design — sealed as local routes inside the
+                         sandbox's own network namespace (a /32 for IPv4, a /128
+                         for IPv6, every address the host owns on every interface,
+                         both families), so a connect to one short-circuits to
+                         local delivery and is refused; this covers the host's own
+                         link-local address too, which pasta does not copy onto
+                         snug0 itself.
+         browser bridge  claude-login — the sandbox may ask snug to open a Claude login page
+                         in YOUR browser, directly, one at a time. Accepted shape:
+                         https://claude.com/cai/oauth/authorize
+                         client 9d1c250a-e61b-44d9-88ed-5944d1962f5e, exactly 7 scopes:
+                         org:create_api_key user:profile user:inference
+                         user:sessions:claude_code user:mcp_servers user:file_upload user:plugins;
+                         anything else is REFUSED, and snug rebuilds the URL it opens
+                         from its own constants.
+                         callback: snug binds localhost:<port> (127.0.0.1 and ::1) on
+                         the host only while a login is pending (at most 10m0s), admits
+                         your uid only, relays ONE rebuilt GET /callback into the
+                         sandbox and answers your browser itself. Nothing is forwarded
+                         into the sandbox's namespace; host loopback stays unreachable
+                         from inside.
+         opener          /usr/bin/xdg-open
+         limits          5 opens and 3 callbacks per run, 1 login pending at a time

@@ -356,15 +356,17 @@ type jsonDoc struct {
 	// spelling it out too — which is why this one does not), and a textual sweep cannot
 	// tell this output struct from a Policy. Keeping the sweep exception-free
 	// is worth more than the tidier field name; the JSON key is unchanged.
-	EngineView  []jsonGraft     `json:"grafts"`
-	NotGranted  jsonNotGranted  `json:"not_granted"`
-	Network     jsonNetwork     `json:"network"`
-	Topology    jsonTopology    `json:"topology"`
-	Containers  *jsonContainers `json:"containers"`
-	Environment []jsonEnvVar    `json:"environment"`
-	Seccomp     jsonSeccomp     `json:"seccomp"`
-	TTY         jsonTTY         `json:"tty"`
-	Bwrap       jsonBwrap       `json:"bwrap"`
+	EngineView []jsonGraft    `json:"grafts"`
+	NotGranted jsonNotGranted `json:"not_granted"`
+	Network    jsonNetwork    `json:"network"`
+	// BrowserBridge is absent when the policy's browser key is off.
+	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
+	Topology      jsonTopology       `json:"topology"`
+	Containers    *jsonContainers    `json:"containers"`
+	Environment   []jsonEnvVar       `json:"environment"`
+	Seccomp       jsonSeccomp        `json:"seccomp"`
+	TTY           jsonTTY            `json:"tty"`
+	Bwrap         jsonBwrap          `json:"bwrap"`
 	// Pasta is nil when this policy starts no pasta process
 	// (network.mode != "egress"). Refs #332 F1e.
 	Pasta *jsonPasta `json:"pasta"`
@@ -548,6 +550,17 @@ type jsonNetwork struct {
 	// local route, so a connect to one is refused rather than reaching pasta
 	// and the host beyond it.
 	HostAddressesSealed bool `json:"host_addresses_sealed"`
+}
+
+// jsonBrowserBridge is reportBrowserBridge. Opener is empty and OpenerError
+// set when a real run would refuse for want of an opener or a display.
+type jsonBrowserBridge struct {
+	Mode        string `json:"mode"`
+	Opener      string `json:"opener"`
+	OpenerError string `json:"opener_error,omitempty"`
+	FIFO        string `json:"fifo"`
+	MaxOpens    int    `json:"max_opens"`
+	MaxRelays   int    `json:"max_relays"`
 }
 
 type jsonTopology struct {
@@ -812,6 +825,14 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		// through the same encoder as every other host-influenced value.
 		msg, _ := e.text(rep.Refusal)
 		doc.Refusal = &jsonRefusal{Message: msg}
+	}
+	if b := rep.BrowserBridge; b != nil {
+		opener, _ := e.text(b.Opener)
+		msg, _ := e.text(b.OpenerError)
+		doc.BrowserBridge = &jsonBrowserBridge{
+			Mode: b.Mode, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
+			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
+		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)
 	doc.Home, doc.HomeBytes = e.text(rep.Home)

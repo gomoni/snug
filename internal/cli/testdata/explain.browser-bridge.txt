@@ -1,0 +1,69 @@
+snug — what this sandbox would be. Nothing was started.
+
+The project directory, writable from inside:
+  /home/u/proj/sub
+Your home directory:
+  /home/u
+Both keep the exact path they have on your host. snug never relocates a path,
+because a tool that prints an absolute path inside should print one that means
+the same thing outside.
+
+Selected profiles:
+  @sys @target-rw @net bridge
+  + @home  (pulled in by include)
+A profile only ever GRANTS. There is no rule anywhere that takes something
+away, so adding a profile can only ever make the sandbox see more, and the way
+to see less is to select fewer.
+
+FILESYSTEM
+  The root is an empty tmpfs. It has 8 paths read-only, 11 writable, and
+  8 files snug generates itself rather than binding from your host.
+  Everything else on this machine is not missing by a rule — it was never
+  granted, so there is nothing there to deny.
+
+  Writable, which is the half worth reading twice:
+    /dev
+    /home/u
+    /home/u/.cache
+    /home/u/.config
+    /home/u/.local
+    /home/u/.local/share
+    /home/u/.local/state
+    /home/u/proj
+    /home/u/proj/sub
+    /proc
+    /tmp
+
+WHAT IS NOT IN HERE
+  No X11 and no Wayland: a GUI program will not open a window, and nothing
+  inside can read your screen or your keystrokes.
+  No D-Bus, session or system. No host abstract sockets of any kind.
+  No host loopback. A service you are running on 127.0.0.1 is unreachable
+  from inside, under every profile, including the networked ones.
+  No ~/.ssh. Your private keys are not in this filesystem at all.
+  No root, no setuid, and no process snug did not start — everything here
+  dies with the sandbox, except the browser xdg-open starts for a login:
+  that browser is yours, not the sandbox's, and may outlive this run.
+
+NETWORK
+  Full outbound internet, through a pasta helper in a namespace of its own.
+  Host loopback stays unreachable — pasta is started with -T none, so a
+  port on your own machine is not a port from in here.
+  DNS: none — a profile asked for it and this host names no usable
+  resolver, so lookups inside will fail immediately rather than stall.
+  Login bridge (browser = "claude-login"): the sandbox may ask snug to open a
+  Claude login page in YOUR browser. snug opens only one URL shape — Claude
+  Code's own authorize URL with its client id and its seven scopes — rebuilt
+  from snug's constants; anything else is refused and nothing is opened. There is
+  no snug page first: if you did not just type /login, close the tab. While a
+  login is pending snug listens on localhost on the HOST — your uid only — and
+  relays one rebuilt callback into the sandbox; host loopback is still not
+  reachable from inside. The browser xdg-open starts is yours and may outlive
+  the run.
+
+COMMAND
+  /bin/sh
+
+This is the summary. `snug --dry-run` has the complete list — every mount, every
+environment variable, the bwrap argv — and is the screen to read when you are
+checking snug rather than orienting yourself.

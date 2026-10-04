@@ -35,6 +35,11 @@ import (
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
 func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, n *notes, refusedBy error) error {
+	// After the argv was built, which is why bwrap_argv below lacks the FIFO
+	// bind: main.go does not plan it on a dry run.
+	if err := planBrowserFIFO(p); err != nil {
+		return err
+	}
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
@@ -81,6 +86,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 			visibleValue(policy.JoinNames(implied, " ")))
 	}
 	describeNetwork(out, p)
+	renderBrowserBridge(out, rep.BrowserBridge)
 	describeTopology(out, p)
 	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
@@ -2286,6 +2292,7 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                  (__innetns is a setns shim that BECOMES bwrap rather than\n")
 		fmt.Fprintf(out, "                  running beside it, so it is not one of the %d.)\n", len(procs))
 	}
+	describeBrowserTopology(out, p)
 	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
 	// PID NESTING, and it is on this screen because nothing else shows it.
 	// The bwrap argv is IDENTICAL on both arms — the nesting is entirely in
