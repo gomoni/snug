@@ -42,6 +42,9 @@ const maxMessage = 64 * 1024
 // way to fill its own descriptor table with sockets in N.
 const maxRelaySockets = 3
 
+// MaxRelaySockets is maxRelaySockets for callers that request that many.
+const MaxRelaySockets = maxRelaySockets
+
 // request is a P0 -> P1 message. Four ops. The stage answers at most one
 // "netready" and exactly one "start" before it exits, in that order; "stop"
 // tears it down and is sent by Close rather than StartSandbox. "mapped" is

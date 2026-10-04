@@ -681,9 +681,10 @@ func (p *Policy) Replace(m Mount) {
 	p.Mounts[m.Guest] = m
 }
 
-// BindSocket grants a host socket at a fixed guest path, after the policy is
-// resolved. It is how the CLI hands the sandbox something it had to create
-// first — an ssh-agent proxy socket, say — and it is deliberately one of the
+// BindSocket grants a host socket or FIFO this run created at a fixed guest
+// path, after the policy is resolved. It is how the CLI hands the sandbox
+// something it had to create first — an ssh-agent proxy socket, or the login
+// bridge's FIFO — and it is deliberately one of the
 // two post-resolution writers (the other being Replace, which it uses), so the
 // set of such things stays countable.
 //
@@ -693,7 +694,7 @@ func (p *Policy) Replace(m Mount) {
 // read as though the identity machinery had opened it.
 //
 // It bypasses no check that matters: the path is snug's own choice under
-// /snug, not a profile's, and the socket is one snug just created.
+// /snug, not a profile's, and the socket or FIFO is one snug just created.
 //
 // Every mount it writes is RunScoped, and that is a property of the caller
 // set rather than a parameter: this function exists for a socket THIS run had

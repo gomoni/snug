@@ -793,6 +793,26 @@ func run(cfg config) int {
 	// breaks if that ever stops being true.
 	defer ctr.cleanup()
 
+	// The login bridge: preflight, FIFO, reader. Real runs only; --dry-run
+	// starts nothing. Before Validate because BindSocket adds a mount, and
+	// registered after runDir's cleanup so the FIFO's directory is removed
+	// last.
+	var bridge *loginBridge
+	if wantsLoginBridge(pol, cfg) {
+		// The path is not used until the host half exists; resolving it now
+		// is what makes a missing xdg-open a refusal at start.
+		if _, perr := browserPreflight(env); perr != nil {
+			return refuse(cfg, exitPolicy, perr)
+		}
+		b, berr := startLoginBridge(pol, runDir.Socket, os.Stderr, notYetBuiltHandler(os.Stderr))
+		if berr != nil {
+			return refuse(cfg, exitPolicy, berr)
+		}
+		bridge = b
+		defer bridge.close()
+		announceLoginBridge(notes)
+	}
+
 	// The post-Resolve mounts above create ancestors of their own — the staged
 	// gh hosts.yml is the first mount under {home}/.config/gh — so the anchor
 	// set is recomputed here rather than left as Resolve computed it. It is
@@ -865,7 +885,7 @@ func run(cfg config) int {
 		return 0
 	}
 
-	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), sandbox.Options{
+	opts := sandbox.Options{
 		NoSeccomp: cfg.noSeccomp,
 		HTTPDoors: doorFiles,
 		// OnInfo publishes state.json once bwrap has reported its own
@@ -931,7 +951,9 @@ func run(cfg config) int {
 		// signalled-teardown guard: it is the one helper meant to outlive
 		// snug (issue #113).
 		ExcludeFromTeardown: ctr.excludeFromTeardown,
-	})
+	}
+	bridge.apply(&opts)
+	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), opts)
 	if err != nil {
 		return refuse(cfg, exitUnavail, err)
 	}
