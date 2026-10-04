@@ -1340,15 +1340,6 @@ func scalarConflict(key string, ownerA ProfileName, a any, ownerB ProfileName, b
 		ownerA, ownerB, key, VisibleText(fmt.Sprint(a)), VisibleText(fmt.Sprint(b)))
 }
 
-func sortedInts(m map[int]bool) []int {
-	out := make([]int, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Ints(out)
-	return out
-}
-
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

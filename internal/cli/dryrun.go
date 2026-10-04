@@ -3197,11 +3197,6 @@ func coverageOf(p *policy.Policy, host string) (coverage, int) {
 	return coverageNone, 0
 }
 
-func covered(p *policy.Policy, host string) bool {
-	c, _ := coverageOf(p, host)
-	return c == coverageFull
-}
-
 // formatArgs renders the argv block. argv0 is the producer's word (see
 // reportExec) rather than a literal here, so this screen and the JSON document
 // cannot name the binary differently.

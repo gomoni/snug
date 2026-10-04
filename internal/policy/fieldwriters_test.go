@@ -158,6 +158,7 @@ func fieldWritesInSource(name string, src []byte, field string) ([]fieldWriteSit
 	// Elided element types: `[]Mount{{...}}` and `map[string]Mount{k: {...}}`
 	// give the inner literal a nil Type, so the type is read off the parent.
 	elidedType := map[*ast.CompositeLit]string{}
+	//lint:ignore S1021 the closure is recursive, so it must be declared before it is assigned
 	var noteChildren func(cl *ast.CompositeLit)
 	noteChildren = func(cl *ast.CompositeLit) {
 		elem := elementTypeName(cl.Type)
