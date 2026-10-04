@@ -544,8 +544,16 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 		}
 		c.Close()
 	}
-	if _, ran := loginRec(t, f.rec, "ran"); !ran {
-		t.Fatalf("precondition: the fake opener never ran, so no flow was opened:\n%s", s.log())
+	// Polled, not read once: the bridge binds the port BEFORE it starts the
+	// opener, so the connects above can succeed while the opener's record is
+	// still unwritten.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, ran := loginRec(t, f.rec, "ran"); ran {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("precondition: the fake opener never ran, so no flow was opened:\n%s", s.log())
+		}
 	}
 
 	handToPayload(t, f.proj, "go", "x")
