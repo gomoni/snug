@@ -35,8 +35,9 @@ import (
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
 func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, n *notes, refusedBy error) error {
-	// After the argv was built, which is why bwrap_argv below lacks the FIFO
-	// bind: main.go does not plan it on a dry run.
+	// main.go plans the FIFO before building the argv on the ordinary dry run;
+	// this call covers the refused-policy screen, whose argv was built without
+	// it, so FILESYSTEM and JSON mounts still show the row there.
 	if err := planBrowserFIFO(p); err != nil {
 		return err
 	}
