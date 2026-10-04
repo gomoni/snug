@@ -186,15 +186,6 @@ func soleTargetRecord(t *testing.T, dir, target, ext string) string {
 	}
 }
 
-// statePath is where THIS run's state file lives.
-func (s *bgSandbox) statePath(t *testing.T) string {
-	t.Helper()
-	if p := soleTargetRecord(t, uidRuntimeSnugDir(t), s.proj, ".json"); p != "" {
-		return p
-	}
-	return targetRecordGlob(t, uidRuntimeSnugDir(t), s.proj, ".json")
-}
-
 func (s *bgSandbox) waitForState(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)

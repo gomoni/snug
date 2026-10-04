@@ -26,16 +26,6 @@ import (
 	"time"
 )
 
-// startingPath is bgSandbox.statePath's sibling for the ".starting" kill
-// record: the same per-run stem, ".starting" instead of ".json".
-func (s *bgSandbox) startingPath(t *testing.T) string {
-	t.Helper()
-	if p := soleTargetRecord(t, uidRuntimeSnugDir(t), s.proj, ".starting"); p != "" {
-		return p
-	}
-	return targetRecordGlob(t, uidRuntimeSnugDir(t), s.proj, ".starting")
-}
-
 // waitForGone polls for a path to stop existing — waitForFile's opposite
 // number, needed here because the ".starting" record's removal is itself
 // part of the invariant under test (never both files gone, and not forever
