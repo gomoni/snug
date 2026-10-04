@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func TestLoginReaderRefusalsAreCappedAndSanitised(t *testing.T) {
 		in.WriteString("https://evil.example/\x1b[31m\n")
 	}
 	handled := 0
-	readLoginLines(strings.NewReader(in.String()), &out, func(loginbridge.Flow) { handled++ })
+	readLoginLines(strings.NewReader(in.String()), &out, func(loginbridge.Flow) error { handled++; return nil })
 	s := out.String()
 	if handled != 0 {
 		t.Fatalf("a refused line reached the handler")
@@ -98,7 +99,7 @@ func TestLoginReaderOverlongLineIsOneRefusalAndResyncs(t *testing.T) {
 	var out bytes.Buffer
 	in := strings.Repeat("a", 3*loginMaxLine) + "\n" + goodLoginURL + "\n"
 	var got []loginbridge.Flow
-	readLoginLines(strings.NewReader(in), &out, func(f loginbridge.Flow) { got = append(got, f) })
+	readLoginLines(strings.NewReader(in), &out, func(f loginbridge.Flow) error { got = append(got, f); return nil })
 	if n := strings.Count(out.String(), "longer than 4096 bytes"); n != 1 {
 		t.Fatalf("overlong refusals = %d:\n%s", n, out.String())
 	}
@@ -110,14 +111,24 @@ func TestLoginReaderOverlongLineIsOneRefusalAndResyncs(t *testing.T) {
 func TestLoginReaderAcceptedLineHitsHandOff(t *testing.T) {
 	var out bytes.Buffer
 	var got []loginbridge.Flow
-	readLoginLines(strings.NewReader(goodLoginURL+"\n"), &out, func(f loginbridge.Flow) { got = append(got, f) })
+	readLoginLines(strings.NewReader(goodLoginURL+"\n"), &out, func(f loginbridge.Flow) error { got = append(got, f); return nil })
 	if len(got) != 1 || out.Len() != 0 {
 		t.Fatalf("got %+v, stderr %q", got, out.String())
 	}
-	var o bytes.Buffer
-	notYetBuiltHandler(&o)(got[0])
-	if !strings.Contains(o.String(), "not implemented in this build") || !strings.Contains(o.String(), "NOTHING WAS OPENED") {
-		t.Fatalf("stub handler: %q", o.String())
+}
+
+func TestLoginReaderCountsAHandlerRefusalWithItsOwn(t *testing.T) {
+	var out bytes.Buffer
+	in := strings.Repeat(goodLoginURL+"\n", 7)
+	readLoginLines(strings.NewReader(in), &out, func(loginbridge.Flow) error {
+		return errors.New("a login is pending (opened 3s ago)")
+	})
+	s := out.String()
+	if n := strings.Count(s, "refused an open request from the sandbox — a login is pending (opened 3s ago). Nothing was opened."); n != 5 {
+		t.Fatalf("printed %d handler refusals, want 5:\n%s", n, s)
+	}
+	if strings.Count(s, "further refusals suppressed") != 1 {
+		t.Fatalf("want one suppression line:\n%s", s)
 	}
 }
 
@@ -139,7 +150,7 @@ func TestLoginBridgeFIFOIsPrivateBoundAndClosesCleanly(t *testing.T) {
 	var out lockedBuf
 	flows := make(chan loginbridge.Flow, 1)
 	b, err := startLoginBridge(pol, func(n string) (string, error) { return filepath.Join(dir, n), nil },
-		&out, func(f loginbridge.Flow) { flows <- f })
+		&out, func(*loginBridge) flowHandler { return func(f loginbridge.Flow) error { flows <- f; return nil } })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,4 +217,43 @@ func TestRunWithoutTheKeyHasNoBridgeAndAsksForNoRelaySockets(t *testing.T) {
 	if o.RelaySockets != 3 || o.OnRelaySockets == nil {
 		t.Fatalf("%+v", o)
 	}
+}
+
+// TestDryRunArgvCarriesTheBrowserFIFOBind pins that --dry-run's bwrap argv is
+// the argv a real run would build: the FIFO bind is planned before BwrapArgs,
+// not only added to the mounts the screens render.
+func TestDryRunArgvCarriesTheBrowserFIFOBind(t *testing.T) {
+	cfgHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfgHome, "snug", "profiles.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgHome, "snug", "profiles.d", "login.toml"),
+		[]byte("[profile.login]\nbrowser = \"claude-login\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	cfg, err := parseArgs([]string{"--dry-run", "--json", "-p", "@claude", "-p", "@net", "-p", "login", t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code := run(cfg); code != 0 {
+			t.Errorf("run = %d", code)
+		}
+	})
+	var doc struct {
+		Bwrap struct {
+			Argv []string `json:"argv"`
+		} `json:"bwrap"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	a := doc.Bwrap.Argv
+	for i := 0; i+2 < len(a); i++ {
+		if a[i] == "--bind" && a[i+2] == policy.BrowserFIFOGuest && strings.HasSuffix(a[i+1], "/"+browserFIFOName) {
+			return
+		}
+	}
+	t.Fatalf("no --bind <rt>/%s %s in the dry-run argv:\n%q", browserFIFOName, policy.BrowserFIFOGuest, a)
 }

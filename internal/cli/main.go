@@ -799,18 +799,27 @@ func run(cfg config) int {
 	// last.
 	var bridge *loginBridge
 	if wantsLoginBridge(pol, cfg) {
-		// The path is not used until the host half exists; resolving it now
-		// is what makes a missing xdg-open a refusal at start.
-		if _, perr := browserPreflight(env); perr != nil {
+		// Resolving xdg-open here makes a missing one a refusal at start,
+		// and the opener execs this absolute path without searching PATH.
+		xdg, perr := browserPreflight(env)
+		if perr != nil {
 			return refuse(cfg, exitPolicy, perr)
 		}
-		b, berr := startLoginBridge(pol, runDir.Socket, os.Stderr, notYetBuiltHandler(os.Stderr))
+		b, berr := startLoginBridge(pol, runDir.Socket, os.Stderr, func(lb *loginBridge) flowHandler {
+			return lb.hostHandler(xdg, os.Stderr)
+		})
 		if berr != nil {
 			return refuse(cfg, exitPolicy, berr)
 		}
 		bridge = b
 		defer bridge.close()
 		announceLoginBridge(notes)
+	} else if cfg.startsNothing() {
+		// The FIFO a real run would bind, planned before BwrapArgs so the
+		// argv --dry-run prints carries the same --bind.
+		if perr := planBrowserFIFO(pol); perr != nil {
+			return refuse(cfg, exitPolicy, perr)
+		}
 	}
 
 	// The post-Resolve mounts above create ancestors of their own — the staged
@@ -920,8 +929,12 @@ func run(cfg config) int {
 		// snug left it for nothing to find (issue #236). Warn-only: a failure
 		// here means the NEXT sweep, not this run, may miss an orphan, and
 		// there is nothing to refuse — a payload may already be about to
-		// exist behind it.
+		// exist behind it. It also hands the login bridge the pid whose
+		// /proc/<pid>/net/tcp lists the sandbox's own sockets.
 		OnInit: func(pid int) {
+			if bridge != nil {
+				bridge.setInitPID(pid)
+			}
 			if werr := writeInitState(pol.Target, pid); werr != nil {
 				fmt.Fprintf(os.Stderr, "snug: could not record this run's sandbox init (%v); "+
 					"a SIGKILL of this run may leave its sandbox init behind and the next snug "+

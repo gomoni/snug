@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 
@@ -75,24 +77,29 @@ func (b *loginBridge) apply(o *sandbox.Options) {
 	o.OnRelaySockets = b.setRelay
 }
 
-// flowHandler receives a login flow the predicate accepted. It is the one
-// place the host half (listener, relay, opener) plugs in.
-type flowHandler func(f loginbridge.Flow)
+// flowHandler receives a login flow the predicate accepted. A non-nil error
+// is a refusal: the reader prints it, counted with its own, and nothing was
+// opened.
+type flowHandler func(f loginbridge.Flow) error
 
 // loginBridge is P0's half of the transport: the FIFO descriptor, the reader
-// goroutine and the relay sockets the stage hands back.
+// goroutine, the relay sockets the stage hands back, the sandbox init's pid
+// the port check reads, and the host half a real run hands flows to.
 type loginBridge struct {
 	fifoPath string
 	fifo     *os.File
 	done     chan struct{}
+	initPID  atomic.Int64
 
 	mu    sync.Mutex
 	relay []*os.File
+	host  *loginbridge.Bridge
 }
 
 // startLoginBridge creates the FIFO in the run directory, binds it into pol
-// at policy.BrowserFIFOGuest and starts the reader.
-func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), stderr io.Writer, handle flowHandler) (*loginBridge, error) {
+// at policy.BrowserFIFOGuest and starts the reader, which hands every
+// accepted flow to the handler newHandler builds for this bridge.
+func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), stderr io.Writer, newHandler func(*loginBridge) flowHandler) (*loginBridge, error) {
 	path, err := socket(browserFIFOName)
 	if err != nil {
 		return nil, err
@@ -111,11 +118,70 @@ func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), s
 	}
 	pol.BindSocket(path, policy.BrowserFIFOGuest, "(browser)")
 	b := &loginBridge{fifoPath: path, fifo: f, done: make(chan struct{})}
+	handle := newHandler(b)
 	go func() {
 		defer close(b.done)
 		readLoginLines(f, stderr, handle)
 	}()
 	return b, nil
+}
+
+// hostHandler builds the host half — listener, relay, opener — over this
+// bridge's relay sockets and the sandbox init's /proc, and returns its
+// Handle. xdg is the absolute path browserPreflight resolved.
+func (b *loginBridge) hostHandler(xdg string, stderr io.Writer) flowHandler {
+	h := loginbridge.New(loginbridge.Deps{
+		Clock:     loginbridge.RealClock{},
+		Relayer:   b,
+		Listening: b.listening,
+		PeerUID:   loginbridge.PeerUID,
+		UID:       os.Getuid(),
+		Open:      loginbridge.Opener{Path: xdg}.Open,
+		Stderr:    stderr,
+	})
+	b.mu.Lock()
+	b.host = h
+	b.mu.Unlock()
+	return h.Handle
+}
+
+// setInitPID is fed from Options.OnInit: the pid whose /proc/<pid>/net/tcp
+// lists the sockets of the sandbox's network namespace.
+func (b *loginBridge) setInitPID(pid int) { b.initPID.Store(int64(pid)) }
+
+func (b *loginBridge) listening(port int) (bool, error) {
+	pid := b.initPID.Load()
+	if pid == 0 {
+		return false, errors.New("the sandbox has not started yet")
+	}
+	return loginbridge.ListeningOn(fmt.Sprintf("/proc/%d/net/tcp", pid), port)
+}
+
+// Left is loginbridge.Relayer's: the relay sockets not yet spent.
+func (b *loginBridge) Left() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.relay)
+}
+
+// Dial spends one relay socket on connect(127.0.0.1:port). The socket was
+// created in the sandbox's network namespace, so that address is the
+// sandbox's loopback, not the host's.
+func (b *loginBridge) Dial(port int) (net.Conn, error) {
+	b.mu.Lock()
+	if len(b.relay) == 0 {
+		b.mu.Unlock()
+		return nil, errors.New("no relay socket is left in this run")
+	}
+	f := b.relay[0]
+	b.relay = b.relay[1:]
+	b.mu.Unlock()
+	defer f.Close()
+	sa := &unix.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}
+	if err := unix.Connect(int(f.Fd()), sa); err != nil {
+		return nil, fmt.Errorf("connecting to 127.0.0.1:%d inside the sandbox: %w", port, err)
+	}
+	return net.FileConn(f)
 }
 
 // setRelay is Options.OnRelaySockets.
@@ -125,11 +191,18 @@ func (b *loginBridge) setRelay(fs []*os.File) {
 	b.mu.Unlock()
 }
 
-// close stops the reader and closes the FIFO and the relay sockets. The
-// FIFO file itself is removed with the run directory.
+// close stops the reader, ends any live flow (its listeners and
+// connections), and closes the FIFO and the relay sockets. The FIFO file
+// itself is removed with the run directory.
 func (b *loginBridge) close() {
 	b.fifo.Close()
 	<-b.done
+	b.mu.Lock()
+	h := b.host
+	b.mu.Unlock()
+	if h != nil {
+		h.Close()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, f := range b.relay {
@@ -176,15 +249,8 @@ func readLoginLines(r io.Reader, stderr io.Writer, handle flowHandler) {
 			refuse(perr.Error())
 			continue
 		}
-		handle(flow)
-	}
-}
-
-// notYetBuiltHandler stands in for the host listener, relay and opener.
-func notYetBuiltHandler(stderr io.Writer) flowHandler {
-	return func(f loginbridge.Flow) {
-		fmt.Fprintf(stderr, "snug: login bridge: accepted a login URL for port %d, but the host "+
-			"half (listener, relay, opener) is not implemented in this build. NOTHING WAS OPENED — "+
-			"open the URL claude printed and paste the code.\n", f.Port)
+		if herr := handle(flow); herr != nil {
+			refuse(herr.Error())
+		}
 	}
 }
