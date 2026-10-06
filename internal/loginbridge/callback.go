@@ -58,10 +58,23 @@ func ParseCallback(method, target, expectedState string) (Callback, error) {
 	if err != nil {
 		return Callback{}, err
 	}
+	// Every unknown key is named, together with the whole key set, not just
+	// the first: the refusal is the record of what a real browser sent, and a
+	// login whose callback was refused cannot be retried to learn the rest.
+	// Names only — a value here may be the authorization code.
+	var unknown []string
 	for _, k := range order {
 		if !callbackKeysPendingMeasurement0e[k] {
-			return Callback{}, fmt.Errorf("parameter %q is not one snug relays", k)
+			unknown = append(unknown, fmt.Sprintf("%q", k))
 		}
+	}
+	if len(unknown) > 0 {
+		all := make([]string, len(order))
+		for i, k := range order {
+			all[i] = fmt.Sprintf("%q", k)
+		}
+		return Callback{}, fmt.Errorf("parameter %s is not one snug relays (the callback's keys: %s)",
+			strings.Join(unknown, ", "), strings.Join(all, ", "))
 	}
 	for k := range callbackKeysPendingMeasurement0e {
 		if _, ok := values[k]; !ok {

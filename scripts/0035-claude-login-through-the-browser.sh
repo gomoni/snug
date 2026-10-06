@@ -88,8 +88,8 @@ if grep -q 'delivered the login callback' "$log"; then
 else
 	echo "MEASURED (e) callback query keys: not measured — no callback was delivered; snug logged:"
 	printf '%s\n' "${refused:-(no refusal lines)}"
-	keys=$(printf '%s\n' "$refused" | sed -n 's/.*parameter "\([^"]*\)" is not one snug relays.*/\1/p' | sort -u | tr '\n' ' ')
-	[ -z "$keys" ] || echo "MEASURED (e) callback query keys: unknown parameter(s) seen: $keys"
+	keys=$(printf '%s\n' "$refused" | sed -n "s/.*is not one snug relays (the callback's keys: \([^)]*\)).*/\1/p" | head -n 1)
+	[ -z "$keys" ] || echo "MEASURED (e) callback query keys: $keys"
 fi
 
 [ "$before" = "$after" ] || fail "the host's ~/.claude/.credentials.json changed across the run ($before -> $after)"

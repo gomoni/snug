@@ -45,6 +45,8 @@ func TestCallbackRefusals(t *testing.T) {
 		{"absolute-form target", "GET", "http://localhost/callback?code=abcXYZ019&state=" + testState,
 			testState, "origin-form"},
 		{"extra key iss", "GET", good + "&iss=https://claude.com", testState, "not one snug relays"},
+		{"every unknown key and the whole set are named", "GET", good + "&iss=x&session_state=y", testState,
+			`parameter "iss", "session_state" is not one snug relays (the callback's keys: "code", "state", "iss", "session_state")`},
 		{"missing code", "GET", "/callback?state=" + testState, testState, "\"code\" is missing"},
 		{"missing state", "GET", "/callback?code=abcXYZ019", testState, "\"state\" is missing"},
 		{"duplicate code", "GET", good + "&code=def", testState, "appears twice"},
