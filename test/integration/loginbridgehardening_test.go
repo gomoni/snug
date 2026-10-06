@@ -107,7 +107,7 @@ echo "STEALER-GONE"
 	t.Logf("with a competing O_RDONLY reader inside, the first request was %s",
 		map[bool]string{true: "SEEN by snug (opener ran)", false: "STOLEN (opener never ran)"}[seen])
 	handToPayload(t, f.proj, "go1", "x")
-	out = waitForLogLine(t, s, "W2-RC 0", 20*time.Second)
+	waitForLogLine(t, s, "W2-RC 0", 20*time.Second)
 
 	for end := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 		if _, ran := loginRec(t, f.rec, "ran"); ran {

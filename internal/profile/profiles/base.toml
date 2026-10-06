@@ -617,8 +617,10 @@ dns = true
 # state alone, so no cookie crosses), and cannot show your browser a byte of
 # its own (snug answers the callback page itself). Another user on this
 # machine cannot deliver the callback: snug refuses any connection not owned
-# by your uid. The browser `xdg-open` starts is yours, not a process snug
-# started, and it may outlive this run.
+# by your uid. "Your uid" includes your own rootless host containers opened to
+# host loopback; lacking the state, they can only hold connection slots, never
+# deliver a callback. xdg-open, and the browser it starts, are yours, not
+# processes snug started, and either may outlive this run.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]

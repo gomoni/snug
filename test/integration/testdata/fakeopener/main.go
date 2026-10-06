@@ -14,7 +14,10 @@
 //	                 touching the callback), "wrongstate" (first send a callback
 //	                 with a state that is not the URL's, then the right one) or
 //	                 "dialonly" (record argv and report whether the callback
-//	                 port accepts a TCP connection, then exit)
+//	                 port accepts a TCP connection, then exit) or "linger"
+//	                 (record argv and its own pid in "pid", then stay alive
+//	                 for FAKEOPENER_LINGER, default 4s, never touching the
+//	                 callback: a browser the opener started and left running)
 //
 // Files written, each created only when its step is reached, so a test can
 // assert that this program never ran by the absence of "ran":
@@ -76,6 +79,14 @@ func main() {
 
 	switch os.Getenv("FAKEOPENER_MODE") {
 	case "hold":
+		return
+	case "linger":
+		write("pid", fmt.Sprintf("%d\n", os.Getpid()))
+		d := 4 * time.Second
+		if v, err := time.ParseDuration(os.Getenv("FAKEOPENER_LINGER")); err == nil {
+			d = v
+		}
+		time.Sleep(d)
 		return
 	case "dialonly":
 		var d strings.Builder

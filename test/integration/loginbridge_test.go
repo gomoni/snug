@@ -908,3 +908,276 @@ echo
 		t.Errorf("the shim is not intact after the attempts (first bytes not a shell shebang):\n%s", r.out)
 	}
 }
+
+// bridgeContainerScript builds one FROM scratch image whose RUN step and
+// entrypoint are the dialer, runs the RUN step with the targets as arguments
+// (the build vantage), then creates and runs a container with the same targets
+// as Cmd, which podman appends to the ENTRYPOINT (the container vantage). Both
+// print what the dialer said, under markers.
+const bridgeContainerScript = `import sys, tarfile, io, urllib.parse
+targets = sys.argv[1:]
+tag = "snugtest-bridgedial:1"
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as tf:
+    df = ("FROM scratch\nCOPY bridgedialprobe /bridgedialprobe\nRUN " + json.dumps(["/bridgedialprobe"] + targets) + "\nENTRYPOINT [\"/bridgedialprobe\"]\n").encode()
+    ti = tarfile.TarInfo("Dockerfile"); ti.size = len(df); tf.addfile(ti, io.BytesIO(df))
+    data = open("bridgedialprobe", "rb").read()
+    t2 = tarfile.TarInfo("bridgedialprobe"); t2.size = len(data); t2.mode = 0o755; tf.addfile(t2, io.BytesIO(data))
+q = {"dockerfile": '["Dockerfile"]', "t": tag, "output": tag,
+     "networkmode": "0", "nsoptions": '[{"Name":"user","Host":true,"Path":""}]',
+     "isolation": "0", "rm": "1", "layers": "1", "pullpolicy": "missing",
+     "seccomp": "/usr/share/containers/seccomp.json", "shmsize": "67108864", "nocache": "1"}
+st, body = req("POST", "/v5.0.0/libpod/build?" + urllib.parse.urlencode(q), buf.getvalue(), {"Content-Type": "application/x-tar"})
+print("BUILD %s: %d" % (tag, st), flush=True)
+print("BUILD-OUTPUT-BEGIN")
+for line in body.decode(errors="replace").splitlines():
+    try:
+        s = json.loads(line).get("stream", "")
+    except Exception:
+        s = line
+    for l in s.splitlines():
+        if l.startswith("DIAL") or l.startswith("ARGS"):
+            print("BUILD-STEP " + l.strip())
+print("BUILD-OUTPUT-END", flush=True)
+if st == 200:
+    spec = {"Image": "localhost/" + tag, "Cmd": targets, "Tty": True}
+    st, r = req("POST", "/v1.41/containers/create", json.dumps(spec).encode(), {"Content-Type": "application/json"})
+    print("CREATE %d" % st, flush=True)
+    if st == 201:
+        cid = json.loads(r)["Id"]
+        print("START %d" % req("POST", "/v1.41/containers/%s/start" % cid)[0], flush=True)
+        print("WAIT %s" % (req("POST", "/v1.41/containers/%s/wait" % cid),), flush=True)
+        st, logs = req("GET", "/v1.41/containers/%s/logs?stdout=1&stderr=1" % cid)
+        print("CTR-LOGS-BEGIN")
+        for l in logs.decode(errors="replace").replace("\r", "").splitlines():
+            print("CTR " + l)
+        print("CTR-LOGS-END", flush=True)
+`
+
+// bridgeVerdicts reads the dialer's lines that start with prefix into
+// label -> {verdict, address}.
+func bridgeVerdicts(out, prefix string) map[string][2]string {
+	m := map[string][2]string{}
+	for _, l := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(l, prefix+"DIAL ")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) >= 3 {
+			m[f[0]] = [2]string{f[1], f[2]}
+		}
+	}
+	return m
+}
+
+// TestAContainerCannotReachTheLoginBridgeListener fails if, with a login flow
+// pending, a container started through snug's engine or a build RUN step can
+// connect to the bridge's host listener on 127.0.0.1:P or [::1]:P, or to any
+// other host loopback, LAN or gateway service; if either of them is answered
+// by snug's page; if snug logs a listener notice for a connection from
+// either; or if a container's request, which carries the flow's right state,
+// ends the human's pending login.
+//
+// Measured claim being kept: containers share the sandbox's network namespace
+// N, whose view of host loopback pasta seals, so 127.0.0.1:P from a container
+// is N's own listener (the login probe's, which never answers) and never
+// snug's. That the uid gate would NOT stop a pasta-forwarded connection is
+// why the seal, not the gate, is what this asserts.
+//
+// Controls: the host connects to 127.0.0.1:P and (where it has IPv6 loopback)
+// [::1]:P before the container starts, and the opener ran; the container's own
+// 127.0.0.1:P connects and gets no answer; every dialled address is read back
+// from the dialer's output; egress is reached when the host has it. It does
+// not cover a forward of a port into N (pasta -T), which no profile builds.
+func TestAContainerCannotReachTheLoginBridgeListener(t *testing.T) {
+	budget(t, 240*time.Second)
+	requireLoginBridgeEnv(t)
+	engEnv, _ := containerEngineEnv(t)
+	requireRealEngine(t, engEnv)
+	buildLoginFixtures(t)
+
+	f := newLoginFixture(t, "hold")
+	for _, e := range engEnv {
+		for _, k := range []string{"XDG_RUNTIME_DIR=", "SNUG_PODMAN=", "SNUG_PODMAN_ROOT="} {
+			if strings.HasPrefix(e, k) {
+				f.env = append(f.env, e)
+			}
+		}
+	}
+
+	dialer := filepath.Join(t.TempDir(), "bridgedialprobe")
+	build := exec.Command("go", "build", "-o", dialer, "./test/integration/testdata/bridgedialprobe")
+	build.Dir = "../.."
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building bridgedialprobe: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(f.proj, "bridgedialprobe"), mustRead(t, dialer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.proj, "container.py"), []byte(pyPreamble+bridgeContainerScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.proj, "attack.sh"), []byte(`"$BROWSER" "$URL"; echo "OPEN-RC $?"
+while [ ! -f go ]; do sleep 0.2; done
+python3 container.py $(cat go); echo "CTR-DONE $?"
+while [ ! -f done ]; do sleep 0.2; done
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Host services the dials must not reach.
+	type svc struct{ label, network, host string }
+	var svcs []svc
+	addSvc := func(label, network, addr string) {
+		ln, err := net.Listen(network, net.JoinHostPort(addr, "0"))
+		if err != nil {
+			t.Logf("no %s listener on %s here, skipping %s: %v", network, addr, label, err)
+			return
+		}
+		serveBanner(t, ln)
+		svcs = append(svcs, svc{label, network, net.JoinHostPort(addr, strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))})
+	}
+	addSvc("svc-v4", "tcp4", "127.0.0.1")
+	haveV6 := loginHostHasV6(t)
+	if haveV6 {
+		addSvc("svc-v6", "tcp6", "::1")
+	}
+	lan, lanErr := hostOutboundAddr()
+	if lanErr == nil {
+		addSvc("svc-lan", "tcp4", lan)
+	} else {
+		t.Logf("no LAN address, skipping the LAN rows: %v", lanErr)
+	}
+
+	args := []string{"-p", "@podman-build", "-p", "@net", "-p", "login"}
+	s := startBgSandbox(t, f.env, args, f.proj, "./loginprobe script=attack.sh")
+	out := waitForLogLine(t, s, "OPEN-RC 0", 60*time.Second)
+	port := loginPort(t, out)
+
+	// Preconditions: the host reaches the bridge's listener on both families,
+	// and the opener ran for this flow.
+	if !loginWaitPort(t, port, true, 10*time.Second) {
+		t.Fatalf("precondition: nothing holds 127.0.0.1:%d on the host:\n%s", port, s.log())
+	}
+	if haveV6 {
+		c, err := net.DialTimeout("tcp6", fmt.Sprintf("[::1]:%d", port), 2*time.Second)
+		if err != nil {
+			t.Fatalf("precondition: the host cannot connect to [::1]:%d: %v", port, err)
+		}
+		c.Close()
+	}
+	if _, ran := loginRec(t, f.rec, "ran"); !ran {
+		t.Fatalf("precondition: the fake opener never ran:\n%s", s.log())
+	}
+
+	type target struct{ label, network, hostport string }
+	// The host's own probes above close a connection before sending a head, and
+	// snug refuses those (a closed client's row shows uid 0). Count them now, so
+	// the check after the container's dials is about the container's.
+	time.Sleep(500 * time.Millisecond)
+	noticesBefore := strings.Count(s.log(), "snug: login bridge:")
+
+	targets := []target{{"p-v4", "tcp4", fmt.Sprintf("127.0.0.1:%d", port)}}
+	if haveV6 {
+		targets = append(targets, target{"p-v6", "tcp6", fmt.Sprintf("::1:%d", port)})
+	}
+	if lanErr == nil {
+		targets = append(targets, target{"p-lan", "tcp4", fmt.Sprintf("%s:%d", lan, port)})
+	}
+	targets = append(targets, target{"p-gw", "tcp4", fmt.Sprintf("gw:%d", port)})
+	for _, v := range svcs {
+		targets = append(targets, target{v.label, v.network, strings.NewReplacer("[", "", "]", "").Replace(v.host)})
+	}
+	egress := false
+	if os.Getenv("SNUG_TEST_NET") != "" {
+		if _, err := probeInternet(); err == nil {
+			targets = append(targets, target{"egress", "tcp4", internetTarget(t)})
+			egress = true
+		}
+	}
+	var words []string
+	for _, tg := range targets {
+		words = append(words, fmt.Sprintf("%s@%s:%s", tg.label, tg.network, tg.hostport))
+	}
+	handToPayload(t, f.proj, "go", strings.Join(words, " "))
+	out = waitForLogLine(t, s, "CTR-DONE", 200*time.Second)
+
+	if !strings.Contains(out, "BUILD snugtest-bridgedial:1: 200") || !strings.Contains(out, "CTR-LOGS-END") {
+		t.Fatalf("control: the image did not build or the container did not run, so no dial below was made:\n%s", out)
+	}
+	if strings.Contains(out, hostBanner) {
+		t.Errorf("a host service's banner reached the output: something connected to a host service:\n%s", out)
+	}
+	if n := strings.Count(out, "snug: login bridge:"); n != noticesBefore {
+		t.Errorf("snug logged %d listener notice(s) during the container's dials, so a connection "+
+			"reached its listener from inside:\n%s", n-noticesBefore, out)
+	}
+
+	for _, v := range []struct{ name, prefix string }{{"build RUN step", "BUILD-STEP "}, {"container", "CTR "}} {
+		if !strings.Contains(out, v.prefix+"ARGS "+strconv.Itoa(len(targets))) {
+			t.Errorf("%s: the dialer was not given %d targets:\n%s", v.name, len(targets), out)
+			continue
+		}
+		got := bridgeVerdicts(out, v.prefix)
+		for _, tg := range targets {
+			r, ok := got[tg.label]
+			if !ok {
+				t.Errorf("%s: no verdict for %s:\n%s", v.name, tg.label, out)
+				continue
+			}
+			verdict, addr := r[0], r[1]
+			if tg.hostport != "" && !strings.HasPrefix(tg.hostport, "gw:") {
+				want := tg.hostport
+				if tg.network == "tcp6" {
+					i := strings.LastIndex(want, ":")
+					want = net.JoinHostPort(want[:i], want[i+1:])
+				}
+				if addr != want {
+					t.Errorf("%s: %s dialled %s, want %s, so the verdict is about another target", v.name, tg.label, addr, want)
+				}
+			} else if !strings.HasSuffix(addr, fmt.Sprintf(":%d", port)) || strings.HasPrefix(addr, "127.") {
+				t.Errorf("%s: %s dialled %s, want the gateway on port %d", v.name, tg.label, addr, port)
+			}
+			switch tg.label {
+			case "p-v4":
+				if verdict != "CONNECTED-SILENT" {
+					t.Errorf("%s: control: the container's own 127.0.0.1:%d gave %s, want a completed "+
+						"handshake and no answer (the sandbox's listener, not snug's)", v.name, port, verdict)
+				}
+			case "egress":
+				if !strings.HasPrefix(verdict, "CONNECTED") {
+					t.Errorf("%s: control: egress gave %s, so a REFUSED elsewhere may be a dead network", v.name, verdict)
+				}
+			case "p-gw":
+				if strings.HasPrefix(verdict, "CONNECTED") {
+					t.Errorf("%s: the gateway on the bridge's port answered: %s", v.name, verdict)
+				}
+			default:
+				if verdict != "REFUSED" {
+					t.Errorf("%s: %s gave %s, want REFUSED", v.name, tg.label, verdict)
+				}
+			}
+		}
+	}
+	if !egress {
+		t.Log("egress control skipped: SNUG_TEST_NET is unset or the host has no route")
+	}
+
+	// The flow is still pending: none of the requests, each carrying the right
+	// state, was relayed or ended it.
+	resp, err := loginHostRequest(t, port, loginCallbackTarget("CODE-HOST", strings.Repeat("W", 43)))
+	if err != nil {
+		t.Fatalf("the host's own request after the container's dials: %v\n%s", err, s.log())
+	}
+	if !strings.HasPrefix(resp, "HTTP/1.1 404 ") || !strings.Contains(resp, "snug is waiting for a Claude login callback") {
+		t.Errorf("the host's wrong-state request got %q, want snug's 404 for a flow still waiting:\n%s",
+			firstLine(resp), resp)
+	}
+	waitForLogLine(t, s, "The login is still pending.", 10*time.Second)
+	handToPayload(t, f.proj, "done", "x")
+	if code := loginWaitExit(t, s, 30*time.Second); code != 0 {
+		t.Errorf("snug exited %d:\n%s", code, s.log())
+	}
+}

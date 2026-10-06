@@ -220,6 +220,19 @@ in the shim's and the opener's argv, readable by any host uid under the default
 deliver that code (authorization-code injection → the sandbox logged in as the
 attacker).
 
+The uid gate does NOT keep the sandbox off the listener. It admits any socket
+the human's uid owns, and pasta is one: a connection pasta forwards out of a
+netns with `-T` shows the human's uid in `/proc/self/net/tcp` (measured, pasta
+20260612). What keeps the sandbox, and every container it starts, off
+`127.0.0.1:P` and `[::1]:P` is host loopback being sealed from N
+(`--map-host-loopback none`, `-T none`, `-U none` in `PastaArgs`). Containers
+share N (ENGINE-NETNS.md): with `-p @podman-build -p @net` and a live flow, a
+container and a build `RUN` step reach only N's own `127.0.0.1:P` (the
+sandbox's listener, never snug's page) and are refused on `[::1]:P` and on
+every host loopback, gateway and LAN address, even carrying the right state.
+A forward of any port in 32768–60999 into N would open the listener to the
+sandbox, state included.
+
 Every answer is `writePage`: snug's own text, HTML-escaped, `text/html;
 charset=utf-8`, `Content-Security-Policy: default-src 'none'; form-action
 'none'; frame-ancestors 'none'`, `Cache-Control: no-store`, `Referrer-Policy:
@@ -293,8 +306,11 @@ authorize page. That is a remote default, not something snug's tests can see:
 **if a user is ever redirected without a click (measurement (b), §11, found a
 click required), the bridge is a sandbox-triggered silent token mint and a
 snug confirmation page must come back** — a page on the same host listener that
-the sandbox cannot click (host loopback is sealed from inside, and the uid gate
-admits only the human's connections) and a POST to reach claude.com.
+the sandbox cannot reach (host loopback is sealed from inside) and a POST to
+reach claude.com. The uid gate would not be that page's guard: it admits pasta
+and the human's own browser, so a page the sandbox serves through `snug proxy`
+reaches it as a same-uid client. Such a page needs its own cross-site check
+(`Sec-Fetch-Site`/`Origin`) and a token the sandbox never sees.
 
 A confirmation in snug's terminal is not an option: the payload shares that tty
 and can draw a fake prompt and read the keystroke first (THREAT-MODEL §3.6).
@@ -359,7 +375,7 @@ Resolve. The pasta argv is byte-equal to `@claude @net`'s: no `-t`, no
 | host listeners | P0, only while a flow lives | closed at flow end, TTL, or `Bridge.Close` | kernel closes both |
 | relay sockets in N | P0 descriptors, CLOEXEC | closed by `close` | kernel closes them; they hold a reference to N only while P0 lives, and P0 is upstream of bwrap |
 | `setns` thread in P1 | P1, transient | destroyed at goroutine exit, then verified absent | — |
-| `xdg-open` | its own session | reaped by a goroutine | reparented; normally already gone |
+| `xdg-open` | its own session | reaped by a goroutine only while snug lives; one still running when the run ends is reparented to the session's subreaper and outlives the run | reparented |
 
 A failure in P1 while making the sockets answers `netready` with an error and
 the run is refused. A panic in P0 collapses the run. Nothing touches pasta, the
@@ -468,7 +484,23 @@ with `testdata/loginprobe` as the sandbox half of `/login` and
 `TestTheLoginBridgeRefusesAPortNothingListensOn`, `TestAWrongStateGets404AndTheFlowSurvives`,
 `TestTheLoginBridgeLeavesHostLoopbackClosed`, `TestWithoutTheBrowserKeyThereIsNoBridge`,
 `TestTheLoginBridgeDiesWithSnug`, `TestTheLoginBridgeRefusesWithoutADisplay`,
-`TestTheShimAndFIFOAreReadOnlyOrScoped`.
+`TestTheShimAndFIFOAreReadOnlyOrScoped`, `TestAContainerCannotReachTheLoginBridgeListener`.
+
+Hardening (`loginbridgehardening_test.go`): `TestASecondFIFOReaderInsideCostsOnlyTheBridge`,
+`TestAFIFOFloodFromInsideNeitherGrowsSnugNorBlocksItsExit`,
+`TestTheFIFOPathCannotBeReplacedFromInside`, `TestSandboxChosenBytesNeverReachSnugsScreenRaw`,
+`TestSIGKILLOfThePayloadMidFlowReleasesTheHostPort`,
+`TestSIGKILLOfTheStageMidFlowCollapsesTheRun`. In combination
+(`loginbridgecombos_test.go`): `TestAnHTTPDoorAndTheLoginBridgeInOneSelection`,
+`TestTwoRunsWithTheBridgeNeverShareAFlow`, `TestTheLoginBridgeBesideTheSSHAgentProxy`,
+`TestDryRunNamesTheMountsAndEnvironmentARealRunHas`,
+`TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn`,
+`TestAfterANormalExitTheHostHoldsNothingOfTheRun`,
+`TestAfterAPayloadCrashTheHostHoldsNothingOfTheRun`,
+`TestAfterSIGKILLOfSnugNoHelperOrNamespaceOfTheRunSurvives`. The run directory
+no grant may reach (`runtimedirgrant_test.go`):
+`TestASandboxGrantedAPeersRuntimeDirIsRefused`,
+`TestDryRunRefusesTmpTargetWithoutXDGRuntimeDir`.
 
 Not CI-able (`scripts/`): `0035-claude-login-through-the-browser.sh` (the real
 claude and browser; the host credential file byte-identical before and after;

@@ -28,6 +28,15 @@
 //	              port) and BROWSER in its environment and its output passed
 //	              through, then SCRIPT-RC. The listener stays up until the
 //	              script ends; nothing else (serve, dial) runs.
+//	port=N        listen on 127.0.0.1:N instead of a kernel-chosen port, so two
+//	              sandboxes can both name the same host port in their URL
+//	second=FILE   after the first open, wait for FILE, then listen on a second
+//	              kernel-chosen port, print it as PORT2, ask $BROWSER to open a
+//	              URL naming it (SHIM2-RC) and serve that listener instead of
+//	              the first. The state is the same
+//	door=1        accept on descriptor 3 (the http door's LISTEN_FDS socket)
+//	              and answer every request with DOOR-BODY, printing each one
+//	              as DOOR-RECEIVED
 //	token=T       ignored; it only puts T in this process's argv, where the
 //	              host can find it
 //
@@ -67,7 +76,14 @@ func main() {
 	}
 	say("PROBE-START")
 
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	listenAddr := "127.0.0.1:0"
+	if opt["port"] != "" {
+		listenAddr = "127.0.0.1:" + opt["port"]
+	}
+	if opt["door"] != "" {
+		serveDoor()
+	}
+	ln, err := net.Listen("tcp4", listenAddr)
 	if err != nil {
 		say("PROBE-ERROR listen: %v", err)
 		os.Exit(1)
@@ -117,7 +133,23 @@ func main() {
 		say("SHIM-RC 0")
 	}
 
-	if len(dials) > 0 {
+	if opt["second"] != "" {
+		waitFor(opt["second"], 30*time.Second)
+		ln2, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			say("PROBE-ERROR listen2: %v", err)
+			os.Exit(1)
+		}
+		port2 := ln2.Addr().(*net.TCPAddr).Port
+		say("PORT2 %d", port2)
+		u2 := pinnedURL(port2, state, challenge)
+		if err := exec.Command(browser, u2).Run(); err != nil {
+			say("SHIM2-RC %v", err)
+		} else {
+			say("SHIM2-RC 0")
+		}
+		serve(ln2, 1, 20*time.Second)
+	} else if len(dials) > 0 {
 		// The listener stays up until the go file appears, because snug checks
 		// that something listens on the port when it handles the open, and that
 		// is asynchronous. It is dropped before the dials: what they measure is
@@ -144,6 +176,40 @@ func main() {
 	}
 	waitFor(opt["release"], 30*time.Second)
 	say("PROBE-DONE")
+}
+
+// serveDoor accepts on descriptor 3 until the process ends. It is the payload
+// half of an http door: the host connects to the door's unix socket and what
+// arrives here is what the host sent, byte for byte.
+func serveDoor() {
+	l, err := net.FileListener(os.NewFile(3, "door-fd-3"))
+	if err != nil {
+		say("PROBE-ERROR door: fd 3 is not a listener: %v", err)
+		os.Exit(1)
+	}
+	say("DOOR-READY %s", os.Getenv("LISTEN_FDNAMES"))
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			var data []byte
+			br := bufio.NewReader(c)
+			for !strings.HasSuffix(string(data), "\r\n\r\n") {
+				b, err := br.ReadByte()
+				if err != nil {
+					break
+				}
+				data = append(data, b)
+			}
+			say("DOOR-RECEIVED %q", string(data))
+			body := "DOOR-BODY"
+			fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			c.Close()
+		}
+	}()
 }
 
 func say(format string, a ...any) {
