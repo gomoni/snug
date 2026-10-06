@@ -670,6 +670,9 @@ func run(cfg config) int {
 		// refuse a writable grant reaching them. Same call profile.Load makes,
 		// so the check cannot disagree with what was actually read.
 		ProfileDirs: profile.ConfigDirs(),
+		// Every place a run's endpoints can live, so a grant cannot reach a
+		// concurrent run's. See Context.RuntimeDirs.
+		RuntimeDirs: runtimeDirCandidates(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)

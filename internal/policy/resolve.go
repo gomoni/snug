@@ -196,6 +196,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, err
 	}
 
+	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, env); err != nil {
+		return nil, err
+	}
+
 	var identityOwner, gitOwner ProfileName
 	var mtuOwner ProfileName
 	var browserOwner ProfileName
@@ -1366,16 +1370,12 @@ func refuseWritableProfileStore(set map[ProfileName]*Profile, names []ProfileNam
 	if len(dirs) == 0 {
 		return nil
 	}
-	// Canonicalise BOTH sides. Without this the check compares text, and a grant
-	// naming a symlink to the store — or a store reached through one, which is
-	// every distro where /home is a symlink — passes it. `covers` is a path-segment
-	// prefix test and has no opinion about links.
-	canon := func(p string) string {
-		if r, err := env.EvalSymlinks(p); err == nil {
-			return r
-		}
-		return filepath.Clean(p) // absent today; the fold refuses it a moment later
-	}
+	// Canonicalise BOTH sides, through the longest existing ancestor. Without
+	// this the check compares text, and a grant naming a symlink to the store —
+	// or a store reached through one, which is every distro where /home is a
+	// symlink — passes it. `covers` is a path-segment prefix test and has no
+	// opinion about links.
+	canon := func(p string) string { return canonExisting(env, p) }
 	for _, name := range names {
 		prof := set[name]
 		for _, raw := range prof.RW {

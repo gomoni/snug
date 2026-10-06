@@ -527,3 +527,32 @@ func TestASocketBindsThroughAVerifiedDescriptor(t *testing.T) {
 			"doc comment may no longer apply", addr)
 	}
 }
+
+func TestRuntimeDirCandidatesCoverEveryFallback(t *testing.T) {
+	x, y := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", x)
+	t.Setenv("TMPDIR", y)
+	uid := os.Getuid()
+	got := runtimeDirCandidates()
+	base, name := runtimeBase()
+	if got[0] != filepath.Join(base, name) {
+		t.Errorf("first candidate = %s, want this run's own directory %s", got[0], filepath.Join(base, name))
+	}
+	seen := map[string]bool{}
+	for _, c := range got {
+		if seen[c] {
+			t.Errorf("duplicate candidate %s in %v", c, got)
+		}
+		seen[c] = true
+	}
+	for _, want := range []string{
+		filepath.Join(x, "snug"),
+		fmt.Sprintf("/run/user/%d/snug", uid),
+		filepath.Join(y, fmt.Sprintf("snug-%d", uid)),
+		fmt.Sprintf("/tmp/snug-%d", uid),
+	} {
+		if !seen[want] {
+			t.Errorf("candidates %v lack %s", got, want)
+		}
+	}
+}

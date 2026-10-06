@@ -313,7 +313,9 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 // one exclusion this function makes: its host path exists for THIS run alone —
 // /snug/podman.sock under the run directory, /snug/engine/sock under
 // snug-<uid>-<pid> — so a peer is handed its own and cannot meet this one
-// there, whatever policy the peer resolves. The flag is set where those paths
+// there, because Resolve refuses every grant that reaches snug's runtime
+// directory. The one way round is a peer whose $XDG_RUNTIME_DIR or $TMPDIR
+// points inside a path this run grants. The flag is set where those paths
 // are CONSTRUCTED (policy.BindSocket, internal/engine's GraftPathsInto), not
 // derived here by reading a pid back out of a path: a naming convention is a
 // guess, and a false row on the screen whose job is to be trusted costs more
@@ -363,9 +365,12 @@ func describeShared(out io.Writer, p *policy.Policy) {
 		return
 	}
 	fmt.Fprintln(out, "         The writable host paths it could meet this one on are below. This")
-	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is named after")
-	fmt.Fprintln(out, "         this run, so a second sandbox is handed its own. Whether a peer")
-	fmt.Fprintln(out, "         reaches a row below still depends on what it grants itself.")
+	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is under snug's")
+	fmt.Fprintln(out, "         runtime directory, which snug refuses to let any grant reach, so a")
+	fmt.Fprintln(out, "         second sandbox can neither be handed them nor list them (unless a")
+	fmt.Fprintln(out, "         peer's $XDG_RUNTIME_DIR or $TMPDIR was itself pointed inside a path")
+	fmt.Fprintln(out, "         one of them grants). Whether a peer reaches a row below still depends")
+	fmt.Fprintln(out, "         on what it grants itself.")
 	for _, r := range rows {
 		fmt.Fprintf(out, "           %-40s %s\n", visibleValue(r.path), r.note)
 	}
