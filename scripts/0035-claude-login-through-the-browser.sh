@@ -58,7 +58,8 @@ echo "host credential sha256 before: $before"
 
 echo
 echo "A browser tab will open. Authorize in it if claude.com asks, and note whether"
-echo "it asked you to click Authorize or sent you straight back. Press Enter to start."
+echo "it asked you to click Authorize or sent you straight back. The tab may open in"
+echo "another browser window, a few seconds late. Press Enter to start."
 read -r _ </dev/tty
 
 log="$SC/snug.stderr"

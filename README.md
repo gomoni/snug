@@ -263,6 +263,8 @@ $ snug profile dot | dot -Tpng -o profiles.png
 `/login` inside `@claude`: paste the code claude prints, or set
 `browser = "claude-login"` in own profile — opt-in, needs `@net`, host
 `xdg-open` and a display; snug opens one pinned login URL in your browser.
+Tab may land in another browser window (seen: distrobox `xdg-open` to host
+flatpak Firefox) — look there before assuming nothing opened.
 Token lives on sandbox tmpfs, dies with run.
 
 
