@@ -20,6 +20,7 @@
 // assert that this program never ran by the absence of "ran":
 //
 //	ran              empty marker, written first
+//	runs             one byte appended per invocation, so a test can count them
 //	argv             argc=N then one argv=... line per argument
 //	response         the raw bytes the callback answered with
 //	response-wrong   the same for the wrong-state request
@@ -52,6 +53,10 @@ func main() {
 		os.WriteFile(filepath.Join(dir, name), []byte(s), 0o644)
 	}
 	write("ran", "")
+	if f, err := os.OpenFile(filepath.Join(dir, "runs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		f.WriteString("x")
+		f.Close()
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "argc=%d\n", len(os.Args)-1)
 	for _, a := range os.Args[1:] {

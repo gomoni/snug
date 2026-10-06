@@ -23,6 +23,11 @@
 //	              may be the word PORT, this probe's own callback port.
 //	go=FILE       the file whose appearance releases the dial= probes
 //	release=FILE  wait for FILE to appear before exiting
+//	script=FILE   instead of calling $BROWSER itself, run /bin/sh FILE once the
+//	              listener is up, with PORT, URL (a valid pinned URL for that
+//	              port) and BROWSER in its environment and its output passed
+//	              through, then SCRIPT-RC. The listener stays up until the
+//	              script ends; nothing else (serve, dial) runs.
 //	token=T       ignored; it only puts T in this process's argv, where the
 //	              host can find it
 //
@@ -88,6 +93,19 @@ func main() {
 
 	browser := os.Getenv("BROWSER")
 	say("BROWSER %s", browser)
+	if script := opt["script"]; script != "" {
+		cmd := exec.Command("/bin/sh", script)
+		cmd.Env = append(os.Environ(), "PORT="+strconv.Itoa(port), "URL="+u)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			say("SCRIPT-RC %v", err)
+		} else {
+			say("SCRIPT-RC 0")
+		}
+		waitFor(opt["release"], 30*time.Second)
+		say("PROBE-DONE")
+		return
+	}
 	if browser == "" {
 		say("PROBE-ERROR BROWSER is unset")
 		os.Exit(1)
