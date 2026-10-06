@@ -100,6 +100,13 @@ are not guaranteed by `@sys` — and `sh` cannot speak AF_UNIX. A FIFO needs onl
   refusal. **Nothing is ever written back**: the sandbox gets no answer, so
   snug is no oracle for "is host port N free". Claude prints its manual URL
   regardless, so a refused open leaves the paste flow intact.
+- **A second reader inside can steal lines, and snug cannot see a stolen
+  one.** Anything in the sandbox may open the FIFO for reading too. The cost
+  is the sandbox's own login convenience, never the run: no hang, no crash,
+  and a later request is seen once the stealer is gone
+  (`TestASecondFIFOReaderInsideCostsOnlyTheBridge`). A stealer that takes the
+  tail of a line also costs the next line, which joins the pending partial
+  and is refused.
 
 ### 3.2 `ParseAuthorize` — refuse, never normalise
 
@@ -253,6 +260,12 @@ anywhere.
 
 A flow that ends early — the opener failed, or a callback was relayed — frees
 the slot at once; the 30 s applies only to replacing a live one.
+
+The 8 connection slots bound concurrency, not persistence: a process of the
+same uid can re-fill them each 10 s head deadline until `FlowTTL`, delaying
+the callback. It cannot inject one — state, the uid gate and the Host check
+still apply (`TestSlowConnectionsDelayTheCallbackButNeverBlockItForever`
+tests one round).
 
 ## 8. The opener
 

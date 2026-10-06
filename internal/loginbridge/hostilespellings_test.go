@@ -19,8 +19,8 @@ func forgingIn(s string, nlOK bool) (rune, bool) {
 	for _, r := range s {
 		switch {
 		case r == '\n' && nlOK:
-		case unicode.IsControl(r), r == ' ', r == ' ',
-			r >= '‪' && r <= '‮', r >= '⁦' && r <= '⁩':
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029',
+			r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
 			return r, true
 		}
 	}
@@ -65,8 +65,8 @@ func TestAuthorizeRefusesHostileSpellings(t *testing.T) {
 		"one dot leader":                  "https://claude․com/cai/oauth/authorize?",
 		"ideographic full stop":           "https://claude。com/cai/oauth/authorize?",
 		"fullwidth dot":                   "https://claude．com/cai/oauth/authorize?",
-		"RLO in host":                     "https://claude.com‮/cai/oauth/authorize?",
-		"zero width space in host":        "https://cl​aude.com/cai/oauth/authorize?",
+		"RLO in host":                     "https://claude.com\u202e/cai/oauth/authorize?",
+		"zero width space in host":        "https://cl\u200baude.com/cai/oauth/authorize?",
 		"uppercase scheme":                "HTTPS://claude.com/cai/oauth/authorize?",
 		"one slash":                       "https:/claude.com/cai/oauth/authorize?",
 		"backslash scheme separator":      "https:\\\\claude.com/cai/oauth/authorize?",
@@ -106,7 +106,7 @@ func TestAuthorizeRefusesHostileSpellings(t *testing.T) {
 		"backslash":           "\\",
 		"raw NUL":             "\x00",
 		"CRLF escape":         "%0d%0a",
-		"RLO":                 "‮",
+		"RLO":                 "\u202e",
 		"non-ascii":           "é",
 		"userinfo-looking":    "@evil.example",
 		"fragment":            "#",
