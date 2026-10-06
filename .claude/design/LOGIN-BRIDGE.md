@@ -277,8 +277,8 @@ the slot at once; the 30 s applies only to replacing a live one.
 
 The browser goes straight to claude.com, and the human gate is Anthropic's
 authorize page. That is a remote default, not something snug's tests can see:
-**if a returning, already-consented user is redirected without a click (open
-measurement (b), §10), the bridge is a sandbox-triggered silent token mint and a
+**if a user is ever redirected without a click (measurement (b), §11, found a
+click required), the bridge is a sandbox-triggered silent token mint and a
 snug confirmation page must come back** — a page on the same host listener that
 the sandbox cannot click (host loopback is sealed from inside, and the uid gate
 admits only the human's connections) and a POST to reach claude.com.
@@ -352,19 +352,23 @@ A failure in P1 while making the sockets answers `netready` with an error and
 the run is refused. A panic in P0 collapses the run. Nothing touches pasta, the
 netns count or abstract-socket isolation.
 
-## 11. Open
+## 11. Measured end to end, and what is still open
 
-- **(b) Does `claude.com/cai/oauth/authorize` redirect a returning,
-  already-consented user without a click?** Not measured. If yes, the snug
-  confirmation page returns (§8). `scripts/0035-claude-login-through-the-browser.sh`
-  asks the human and prints `MEASURED (b)`.
-- **(e) The real callback's key set.** Not measured: no login has been run to
-  completion through the bridge. `{code, state}` is what the authorize request
-  asks the browser to send back, not an observation of what it also sends.
-  The set is `callbackKeysPendingMeasurement0e` in `callback.go`, the one
-  variable to change; until then an extra key (an `iss`, say) would make every
-  real login a `404`. `scripts/0035` prints `MEASURED (e)`.
-- Not measured either: the ephemeral port range read inside a real snug run
+One real login through the bridge, `scripts/0035-claude-login-through-the-browser.sh`:
+Claude Code 2.1.289 inside `snug -p @claude -p @net -p login`, the host's
+Firefox (flatpak, reached through `xdg-open` from a distrobox) already signed
+in to claude.ai. `claude auth login` completed, `claude -p` answered in the
+same run, and the host's `~/.claude/.credentials.json` was unchanged.
+
+- **(b) The authorize page asked for a click.** The human answered that
+  claude.com showed Authorize and waited for it. This is a remote default:
+  if claude.com ever redirects without a click, the snug confirmation page
+  returns (§8). Re-run `scripts/0035` to re-check it.
+- **(e) The callback carried exactly `code` and `state`.** snug logged
+  `delivered the login callback to the sandbox; it answered HTTP 302`, and
+  `ParseCallback` refuses any other key and any missing one. The set is
+  `callbackKeys` in `callback.go`; a refused callback names the whole key set.
+- Not measured: the ephemeral port range read inside a real snug run
   (the integration tests only show the probe's kernel-chosen port passed the
   range check); whether Claude Code execs `$BROWSER` directly or through a
   shell — `argc=1` was measured with a path value, a value with spaces is

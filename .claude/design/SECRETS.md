@@ -638,9 +638,9 @@ access token and a `refreshToken`, written by the client into the sandbox's
 tmpfs, able to mint an API key, dead with the run, never synced back. The
 bridge adds no credential and no channel to the host's file; what it adds is
 WHEN the consent page appears, which the sandbox chooses. Nothing is minted
-until the human approves on claude.com — and whether claude.com asks a
-returning user for that click at all is unmeasured, which is why
-`LOGIN-BRIDGE.md` §11 keeps the snug confirmation page one measurement away.
+until the human approves on claude.com, and claude.com asked for that click
+in the one real login measured (`LOGIN-BRIDGE.md` §11). That is a remote
+default: if it ever stops asking, the snug confirmation page comes back.
 
 **Residual egress, and it is the same sentence facing two ways. [M]** With the
 socket set *and network available*, eleven TLS connections still bypass it:

@@ -12,11 +12,9 @@
 #       claude.com ask for a click on Authorize, or redirect straight back)
 #   MEASURED (e) callback query keys: ...           (from snug's own log)
 #
-# (e) is what internal/loginbridge/callback.go's callbackKeysPendingMeasurement0e
-# waits for. snug's refusal line names only the FIRST parameter outside the
-# accepted set, so a refused callback reports a lower bound on the key set, not
-# the whole set; a delivered callback proves the set is exactly {code, state},
-# because ParseCallback refuses any other key and any missing one.
+# (e) checks internal/loginbridge/callback.go's callbackKeys. A refused callback
+# names the whole key set it carried; a delivered one proves the set is exactly
+# {code, state}, because ParseCallback refuses any other key and any missing one.
 #
 # The login's token dies with the run, so the proof that login worked is made
 # INSIDE the same sandbox invocation: run.sh does `claude auth login` and then
@@ -96,7 +94,7 @@ fi
 echo "asserted: the host's ~/.claude/.credentials.json is byte-identical before and after"
 
 if [ -n "${keys:-}" ]; then
-	fail "the callback was refused for parameter(s) [ $keys]: callbackKeysPendingMeasurement0e in internal/loginbridge/callback.go needs this key set"
+	fail "the callback was refused for parameter(s) [ $keys]: callbackKeys in internal/loginbridge/callback.go needs this key set"
 fi
 grep -q 'delivered the login callback' "$log" \
 	|| fail "snug never logged 'delivered the login callback' (snug exited $rc); refusals it logged are printed above"

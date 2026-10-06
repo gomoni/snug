@@ -8,15 +8,14 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// callbackKeysPendingMeasurement0e is the callback's accepted query key set.
-// The measurement this predicate needs — capturing the request a real
-// login's browser redirect actually sends to a loopback listener — has not
-// been taken (issue #455). {code, state} is what the authorize request
-// authorize.go builds asks the browser to send back, not yet a measured fact
-// about what it also sends alongside them. Change this variable, and nothing
-// else, once that measurement is taken; every other check in ParseCallback
-// names "code" and "state" directly.
-var callbackKeysPendingMeasurement0e = map[string]bool{
+// callbackKeys is the callback's accepted query key set. Measured: a real
+// login (Claude Code 2.1.289, Firefox, scripts/0035) delivered its callback
+// through ParseCallback, which refuses any other key and any missing one, so
+// claude.com's redirect carried exactly these two. If claude.com adds a key,
+// every login answers 404 and the refusal names the whole set; change this
+// variable, and nothing else — every other check names "code" and "state"
+// directly.
+var callbackKeys = map[string]bool{
 	"code": true, "state": true,
 }
 
@@ -64,7 +63,7 @@ func ParseCallback(method, target, expectedState string) (Callback, error) {
 	// Names only — a value here may be the authorization code.
 	var unknown []string
 	for _, k := range order {
-		if !callbackKeysPendingMeasurement0e[k] {
+		if !callbackKeys[k] {
 			unknown = append(unknown, fmt.Sprintf("%q", k))
 		}
 	}
@@ -76,7 +75,7 @@ func ParseCallback(method, target, expectedState string) (Callback, error) {
 		return Callback{}, fmt.Errorf("parameter %s is not one snug relays (the callback's keys: %s)",
 			strings.Join(unknown, ", "), strings.Join(all, ", "))
 	}
-	for k := range callbackKeysPendingMeasurement0e {
+	for k := range callbackKeys {
 		if _, ok := values[k]; !ok {
 			return Callback{}, fmt.Errorf("parameter %q is missing", k)
 		}
