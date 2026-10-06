@@ -30,11 +30,18 @@ for tool in go curl sudo pasta; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "SKIP: no $tool on PATH" >&2; exit $skip; }
 done
 id nobody >/dev/null 2>&1 || { echo "SKIP: no 'nobody' user on this host" >&2; exit $skip; }
-# Probe the exact thing used below: a sudoers rule can allow `true` and still
-# ask a password for `-u nobody curl`.
-if ! sudo -n -u nobody true 2>/dev/null; then
+# Probe the exact thing used below. A sudoers rule can grant `(root) NOPASSWD`
+# and still ask a password for `-u nobody` — a rootless distrobox does exactly
+# that, with no password set — so the second route goes through root, which
+# never asks.
+if sudo -n -u nobody true 2>/dev/null; then
+	as_nobody() { sudo -n -u nobody "$@"; }
+elif sudo -n sudo -n -u nobody true 2>/dev/null; then
+	as_nobody() { sudo -n sudo -n -u nobody "$@"; }
+else
 	[ -t 0 ] || { echo "SKIP: sudo -u nobody needs a password and there is no terminal to ask on" >&2; exit $skip; }
 	sudo -u nobody true || { echo "SKIP: sudo -u nobody refused" >&2; exit $skip; }
+	as_nobody() { sudo -u nobody "$@"; }
 fi
 [ "$(id -u nobody)" != "$(id -u)" ] || { echo "SKIP: this check is running as nobody" >&2; exit $skip; }
 
@@ -67,7 +74,7 @@ state=$(printf '%s\n' "$url" | sed -n 's/.*[&?]state=\([A-Za-z0-9_-]*\).*/\1/p')
 echo "flow: localhost:$port, state taken from the opener's recorded argv"
 cb="http://localhost:$port/callback?code=CODE-1_x&state=$state"
 
-nobody_out=$(sudo -u nobody curl -sS -m 10 -o - -w '\nHTTP %{http_code}\n' "$cb" 2>&1)
+nobody_out=$(as_nobody curl -sS -m 10 -o - -w '\nHTTP %{http_code}\n' "$cb" 2>&1)
 printf '%s\n' "$nobody_out"
 printf '%s\n' "$nobody_out" | grep -q '^HTTP 403$' || fail "nobody's curl was not answered 403"
 printf '%s\n' "$nobody_out" | grep -q 'belongs to another user on this machine' \
