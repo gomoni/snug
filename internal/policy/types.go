@@ -755,8 +755,8 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 
 // BrowserMode is "off" | "claude-login", joined by max like every other
 // feature scalar. It is an ordinary feature key a user profile sets — there is
-// no builtin that turns it on, and @claude does not (issue #455, maintainer
-// decision D1): the hole exists only where a profile spells `browser =
+// no builtin that turns it on, and @claude does not (issue #455, a maintainer
+// decision): the hole exists only where a profile spells `browser =
 // "claude-login"` itself, never merely by riding along with `@claude -p @net`.
 type BrowserMode uint8
 

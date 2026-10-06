@@ -614,7 +614,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	// The login-bridge shim (issue #455). browser is an ordinary feature key —
-	// no builtin sets it, @claude included (maintainer decision D1) — so the
+	// no builtin sets it, @claude included, by maintainer decision — so the
 	// hole exists only in a selection that spells browser = "claude-login"
 	// itself. Refused rather than granted-but-useless outside egress: the
 	// bridge relays the callback into the sandbox's own netns and the token

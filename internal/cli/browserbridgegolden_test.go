@@ -14,7 +14,7 @@ import (
 // browserLoginProfile is the ordinary user profile that turns the login
 // bridge on — `browser = "claude-login"` alone, since @claude and @net are
 // selected directly beside it. There is no `@claude-login` builtin (issue
-// #455, maintainer decision D1).
+// #455, a maintainer decision).
 var browserLoginProfile = &policy.Profile{Name: "login", Browser: "claude-login"}
 
 // TestGoldenBwrapClaudeLogin pins the bwrap argv for `@claude @net login`

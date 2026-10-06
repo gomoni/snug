@@ -3,7 +3,7 @@ package loginbridge
 import "time"
 
 // The bridge's limits, in one place so the host half and every screen that
-// reports them read the same numbers (spec §5.6, maintainer decision D4).
+// reports them read the same numbers (.claude/design/LOGIN-BRIDGE.md §7).
 const (
 	// MaxLiveFlows is how many logins may be pending at once.
 	MaxLiveFlows = 1

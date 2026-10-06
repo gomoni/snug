@@ -18,7 +18,7 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// The listener's per-connection bounds (spec §5.3) and the relay's (§5.5).
+// The listener's per-connection bounds and the relay's (.claude/design/LOGIN-BRIDGE.md §6).
 const (
 	headReadDeadline = 10 * time.Second
 	maxHeadBytes     = 8 << 10
