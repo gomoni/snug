@@ -7,9 +7,10 @@ TOPOLOGY
                     bwrap       the sandbox itself, and the payload inside it
                   (__innetns is a setns shim that BECOMES bwrap rather than
                   running beside it, so it is not one of the 4.)
-  login opener    xdg-open, started by snug once per accepted login, detached;
-                  snug waits at most 30s for it. The BROWSER it starts is YOURS —
-                  not a child of the sandbox — and may outlive this run.
+  login opener    xdg-open, started by snug once per accepted login, detached.
+                  snug waits at most 30s PER LOGIN for its exit status, and reaps
+                  it only while snug is alive: xdg-open itself, and the BROWSER it
+                  starts — YOURS, not a child of the sandbox — may outlive this run.
   netns owner     stage
   pid nesting     depth 2 — the stage forks bwrap into an intermediate pid AND
                   mount namespace, so bwrap is pid 1 THERE and the sandbox's own

@@ -42,8 +42,9 @@ WHAT IS NOT IN HERE
   from inside, under every profile, including the networked ones.
   No ~/.ssh. Your private keys are not in this filesystem at all.
   No root, no setuid, and no process snug did not start — everything here
-  dies with the sandbox, except the browser xdg-open starts for a login:
-  that browser is yours, not the sandbox's, and may outlive this run.
+  dies with the sandbox, except the xdg-open snug starts for a login and the
+  browser it starts: they are yours, not the sandbox's, and may outlive this
+  run. snug reaps xdg-open only while it is alive.
 
 NETWORK
   Full outbound internet, through a pasta helper in a namespace of its own.

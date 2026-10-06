@@ -41,7 +41,7 @@ func explain(env policy.Environ, out io.Writer, p *policy.Policy, args []string,
 	explainFilesystem(out, p)
 	explainAbsent(out, p)
 	explainClaudeTrust(out, p)
-	explainNetwork(out, p)
+	explainNetwork(env, out, p)
 	explainEngine(out, p)
 	explainCommand(out, p)
 	n.render(out)
@@ -192,8 +192,9 @@ func explainAbsent(out io.Writer, p *policy.Policy) {
 	// that dies with the sandbox (CLAUDE.md invariant 4).
 	if p.Browser != policy.BrowserOff {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
-		fmt.Fprintln(out, "  dies with the sandbox, except the browser xdg-open starts for a login:")
-		fmt.Fprintln(out, "  that browser is yours, not the sandbox's, and may outlive this run.")
+		fmt.Fprintln(out, "  dies with the sandbox, except the xdg-open snug starts for a login and the")
+		fmt.Fprintln(out, "  browser it starts: they are yours, not the sandbox's, and may outlive this")
+		fmt.Fprintln(out, "  run. snug reaps xdg-open only while it is alive.")
 	} else {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
 		fmt.Fprintln(out, "  dies with the sandbox.")
@@ -357,7 +358,7 @@ func grantedSSHPaths(p *policy.Policy) []string {
 	return out
 }
 
-func explainNetwork(out io.Writer, p *policy.Policy) {
+func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 	fmt.Fprintln(out, "NETWORK")
 	switch p.Net.Mode {
 	case policy.NetIsolated:
@@ -385,15 +386,21 @@ func explainNetwork(out io.Writer, p *policy.Policy) {
 		fmt.Fprintln(out, "  browser trusts as local. That is a sandbox escape and snug does not bound it.")
 	}
 	if p.Browser != policy.BrowserOff {
-		fmt.Fprintln(out, "  Login bridge (browser = \"claude-login\"): the sandbox may ask snug to open a")
-		fmt.Fprintln(out, "  Claude login page in YOUR browser. snug opens only one URL shape — Claude")
-		fmt.Fprintln(out, "  Code's own authorize URL with its client id and its seven scopes — rebuilt")
-		fmt.Fprintln(out, "  from snug's constants; anything else is refused and nothing is opened. There is")
-		fmt.Fprintln(out, "  no snug page first: if you did not just type /login, close the tab. While a")
-		fmt.Fprintln(out, "  login is pending snug listens on localhost on the HOST — your uid only — and")
-		fmt.Fprintln(out, "  relays one rebuilt callback into the sandbox; host loopback is still not")
-		fmt.Fprintln(out, "  reachable from inside. The browser xdg-open starts is yours and may outlive")
-		fmt.Fprintln(out, "  the run.")
+		if _, err := browserPreflight(env); err != nil {
+			fmt.Fprintln(out, "  Login bridge (browser = \"claude-login\"): a real run would REFUSE to start:")
+			fmt.Fprintf(out, "  %s\n", visibleValue(err.Error()))
+			fmt.Fprintln(out, "  Fix that, or drop the key, and re-run --explain.")
+		} else {
+			fmt.Fprintln(out, "  Login bridge (browser = \"claude-login\"): the sandbox may ask snug to open a")
+			fmt.Fprintln(out, "  Claude login page in YOUR browser. snug opens only one URL shape — Claude")
+			fmt.Fprintln(out, "  Code's own authorize URL with its client id and its seven scopes — rebuilt")
+			fmt.Fprintln(out, "  from snug's constants; anything else is refused and nothing is opened. There is")
+			fmt.Fprintln(out, "  no snug page first: if you did not just type /login, close the tab. While a")
+			fmt.Fprintln(out, "  login is pending snug listens on localhost on the HOST — your uid only — and")
+			fmt.Fprintln(out, "  relays one rebuilt callback into the sandbox; host loopback is still not")
+			fmt.Fprintln(out, "  reachable from inside. The browser xdg-open starts is yours and may outlive")
+			fmt.Fprintln(out, "  the run.")
+		}
 	}
 	fmt.Fprintln(out)
 }

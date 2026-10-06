@@ -817,7 +817,7 @@ func run(cfg config) int {
 	} else if cfg.startsNothing() {
 		// The FIFO a real run would bind, planned before BwrapArgs so the
 		// argv --dry-run prints carries the same --bind.
-		if perr := planBrowserFIFO(pol); perr != nil {
+		if perr := planBrowserFIFO(pol, nil); perr != nil {
 			return refuse(cfg, exitPolicy, perr)
 		}
 	}

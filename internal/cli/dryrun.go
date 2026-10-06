@@ -35,10 +35,11 @@ import (
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
 func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, n *notes, refusedBy error) error {
-	// main.go plans the FIFO before building the argv on the ordinary dry run;
-	// this call covers the refused-policy screen, whose argv was built without
-	// it, so FILESYSTEM and JSON mounts still show the row there.
-	if err := planBrowserFIFO(p); err != nil {
+	// main.go plans the FIFO before building the argv on the ordinary dry run,
+	// so this call is a no-op there; it covers a caller that did not (a policy
+	// that can run, reached without main's call). A refused policy gets no row:
+	// the mount at that guest path is the offending profile's.
+	if err := planBrowserFIFO(p, refusedBy); err != nil {
 		return err
 	}
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
@@ -2152,9 +2153,16 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
 			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
-		fmt.Fprintf(out, "         host -> sandbox CLOSED — nothing is forwarded into this\n")
-		fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
-		fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		if p.Browser != policy.BrowserOff {
+			fmt.Fprintf(out, "         host -> sandbox CLOSED — except the login bridge's one relayed\n")
+			fmt.Fprintf(out, "                         callback, see below. Nothing else is forwarded into this\n")
+			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
+			fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		} else {
+			fmt.Fprintf(out, "         host -> sandbox CLOSED — nothing is forwarded into this\n")
+			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
+			fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		}
 		renderHTTPDoors(out, p)
 		// address is copied from the host (no synthetic-address mechanism
 		// exists any more), and the host is unreachable on every address it

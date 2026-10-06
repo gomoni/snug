@@ -74,7 +74,7 @@ func goldenText(t *testing.T, name, got string) {
 
 func bridgeHuman(t *testing.T, env policy.Environ, p *policy.Policy) string {
 	t.Helper()
-	if err := planBrowserFIFO(p); err != nil {
+	if err := planBrowserFIFO(p, nil); err != nil {
 		t.Fatal(err)
 	}
 	rep := buildReport(env, p, nil, config{}, nil, nil)
@@ -106,7 +106,7 @@ func TestGoldenBrowserBridgeJSON(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	env := newBridgeEnv(false)
 	p := resolveBridge(t, env, true)
-	if err := planBrowserFIFO(p); err != nil {
+	if err := planBrowserFIFO(p, nil); err != nil {
 		t.Fatal(err)
 	}
 	rep := buildReport(env, p, nil, config{}, nil, nil)

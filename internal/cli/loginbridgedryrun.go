@@ -13,10 +13,18 @@ import (
 // planBrowserFIFO is the --dry-run counterpart of startLoginBridge's
 // BindSocket: it names the FIFO a real run would create, creating nothing, so
 // the FILESYSTEM block and the mounts array carry the same row a run would.
-// It is a no-op when the key is off. Replace is idempotent on a guest path,
-// so calling it where a real run already bound the FIFO changes nothing.
-func planBrowserFIFO(p *policy.Policy) error {
-	if p.Browser == policy.BrowserOff {
+//
+// It writes nothing when the key is off, when refusedBy is set, or when the
+// guest path is already mapped. Replace appends `replaces:<old From>` to a
+// mount it displaces, so a second call over its own (browser) row would print
+// "(browser)+replaces:(browser)"; and on a refused policy the mount at the
+// guest path is the OFFENDING profile's, which a replacement would erase from
+// the one screen that exists to name it.
+func planBrowserFIFO(p *policy.Policy, refusedBy error) error {
+	if p.Browser == policy.BrowserOff || refusedBy != nil {
+		return nil
+	}
+	if _, mapped := p.Mounts[policy.BrowserFIFOGuest]; mapped {
 		return nil
 	}
 	path, err := plannedSocket(browserFIFOName)
@@ -65,7 +73,8 @@ func describeBrowserTopology(out io.Writer, p *policy.Policy) {
 	if p.Browser == policy.BrowserOff {
 		return
 	}
-	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached;\n")
-	fmt.Fprintf(out, "                  snug waits at most %s for it. The BROWSER it starts is YOURS —\n", loginbridge.OpenerPatience.Round(time.Second))
-	fmt.Fprintf(out, "                  not a child of the sandbox — and may outlive this run.\n")
+	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached.\n")
+	fmt.Fprintf(out, "                  snug waits at most %s PER LOGIN for its exit status, and reaps\n", loginbridge.OpenerPatience.Round(time.Second))
+	fmt.Fprintf(out, "                  it only while snug is alive: xdg-open itself, and the BROWSER it\n")
+	fmt.Fprintf(out, "                  starts — YOURS, not a child of the sandbox — may outlive this run.\n")
 }
