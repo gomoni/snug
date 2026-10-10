@@ -342,12 +342,16 @@ type jsonDoc struct {
 	Refusal     *jsonRefusal `json:"refusal,omitempty"`
 	Target      string       `json:"target"`
 	TargetBytes byteList     `json:"target_bytes,omitempty"`
-	Home        string       `json:"home"`
-	HomeBytes   byteList     `json:"home_bytes,omitempty"`
-	Chdir       string       `json:"chdir"`
-	ChdirBytes  byteList     `json:"chdir_bytes,omitempty"`
-	Profiles    jsonProfiles `json:"profiles"`
-	Mounts      []jsonMount  `json:"mounts"`
+	// TargetAsked is the path the target was named by, present only when
+	// resolving it changed it: the human screen's "(resolved from ...)".
+	TargetAsked      string       `json:"target_asked,omitempty"`
+	TargetAskedBytes byteList     `json:"target_asked_bytes,omitempty"`
+	Home             string       `json:"home"`
+	HomeBytes        byteList     `json:"home_bytes,omitempty"`
+	Chdir            string       `json:"chdir"`
+	ChdirBytes       byteList     `json:"chdir_bytes,omitempty"`
+	Profiles         jsonProfiles `json:"profiles"`
+	Mounts           []jsonMount  `json:"mounts"`
 	// EngineView is the grafts array. The Go field avoids the name `Grafts`
 	// for the same reason jsonMount.SnugAuthored avoids `Authored`: policy's
 	// TestOnlyGraftWritesGrafts greps the module for an assignment to a
@@ -814,6 +818,9 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		doc.Refusal = &jsonRefusal{Message: msg}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)
+	if rep.TargetAsked != "" {
+		doc.TargetAsked, doc.TargetAskedBytes = e.text(rep.TargetAsked)
+	}
 	doc.Home, doc.HomeBytes = e.text(rep.Home)
 	doc.Chdir, doc.ChdirBytes = e.text(rep.Chdir)
 
