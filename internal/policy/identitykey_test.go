@@ -58,7 +58,7 @@ func TestIdentitySSHKeyUnderTargetIsAcceptedWhenItIsLiteral(t *testing.T) {
 	// The positive control. Without it the test above passes on a fix that
 	// refuses every pinned key under the target, which would be a different bug.
 	env := newFakeEnv()
-	env.links["/home/u/proj/sub/deploy.pub"] = "/home/u/proj/sub/deploy.pub"
+	env.files["/home/u/proj/sub/deploy.pub"] = true
 
 	p, err := Resolve(identityRegistry("{target}/deploy.pub"),
 		append(append([]ProfileName{}, testDefaults...), "pinned"), testCtx(), env)
