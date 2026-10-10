@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"errors"
 	"io/fs"
 	"math/rand"
 	"slices"
@@ -393,7 +394,7 @@ func TestUserLinkAboveTheGrantRootIsRefused(t *testing.T) {
 		env.dirs[d] = true
 	}
 	ctx := testCtx()
-	ctx.Target = "/home/u/projects/app"
+	ctx.Target = "/data/projects/app"
 	sel := append(slices.Clone(testDefaults), "lit")
 
 	lit := &Profile{Name: "lit", RO: []string{"/home/u/projects/lib"}}
@@ -405,8 +406,8 @@ func TestUserLinkAboveTheGrantRootIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the same project written as {target_parent} was refused: %v", err)
 	}
-	if p.Target != "/data/projects/app" || p.TargetAsked != "/home/u/projects/app" {
-		t.Errorf("Target = %q, TargetAsked = %q", p.Target, p.TargetAsked)
+	if p.Target != "/data/projects/app" {
+		t.Errorf("Target = %q", p.Target)
 	}
 	if got := hlHost(t, p, "/data/projects/lib"); got != "/data/projects/lib" {
 		t.Errorf("{target_parent}/lib binds %s", got)
@@ -563,5 +564,213 @@ func TestAuthorableLinkRefusalsEscapeTheDestination(t *testing.T) {
 		if !strings.Contains(err.Error(), "verified safe") || !strings.Contains(err.Error(), `\x1b`) {
 			t.Errorf("%s: the destination is neither present nor escaped: %q", name, err)
 		}
+	}
+}
+
+// TestUserLinkOnTheTargetPathIsRefused fails if CanonicalTarget follows a link
+// a sandbox could have planted. A root-owned link is the control.
+func TestUserLinkOnTheTargetPathIsRefused(t *testing.T) {
+	build := func(owner uint32) *fakeEnv {
+		env := newFakeEnv()
+		env.resolveParents = true
+		env.hlLink(owner, "/home/u/projects", "/data/projects")
+		env.dirs["/data/projects"] = true
+		env.dirs["/data/projects/app"] = true
+		return env
+	}
+	ctx := testCtx()
+	ctx.Target = "/home/u/projects/app"
+	_, err := Resolve(hlRegistry(), testDefaults, ctx, build(hlUser))
+	if err == nil || errors.Is(err, ErrTargetUnusable) ||
+		!strings.Contains(err.Error(), "/home/u/projects -> /data/projects") {
+		t.Fatalf("a user-owned link above the target: err = %v", err)
+	}
+	if _, err := CanonicalTarget(build(hlUser), ctx); err == nil {
+		t.Errorf("CanonicalTarget followed a user-owned link")
+	}
+	p, err := Resolve(hlRegistry(), testDefaults, ctx, build(0))
+	if err != nil || p.Target != "/data/projects/app" || p.TargetAsked != ctx.Target {
+		t.Errorf("control: root-owned link: p = %+v, err = %v", p, err)
+	}
+}
+
+// TestUserLinkOnHomeIsRefused fails if a planted $HOME link is followed:
+// {home} is the host side of every grant under it.
+func TestUserLinkOnHomeIsRefused(t *testing.T) {
+	env := newFakeEnv()
+	env.resolveParents = true
+	env.hlLink(hlUser, "/home/u", "/data/u")
+	env.dirs["/data/u"] = true
+	env.dirs["/data/u/proj/sub"] = true
+	ctx := testCtx()
+	ctx.Target = "/data/u/proj/sub"
+	_, err := Resolve(hlRegistry(), testDefaults, ctx, env)
+	if err == nil || !strings.HasPrefix(err.Error(), "$HOME /home/u resolves through the link") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// targetEnv is a fixture host where links are followed on every component and
+// the data directories a link can point at exist.
+func targetEnv(dirs ...string) *fakeEnv {
+	env := newFakeEnv()
+	env.resolveParents = true
+	for _, d := range dirs {
+		env.dirs[d] = true
+	}
+	return env
+}
+
+func targetResolve(env *fakeEnv, target string) (*Policy, error) {
+	ctx := testCtx()
+	ctx.Target = target
+	return Resolve(hlRegistry(), testDefaults, ctx, env)
+}
+
+// TestTargetLinkOneLevelBelowHomeIsRefused fails if the refusal is anchored on
+// something that excludes the layout a sandbox with rw on ~/src would leave
+// behind: a user-owned link one level below $HOME.
+func TestTargetLinkOneLevelBelowHomeIsRefused(t *testing.T) {
+	env := targetEnv("/data/work", "/data/work/app", "/home/u/src")
+	env.hlLink(hlUser, "/home/u/src/work", "/data/work")
+	_, err := targetResolve(env, "/home/u/src/work/app")
+	if err == nil || errors.Is(err, ErrTargetUnusable) {
+		t.Fatalf("err = %v, want a policy refusal (not ErrTargetUnusable)", err)
+	}
+	for _, s := range []string{"/home/u/src/work -> /data/work", "snug /data/work/app", "cd -P"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("refusal does not contain %q: %v", s, err)
+		}
+	}
+}
+
+// TestTargetLinkDirectlyInHomeIsRefused pins the strict decision: the common
+// ~/projects -> /data/projects layout is refused too, because a link there is
+// indistinguishable from one a sandbox with rw on $HOME planted. The fix is to
+// name /data/projects/app, and the refusal says so.
+func TestTargetLinkDirectlyInHomeIsRefused(t *testing.T) {
+	env := targetEnv("/data/projects", "/data/projects/app")
+	env.hlLink(hlUser, "/home/u/projects", "/data/projects")
+	_, err := targetResolve(env, "/home/u/projects/app")
+	if err == nil || errors.Is(err, ErrTargetUnusable) ||
+		!strings.Contains(err.Error(), "snug /data/projects/app") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestTargetEveryHopIsJudged fails if only the first authorable link, or only
+// the last hop, is checked: a root-owned link leads to a user-owned one and the
+// refusal must name the second.
+func TestTargetEveryHopIsJudged(t *testing.T) {
+	env := targetEnv("/data/real", "/data/real/app", "/data/mid")
+	env.hlLink(0, "/home/u/a", "/data/mid/b")
+	env.hlLink(hlUser, "/data/mid/b", "/data/real")
+	_, err := targetResolve(env, "/home/u/a/app")
+	if err == nil {
+		t.Fatal("a user-owned second hop was followed because the first was root-owned")
+	}
+	if !strings.Contains(err.Error(), "/data/mid/b -> /data/real") ||
+		strings.Contains(err.Error(), "/home/u/a ->") {
+		t.Errorf("refusal must name the second hop only: %v", err)
+	}
+}
+
+// TestRootOwnedTargetLinkIsFollowed is the control for the refusals above: the
+// same layout with a root-owned link resolves, with the asked path kept.
+func TestRootOwnedTargetLinkIsFollowed(t *testing.T) {
+	env := targetEnv("/data/projects", "/data/projects/app")
+	env.hlLink(0, "/home/u/projects", "/data/projects")
+	p, err := targetResolve(env, "/home/u/projects/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Target != "/data/projects/app" || p.TargetAsked != "/home/u/projects/app" {
+		t.Errorf("Target = %q, TargetAsked = %q", p.Target, p.TargetAsked)
+	}
+}
+
+// TestTargetLinkRefusedAsRootToo fails if the root exemption (a root-owned
+// link is trusted) is applied when snug itself is root: a root-owned link is
+// then one the invoking user's sandbox could have planted.
+func TestTargetLinkRefusedAsRootToo(t *testing.T) {
+	env := targetEnv("/data/projects", "/data/projects/app")
+	env.hlLink(0, "/home/u/projects", "/data/projects")
+	env.asRoot = true
+	_, err := targetResolve(env, "/home/u/projects/app")
+	if err == nil || !strings.Contains(err.Error(), "running as root") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+const forgedTail = "\x1b[2K\x1b[1Asnug: verified safe\u202e"
+
+// refusalTargetLinkCarriesAForgingRune puts the forging runes in the link name
+// and in the link text, both of which whatever planted the link chooses.
+func refusalTargetLinkCarriesAForgingRune(t testing.TB) error {
+	env := targetEnv("/data/w"+forgedTail, "/data/w"+forgedTail+"/app")
+	env.hlLink(hlUser, "/home/u/p"+forgedTail, "/data/w"+forgedTail)
+	_, err := targetResolve(env, "/home/u/p"+forgedTail+"/app")
+	return err
+}
+
+func refusalTargetThroughAuthorableLink(t testing.TB) error {
+	env := targetEnv("/data/projects", "/data/projects/app")
+	env.hlLink(hlUser, "/home/u/projects", "/data/projects")
+	_, err := targetResolve(env, "/home/u/projects/app")
+	return err
+}
+
+func refusalHomeCarriesAForgingRune(t testing.TB) error {
+	env := targetEnv("/data/u"+forgedTail, "/data/u"+forgedTail+"/proj")
+	env.hlLink(hlUser, "/home/h"+forgedTail, "/data/u"+forgedTail)
+	ctx := testCtx()
+	ctx.Home = "/home/h" + forgedTail
+	ctx.Target = "/data/u" + forgedTail + "/proj"
+	_, err := Resolve(hlRegistry(), testDefaults, ctx, env)
+	return err
+}
+
+func refusalHomeThroughAuthorableLink(t testing.TB) error {
+	env := targetEnv("/data/u", "/data/u/proj")
+	env.hlLink(hlUser, "/home/h", "/data/u")
+	ctx := testCtx()
+	ctx.Home = "/home/h"
+	ctx.Target = "/data/u/proj"
+	_, err := Resolve(hlRegistry(), testDefaults, ctx, env)
+	return err
+}
+
+// TestTargetLinkRefusalEscapesHostileSpelling fails if a refusal prints the
+// planted link's name or text raw: a sandbox chose both, and the refusal is
+// what the human reads before deciding what to delete.
+func TestTargetLinkRefusalEscapesHostileSpelling(t *testing.T) {
+	for name, run := range map[string]func(testing.TB) error{
+		"target": refusalTargetLinkCarriesAForgingRune,
+		"home":   refusalHomeCarriesAForgingRune,
+	} {
+		err := run(t)
+		if err == nil {
+			t.Fatalf("%s: went unrefused", name)
+		}
+		for _, r := range []string{"\x1b", "\u202e"} {
+			if strings.Contains(err.Error(), r) {
+				t.Errorf("%s: the refusal rendered %q raw: %q", name, r, err)
+			}
+		}
+		if !strings.Contains(err.Error(), "verified safe") || !strings.Contains(err.Error(), `\x1b`) {
+			t.Errorf("%s: the hostile spelling is neither present nor escaped: %q", name, err)
+		}
+	}
+}
+
+// TestHomeThroughUserLinkIsRefused fails if $HOME is canonicalised without the
+// ownership rule while the target is not: here the target is clean and only
+// $HOME crosses the link, and the refusal tells the human what to set.
+func TestHomeThroughUserLinkIsRefused(t *testing.T) {
+	err := refusalHomeThroughAuthorableLink(t)
+	if err == nil || errors.Is(err, ErrTargetUnusable) ||
+		!strings.Contains(err.Error(), "/home/h -> /data/u") ||
+		!strings.Contains(err.Error(), "set HOME to /data/u") {
+		t.Fatalf("err = %v", err)
 	}
 }

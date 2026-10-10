@@ -37,6 +37,22 @@ profile "pinned": identity.ssh.key /home/u/.ssh/id.pub resolves through the link
 == identity_key_through_authorable_link_destination_carries_a_forging_rune ==
 profile "pinned": identity.ssh.key /home/u/.ssh/id.pub resolves through the link /home/u/.ssh (owned by uid 1000, not root); a sandbox run could have planted it to choose which host key the sandbox can sign with. If you made it, write the destination /home/u/x\x1b[2K\x1b[1Asnug: verified safe/id.pub instead; if you did not, delete it.
 
+== target_through_authorable_link ==
+target /home/u/projects/app resolves through the link /home/u/projects -> /data/projects (owned by uid 1000, not root), so a sandbox run that once had write access to /home/u could have planted it; snug will not sandbox /data/projects/app in its place.
+      If you made that link, name the real directory yourself: snug /data/projects/app (or `cd -P` there first; `snug .` keeps the path you cd'd through). If you did not, delete it and treat everything near it as sandbox-written.
+
+== target_link_carries_a_forging_rune ==
+target /home/u/p\x1b[2K\x1b[1Asnug: verified safe\u202e/app resolves through the link /home/u/p\x1b[2K\x1b[1Asnug: verified safe\u202e -> /data/w\x1b[2K\x1b[1Asnug: verified safe\u202e (owned by uid 1000, not root), so a sandbox run that once had write access to /home/u could have planted it; snug will not sandbox /data/w\x1b[2K\x1b[1Asnug: verified safe\u202e/app in its place.
+      If you made that link, name the real directory yourself: snug /data/w\x1b[2K\x1b[1Asnug: verified safe\u202e/app (or `cd -P` there first; `snug .` keeps the path you cd'd through). If you did not, delete it and treat everything near it as sandbox-written.
+
+== home_through_authorable_link ==
+$HOME /home/h resolves through the link /home/h -> /data/u (owned by uid 1000, not root), so a sandbox run that once had write access to /home could have planted it; snug will not sandbox /data/u in its place.
+      If you made that link, set HOME to /data/u instead. If you did not, delete it and treat everything near it as sandbox-written.
+
+== home_link_carries_a_forging_rune ==
+$HOME /home/h\x1b[2K\x1b[1Asnug: verified safe\u202e resolves through the link /home/h\x1b[2K\x1b[1Asnug: verified safe\u202e -> /data/u\x1b[2K\x1b[1Asnug: verified safe\u202e (owned by uid 1000, not root), so a sandbox run that once had write access to /home could have planted it; snug will not sandbox /data/u\x1b[2K\x1b[1Asnug: verified safe\u202e in its place.
+      If you made that link, set HOME to /data/u\x1b[2K\x1b[1Asnug: verified safe\u202e instead. If you did not, delete it and treat everything near it as sandbox-written.
+
 == join_conflict_different_content ==
 conflict at /generated: two different generated contents (from gen-a and from gen-b)
 
