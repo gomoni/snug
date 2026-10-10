@@ -12,10 +12,10 @@ import (
 )
 
 // browserLoginProfile is the ordinary user profile that turns the login
-// bridge on — `browser = "claude-login"` alone, since @claude and @net are
+// bridge on — `login = ["claude"]` alone, since @claude and @net are
 // selected directly beside it. There is no `@claude-login` builtin (issue
 // #455, a maintainer decision).
-var browserLoginProfile = &policy.Profile{Name: "login", Browser: "claude-login"}
+var browserLoginProfile = &policy.Profile{Name: "login", Login: []string{"claude"}}
 
 // TestGoldenBwrapClaudeLogin pins the bwrap argv for `@claude @net login`
 // against the real builtin profiles, the same shape TestGoldenClaudeArgv
@@ -40,7 +40,7 @@ func TestGoldenBwrapClaudeLogin(t *testing.T) {
 	}
 	if _, ok := p.Mounts[policy.BrowserShimGuest]; !ok {
 		t.Fatal("control: the login-bridge shim is not staged — this golden would pin an argv " +
-			"that never exercises browser = \"claude-login\"")
+			"that never exercises login = [\"claude\"]")
 	}
 
 	got := goldenFormat(p.BwrapArgs(1000, 1000))
@@ -117,7 +117,7 @@ func TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER(t *testing.T) {
 
 // TestClaudeLoginPastaArgvEqualsClaudeNet: the login bridge relays into the
 // sandbox's own netns over a socket the stage creates, never over pasta —
-// pasta's argv must not move by one byte when browser = "claude-login" is
+// pasta's argv must not move by one byte when login = ["claude"] is
 // added beside @claude @net.
 func TestClaudeLoginPastaArgvEqualsClaudeNet(t *testing.T) {
 	reg, err := profile.Builtins()
@@ -141,6 +141,6 @@ func TestClaudeLoginPastaArgvEqualsClaudeNet(t *testing.T) {
 	a := strings.Join(without.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD)), " ")
 	b := strings.Join(with.PastaArgs(policy.PastaTargetStage(0, stage.NetnsFD)), " ")
 	if a != b {
-		t.Errorf("pasta argv changed when browser = \"claude-login\" was added:\n@claude @net:       %s\n@claude @net login: %s", a, b)
+		t.Errorf("pasta argv changed when login = [\"claude\"] was added:\n@claude @net:       %s\n@claude @net login: %s", a, b)
 	}
 }

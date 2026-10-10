@@ -60,7 +60,7 @@ func TestBrowserPreflightExitsPolicy(t *testing.T) {
 	w.Close()
 	os.Stderr = old
 	buf.ReadFrom(r)
-	if code != 77 || !strings.HasPrefix(buf.String(), "snug: browser = \"claude-login\"") {
+	if code != 77 || !strings.HasPrefix(buf.String(), "snug: login = [\"claude\"]") {
 		t.Fatalf("code=%d out=%q", code, buf.String())
 	}
 }
@@ -201,7 +201,7 @@ func TestRunWithoutTheKeyHasNoBridgeAndAsksForNoRelaySockets(t *testing.T) {
 	if wantsLoginBridge(&policy.Policy{}, config{}) {
 		t.Fatal("bridge wanted with the key off")
 	}
-	on := &policy.Policy{Browser: policy.BrowserClaudeLogin}
+	on := &policy.Policy{Login: policy.LoginSet(0).With(policy.LoginClaude)}
 	if !wantsLoginBridge(on, config{}) {
 		t.Fatal("bridge not wanted with the key on")
 	}
@@ -228,7 +228,7 @@ func TestDryRunArgvCarriesTheBrowserFIFOBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(cfgHome, "snug", "profiles.d", "login.toml"),
-		[]byte("[profile.login]\nbrowser = \"claude-login\"\n"), 0o600); err != nil {
+		[]byte("[profile.login]\nlogin = [\"claude\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)

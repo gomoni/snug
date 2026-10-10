@@ -52,7 +52,7 @@ NETWORK
   port on your own machine is not a port from in here.
   DNS: none — a profile asked for it and this host names no usable
   resolver, so lookups inside will fail immediately rather than stall.
-  Login bridge (browser = "claude-login"): the sandbox may ask snug to open a
+  Login bridge (login = ["claude"]): the sandbox may ask snug to open a
   Claude login page in YOUR browser. snug opens only one URL shape — Claude
   Code's own authorize URL with its client id and its seven scopes — rebuilt
   from snug's constants; anything else is refused and nothing is opened. There is

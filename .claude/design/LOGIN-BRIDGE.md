@@ -1,4 +1,4 @@
-# The Claude login bridge — `browser = "claude-login"`
+# The Claude login bridge — `login = ["claude"]`
 
 Claude Code's `/login` opens a browser on an authorize URL whose callback is
 `http://localhost:<port>/callback`, a listener inside the sandbox's own network
@@ -13,13 +13,13 @@ Owner: `host-bridge`. Code:
 
 | piece | where |
 |---|---|
-| the key, the shim, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`BrowserMode`), `resolve.go`, `browserbridge.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserShimGuest`) |
+| the key, the shim, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginSet`), `resolve.go`, `browserbridge.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserShimGuest`) |
 | the predicate and rebuild (pure) | `internal/loginbridge/authorize.go`, `callback.go`, `query.go`, `pinned.go` |
 | limits | `internal/loginbridge/limits.go` |
 | host listener, relay | `internal/loginbridge/bridge.go`, `procnet.go` |
 | opener | `internal/loginbridge/opener.go` |
 | relay sockets created in N | `internal/stage/relay.go`, the `netready` arm of `serve.go`, `WaitNetReady` in `stage.go`, `recvEventFDs` in `conn.go` |
-| P0 wiring: preflight, FIFO, reader, startup note | `internal/cli/loginbridge.go`, `main.go` |
+| P0 wiring: preflight, FIFO, reader | `internal/cli/loginbridge.go`, `main.go` |
 | `--dry-run`, JSON, `--explain` | `internal/cli/loginbridgedryrun.go`, `dryrunjson.go`, `explain.go` |
 
 The abuse sentence is the comment above `[profile.claude]` in
@@ -54,17 +54,21 @@ forwarded into the namespace, and host loopback stays unreachable from inside.
 
 ## 2. How it is granted
 
-- **An ordinary feature key, `browser = "off" | "claude-login"`**, joined by
-  max (`BrowserMode`). `ParseBrowserMode` refuses any other spelling quoting
-  the accepted set (`unknown browser mode "…" (want off or claude-login)`), at
-  profile parse time and so in `snug profile show` as well.
+- **An ordinary feature key, `login = ["claude"]`**: a list of provider
+  names, unioned across profiles as a set (`LoginSet`), so two profiles naming
+  `claude` turn it on once and the result does not depend on fold order. An
+  empty list is off. `claude` is the only provider; each one is its own
+  `LoginProvider` value with its own pinned predicate. `ParseLoginProvider`
+  refuses any other element quoting the accepted set (`unknown login provider
+  "…" (want claude)`) at profile parse time and so in `snug profile show` as
+  well.
 - **No builtin sets it, `@claude` included.** `@claude` is what every Claude
   run selects; the hole exists only where a user profile spells
-  `browser = "claude-login"` itself, never by riding along with
+  `login = ["claude"]` itself, never by riding along with
   `-p @claude -p @net`.
 - No CLI flag. The key is a TOML value only.
 - **Resolve refuses** the key on in a selection
-  - without egress: `profile "X" sets browser = "claude-login", but nothing in
+  - without egress: `profile "X" sets login = ["claude"], but nothing in
     this selection grants the network: the callback is relayed into the
     sandbox's own network namespace and the token exchange needs the internet.
     Add -p @net.`
@@ -319,19 +323,14 @@ and can draw a fake prompt and read the keystroke first (THREAT-MODEL §3.6).
 
 **Preflight** (`browserPreflight`, real runs only; exit 77):
 
-- no `xdg-open` on PATH → `browser = "claude-login" opens your browser with
-  xdg-open, and there is none on PATH. Install xdg-utils — or drop browser =
-  "claude-login" from the profile that sets it: /login inside still works by
+- no `xdg-open` on PATH → `login = ["claude"] opens your browser with
+  xdg-open, and there is none on PATH. Install xdg-utils — or drop login =
+  ["claude"] from the profile that sets it: /login inside still works by
   opening the URL claude prints and pasting the code`
-- neither `DISPLAY` nor `WAYLAND_DISPLAY` → `browser = "claude-login" needs a
+- neither `DISPLAY` nor `WAYLAND_DISPLAY` → `login = ["claude"] needs a
   graphical session to open your browser, and neither DISPLAY nor
   WAYLAND_DISPLAY is set in snug's environment. Run snug from your desktop
   session — or drop …` with the same fallback.
-
-**Startup note**, always printed on a real run through `notes.escape`:
-`snug: browser = "claude-login": the sandbox can ask snug to open a Claude login
-page in your browser.` / `snug opens only the one URL shape it pins, rebuilt
-from its own constants — if you did not just type /login, close the page.`
 
 **Runtime**, stderr, sandbox-derived text through `VisibleText`:
 
@@ -355,8 +354,9 @@ start: …` when preflight would fail) and the limits; in TOPOLOGY,
 `describeBrowserTopology` — `xdg-open` per login, detached, the browser it
 starts is yours and may outlive the run. It is not in `longLivedProcesses`:
 it is per login, and counting it would make a process count `ps` cannot
-confirm. JSON: `browser_bridge {mode, opener, opener_error, fifo, max_opens,
-max_relays}`, absent with the key off.
+confirm. JSON: `browser_bridge {login, opener, opener_error, fifo, max_opens,
+max_relays}`, `login` the provider list (`["claude"]`), absent with the key
+off.
 
 **`--explain`**: a paragraph in the network section, and the "no process snug
 did not start" sentence qualified with "except the browser xdg-open starts for
@@ -482,7 +482,7 @@ with `testdata/loginprobe` as the sandbox half of `/login` and
 `testdata/fakeopener` as a host `xdg-open` playing the browser:
 `TestTheLoginBridgeRelaysOneRebuiltCallback`, `TestTheLoginBridgeRefusesANonClaudeURL`,
 `TestTheLoginBridgeRefusesAPortNothingListensOn`, `TestAWrongStateGets404AndTheFlowSurvives`,
-`TestTheLoginBridgeLeavesHostLoopbackClosed`, `TestWithoutTheBrowserKeyThereIsNoBridge`,
+`TestTheLoginBridgeLeavesHostLoopbackClosed`, `TestWithoutTheLoginKeyThereIsNoBridge`,
 `TestTheLoginBridgeDiesWithSnug`, `TestTheLoginBridgeRefusesWithoutADisplay`,
 `TestTheShimAndFIFOAreReadOnlyOrScoped`, `TestAContainerCannotReachTheLoginBridgeListener`.
 

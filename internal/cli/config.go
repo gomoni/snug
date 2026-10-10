@@ -961,8 +961,8 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"starts a container engine and delegates your whole subuid range, "+
 				"even with no network profile selected"))
 	}
-	if m, err := policy.ParseBrowserMode(p.Browser); p.Browser != "" && (err != nil || m != policy.BrowserOff) {
-		show("browser", capRows(p.Browser,
+	if len(p.Login) > 0 {
+		show("login", capRows(strings.Join(p.Login, " "),
 			"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
 				"it in YOUR browser only if it is exactly the Claude login page snug pins"))
 	}

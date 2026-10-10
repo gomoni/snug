@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// The login bridge (browser = "claude-login") lets a process in the sandbox ask
+// The login bridge (login = ["claude"]) lets a process in the sandbox ask
 // snug to open ONE pinned Claude login URL in the host's browser and to carry
 // the browser's callback back in. These tests run the real binary against two
 // stand-ins: testdata/loginprobe is the sandbox half of /login, and
@@ -120,7 +120,7 @@ func newLoginFixture(t *testing.T, mode string, extraEnv ...string) *loginFixtur
 	if err := os.WriteFile(filepath.Join(pd, "login.toml"), []byte(
 		"[profile.login]\n"+
 			"description = \"the login bridge, for the integration suite\"\n"+
-			"browser = \"claude-login\"\n"), 0o644); err != nil {
+			"login = [\"claude\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	env := baseEnv(append([]string{
@@ -628,11 +628,11 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 	}
 }
 
-// TestWithoutTheBrowserKeyThereIsNoBridge fails if BROWSER, the FIFO or the
-// shim exist in a run whose profiles do not set browser = "claude-login". The
+// TestWithoutTheLoginKeyThereIsNoBridge fails if BROWSER, the FIFO or the
+// shim exist in a run whose profiles do not set login = ["claude"]. The
 // same script runs again with the key on and must see all three, which is what
 // shows the script looks at the right paths.
-func TestWithoutTheBrowserKeyThereIsNoBridge(t *testing.T) {
+func TestWithoutTheLoginKeyThereIsNoBridge(t *testing.T) {
 	budget(t, 40*time.Second)
 	requireLoginBridgeEnv(t)
 	proj, _ := target(t)

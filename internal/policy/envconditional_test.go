@@ -155,18 +155,18 @@ func TestConditionalEnvListenFDsRefused(t *testing.T) {
 }
 
 // TestBrowserIsAConditionalName: a profile's BROWSER in a selection whose
-// browser = "claude-login" makes snug point BROWSER at its own login-bridge
+// login = ["claude"] makes snug point BROWSER at its own login-bridge
 // shim (issue #455).
 func TestBrowserIsAConditionalName(t *testing.T) {
 	reg := testRegistry()
-	reg["bridge"] = &Profile{Name: "bridge", Browser: "claude-login", Network: "egress"}
+	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
 	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
 		Set: map[string]string{"BROWSER": "/usr/bin/firefox"}}}
 	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge", "ptr"}, testCtx(), newFakeEnv())
 	if err == nil {
-		t.Fatal("BROWSER beside browser = \"claude-login\" resolved")
+		t.Fatal("BROWSER beside login = [\"claude\"] resolved")
 	}
-	if !strings.Contains(err.Error(), `bridge sets browser = "claude-login"`) {
+	if !strings.Contains(err.Error(), `bridge sets login = ["claude"]`) {
 		t.Errorf("refusal does not name the key that made snug the author: %v", err)
 	}
 }

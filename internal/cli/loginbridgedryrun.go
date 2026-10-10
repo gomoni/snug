@@ -21,7 +21,7 @@ import (
 // guest path is the OFFENDING profile's, which a replacement would erase from
 // the one screen that exists to name it.
 func planBrowserFIFO(p *policy.Policy, refusedBy error) error {
-	if p.Browser == policy.BrowserOff || refusedBy != nil {
+	if !p.Login.Has(policy.LoginClaude) || refusedBy != nil {
 		return nil
 	}
 	if _, mapped := p.Mounts[policy.BrowserFIFOGuest]; mapped {
@@ -43,7 +43,7 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 		return
 	}
 	scopes := loginbridge.PinnedScopes()
-	fmt.Fprintf(out, "         browser bridge  %s — the sandbox may ask snug to open a Claude login page\n", b.Mode)
+	fmt.Fprintf(out, "         browser bridge  login = %q — the sandbox may ask snug to open a Claude login page\n", b.Login)
 	fmt.Fprintf(out, "                         in YOUR browser, directly, one at a time. Accepted shape:\n")
 	fmt.Fprintf(out, "                         %s\n", loginbridge.PinnedAuthorizeBase())
 	fmt.Fprintf(out, "                         client %s, exactly %d scopes:\n", loginbridge.PinnedClientID(), len(scopes))
@@ -70,7 +70,7 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 // in longLivedProcesses: xdg-open is started per login, not per run, so
 // counting it would make the process count a `ps` check cannot confirm.
 func describeBrowserTopology(out io.Writer, p *policy.Policy) {
-	if p.Browser == policy.BrowserOff {
+	if !p.Login.Has(policy.LoginClaude) {
 		return
 	}
 	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached.\n")

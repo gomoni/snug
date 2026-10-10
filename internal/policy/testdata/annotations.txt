@@ -24,8 +24,8 @@ ANTHROPIC_BASE_URL       set       ← every request the agent makes, conversati
 ANTHROPIC_BASE_URL       inherit   ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
 BASH_ENV                 set       ← every non-interactive bash SOURCES this file at startup; the value must be an absolute path, and one this profile does not grant names a file the sandbox will not have
 BASH_ENV                 inherit   ← every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile
-BROWSER                  set       ← Claude Code execs this program with the URL it wants opened as its one argument (measured, LOGIN-BRIDGE.md section 12); browser = "claude-login" points it at snug's login bridge instead
-BROWSER                  inherit   ← Claude Code execs this program with the URL it wants opened as its one argument (measured, LOGIN-BRIDGE.md section 12); browser = "claude-login" points it at snug's login bridge instead
+BROWSER                  set       ← Claude Code execs this program with the URL it wants opened as its one argument (measured, LOGIN-BRIDGE.md section 12); login = ["claude"] points it at snug's login bridge instead
+BROWSER                  inherit   ← Claude Code execs this program with the URL it wants opened as its one argument (measured, LOGIN-BRIDGE.md section 12); login = ["claude"] points it at snug's login bridge instead
 CARGO_HOME               set       ← the config.toml under this path names a program cargo runs — build.rustc-wrapper ran in place of rustc, as the sandbox's own uid (measured, cargo 1.97.1)
 CARGO_HOME               inherit   ← taking the host's value points cargo back at the host's config, which is the file "generate, don't bind" exists to avoid; `set` it to a path a profile authored
 CC                       set       ← make's implicit rules run this as the compiler (measured)

@@ -359,7 +359,7 @@ type jsonDoc struct {
 	EngineView []jsonGraft    `json:"grafts"`
 	NotGranted jsonNotGranted `json:"not_granted"`
 	Network    jsonNetwork    `json:"network"`
-	// BrowserBridge is absent when the policy's browser key is off.
+	// BrowserBridge is absent when the policy's login set lacks claude.
 	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
 	Topology      jsonTopology       `json:"topology"`
 	Containers    *jsonContainers    `json:"containers"`
@@ -555,12 +555,12 @@ type jsonNetwork struct {
 // jsonBrowserBridge is reportBrowserBridge. Opener is empty and OpenerError
 // set when a real run would refuse for want of an opener or a display.
 type jsonBrowserBridge struct {
-	Mode        string `json:"mode"`
-	Opener      string `json:"opener"`
-	OpenerError string `json:"opener_error,omitempty"`
-	FIFO        string `json:"fifo"`
-	MaxOpens    int    `json:"max_opens"`
-	MaxRelays   int    `json:"max_relays"`
+	Login       []string `json:"login"`
+	Opener      string   `json:"opener"`
+	OpenerError string   `json:"opener_error,omitempty"`
+	FIFO        string   `json:"fifo"`
+	MaxOpens    int      `json:"max_opens"`
+	MaxRelays   int      `json:"max_relays"`
 }
 
 type jsonTopology struct {
@@ -830,7 +830,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		opener, _ := e.text(b.Opener)
 		msg, _ := e.text(b.OpenerError)
 		doc.BrowserBridge = &jsonBrowserBridge{
-			Mode: b.Mode, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
+			Login: b.Login, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
 			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
 		}
 	}

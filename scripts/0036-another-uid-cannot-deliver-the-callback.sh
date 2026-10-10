@@ -55,7 +55,7 @@ CGO_ENABLED=0 go build -o "$SC/bin/xdg-open" ./test/integration/testdata/fakeope
 cat > "$SC/cfg/snug/profiles.d/login.toml" <<'TOML'
 [profile.login]
 description = "the login bridge, for scripts/0036"
-browser = "claude-login"
+login = ["claude"]
 TOML
 
 XDG_CONFIG_HOME="$SC/cfg" PATH="$SC/bin:$PATH" DISPLAY=${DISPLAY:-:99} \

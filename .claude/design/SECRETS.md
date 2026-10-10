@@ -628,7 +628,7 @@ is the run's lifetime and §8's list of what a run can hand sideways before it
 ends.
 
 **The login bridge mints exactly what the paste flow mints, behind the human's
-browser approval.** With `browser = "claude-login"` in a user profile
+browser approval.** With `login = ["claude"]` in a user profile
 ([`LOGIN-BRIDGE.md`](LOGIN-BRIDGE.md)), the sandbox hands snug the loopback
 authorize URL and snug opens a rebuilt copy of it in the host browser. **[R]**
 The client builds that URL and the manual one from the same `state` and

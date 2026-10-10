@@ -597,11 +597,11 @@ dns = true
 # private tmpfs, so /tmp/cc-socks/ holds only this session's socket. No shipped
 # profile puts a host directory there; a user profile that binds one has yielded
 # the private tmpfs deliberately and reads its own grant on --dry-run.
-# THE LOGIN BRIDGE IS OFF HERE, ON PURPOSE (issue #455). `browser` is an
+# THE LOGIN BRIDGE IS OFF HERE, ON PURPOSE (issue #455). `login` is an
 # ordinary feature key, not something this builtin sets — @claude alone never
 # stages it, and Claude Code's own manual /login flow (print a URL, paste back
 # a code) keeps working exactly as it does today. A user profile turns it on
-# by writing `browser = "claude-login"` alongside `@claude @net`:
+# by writing `login = ["claude"]` alongside `@claude @net`:
 #
 # ABUSE: with the key on, a hostile process inside the sandbox can make snug
 # open https://claude.com/cai/oauth/authorize DIRECTLY in YOUR browser — no

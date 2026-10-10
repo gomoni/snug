@@ -22,7 +22,7 @@ NETWORK  egress — private netns (one per sandbox) with a pasta helper.
                          local delivery and is refused; this covers the host's own
                          link-local address too, which pasta does not copy onto
                          snug0 itself.
-         browser bridge  claude-login — the sandbox may ask snug to open a Claude login page
+         browser bridge  login = ["claude"] — the sandbox may ask snug to open a Claude login page
                          in YOUR browser, directly, one at a time. Accepted shape:
                          https://claude.com/cai/oauth/authorize
                          client 9d1c250a-e61b-44d9-88ed-5944d1962f5e, exactly 7 scopes:

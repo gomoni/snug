@@ -2158,7 +2158,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
 			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
-		if p.Browser != policy.BrowserOff {
+		if p.Login.Has(policy.LoginClaude) {
 			fmt.Fprintf(out, "         host -> sandbox CLOSED — except the login bridge's one relayed\n")
 			fmt.Fprintf(out, "                         callback, see below. Nothing else is forwarded into this\n")
 			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")

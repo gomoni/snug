@@ -202,7 +202,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	var identityOwner, gitOwner ProfileName
 	var mtuOwner ProfileName
-	var browserOwner ProfileName
+	var loginOwner ProfileName
 	pluginAllow := map[string]bool{}
 	httpDoors := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -465,15 +465,18 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			p.Podman = p.Podman.Join(mode)
 		}
-		if prof.Browser != "" {
-			mode, err := ParseBrowserMode(prof.Browser)
+		// login: a SET unioned across profiles, same reasoning as Plugins
+		// below. loginOwner is the first profile in fold order that turned the
+		// bridge on, for the refusals after the fold.
+		if len(prof.Login) > 0 {
+			set, err := ParseLoginSet(prof.Login)
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
-			if mode > p.Browser {
-				browserOwner = name
+			if p.Login == 0 {
+				loginOwner = name
 			}
-			p.Browser = p.Browser.Join(mode)
+			p.Login = p.Login.Join(set)
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 		p.NSS = p.NSS || prof.NSS
@@ -617,19 +620,19 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
 	}
 
-	// The login-bridge shim (issue #455). browser is an ordinary feature key —
+	// The login-bridge shim (issue #455). login is an ordinary feature key —
 	// no builtin sets it, @claude included, by maintainer decision — so the
-	// hole exists only in a selection that spells browser = "claude-login"
+	// hole exists only in a selection that spells login = ["claude"]
 	// itself. Refused rather than granted-but-useless outside egress: the
 	// bridge relays the callback into the sandbox's own netns and the token
 	// exchange needs the internet, so a selection without @net would stage a
 	// BROWSER that can never complete a login.
-	if p.Browser != BrowserOff {
+	if p.Login.Has(LoginClaude) {
 		if p.Net.Mode != NetEgress {
-			return nil, fmt.Errorf("profile %q sets browser = %q, but nothing in this "+
+			return nil, fmt.Errorf("profile %q sets login = %s, but nothing in this "+
 				"selection grants the network: the callback is relayed into the sandbox's "+
 				"own network namespace and the token exchange needs the internet. Add -p "+
-				"@net.", browserOwner, p.Browser)
+				"@net.", loginOwner, p.Login)
 		}
 		if !p.shellIsVisible() {
 			return nil, BrowserBridgeShellError(httpDoorShimShell)

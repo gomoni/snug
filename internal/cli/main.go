@@ -816,7 +816,6 @@ func run(cfg config) int {
 		}
 		bridge = b
 		defer bridge.close()
-		announceLoginBridge(notes)
 	} else if cfg.startsNothing() {
 		// The FIFO a real run would bind, planned before BwrapArgs so the
 		// argv --dry-run prints carries the same --bind.

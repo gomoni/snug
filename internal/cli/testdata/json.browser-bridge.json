@@ -447,7 +447,9 @@
     "host_addresses_sealed": true
   },
   "browser_bridge": {
-    "mode": "claude-login",
+    "login": [
+      "claude"
+    ],
     "opener": "/usr/bin/xdg-open",
     "fifo": "/snug/browser.fifo",
     "max_opens": 5,

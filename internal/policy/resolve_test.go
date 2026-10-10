@@ -646,7 +646,7 @@ func maximalProfile() *Profile {
 		MTU:         1400,
 		NSS:         true,
 		Podman:      "socket",
-		Browser:     "claude-login",
+		Login:       []string{"claude"},
 		Git:         "extract",
 		Identity: &Identity{
 			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
@@ -692,7 +692,7 @@ func keyDrops() []keyDrop {
 		{"mtu", "MTU", func(p *Profile) { p.MTU = 0 }},
 		{"nss", "NSS", func(p *Profile) { p.NSS = false }},
 		{"podman", "Podman", func(p *Profile) { p.Podman = "" }},
-		{"browser", "Browser", func(p *Profile) { p.Browser = "" }},
+		{"login", "Login", func(p *Profile) { p.Login = nil }},
 		{"git", "Git", func(p *Profile) { p.Git = "" }},
 		{"identity.ssh.host", "Identity.SSH.Host", func(p *Profile) { p.Identity.SSH.Host = "" }},
 		{"identity.ssh.key", "Identity.SSH.Key", func(p *Profile) { p.Identity.SSH.Key = "" }},
@@ -770,13 +770,13 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 		return Resolve(reg, []ProfileName{p.Name}, testCtx(), newFakeEnv())
 	}
 
-	// browser = "claude-login" refuses without egress, so against the maximal
+	// login = ["claude"] refuses without egress, so against the maximal
 	// fixture the network drop only ever takes the refusal arm. The second base
-	// is the same fixture without browser, so that drop still reaches the
+	// is the same fixture without login, so that drop still reaches the
 	// subset check.
-	withoutBrowser := func() *Profile {
+	withoutLogin := func() *Profile {
 		p := maximalProfile()
-		p.Browser = ""
+		p.Login = nil
 		return p
 	}
 	for _, base := range []struct {
@@ -784,7 +784,7 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 		make   func() *Profile
 	}{
 		{"", maximalProfile},
-		{"without_browser/", withoutBrowser},
+		{"without_login/", withoutLogin},
 	} {
 		full, err := resolveWith(t, base.make())
 		if err != nil {
@@ -854,8 +854,8 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 				if got.Podman.Join(full.Podman) != full.Podman {
 					t.Errorf("dropping %s raised podman from %s to %s", d.key, full.Podman, got.Podman)
 				}
-				if got.Browser.Join(full.Browser) != full.Browser {
-					t.Errorf("dropping %s raised browser from %s to %s", d.key, full.Browser, got.Browser)
+				if got.Login.Join(full.Login) != full.Login {
+					t.Errorf("dropping %s added login providers: %s to %s", d.key, full.Login, got.Login)
 				}
 				if got.Git.Join(full.Git) != full.Git {
 					t.Errorf("dropping %s raised git from %s to %s", d.key, full.Git, got.Git)

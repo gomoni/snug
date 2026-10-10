@@ -97,7 +97,7 @@ conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES 
 - **Conditional** (`conditionalEnvs`, eleven names): snug writes one only when a
   profile key turns its feature on — `podman`, `identity.ssh.agent = "proxy"`,
   `identity.gh.user`, `git = "extract"` or an identity, `listen_names`,
-  `browser = "claude-login"`. In any
+  `login = ["claude"]`. In any
   other selection a profile may `set` or `inherit` it, annotated (§2.9). In a
   selection that turns the feature on, a profile's line on it is a **symmetric
   conflict** naming the profile's line and the profiles whose key made snug the
@@ -1018,7 +1018,7 @@ worse than an absent value.
 | `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | ✓ | ✓ | conditional (§1.1): snug's when the identity or `git` key turns its feature on, a conflict for a profile then; otherwise annotated — a raw agent socket signs with every key it holds, the two pointers name a command table |
 | `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗ → annotated** | "generate, don't bind" — the value is a path, never a credential. No annotation at `set`: authoring a pointer is the mechanism, not the hazard |
 | `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | ✓ | ✓ | conditional (§1.1): snug's filtering proxy when `podman` is on, a conflict for a profile then; otherwise annotated — the engine at the URL runs whatever container it is asked for. podman dials an `ssh://` URL itself (measured, podman 6.0.2) and does not read `DOCKER_HOST` at all |
-| `BROWSER` | yes | ✓ | ✓ | conditional (§1.1): snug's login-bridge shim (`/snug/bin/snug-browser`) when `browser = "claude-login"` is on, a conflict for a profile then; otherwise annotated — Claude Code execs the named program with the URL it wants opened as its one argument |
+| `BROWSER` | yes | ✓ | ✓ | conditional (§1.1): snug's login-bridge shim (`/snug/bin/snug-browser`) when `login = ["claude"]` is on, a conflict for a profile then; otherwise annotated — Claude Code execs the named program with the URL it wants opened as its one argument |
 
 **The three names are legal at both verbs for anybody, and `@claude` — the one
 shipped profile that touches the environment — inherits `PAGER` and neither of

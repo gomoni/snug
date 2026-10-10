@@ -117,11 +117,11 @@ var conditionalEnvs = []conditionalEnv{
 	},
 	{
 		names: []string{"BROWSER"},
-		key:   func(prof *Profile) string { return fmt.Sprintf("browser = %q", prof.Browser) },
-		on:    func(p *Policy) bool { return p.Browser != BrowserOff },
+		key:   func(prof *Profile) string { return fmt.Sprintf("login = %q", prof.Login) },
+		on:    func(p *Policy) bool { return p.Login.Has(LoginClaude) },
 		by: func(prof *Profile) bool {
-			m, err := ParseBrowserMode(prof.Browser)
-			return prof.Browser != "" && err == nil && m != BrowserOff
+			s, err := ParseLoginSet(prof.Login)
+			return err == nil && s.Has(LoginClaude)
 		},
 		writes: "points Claude Code's browser opener at snug's login bridge",
 	},

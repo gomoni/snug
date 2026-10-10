@@ -55,7 +55,7 @@ func TestRefusedScreenNamesTheOffendingProfileAtTheFIFOPath(t *testing.T) {
 			m := map[policy.ProfileName]*policy.Profile(reg)
 			evil := tc.prof
 			evil.Name = "evil"
-			evil.Browser = "claude-login"
+			evil.Login = []string{"claude"}
 			m["evil"] = &evil
 			p, rerr := policy.Resolve(m, []policy.ProfileName{"@sys", "@target-rw", "@net", "evil"}, envGoldenCtx(), env)
 			if rerr == nil || p == nil {

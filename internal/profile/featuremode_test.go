@@ -19,8 +19,6 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 		{"git", "extracted", "extract or off"},
 		{"network", "host", "isolated or egress"},
 		{"network", "egress ", "isolated or egress"},
-		{"browser", "claude", "off or claude-login"},
-		{"browser", "Claude-Login", "off or claude-login"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			_, err := parse([]byte("[profile.x]\n"+tc.key+" = "+strconv.Quote(tc.value)+"\n"), "mine.toml", true)
@@ -36,16 +34,46 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 		})
 	}
 
+	// login is a list; one unknown element refuses the whole key, and so does
+	// a value spelled as a mode rather than a provider.
+	for _, body := range []string{
+		`login = ["claude-login"]`, `login = ["x"]`, `login = ["Claude"]`, `login = ["claude", "x"]`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			_, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true)
+			if err == nil {
+				t.Fatalf("%s parsed; `snug profile show` would render a profile no run can use", body)
+			}
+			for _, want := range []string{"mine.toml", `"x"`, "unknown login provider", "(want claude)"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not say %s: %v", want, err)
+				}
+			}
+		})
+	}
+
 	// POSITIVE CONTROL: every accepted spelling parses, the no-ops included,
 	// and so does leaving each key out. Without it the test above passes on a
 	// parse that refuses every value.
 	for _, body := range []string{
 		"", `podman = "off"`, `podman = "socket"`, `podman = "build"`,
 		`git = "off"`, `git = "extract"`, `network = "isolated"`, `network = "egress"`,
-		`browser = "off"`, `browser = "claude-login"`,
+		`login = []`, `login = ["claude"]`, `login = ["claude", "claude"]`,
 	} {
 		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err != nil {
 			t.Errorf("accepted spelling %q refused: %v", body, err)
+		}
+	}
+}
+
+// The bridge is spelled `login = ["claude"]` and nothing else: `browser` is
+// not a key, so a profile still carrying it is refused by strict decoding
+// rather than read as the bridge being on or off.
+func TestBrowserKeyIsNotAKey(t *testing.T) {
+	for _, body := range []string{`browser = "claude-login"`, `browser = "off"`} {
+		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err == nil ||
+			!strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("%s: want an unknown-key refusal, got %v", body, err)
 		}
 	}
 }
