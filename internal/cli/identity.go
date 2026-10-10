@@ -275,12 +275,14 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 	// under-target symlink check as a mount path, so there is one spelling with
 	// one fate.
 	if id.SSH.Key != "" {
-		// hostread.Required, not os.ReadFile: the key is a path a payload can
-		// plant a FIFO or a symlink to /dev/zero at (issue #337) — it is
+		// hostread.RequiredNoLinks, not os.ReadFile: the key is a path a payload
+		// can plant a FIFO or a symlink to /dev/zero at (issue #337) — it is
 		// resolved under the target, which a previous run's own @target-rw could
-		// have written into. "Required" because an unreadable pinned key must
+		// have written into. pol.Identity.SSH.Key is already spelled without
+		// links, so a link found at open time was put there after Resolve.
+		// "Required" because an unreadable pinned key must
 		// stay a hard error naming the path, exactly as os.ReadFile's did.
-		data, rerr := hostread.Required(id.SSH.Key, hostread.MaxSSHPublicKeyBytes)
+		data, rerr := hostread.RequiredNoLinks(id.SSH.Key, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			// Reachable on a DRY RUN, which breaks out of the switch above
 			// before sshproxy.New exists to read the same file and fail
@@ -299,10 +301,10 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 	}
 
 	if id.Git.SigningKey != "" {
-		// Same hostread.Required for the same reason (#337): the signing key is a
+		// Same hostread.RequiredNoLinks for the same reason (#337): the signing key is a
 		// path that may resolve under the target, which a previous run's own
 		// @target-rw could have replaced with a FIFO.
-		data, rerr := hostread.Required(id.Git.SigningKey, hostread.MaxSSHPublicKeyBytes)
+		data, rerr := hostread.RequiredNoLinks(id.Git.SigningKey, hostread.MaxSSHPublicKeyBytes)
 		if rerr != nil {
 			cleanup()
 			return nil, fmt.Errorf("identity.git.signing_key %q: %w\n\n"+

@@ -13,7 +13,7 @@
 --dir /etc
 --perms 0755
 --dir /home
---ro-bind /opt /bin
+--ro-bind-fd 14 /bin
 --dev /dev
 --remount-ro /dev
 --size 1073741824
@@ -34,12 +34,12 @@
 --tmpfs /home/u/.config
 --size 1073741824
 --tmpfs /home/u/.local
---ro-bind /home/u/proj /home/u/proj
+--ro-bind-fd 15 /home/u/proj
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind /home/u/proj/sub /home/u/proj/sub
+--bind-fd 16 /home/u/proj/sub
 --remount-ro /
 --clearenv
 --setenv HOME /home/u

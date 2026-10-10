@@ -716,6 +716,7 @@ func explainInversionEnv() *envFakeEnv {
 	env.dirs["/run/dbus/system_bus_socket"] = true
 	env.links["/home/u/keys"] = "/home/u/.ssh"
 	env.hostSymlinks["/home/u/keys"] = "/home/u/.ssh"
+	env.dirs["/home/u/.ssh"] = true
 	return env
 }
 

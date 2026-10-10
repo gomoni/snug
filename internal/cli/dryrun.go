@@ -2966,11 +2966,16 @@ func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy err
 	default:
 		fmt.Fprintln(out, "(this argv determines the network posture on its own: --unshare-net creates")
 		fmt.Fprintln(out, " the sandbox's own empty network namespace, so running it by hand reproduces")
-		fmt.Fprintln(out, " it.)")
+		if len(p.BindSources()) > 0 {
+			fmt.Fprintln(out, " it; running it by hand needs each listed descriptor opened on its path first.)")
+		} else {
+			fmt.Fprintln(out, " it.)")
+		}
 	}
 	bwrapExec := execResolution("bwrap")
 	fmt.Fprintln(out, formatArgs(bwrapExec.Argv0, args))
 	describeArgv0(out, bwrapExec)
+	describeBindSources(out, p)
 	if p.Topology.Netns == policy.NetnsStage {
 		fmt.Fprintln(out, "(the argv ends here and the network namespace was never in it — see the note")
 		fmt.Fprintln(out, " above it. To check the netns by hand, compare inside against outside:")
@@ -2978,6 +2983,37 @@ func describeBwrap(out io.Writer, p *policy.Policy, args []string, refusedBy err
 		fmt.Fprintln(out, "     snug -p @net <dir> -- readlink /proc/self/ns/net  # inside")
 		fmt.Fprintln(out, " The two must DIFFER, and an empty answer from either side is a failed check")
 		fmt.Fprintln(out, " rather than a pass: an empty string is != any real namespace id.)")
+	}
+}
+
+// describeBindSources is the legend for the --ro-bind-fd and --bind-fd lines in
+// the argv above it. The argv is byte-faithful and a number in it names nothing
+// on its own; this says which host path each one is opened from, and how.
+//
+// Every number comes from policy.StubBindFDs and every row from
+// policy.BindSources, the enumerations the launcher and the goldens use, so
+// the legend cannot list a source the run does not open. Both paths go through
+// visibleValue: a grant's host path is text a profile or a directory name
+// chose.
+func describeBindSources(out io.Writer, p *policy.Policy) {
+	srcs := p.BindSources()
+	if len(srcs) == 0 {
+		return
+	}
+	fds := p.StubBindFDs()
+	fmt.Fprintln(out, "bind sources — snug opens each at launch with O_PATH and RESOLVE_NO_SYMLINKS")
+	fmt.Fprintln(out, "and refuses the run if any path component is a symlink by then; the numbers")
+	fmt.Fprintln(out, "above are illustrative, the run assigns its own:")
+	for _, m := range srcs {
+		path := visibleValue(m.Host)
+		if m.Host != m.Guest {
+			path = visibleValue(m.Host) + " -> " + visibleValue(m.Guest)
+		}
+		note := ""
+		if m.Optional {
+			note = "  (optional: omitted if absent at launch)"
+		}
+		fmt.Fprintf(out, "  fd %d  %s  %s%s\n", fds[m.Guest], m.Access, path, note)
 	}
 }
 

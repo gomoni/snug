@@ -214,7 +214,23 @@ func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 		extra = append(extra, f)
 	}
 
-	flags := p.BwrapFlags(uid, gid, func(guest string) int { return dataFDs[guest] })
+	// Every grant outside /proc is bound by descriptor, opened here and not by
+	// bwrap, so a path swapped for a link after Resolve fails the open instead
+	// of being followed. They ride in ExtraFiles like the memfds above and
+	// bwrap closes the ones it is told about; internal/fdseal keeps the
+	// engine fork and __inengine from inheriting the rest.
+	if err := requireBindFD(bwrap); err != nil {
+		return 0, err
+	}
+	bindFDs, err := openBindSources(p, &extra, nextFD)
+	if err != nil {
+		return 0, err
+	}
+
+	flags := p.BwrapFlags(uid, gid, policy.FDs{
+		Data: func(guest string) int { return dataFDs[guest] },
+		Bind: func(guest string) (int, bool) { fd, ok := bindFDs[guest]; return fd, ok },
+	})
 
 	if !opts.NoSeccomp {
 		// Built here rather than through FilterFD because the warning below

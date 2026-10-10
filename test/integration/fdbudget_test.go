@@ -105,7 +105,7 @@ func TestTheFDBudgetPolicySnugAcceptsIsOneTheStageCanActuallyBuild(t *testing.T)
 // was measured on.
 func reportedFDBudget(t *testing.T, proj string) (budget, overhead int) {
 	t.Helper()
-	const probeDoors = 200
+	const probeDoors = 400
 	out, err := runWithDoors(t, proj, probeDoors)
 	if err == nil {
 		t.Fatalf("a policy of %d doors was accepted; nothing here can find the boundary:\n%s",

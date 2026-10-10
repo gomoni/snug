@@ -970,6 +970,9 @@ func run(cfg config) int {
 	bridge.apply(&opts)
 	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), opts)
 	if err != nil {
+		if errors.Is(err, sandbox.ErrGrantRefused) {
+			return refuse(cfg, exitPolicy, err)
+		}
 		return refuse(cfg, exitUnavail, err)
 	}
 	return code
