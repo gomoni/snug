@@ -184,6 +184,15 @@ type Context struct {
 	// unit test wanting to resolve without a host profile store gets.
 	ProfileDirs []string
 
+	// RuntimeDirs are the directories snug keeps a run's host-side endpoints
+	// in, this run's own first — every place runtimeDir could have put them,
+	// because a concurrent run may have fallen back differently. Passed in so
+	// internal/cli stays the single author of the path. Resolve refuses any
+	// read-only or writable grant that contains or lies inside one: a sandbox
+	// that can see another run's socket or FIFO can use it. Empty disables the
+	// check.
+	RuntimeDirs []string
+
 	// HostNameservers is the host's /etc/resolv.conf nameserver list, read by the
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.
 	HostNameservers []string

@@ -247,6 +247,29 @@ func runtimeBase() (base, snugName string) {
 	return base, snugName
 }
 
+// runtimeDirCandidates lists every directory a snug run's endpoints can live
+// in, cleaned and deduplicated, this run's own first. A concurrent run may have
+// $XDG_RUNTIME_DIR set or unset differently from this one, so the list covers
+// the fallbacks as well as what runtimeBase picks here.
+func runtimeDirCandidates() []string {
+	base, name := runtimeBase()
+	uid := os.Getuid()
+	var out []string
+	seen := map[string]bool{}
+	for _, c := range []string{
+		filepath.Join(base, name),
+		fmt.Sprintf("/run/user/%d/snug", uid),
+		filepath.Join(os.TempDir(), fmt.Sprintf("snug-%d", uid)),
+		fmt.Sprintf("/tmp/snug-%d", uid),
+	} {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // runtimeDirs holds the *runtimeDir this process has claimed for each run
 // directory, keyed by the resolved path. The flock inside it is never
 // released and the descriptor never closed for the lifetime of this process:

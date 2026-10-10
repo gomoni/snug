@@ -188,20 +188,6 @@ func (h *netHelper) readReady(r *os.File) {
 // link up. See policy.PastaReadyPath for why "UP and RUNNING" is not this.
 func (h *netHelper) configured() <-chan struct{} { return h.configuredCh }
 
-func hasNonLoopback(procNetDev string) bool {
-	sc := bufio.NewScanner(strings.NewReader(procNetDev))
-	for i := 0; sc.Scan(); i++ {
-		if i < 2 {
-			continue // two header lines
-		}
-		name, _, ok := strings.Cut(strings.TrimSpace(sc.Text()), ":")
-		if ok && strings.TrimSpace(name) != "lo" {
-			return true
-		}
-	}
-	return false
-}
-
 // died is closed when pasta has exited, however it exited. It exists so a
 // caller can RACE a slow readiness check against the helper dying, rather than
 // waiting out a timeout for a process that is already gone: a pasta that starts

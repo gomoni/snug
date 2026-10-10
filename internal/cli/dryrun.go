@@ -35,6 +35,13 @@ import (
 // what they know, which is the copy-with-no-link-back shape this repo keeps
 // paying for.
 func dryRun(env policy.Environ, out io.Writer, p *policy.Policy, args []string, cfg config, n *notes, refusedBy error) error {
+	// main.go plans the FIFO before building the argv on the ordinary dry run,
+	// so this call is a no-op there; it covers a caller that did not (a policy
+	// that can run, reached without main's call). A refused policy gets no row:
+	// the mount at that guest path is the offending profile's.
+	if err := planBrowserFIFO(p, refusedBy); err != nil {
+		return err
+	}
 	// ONE Report, then ONE renderer. --json REPLACES the human form; it never
 	// adds to it, because the document is the whole of stdout (renderJSON's
 	// doc comment says why that matters on a refusal).
@@ -85,6 +92,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 			visibleValue(policy.JoinNames(implied, " ")))
 	}
 	describeNetwork(out, p)
+	renderBrowserBridge(out, rep.BrowserBridge)
 	describeTopology(out, p)
 	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
@@ -309,7 +317,9 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 // one exclusion this function makes: its host path exists for THIS run alone —
 // /snug/podman.sock under the run directory, /snug/engine/sock under
 // snug-<uid>-<pid> — so a peer is handed its own and cannot meet this one
-// there, whatever policy the peer resolves. The flag is set where those paths
+// there, because Resolve refuses every grant that reaches snug's runtime
+// directory. The one way round is a peer whose $XDG_RUNTIME_DIR or $TMPDIR
+// points inside a path this run grants. The flag is set where those paths
 // are CONSTRUCTED (policy.BindSocket, internal/engine's GraftPathsInto), not
 // derived here by reading a pid back out of a path: a naming convention is a
 // guess, and a false row on the screen whose job is to be trusted costs more
@@ -359,9 +369,12 @@ func describeShared(out io.Writer, p *policy.Policy) {
 		return
 	}
 	fmt.Fprintln(out, "         The writable host paths it could meet this one on are below. This")
-	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is named after")
-	fmt.Fprintln(out, "         this run, so a second sandbox is handed its own. Whether a peer")
-	fmt.Fprintln(out, "         reaches a row below still depends on what it grants itself.")
+	fmt.Fprintln(out, "         run's own sockets are NOT among them — their host side is under snug's")
+	fmt.Fprintln(out, "         runtime directory, which snug refuses to let any grant reach, so a")
+	fmt.Fprintln(out, "         second sandbox can neither be handed them nor list them (unless a")
+	fmt.Fprintln(out, "         peer's $XDG_RUNTIME_DIR or $TMPDIR was itself pointed inside a path")
+	fmt.Fprintln(out, "         one of them grants). Whether a peer reaches a row below still depends")
+	fmt.Fprintln(out, "         on what it grants itself.")
 	for _, r := range rows {
 		fmt.Fprintf(out, "           %-40s %s\n", visibleValue(r.path), r.note)
 	}
@@ -2149,9 +2162,16 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
 			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
-		fmt.Fprintf(out, "         host -> sandbox CLOSED — nothing is forwarded into this\n")
-		fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
-		fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		if p.Login.Has(policy.LoginClaude) {
+			fmt.Fprintf(out, "         host -> sandbox CLOSED — except the login bridge's one relayed\n")
+			fmt.Fprintf(out, "                         callback, see below. Nothing else is forwarded into this\n")
+			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
+			fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		} else {
+			fmt.Fprintf(out, "         host -> sandbox CLOSED — nothing is forwarded into this\n")
+			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
+			fmt.Fprintf(out, "                         listen_names in a profile; see below.\n")
+		}
 		renderHTTPDoors(out, p)
 		// address is copied from the host (no synthetic-address mechanism
 		// exists any more), and the host is unreachable on every address it
@@ -2290,6 +2310,7 @@ func describeTopology(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "                  (__innetns is a setns shim that BECOMES bwrap rather than\n")
 		fmt.Fprintf(out, "                  running beside it, so it is not one of the %d.)\n", len(procs))
 	}
+	describeBrowserTopology(out, p)
 	fmt.Fprintf(out, "  netns owner     %s\n", p.Topology.Netns)
 	// PID NESTING, and it is on this screen because nothing else shows it.
 	// The bwrap argv is IDENTICAL on both arms — the nesting is entirely in
@@ -3191,11 +3212,6 @@ func coverageOf(p *policy.Policy, host string) (coverage, int) {
 		return coveragePartial, beneath
 	}
 	return coverageNone, 0
-}
-
-func covered(p *policy.Policy, host string) bool {
-	c, _ := coverageOf(p, host)
-	return c == coverageFull
 }
 
 // formatArgs renders the argv block. argv0 is the producer's word (see

@@ -121,6 +121,12 @@ gate:
 	# budget is sized for. This one calls signal.Ignore explicitly. Same fix,
 	# same reasoning as the twelve above.
 	go vet ./test/integration/testdata/ignoresterm
+	# testdata/loginprobe and testdata/fakeopener (the login bridge) are the
+	# fourteenth and fifteenth: the sandbox half of /login and a stand-in
+	# xdg-open that plays the browser. Built lazily by loginbridge_test.go.
+	# Same fix, same reasoning as the thirteen above.
+	go vet ./test/integration/testdata/loginprobe
+	go vet ./test/integration/testdata/fakeopener
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

@@ -107,6 +107,7 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 		0,           // MTU
 		false,       // NSS
 		"",          // Podman
+		nil,         // Login
 		"",          // Git
 		nil,         // Identity
 		EnvGrants{}, // Environ

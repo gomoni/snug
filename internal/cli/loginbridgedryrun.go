@@ -1,0 +1,80 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/gomoni/snug/internal/loginbridge"
+	"github.com/gomoni/snug/internal/policy"
+)
+
+// planBrowserFIFO is the --dry-run counterpart of startLoginBridge's
+// BindSocket: it names the FIFO a real run would create, creating nothing, so
+// the FILESYSTEM block and the mounts array carry the same row a run would.
+//
+// It writes nothing when the key is off, when refusedBy is set, or when the
+// guest path is already mapped. Replace appends `replaces:<old From>` to a
+// mount it displaces, so a second call over its own (browser) row would print
+// "(browser)+replaces:(browser)"; and on a refused policy the mount at the
+// guest path is the OFFENDING profile's, which a replacement would erase from
+// the one screen that exists to name it.
+func planBrowserFIFO(p *policy.Policy, refusedBy error) error {
+	if !p.Login.Has(policy.LoginClaude) || refusedBy != nil {
+		return nil
+	}
+	if _, mapped := p.Mounts[policy.BrowserFIFOGuest]; mapped {
+		return nil
+	}
+	path, err := plannedSocket(browserFIFOName)
+	if err != nil {
+		return err
+	}
+	p.BindSocket(path, policy.BrowserFIFOGuest, "(browser)")
+	return nil
+}
+
+// renderBrowserBridge prints the login bridge's rows inside the NETWORK
+// block. Nothing when the key is off. The port is per-flow and so is not
+// named: it exists only while a login is pending.
+func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
+	if b == nil {
+		return
+	}
+	scopes := loginbridge.PinnedScopes()
+	fmt.Fprintf(out, "         browser bridge  login = %q — the sandbox may ask snug to open a Claude login page\n", b.Login)
+	fmt.Fprintf(out, "                         in YOUR browser, directly, one at a time. Accepted shape:\n")
+	fmt.Fprintf(out, "                         %s\n", loginbridge.PinnedAuthorizeBase())
+	fmt.Fprintf(out, "                         client %s, exactly %d scopes:\n", loginbridge.PinnedClientID(), len(scopes))
+	fmt.Fprintf(out, "                         %s\n", strings.Join(scopes[:3], " "))
+	fmt.Fprintf(out, "                         %s;\n", strings.Join(scopes[3:], " "))
+	fmt.Fprintf(out, "                         anything else is REFUSED, and snug rebuilds the URL it opens\n")
+	fmt.Fprintf(out, "                         from its own constants.\n")
+	fmt.Fprintf(out, "                         callback: snug binds localhost:<port> (127.0.0.1 and ::1) on\n")
+	fmt.Fprintf(out, "                         the host only while a login is pending (at most %s), admits\n", loginbridge.FlowTTL)
+	fmt.Fprintf(out, "                         your uid only, relays ONE rebuilt GET /callback into the\n")
+	fmt.Fprintf(out, "                         sandbox and answers your browser itself. Nothing is forwarded\n")
+	fmt.Fprintf(out, "                         into the sandbox's namespace; host loopback stays unreachable\n")
+	fmt.Fprintf(out, "                         from inside.\n")
+	if b.OpenerError != "" {
+		fmt.Fprintf(out, "         opener          NONE — a real run would REFUSE to start: %s\n", visibleValue(b.OpenerError))
+	} else {
+		fmt.Fprintf(out, "         opener          %s\n", visibleValue(b.Opener))
+	}
+	fmt.Fprintf(out, "         limits          %d opens and %d callbacks per run, %d login pending at a time\n",
+		b.MaxOpens, b.MaxRelays, loginbridge.MaxLiveFlows)
+}
+
+// describeBrowserTopology prints the TOPOLOGY rows for the opener. It is not
+// in longLivedProcesses: xdg-open is started per login, not per run, so
+// counting it would make the process count a `ps` check cannot confirm.
+func describeBrowserTopology(out io.Writer, p *policy.Policy) {
+	if !p.Login.Has(policy.LoginClaude) {
+		return
+	}
+	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached.\n")
+	fmt.Fprintf(out, "                  snug waits at most %s PER LOGIN for its exit status, and reaps\n", loginbridge.OpenerPatience.Round(time.Second))
+	fmt.Fprintf(out, "                  it only while snug is alive: xdg-open itself, and the BROWSER it\n")
+	fmt.Fprintf(out, "                  starts — YOURS, not a child of the sandbox — may outlive this run.\n")
+}

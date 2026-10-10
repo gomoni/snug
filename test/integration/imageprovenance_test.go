@@ -126,20 +126,6 @@ func engineSpecEnvWithSignaturePolicy(t *testing.T, hostPolicy string) ([]string
 	return hostSideEnv(t, e, "", spec.Env), e
 }
 
-// envLookup returns the value of name in a KEY=VALUE environment, failing the
-// test when it is absent — an absent variable is the regression these tests
-// exist for, so it must never read as an empty string.
-func envLookup(t *testing.T, env []string, name string) string {
-	t.Helper()
-	for _, kv := range env {
-		if rest, ok := strings.CutPrefix(kv, name+"="); ok {
-			return rest
-		}
-	}
-	t.Fatalf("the engine's environment carries no %s at all", name)
-	return ""
-}
-
 // envWithout returns env with name removed. It builds the CONTROL for every
 // test in this file: the same podman, the same planted host file, and snug's
 // variable taken away. Without it "podman did not read the host's file" would

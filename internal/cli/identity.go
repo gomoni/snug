@@ -169,8 +169,6 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 // file for every mode except none; identity.git.signing_key is refused in Resolve
 // without an agent. So there is nothing here a profile with no agent wants.
 func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun bool) (cleanup func(), err error) {
-	cleanup = func() {}
-
 	// No os.RemoveAll here: the run directory now has one owner for its
 	// whole lifetime — run() in main.go, which creates it on every REAL run
 	// and is the sole remover, once, after the sandbox has exited. Two removers racing each

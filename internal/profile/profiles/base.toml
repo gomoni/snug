@@ -597,6 +597,30 @@ dns = true
 # private tmpfs, so /tmp/cc-socks/ holds only this session's socket. No shipped
 # profile puts a host directory there; a user profile that binds one has yielded
 # the private tmpfs deliberately and reads its own grant on --dry-run.
+# THE LOGIN BRIDGE IS OFF HERE, ON PURPOSE (issue #455). `login` is an
+# ordinary feature key, not something this builtin sets — @claude alone never
+# stages it, and Claude Code's own manual /login flow (print a URL, paste back
+# a code) keeps working exactly as it does today. A user profile turns it on
+# by writing `login = ["claude"]` alongside `@claude @net`:
+#
+# ABUSE: with the key on, a hostile process inside the sandbox can make snug
+# open https://claude.com/cai/oauth/authorize DIRECTLY in YOUR browser — no
+# snug page in between — for Claude Code's own client id and the seven scopes
+# snug pins (org:create_api_key among them), with a challenge, a state and a
+# callback port the SANDBOX chose, at most five times per run and at most once
+# every 30 seconds. If you approve, the sandbox receives a login for whichever
+# account you approved: an access token AND a refresh token, which it can copy
+# out over @net and use for as long as Anthropic honours it (a host-minted
+# refresh token measured 26 days, issue #58), and with which it can mint an API
+# key. It cannot make your browser open any other URL, cannot see a byte your
+# browser sends to localhost (snug rebuilds the callback from the code and
+# state alone, so no cookie crosses), and cannot show your browser a byte of
+# its own (snug answers the callback page itself). Another user on this
+# machine cannot deliver the callback: snug refuses any connection not owned
+# by your uid. "Your uid" includes your own rootless host containers opened to
+# host loopback; lacking the state, they can only hold connection slots, never
+# deliver a callback. xdg-open, and the browser it starts, are yours, not
+# processes snug started, and either may outlive this run.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]

@@ -427,13 +427,12 @@ func TestECONNREFUSEDNamesTheFix(t *testing.T) {
 }
 
 func TestBindRefusesOnCollision(t *testing.T) {
-	addr := netip.MustParseAddrPort("127.64.9.9:0")
 	ln, err := net.Listen("tcp", "127.64.9.9:0")
 	if err != nil {
 		t.Skipf("cannot bind 127.64.9.9 in this environment: %v", err)
 	}
 	defer ln.Close()
-	addr = netip.MustParseAddrPort(ln.Addr().String())
+	addr := netip.MustParseAddrPort(ln.Addr().String())
 
 	dial, _ := echoBackend(t, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 	d, err := New(Config{Addr: addr, Token: "t", DoorName: "web", Dial: dial, Log: &bytes.Buffer{}})

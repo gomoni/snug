@@ -259,8 +259,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, err
 	}
 
+	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, env); err != nil {
+		return nil, err
+	}
+
 	var identityOwner, gitOwner ProfileName
 	var mtuOwner ProfileName
+	var loginOwner ProfileName
 	pluginAllow := map[string]bool{}
 	httpDoors := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -563,6 +568,19 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			p.Podman = p.Podman.Join(mode)
 		}
+		// login: a SET unioned across profiles, same reasoning as Plugins
+		// below. loginOwner is the first profile in fold order that turned the
+		// bridge on, for the refusals after the fold.
+		if len(prof.Login) > 0 {
+			set, err := ParseLoginSet(prof.Login)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			if p.Login == 0 {
+				loginOwner = name
+			}
+			p.Login = p.Login.Join(set)
+		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 		p.NSS = p.NSS || prof.NSS
 
@@ -707,6 +725,31 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		// --dry-run can see them.
 		p.AuthorEnv("LISTEN_FDS", strconv.Itoa(len(p.ListenNames)))
 		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
+	}
+
+	// The login-bridge shim (issue #455). login is an ordinary feature key —
+	// no builtin sets it, @claude included, by maintainer decision — so the
+	// hole exists only in a selection that spells login = ["claude"]
+	// itself. Refused rather than granted-but-useless outside egress: the
+	// bridge relays the callback into the sandbox's own netns and the token
+	// exchange needs the internet, so a selection without @net would stage a
+	// BROWSER that can never complete a login.
+	if p.Login.Has(LoginClaude) {
+		if p.Net.Mode != NetEgress {
+			return nil, fmt.Errorf("profile %q sets login = %s, but nothing in this "+
+				"selection grants the network: the callback is relayed into the sandbox's "+
+				"own network namespace and the token exchange needs the internet. Add -p "+
+				"@net.", loginOwner, p.Login)
+		}
+		if !p.shellIsVisible() {
+			return nil, BrowserBridgeShellError(httpDoorShimShell)
+		}
+		perm := uint32(0755)
+		p.Replace(Mount{
+			Guest: BrowserShimGuest, Kind: KindData, Access: AccessRO,
+			Perms: &perm, Content: []byte(browserBridgeShim), From: []string{"(snug)"},
+		})
+		p.AuthorEnv("BROWSER", BrowserShimGuest)
 	}
 
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
@@ -1411,15 +1454,6 @@ func scalarConflict(key string, ownerA ProfileName, a any, ownerB ProfileName, b
 		ownerA, ownerB, key, VisibleText(fmt.Sprint(a)), VisibleText(fmt.Sprint(b)))
 }
 
-func sortedInts(m map[int]bool) []int {
-	out := make([]int, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Ints(out)
-	return out
-}
-
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -1446,16 +1480,12 @@ func refuseWritableProfileStore(set map[ProfileName]*Profile, names []ProfileNam
 	if len(dirs) == 0 {
 		return nil
 	}
-	// Canonicalise BOTH sides. Without this the check compares text, and a grant
-	// naming a symlink to the store — or a store reached through one, which is
-	// every distro where /home is a symlink — passes it. `covers` is a path-segment
-	// prefix test and has no opinion about links.
-	canon := func(p string) string {
-		if r, err := env.EvalSymlinks(p); err == nil {
-			return r
-		}
-		return filepath.Clean(p) // absent today; the fold refuses it a moment later
-	}
+	// Canonicalise BOTH sides, through the longest existing ancestor. Without
+	// this the check compares text, and a grant naming a symlink to the store —
+	// or a store reached through one, which is every distro where /home is a
+	// symlink — passes it. `covers` is a path-segment prefix test and has no
+	// opinion about links.
+	canon := func(p string) string { return canonExisting(env, p) }
 	for _, name := range names {
 		prof := set[name]
 		for _, raw := range prof.RW {

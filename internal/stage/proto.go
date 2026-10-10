@@ -37,6 +37,14 @@ import (
 // not the hazard a request carrying one is.
 const maxMessage = 64 * 1024
 
+// maxRelaySockets bounds request.RelaySockets. The login bridge relays at most
+// three callbacks per run and each relay spends one socket; P1 refuses more, so a confused P0 cannot turn "netready" into a
+// way to fill its own descriptor table with sockets in N.
+const maxRelaySockets = 3
+
+// MaxRelaySockets is maxRelaySockets for callers that request that many.
+const MaxRelaySockets = maxRelaySockets
+
 // request is a P0 -> P1 message. Four ops. The stage answers at most one
 // "netready" and exactly one "start" before it exits, in that order; "stop"
 // tears it down and is sent by Close rather than StartSandbox. "mapped" is
@@ -73,6 +81,14 @@ type request struct {
 	// snug0 (the host's link-local, and any second alias on another
 	// interface).
 	HostAddrs []string `json:"host_addrs,omitempty"`
+
+	// "netready" only: how many unconnected AF_INET stream sockets the stage
+	// creates INSIDE N and hands back on the "netready" event as SCM_RIGHTS.
+	// Zero on every run without the login browser bridge, and omitempty keeps
+	// such a run's request byte-for-byte what it was before the field existed.
+	// P1 refuses a count above maxRelaySockets: it is input on that side, the
+	// same trust position as Passthrough.
+	RelaySockets int `json:"relay_sockets,omitempty"`
 
 	// "start" only.
 	Bwrap string   `json:"bwrap,omitempty"`
@@ -143,7 +159,9 @@ type request struct {
 // the map for P0 to write via newuidmap/newgidmap instead of writing it
 // itself); "ready", sent once at startup with the namespace ids and the
 // pinned netns fd; "netready", the answer to a "netready" request, carrying
-// Err when the interface never came up; "forked", sent at most once, inside a
+// Err when the interface never came up and, when the request asked for them,
+// the relay sockets as SCM_RIGHTS (the only event that ever carries a
+// descriptor); "forked", sent at most once, inside a
 // "start" reply, the instant bwrap's --info-fd answer is parsed and BEFORE
 // anything slow on the way to a payload (the mount settle, the engine's cold
 // start); and "enginestarted" and "exited", the TWO answers to the one
@@ -175,6 +193,12 @@ type event struct {
 	Netns   string `json:"netns,omitempty"`
 	Userns  string `json:"userns,omitempty"`
 	NetnsFD int    `json:"netns_fd,omitempty"`
+
+	// "netready" only: how many descriptors ride on this datagram as
+	// SCM_RIGHTS. P0 checks it against both its own request and the number of
+	// descriptors the kernel actually delivered, so a stage that sends one
+	// without the other is refused rather than believed.
+	RelaySockets int `json:"relay_sockets,omitempty"`
 
 	// "forked" and "enginestarted": bwrap's own --info-fd answer, parsed by P1
 	// because P1 is the process that holds the descriptor (fds.go's

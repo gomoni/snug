@@ -465,6 +465,10 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
+	// Login is the union of the selected profiles' `login` lists — see
+	// LoginSet. Empty means the login bridge is off.
+	Login LoginSet
+
 	// NSS is the OR-fold of every selected profile's `nss` key (issue #612).
 	// It gates Resolve's own generated /etc/passwd, /etc/group and
 	// /etc/nsswitch.conf — see the `if p.NSS` branch in Resolve.
@@ -681,9 +685,10 @@ func (p *Policy) Replace(m Mount) {
 	p.Mounts[m.Guest] = m
 }
 
-// BindSocket grants a host socket at a fixed guest path, after the policy is
-// resolved. It is how the CLI hands the sandbox something it had to create
-// first — an ssh-agent proxy socket, say — and it is deliberately one of the
+// BindSocket grants a host socket or FIFO this run created at a fixed guest
+// path, after the policy is resolved. It is how the CLI hands the sandbox
+// something it had to create first — an ssh-agent proxy socket, or the login
+// bridge's FIFO — and it is deliberately one of the
 // two post-resolution writers (the other being Replace, which it uses), so the
 // set of such things stays countable.
 //
@@ -693,7 +698,7 @@ func (p *Policy) Replace(m Mount) {
 // read as though the identity machinery had opened it.
 //
 // It bypasses no check that matters: the path is snug's own choice under
-// /snug, not a profile's, and the socket is one snug just created.
+// /snug, not a profile's, and the socket or FIFO is one snug just created.
 //
 // Every mount it writes is RunScoped, and that is a property of the caller
 // set rather than a parameter: this function exists for a socket THIS run had
@@ -750,6 +755,98 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 	default:
 		return 0, fmt.Errorf("unknown podman mode %q (want off, socket or build)", s)
 	}
+}
+
+// LoginProvider names one sign-in flow the login bridge completes through the
+// host browser. Each provider is its own value with its own pinned predicate
+// on the host side of the FIFO (internal/loginbridge): the bridge opens only a
+// URL that predicate accepts, so a provider is never a free-form string.
+type LoginProvider uint8
+
+const (
+	// LoginClaude is Claude Code's `/login`: snug stages
+	// /snug/bin/snug-browser and points BROWSER at it, so Claude Code execs
+	// the shim with the login URL as its one argument instead of a real
+	// opener. Resolve refuses it outside a selection that also grants egress
+	// and a shell — see resolve.go.
+	LoginClaude LoginProvider = iota
+)
+
+func (l LoginProvider) String() string {
+	if l == LoginClaude {
+		return "claude"
+	}
+	return fmt.Sprintf("LoginProvider(%d)", uint8(l))
+}
+
+// ParseLoginProvider returns the provider one element of a profile's `login`
+// list names. Any spelling outside the accepted set is an error quoting that
+// set; it is never read as the nearest provider it resembles.
+func ParseLoginProvider(s string) (LoginProvider, error) {
+	switch s {
+	case "claude":
+		return LoginClaude, nil
+	default:
+		return 0, fmt.Errorf("unknown login provider %q (want claude)", s)
+	}
+}
+
+// LoginSet is the union of the selected profiles' `login` lists — a SET, so
+// two profiles naming the same provider turn it on once and the value does not
+// depend on fold order. The zero value is empty: the bridge is off. It is an
+// ordinary feature key a user profile sets — there is no builtin that turns it
+// on, and @claude does not (issue #455, a maintainer decision): the hole
+// exists only where a profile spells `login = ["claude"]` itself, never merely
+// by riding along with `@claude -p @net`.
+type LoginSet uint8
+
+// Has reports whether l is in the set.
+func (s LoginSet) Has(l LoginProvider) bool { return s&(1<<l) != 0 }
+
+// With returns s with l added.
+func (s LoginSet) With(l LoginProvider) LoginSet { return s | 1<<l }
+
+// Join is the union.
+func (s LoginSet) Join(o LoginSet) LoginSet { return s | o }
+
+// Providers lists the set in LoginProvider order.
+func (s LoginSet) Providers() []LoginProvider {
+	var out []LoginProvider
+	for l := LoginProvider(0); l < 8; l++ {
+		if s.Has(l) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Names lists the set's providers by their TOML spelling, in LoginProvider
+// order.
+func (s LoginSet) Names() []string {
+	var out []string
+	for _, l := range s.Providers() {
+		out = append(out, l.String())
+	}
+	return out
+}
+
+// String renders the set as its TOML list, e.g. `["claude"]`; `[]` when empty.
+func (s LoginSet) String() string {
+	return fmt.Sprintf("%q", s.Names())
+}
+
+// ParseLoginSet parses a profile's `login` list. Any element ParseLoginProvider
+// refuses is an error; duplicates are not.
+func ParseLoginSet(names []string) (LoginSet, error) {
+	var s LoginSet
+	for _, n := range names {
+		l, err := ParseLoginProvider(n)
+		if err != nil {
+			return 0, err
+		}
+		s = s.With(l)
+	}
+	return s, nil
 }
 
 // There is deliberately no restriction operation here — no Clamp, no Apply, no
