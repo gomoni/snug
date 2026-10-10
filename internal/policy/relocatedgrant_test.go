@@ -468,3 +468,80 @@ func TestRelocationOntoAnEphemeralTmpfsSaysSoRatherThanClaimingADowngrade(t *tes
 			"tmpfs, where nothing is shadowed and no access changes:\n%v", err)
 	}
 }
+
+func resolveLinkGrant(link, grant string) error {
+	reg := testRegistry()
+	reg["l"] = &Profile{Name: "l",
+		Symlink: []Symlink{{At: "/p", Target: link}},
+		RO:      []string{grant}}
+	_, err := Resolve(reg, twoOf("l"), testCtx(), newFakeEnv())
+	return err
+}
+
+// TestRelocatedGrantIntoSnugsOwnTreeDoesNotSuggestIt holds "errors name the
+// fix": a grant that resolves through a profile symlink into /proc or /dev
+// must not be told to "grant <landing> instead", because snug refuses that
+// landing as its own. The suggestion is checked by running it.
+func TestRelocatedGrantIntoSnugsOwnTreeDoesNotSuggestIt(t *testing.T) {
+	for _, c := range []struct{ link, own string }{
+		{"/proc", "/proc"},
+		{"/dev", "/dev"},
+		{"/sys", "/sys"},
+	} {
+		landing := c.link + "/x"
+		err := resolveLinkGrant(c.link, "/usr:/p/x")
+		if err == nil {
+			t.Fatalf("%s: grant through a symlink into %s accepted", c.link, c.own)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "instead") {
+			t.Errorf("%s: refusal still suggests granting the landing:\n%v", c.link, err)
+		}
+		for _, want := range []string{landing, c.own, "snug's own", "Remove the grant"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: refusal does not name %q:\n%v", c.link, want, err)
+			}
+		}
+		if err2 := resolveLinkGrant(c.link, "/usr:"+landing); err2 == nil {
+			t.Errorf("%s: the landing %s is accepted, so the refusal above is wrong about it", c.link, landing)
+		}
+	}
+}
+
+// TestRelocatedGrantSuggestedLandingIsAccepted holds that for an ordinary
+// landing the "grant <landing> instead" advice is itself accepted.
+func TestRelocatedGrantSuggestedLandingIsAccepted(t *testing.T) {
+	err := resolveLinkGrant("/w", "/usr:/p/x")
+	if err == nil {
+		t.Fatal("grant through a profile symlink accepted")
+	}
+	if !strings.Contains(err.Error(), "grant /w/x instead") {
+		t.Fatalf("refusal does not suggest /w/x:\n%v", err)
+	}
+	if err := resolveLinkGrant("/w", "/usr:/w/x"); err != nil {
+		t.Errorf("the suggested grant /w/x is itself refused: %v", err)
+	}
+}
+
+// refusalRelocatedIntoSnugsOwnTree is relocatedError's own arm for a landing
+// snug refuses as its own: a host symlink inside a cover points at /proc.
+func refusalRelocatedIntoSnugsOwnTree(t testing.TB) error {
+	reg := testRegistry()
+	reg["evil"] = &Profile{Name: "evil", RO: []string{"/cover:/G", "/usr:/G/sub/mnt"}}
+	env := newFakeEnv()
+	env.dirs["/cover"] = true
+	env.links["/cover/sub"] = "/proc"
+	_, err := Resolve(reg, twoOf("evil"), testCtx(), env)
+	return err
+}
+
+func TestRelocatedErrorIntoSnugsOwnTreeDoesNotSuggestIt(t *testing.T) {
+	err := refusalRelocatedIntoSnugsOwnTree(t)
+	if err == nil {
+		t.Fatal("accepted a grant landing in /proc through a host symlink")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "the path the sandbox really has") || !strings.Contains(msg, "snug's own") {
+		t.Errorf("refusal still suggests the landing or omits why:\n%v", err)
+	}
+}
