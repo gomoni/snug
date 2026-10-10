@@ -188,7 +188,8 @@ func TestGitExtractNeverBindsTheHostFile(t *testing.T) {
 		if !strings.Contains(line, ".gitconfig") {
 			continue
 		}
-		if strings.Contains(line, "ro ") || strings.Contains(line, "--ro-bind ") {
+		if strings.Contains(line, "ro ") || strings.Contains(line, "--ro-bind ") ||
+			strings.Contains(line, "--ro-bind-fd ") {
 			t.Errorf("the host's git config is BOUND, not generated — the whole point of "+
 				"this profile is that a read-only bind supplies the commands the file "+
 				"names: %q", strings.TrimSpace(line))

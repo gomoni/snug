@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // BwrapArgs is the complete argument vector, flags followed by `-- command`.
@@ -13,10 +14,41 @@ import (
 func (p *Policy) BwrapArgs(uid, gid int) []string {
 	// A deterministic stub allocator, so --dry-run and the golden files show
 	// stable fd numbers. The real numbers come from the sandbox layer.
-	n := 9
-	a := p.BwrapFlags(uid, gid, func(string) int { n++; return n })
+	data, bind := p.stubFDs()
+	a := p.BwrapFlags(uid, gid, FDs{
+		Data: func(guest string) int { return data[guest] },
+		Bind: func(guest string) (int, bool) { fd, ok := bind[guest]; return fd, ok },
+	})
 	a = append(a, "--")
 	return append(a, p.Command...)
+}
+
+// stubFDs numbers the descriptors BwrapArgs prints: data fds from 10 in
+// SortedMounts order, then bind fds in BindSources order, so no --file or
+// --ro-bind-data line moves when a bind becomes a descriptor. The numbers are
+// illustrative; sandbox.Run assigns its own.
+func (p *Policy) stubFDs() (data, bind map[string]int) {
+	n := 9
+	data, bind = map[string]int{}, map[string]int{}
+	for _, m := range p.SortedMounts() {
+		if m.Kind == KindData {
+			n++
+			data[m.Guest] = n
+		}
+	}
+	for _, m := range p.BindSources() {
+		n++
+		bind[m.Guest] = n
+	}
+	return data, bind
+}
+
+// StubBindFDs is the descriptor number BwrapArgs prints for each BindSources
+// entry, keyed by guest path, so --dry-run's legend and the argv above it
+// cannot disagree. Illustrative only.
+func (p *Policy) StubBindFDs() map[string]int {
+	_, bind := p.stubFDs()
+	return bind
 }
 
 // BwrapFlags is everything up to but NOT including the `--` separator.
@@ -105,7 +137,23 @@ func (t Topology) UnshareFlags() []string {
 	return f
 }
 
-func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []string {
+// FDs is how BwrapFlags learns the descriptor numbers the caller assigned. It
+// is a pair of lookups, not two maps, so this package stays free of the
+// os.File bookkeeping that lives in internal/sandbox.
+type FDs struct {
+	// Data returns the memfd number carrying the content of the KindData mount
+	// at guest.
+	Data func(guest string) int
+
+	// Bind returns the descriptor number the caller opened for the KindBind
+	// mount at guest, and whether there is one. present=false is legal only
+	// for an Optional mount whose host path was absent at launch: BwrapFlags
+	// then emits nothing for it. A missing descriptor for a non-optional mount
+	// panics, for the same reason an unhandled Kind does.
+	Bind func(guest string) (fd int, present bool)
+}
+
+func (p *Policy) BwrapFlags(uid, gid int, fds FDs) []string {
 	a := []string{}
 
 	// append, not `a := p.Topology.UnshareFlags()`, so the freshness of the
@@ -202,14 +250,33 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	for _, m := range p.SortedMounts() {
 		switch m.Kind {
 		case KindBind:
-			flag := "--ro-bind"
+			if BindByPath(m.Host) {
+				flag := "--ro-bind"
+				if m.Access == AccessRW {
+					flag = "--bind"
+				}
+				if m.Optional {
+					flag += "-try"
+				}
+				a = append(a, flag, m.Host, m.Guest)
+				break
+			}
+			fd, ok := fds.Bind(m.Guest)
+			if !ok {
+				if m.Optional {
+					break
+				}
+				// A non-optional bind source the caller did not open would be
+				// silently omitted from the argv, the "--seccomp after bwrap's
+				// --" shape: no error and no --dry-run line to notice it by.
+				panic(fmt.Sprintf("bind source not opened — a grant without a descriptor is "+
+					"silently omitted from the argv (guest=%s)", m.Guest))
+			}
+			flag := "--ro-bind-fd"
 			if m.Access == AccessRW {
-				flag = "--bind"
+				flag = "--bind-fd"
 			}
-			if m.Optional {
-				flag += "-try"
-			}
-			a = append(a, flag, m.Host, m.Guest)
+			a = append(a, flag, strconv.Itoa(fd), m.Guest)
 		case KindTmpfs:
 			// --size sets the size of the NEXT argument and bwrap refuses it in
 			// front of anything but --tmpfs ("bwrap: --size must be followed by
@@ -244,9 +311,9 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 				a = append(a, "--perms", fmt.Sprintf("%04o", *m.Perms))
 			}
 			if m.Access == AccessRW {
-				a = append(a, "--file", strconv.Itoa(dataFD(m.Guest)), m.Guest)
+				a = append(a, "--file", strconv.Itoa(fds.Data(m.Guest)), m.Guest)
 			} else {
-				a = append(a, "--ro-bind-data", strconv.Itoa(dataFD(m.Guest)), m.Guest)
+				a = append(a, "--ro-bind-data", strconv.Itoa(fds.Data(m.Guest)), m.Guest)
 			}
 		default:
 			// Unreachable given Validate's rule that a KindGraft OR KindCgroup2
@@ -286,6 +353,33 @@ func (p *Policy) BwrapFlags(uid, gid int, dataFD func(guest string) int) []strin
 	}
 
 	return append(a, "--chdir", p.Chdir)
+}
+
+// BindByPath reports whether a KindBind source is handed to bwrap as a path
+// rather than as a descriptor: /proc and everything under it, compared by
+// component so "/procfoo" is not procfs.
+//
+// Under /proc the sandbox's own procfs is a fresh superblock (the __inpidns
+// and stage topologies mount one), and a descriptor opened on the host's
+// procfs path does not survive being bound under it: bwrap refuses the mount
+// as a race. Nothing can rename an entry inside procfs, so there is no swap
+// for a descriptor to close.
+func BindByPath(host string) bool {
+	return host == "/proc" || strings.HasPrefix(host, "/proc/")
+}
+
+// BindSources are the KindBind mounts a caller must open and pass by
+// descriptor, in SortedMounts order. It is the one enumeration: the launcher,
+// --dry-run (text and JSON) and the goldens all walk this list, so what snug
+// opens and what the screen says it opens cannot diverge.
+func (p *Policy) BindSources() []Mount {
+	var out []Mount
+	for _, m := range p.SortedMounts() {
+		if m.Kind == KindBind && !BindByPath(m.Host) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // coveredByGrant reports whether some proper ancestor of guest is itself a

@@ -86,6 +86,11 @@ type fakeEnv struct {
 	// linkOwners is the uid owning each fixture symlink. The default, 0, models
 	// the host's own configuration (/home -> /var/home): root-owned.
 	linkOwners map[string]uint32
+	// dirOwners and dirModes are the owner and permission bits Lstat reports for
+	// a directory, defaulting to root and 0755: a trusted link also needs a
+	// parent directory only root can change (authorableLinks).
+	dirOwners map[string]uint32
+	dirModes  map[string]fs.FileMode
 	// resolveParents makes EvalSymlinks follow a link at any ANCESTOR of the
 	// path, as a real one does. Off by default: most fixtures name a link only
 	// at the exact path they grant and mean nothing about its parents.
@@ -149,6 +154,8 @@ func newFakeEnv() *fakeEnv {
 		},
 		links:        map[string]string{},
 		linkOwners:   map[string]uint32{},
+		dirOwners:    map[string]uint32{},
+		dirModes:     map[string]fs.FileMode{},
 		symlinkErrs:  map[string]error{},
 		statErrs:     map[string]error{},
 		readlinkErrs: map[string]error{},
@@ -235,7 +242,44 @@ func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
 	if _, ok := f.links[p]; ok {
 		return fakeInfo{name: p, mode: fs.ModeSymlink, sys: &syscall.Stat_t{Uid: f.linkOwners[p]}}, nil
 	}
-	return f.Stat(p)
+	fi, err := f.Stat(p)
+	if err != nil && f.isAncestor(p) {
+		return f.dirInfo(p), nil
+	}
+	if err == nil && f.dirs[p] {
+		return f.dirInfo(p), nil
+	}
+	return fi, err
+}
+
+// dirInfo is a directory as Lstat reports it, with the owner and mode the
+// parent-directory half of authorableLinks reads.
+func (f *fakeEnv) dirInfo(p string) fakeInfo {
+	mode, ok := f.dirModes[p]
+	if !ok {
+		mode = 0o755
+	}
+	return fakeInfo{name: p, dir: true, mode: fs.ModeDir | mode,
+		sys: &syscall.Stat_t{Uid: f.dirOwners[p]}}
+}
+
+// isAncestor reports whether some fixture path lies under p, so a link's parent
+// directory exists on the fixture host without every test listing it.
+func (f *fakeEnv) isAncestor(p string) bool {
+	prefix := strings.TrimSuffix(p, "/") + "/"
+	for _, m := range []map[string]bool{f.dirs, f.files, f.sockets, f.fifos} {
+		for k := range m {
+			if strings.HasPrefix(k, prefix) {
+				return true
+			}
+		}
+	}
+	for k := range f.links {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Readlink is the link TEXT the fixture wrote, which may be relative — that is
@@ -1353,7 +1397,7 @@ func TestSetButEmptyHostVariableReachesTheSandbox(t *testing.T) {
 
 	// And it must survive all the way into the argv: bwrap delivers
 	// `--setenv NO_COLOR ''` as a present, empty variable (measured, §0).
-	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	args := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 10 }, Bind: func(string) (int, bool) { return 10, true }})
 	found := false
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--setenv" && args[i+1] == "NO_COLOR" && args[i+2] == "" {

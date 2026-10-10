@@ -72,12 +72,12 @@ func isStageProcess(pid int) bool {
 // __stage-setup and __stage-serve are the same process: the first re-execs
 // into the second, so a prefix match on "__stage" answers yes from the
 // instant execve replaces the image. The Go runtime has not run MainSetup at
-// that instant, so reserveParkingFDs has not yet dup3'd anything onto 66, 67
-// or 68 — and a caller that reads /proc/<pid>/fd right then sees fd 3 (which
+// that instant, so reserveParkingFDs has not yet dup3'd anything onto 250, 251
+// or 252 — and a caller that reads /proc/<pid>/fd right then sees fd 3 (which
 // is inherited, so it is always there) and none of the parkings.
 //
 // MEASURED, sampling every `snug __stage*` process a @net run produces and
-// recording whether 66/67/68 were open: 2621 observations of __stage-serve,
+// recording whether 250/251/252 were open: 2621 observations of __stage-serve,
 // all parked; 11 of __stage-setup, of which 9 were NOT parked. It is rare
 // enough on an idle host to pass a thousand local runs and common enough to
 // fail on a loaded one — it failed first in the Tumbleweed engine job, run
@@ -1781,9 +1781,9 @@ func fdLinksOf(t *testing.T, pid int) map[int]string {
 
 // TestTheThreeParkedDescriptorsOnALiveStage is issue #525 read off a RUNNING
 // process rather than off setup.go's own source text or a pinned constant
-// table: fds.go's reserveParkingFDs dup3's fdNetSock (66, an AF_INET socket
-// created inside N), fdNetlinkSock (67, an AF_NETLINK/NETLINK_ROUTE socket
-// created in N alongside it) and stage.NetnsFD (68, the pinned network
+// table: fds.go's reserveParkingFDs dup3's fdNetSock (250, an AF_INET socket
+// created inside N), fdNetlinkSock (251, an AF_NETLINK/NETLINK_ROUTE socket
+// created in N alongside it) and stage.NetnsFD (252, the pinned network
 // namespace) onto three fixed numbers before P1 forks bwrap.
 // internal/stage/fds_test.go:TestEveryParkedDescriptorIsGuarded reads that
 // dup3 sequence out of setup.go's SOURCE TEXT; TestGoldenStageSpec pins the
@@ -1793,11 +1793,11 @@ func fdLinksOf(t *testing.T, pid int) map[int]string {
 // silently and reports success, per fds.go's own doc comment — would pass
 // both of those and still be caught only here.
 //
-// fd 66 is not the first free number after the inherited block: fds.go's
-// fdPremainSlack leaves 62-65 open on purpose, for descriptors the Go runtime
+// fd 250 is not the first free number after the inherited block: fds.go's
+// fdPremainSlack leaves 246-249 open on purpose, for descriptors the Go runtime
 // opens before main and never gives up — the cgroup CPU limit file
 // (defaultGOMAXPROCSInit) and netpoll's epoll/eventfd pair once a timer is
-// armed early enough — so this test asserting exactly 66/67/68 is checking
+// armed early enough — so this test asserting exactly 250/251/252 is checking
 // the reservation lands past that slack, not merely that it exists somewhere.
 func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 	budget(t, 40*time.Second)
@@ -1819,7 +1819,7 @@ func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 	// isServingStage, NOT isStageProcess: see that function's own comment for
 	// the measurement. A prefix match on "__stage" also matches __stage-setup
 	// in the window between its execve and reserveParkingFDs, where fd 3 is
-	// open and 66/67/68 are not — which is this test failing for a reason
+	// open and 250/251/252 are not — which is this test failing for a reason
 	// that has nothing to do with issue #525.
 	stagePID, ok := findDescendant(cmd.Process.Pid, isServingStage, 5*time.Second)
 	if !ok {
@@ -1845,9 +1845,9 @@ func TestTheThreeParkedDescriptorsOnALiveStage(t *testing.T) {
 		kind string
 		name string
 	}{
-		{66, "socket:", "fdNetSock, the AF_INET socket created inside N"},
-		{67, "socket:", "fdNetlinkSock, the AF_NETLINK/NETLINK_ROUTE socket created in N"},
-		{68, "net:", "the pinned network namespace (stage.NetnsFD)"},
+		{250, "socket:", "fdNetSock, the AF_INET socket created inside N"},
+		{251, "socket:", "fdNetlinkSock, the AF_NETLINK/NETLINK_ROUTE socket created in N"},
+		{252, "net:", "the pinned network namespace (stage.NetnsFD)"},
 	} {
 		got, ok := links[want.fd]
 		if !ok {

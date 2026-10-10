@@ -447,3 +447,42 @@ func fillToTheBudgetAndReserve(t *testing.T) {
 	}
 	fmt.Println("FD-SLACK-CHILD-RESERVED")
 }
+
+// TestFDBudgetCoversAHundredBinds fails if the pass-through block cannot hold
+// a policy with a hundred bind sources: every grant outside /proc now costs a
+// descriptor, and the block used to be sized for a dozen generated files. The
+// fixed part is generous on purpose (generated files, the seccomp filter,
+// --info-fd, the --block-fd/--sync-fd pair, the args memfd, doors), so the
+// test fails when the budget is cut back toward its old size and not when a
+// profile adds one file.
+//
+// It also holds the reserved descriptors above the block and apart from each
+// other: a collision there does not crash, it hands the pinned netns to bwrap
+// as one of the sandbox's own files. What it does not reach is the real
+// dup3/RLIMIT_NOFILE behaviour at those numbers; the fd-budget integration
+// test runs that against the built binary.
+func TestFDBudgetCoversAHundredBinds(t *testing.T) {
+	const binds, generated, fixed, doors = 100, 40, 8, 16
+	need := binds + generated + fixed + doors
+	if err := checkFDBudget(need); err != nil {
+		t.Fatalf("a policy with %d bind sources (%d descriptors in all) was refused: %v", binds, need, err)
+	}
+	if maxPassthrough < need {
+		t.Fatalf("maxPassthrough = %d, below the %d a hundred-bind policy needs", maxPassthrough, need)
+	}
+
+	reserved := map[string]int{"fdNetSock": fdNetSock, "fdNetlinkSock": fdNetlinkSock, "fdNetnsN": fdNetnsN}
+	seen := map[int]string{}
+	for name, n := range reserved {
+		if other, dup := seen[n]; dup {
+			t.Errorf("%s and %s are both fd %d", name, other, n)
+		}
+		seen[n] = name
+		if top := fdSandboxBase + maxPassthrough + fdPremainSlack; n < top {
+			t.Errorf("%s = %d sits inside the block and its slack, which end at %d", name, n, top)
+		}
+	}
+	if err := checkFDBudget(maxPassthrough + 1); err == nil {
+		t.Error("control: one descriptor over the budget was accepted, so the check above passes for any size")
+	}
+}

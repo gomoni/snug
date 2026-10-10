@@ -150,7 +150,7 @@ func TestSanitiseToNothingLeavesTheVariableUnset(t *testing.T) {
 	}
 	// And it must not reach the argv at all — an empty --setenv would be worse
 	// than useless, and snug never emits --unsetenv either.
-	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	args := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 10 }, Bind: func(string) (int, bool) { return 10, true }})
 	for i, a := range args {
 		if a == "PKG_CONFIG_PATH" {
 			t.Errorf("PKG_CONFIG_PATH reached the argv at %d: %v", i, args[i-1:])
@@ -275,7 +275,7 @@ func sanitiseProbeEnv() *fakeEnv {
 // a struct field a payload cannot read is not a security property.
 func pathOperand(t *testing.T, p *Policy) string {
 	t.Helper()
-	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	args := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 10 }, Bind: func(string) (int, bool) { return 10, true }})
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--setenv" && args[i+1] == "PATH" {
 			return args[i+2]

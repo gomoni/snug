@@ -777,17 +777,17 @@
       "1073741824",
       "--tmpfs",
       "/tmp",
-      "--ro-bind",
-      "/usr",
+      "--ro-bind-fd",
+      "14",
       "/usr",
       "--ro-bind-data",
       "10",
       "/etc/group",
-      "--ro-bind",
+      "--ro-bind-fd",
+      "15",
       "/etc/ld.so.cache",
-      "/etc/ld.so.cache",
-      "--ro-bind",
-      "/etc/ld.so.conf",
+      "--ro-bind-fd",
+      "16",
       "/etc/ld.so.conf",
       "--ro-bind-data",
       "11",
@@ -826,8 +826,8 @@
       "1073741824",
       "--tmpfs",
       "/home/u/.local/state",
-      "--bind",
-      "/home/u/proj/sub",
+      "--bind-fd",
+      "17",
       "/home/u/proj/sub",
       "--remount-ro",
       "/",
@@ -881,6 +881,36 @@
     ],
     "argv0_resolved": false,
     "argv0_note": "argv[0] is the bare name \"bwrap\" and snug does not exec that name: it calls exec.LookPath(\"bwrap\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH bwrap runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v bwrap",
+    "bind_sources": [
+      {
+        "fd": 14,
+        "host": "/usr",
+        "guest": "/usr",
+        "access": "ro",
+        "optional": false
+      },
+      {
+        "fd": 15,
+        "host": "/etc/ld.so.cache",
+        "guest": "/etc/ld.so.cache",
+        "access": "ro",
+        "optional": false
+      },
+      {
+        "fd": 16,
+        "host": "/etc/ld.so.conf",
+        "guest": "/etc/ld.so.conf",
+        "access": "ro",
+        "optional": false
+      },
+      {
+        "fd": 17,
+        "host": "/home/u/proj/sub",
+        "guest": "/home/u/proj/sub",
+        "access": "rw",
+        "optional": false
+      }
+    ],
     "incomplete": true,
     "reason": "the network namespace is not in this argv: the stage created it, pinned it, and a setns shim placed bwrap inside it before bwrap ran, and bwrap has no --netns flag to carry that here. No pasta helper starts if this argv is run standalone, either. Run as printed, this command lands in the CALLER's own network namespace: host loopback and the host's abstract sockets are reachable, contradicting network.host_loopback and network.abstract_sockets elsewhere in this document."
   },

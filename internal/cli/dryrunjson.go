@@ -740,6 +740,11 @@ type jsonBwrap struct {
 	Argv0Resolved bool `json:"argv0_resolved"`
 	// Argv0Note is reportExec.Note, the same string the human screen wraps.
 	Argv0Note string `json:"argv0_note"`
+	// BindSources are the mounts snug opens at launch (O_PATH, no symlinks) and
+	// passes to bwrap as the --ro-bind-fd/--bind-fd descriptors in Argv. The fd
+	// numbers are illustrative: the run assigns its own. Always an array, empty
+	// when no grant is bound by descriptor.
+	BindSources []jsonBindSource `json:"bind_sources"`
 	// Incomplete is Report.BwrapIncomplete: true when running Argv standalone
 	// will NOT reproduce this policy's actual network posture. See Reason,
 	// and Report.BwrapIncompleteReason's doc comment for why this must not
@@ -749,6 +754,16 @@ type jsonBwrap struct {
 	// Reason is "" when Incomplete is false, and otherwise the same fact
 	// describeBwrap prints in capitals on the human screen.
 	Reason string `json:"reason,omitempty"`
+}
+
+type jsonBindSource struct {
+	FD         int      `json:"fd"`
+	Host       string   `json:"host"`
+	HostBytes  byteList `json:"host_bytes,omitempty"`
+	Guest      string   `json:"guest"`
+	GuestBytes byteList `json:"guest_bytes,omitempty"`
+	Access     string   `json:"access"`
+	Optional   bool     `json:"optional"`
 }
 
 // jsonPasta is the pasta invocation this run's egress actually uses. See
@@ -899,6 +914,13 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	doc.Bwrap.Argv, doc.Bwrap.ArgvBytes = e.texts(bwrapArgv)
 	doc.Bwrap.Argv0Resolved = rep.BwrapExec.Resolved
 	doc.Bwrap.Argv0Note = rep.BwrapExec.Note
+	doc.Bwrap.BindSources = []jsonBindSource{}
+	for _, bs := range rep.BindSources {
+		jb := jsonBindSource{FD: bs.FD, Access: bs.Mount.Access.String(), Optional: bs.Mount.Optional}
+		jb.Host, jb.HostBytes = e.text(bs.Mount.Host)
+		jb.Guest, jb.GuestBytes = e.text(bs.Mount.Guest)
+		doc.Bwrap.BindSources = append(doc.Bwrap.BindSources, jb)
+	}
 	doc.Bwrap.Incomplete = rep.BwrapIncomplete
 	doc.Bwrap.Reason = rep.BwrapIncompleteReason
 

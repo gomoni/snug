@@ -106,7 +106,7 @@ func TestEveryTmpfsInTheArgvCarriesASize(t *testing.T) {
 func TestSizeAppearsOnlyImmediatelyBeforeATmpfs(t *testing.T) {
 	for name, p := range tmpfsSelections(t) {
 		t.Run(name, func(t *testing.T) {
-			flags := p.BwrapFlags(1000, 1000, func(string) int { return 9 })
+			flags := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }})
 
 			found := false
 			for i, a := range flags {

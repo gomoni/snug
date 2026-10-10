@@ -64,6 +64,11 @@ type envFakeEnv struct {
 	// hostLinkOwners is the uid owning each hostSymlinks entry; the default, 0,
 	// is a link the host's own configuration wrote.
 	hostLinkOwners map[string]uint32
+	// dirOwners and dirModes are the owner and permission bits Lstat reports for
+	// a directory, defaulting to root and 0755: a trusted host link also needs a
+	// parent directory only root can change.
+	dirOwners map[string]uint32
+	dirModes  map[string]fs.FileMode
 	// resolveParents makes EvalSymlinks follow a link at any ANCESTOR of the
 	// path and follow a link's destination in turn, as a real one does.
 	resolveParents bool
@@ -131,6 +136,8 @@ func newEnvFakeEnv() *envFakeEnv {
 		hostSymlinks:   map[string]string{},
 		lstatErrs:      map[string]error{},
 		hostLinkOwners: map[string]uint32{},
+		dirOwners:      map[string]uint32{},
+		dirModes:       map[string]fs.FileMode{},
 	}
 }
 
@@ -183,7 +190,36 @@ func (f *envFakeEnv) Lstat(p string) (fs.FileInfo, error) {
 	if _, ok := f.hostSymlinks[p]; ok {
 		return envFakeInfo{name: p, link: true, uid: f.hostLinkOwners[p]}, nil
 	}
-	return f.Stat(p)
+	fi, err := f.Stat(p)
+	if (err == nil && f.dirs[p]) || (err != nil && f.isAncestor(p)) {
+		mode, ok := f.dirModes[p]
+		if !ok {
+			mode = 0o755
+		}
+		return envFakeInfo{name: p, dir: true, statted: true, uid: f.dirOwners[p], perm: mode}, nil
+	}
+	return fi, err
+}
+
+// isAncestor reports whether some fixture path lies under p, so a link's parent
+// directory exists on the fixture host without every test listing it.
+func (f *envFakeEnv) isAncestor(p string) bool {
+	prefix := strings.TrimSuffix(p, "/") + "/"
+	for _, m := range []map[string]bool{f.dirs, f.files} {
+		for k := range m {
+			if strings.HasPrefix(k, prefix) {
+				return true
+			}
+		}
+	}
+	for _, m := range []map[string]string{f.links, f.hostSymlinks} {
+		for k := range m {
+			if strings.HasPrefix(k, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (f *envFakeEnv) Readlink(p string) (string, error) {
@@ -219,6 +255,10 @@ type envFakeInfo struct {
 	// from Lstat, distinct from dir and from the plain-file zero value.
 	link bool
 	uid  uint32
+	// statted makes Sys report a *syscall.Stat_t and Mode carry perm, as a real
+	// directory does; links always report one.
+	statted bool
+	perm    fs.FileMode
 }
 
 func (i envFakeInfo) Name() string { return i.name }
@@ -228,14 +268,14 @@ func (i envFakeInfo) Mode() fs.FileMode {
 	case i.link:
 		return fs.ModeSymlink
 	case i.dir:
-		return fs.ModeDir
+		return fs.ModeDir | i.perm
 	}
 	return 0
 }
 func (i envFakeInfo) ModTime() time.Time { return time.Time{} }
 func (i envFakeInfo) IsDir() bool        { return i.dir }
 func (i envFakeInfo) Sys() any {
-	if i.link {
+	if i.link || i.statted {
 		return &syscall.Stat_t{Uid: i.uid}
 	}
 	return nil

@@ -33,6 +33,7 @@ func TestClaudeBinaryLinkIsCoveredByItsOwnTree(t *testing.T) {
 		env.dirs["/home/u/.local/bin"] = true
 		env.dirs["/home/u/.local/share/claude"] = true
 		env.hostLink(1000, "/home/u/.local/bin/claude", dest)
+		env.files[dest] = true
 		return env
 	}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@claude")
