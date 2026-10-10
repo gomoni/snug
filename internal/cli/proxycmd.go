@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/gomoni/snug/internal/httpdoor"
+	"github.com/gomoni/snug/internal/policy"
 )
 
 func proxyUsage() {
@@ -64,6 +66,9 @@ func proxyCmd(argv []string) int {
 	real, exists, err := canonicalTarget(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug: resolving %s: %v\n", abs, err)
+		if !errors.Is(err, policy.ErrTargetUnusable) {
+			return exitPolicy
+		}
 		return exitUsage
 	}
 	if !exists {

@@ -1150,6 +1150,18 @@ func TestGoldenRefusals(t *testing.T) {
 		{"grant_evalsymlinks_error_carries_a_forging_rune", refusalOrdinaryGrantEvalSymlinksErrorCarriesAForgingRune},
 		{"identity_key_symlinked_through_a_forging_destination", refusalIdentityKeySymlinkedThroughAForgingDestination},
 		{"identity_key_dangling_symlink_carries_a_forging_rune", refusalIdentityKeyDanglingSymlinkCarriesAForgingRune},
+		// The ownership rule (hostlinks.go): a grant or a pinned key through a link
+		// a sandbox could have planted. The two forging-rune rows are the
+		// destination of such a link reaching the screen.
+		{"grant_through_authorable_link_uncovered", refusalGrantThroughAuthorableLinkUncovered},
+		{"grant_through_authorable_link_destination_carries_a_forging_rune", refusalGrantThroughAuthorableLinkCarriesAForgingRune},
+		{"identity_key_through_authorable_link", refusalIdentityKeyThroughAuthorableLink},
+		{"identity_key_through_authorable_link_destination_carries_a_forging_rune", refusalIdentityKeyThroughAuthorableLinkCarriesAForgingRune},
+		// The target and $HOME go through the same ownership rule as a grant.
+		{"target_through_authorable_link", refusalTargetThroughAuthorableLink},
+		{"target_link_carries_a_forging_rune", refusalTargetLinkCarriesAForgingRune},
+		{"home_through_authorable_link", refusalHomeThroughAuthorableLink},
+		{"home_link_carries_a_forging_rune", refusalHomeCarriesAForgingRune},
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
 		{"kind_conflict_tmpfs_over_sys_bind", refusalKindConflictTmpfsOverSysBind},

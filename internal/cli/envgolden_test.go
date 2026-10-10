@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,6 +61,19 @@ type envFakeEnv struct {
 	// distinct from the path simply not existing, which every other map here
 	// already answers by omission.
 	lstatErrs map[string]error
+	// hostLinkOwners is the uid owning each hostSymlinks entry; the default, 0,
+	// is a link the host's own configuration wrote.
+	hostLinkOwners map[string]uint32
+	// resolveParents makes EvalSymlinks follow a link at any ANCESTOR of the
+	// path and follow a link's destination in turn, as a real one does.
+	resolveParents bool
+}
+
+// hostLink plants a link both EvalSymlinks and Lstat/Readlink see, with an owner.
+func (f *envFakeEnv) hostLink(owner uint32, at, text string) {
+	f.links[at] = text
+	f.hostSymlinks[at] = text
+	f.hostLinkOwners[at] = owner
 }
 
 func newEnvFakeEnv() *envFakeEnv {
@@ -112,9 +127,10 @@ func newEnvFakeEnv() *envFakeEnv {
 		// NO_COLOR is present and EMPTY, which is its specified spelling — "set
 		// to any value, including empty" — and the case a `v != ""` read of the
 		// host silently turned back into "colour on".
-		env:          map[string]string{"USER": "u", "PAGER": "less", "NO_COLOR": ""},
-		hostSymlinks: map[string]string{},
-		lstatErrs:    map[string]error{},
+		env:            map[string]string{"USER": "u", "PAGER": "less", "NO_COLOR": ""},
+		hostSymlinks:   map[string]string{},
+		lstatErrs:      map[string]error{},
+		hostLinkOwners: map[string]uint32{},
 	}
 }
 
@@ -124,7 +140,19 @@ func (f *envFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil 
 
 func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {
+		if f.resolveParents {
+			return f.EvalSymlinks(t)
+		}
 		return t, nil
+	}
+	for q := filepath.Dir(p); f.resolveParents && q != "/" && q != "."; q = filepath.Dir(q) {
+		if _, ok := f.links[q]; ok {
+			r, err := f.EvalSymlinks(q)
+			if err != nil {
+				return "", err
+			}
+			return f.EvalSymlinks(r + strings.TrimPrefix(p, q))
+		}
 	}
 	if f.dirs[p] || f.files[p] {
 		return p, nil
@@ -153,7 +181,7 @@ func (f *envFakeEnv) Lstat(p string) (fs.FileInfo, error) {
 		return nil, err
 	}
 	if _, ok := f.hostSymlinks[p]; ok {
-		return envFakeInfo{name: p, link: true}, nil
+		return envFakeInfo{name: p, link: true, uid: f.hostLinkOwners[p]}, nil
 	}
 	return f.Stat(p)
 }
@@ -190,6 +218,7 @@ type envFakeInfo struct {
 	// link is issue #604's addition: a hostSymlinks entry reports ModeSymlink
 	// from Lstat, distinct from dir and from the plain-file zero value.
 	link bool
+	uid  uint32
 }
 
 func (i envFakeInfo) Name() string { return i.name }
@@ -205,7 +234,12 @@ func (i envFakeInfo) Mode() fs.FileMode {
 }
 func (i envFakeInfo) ModTime() time.Time { return time.Time{} }
 func (i envFakeInfo) IsDir() bool        { return i.dir }
-func (i envFakeInfo) Sys() any           { return nil }
+func (i envFakeInfo) Sys() any {
+	if i.link {
+		return &syscall.Stat_t{Uid: i.uid}
+	}
+	return nil
+}
 
 // envGoldenCtx pins Target and Home to fixed FAKE paths. Not t.TempDir():
 // SNUG_TARGET and the {home}-derived values are rendered into the golden, so a

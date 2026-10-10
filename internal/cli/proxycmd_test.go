@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -87,5 +91,53 @@ func TestPlanHTTPDoorsNamesNoneWhenNoneAreDeclared(t *testing.T) {
 	doors, err := planHTTPDoors(pol, func(name string) (string, error) { return "/tmp/" + name, nil })
 	if err != nil || doors != nil {
 		t.Errorf("planHTTPDoors(no ListenNames) = %v, %v; want nil, nil", doors, err)
+	}
+}
+
+// TestProxyThroughPlantedLinkIsRefused fails if `snug proxy <dir>` follows a
+// link a sandbox could have planted: it would then open a door into the run
+// sandboxing the link's destination, not the directory the human named. The
+// refusal must be exitPolicy and say so; the control is the same command on the
+// real directory, which also exits exitPolicy ("no live run") but with a
+// different message, so the exit code alone cannot tell the two apart and the
+// stderr text is asserted. Not covered: a live run behind the link.
+func TestProxyThroughPlantedLinkIsRefused(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(dir string) (int, string) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stderr
+		os.Stderr = w
+		code := proxyCmd([]string{dir})
+		os.Stderr = old
+		w.Close()
+		b, _ := io.ReadAll(r)
+		return code, string(b)
+	}
+
+	code, msg := run(real)
+	if code != exitPolicy || !strings.Contains(msg, "no live snug run") {
+		t.Fatalf("control: real dir: code %d, stderr %q; want exitPolicy and \"no live snug run\"", code, msg)
+	}
+	code, msg = run(link)
+	if code != exitPolicy {
+		t.Errorf("planted link: exit %d, want %d", code, exitPolicy)
+	}
+	if !strings.Contains(msg, "resolves through the link") || strings.Contains(msg, "no live snug run") {
+		t.Errorf("planted link: stderr %q does not name the link refusal", msg)
 	}
 }

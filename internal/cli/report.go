@@ -76,9 +76,10 @@ type Report struct {
 	// red test rather than a stale sentence.
 	ExitCode int
 
-	Target string
-	Home   string
-	Chdir  string
+	Target      string
+	TargetAsked string
+	Home        string
+	Chdir       string
 
 	Selected []policy.ProfileName
 	Implied  []policy.ProfileName
@@ -469,6 +470,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 	rep := Report{
 		Outcome:        "ok",
 		Target:         p.Target,
+		TargetAsked:    p.TargetAsked,
 		Home:           p.Home,
 		Chdir:          p.Chdir,
 		Selected:       p.Selected,
