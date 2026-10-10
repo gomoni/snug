@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +59,14 @@ func extractGitConfig(home, target string, n *notes) (policy.GitValues, error) {
 		target = real
 	}
 	gitDir := filepath.Join(target, ".git")
-	if fi, err := os.Stat(gitDir); err != nil || !fi.IsDir() {
+	// The target is writable, so a `.git` symlink in it is sandbox-written, and
+	// following it would let repo content choose which `includeIf gitdir:`
+	// identity fires. Git itself would follow it; the two differ only for a
+	// hand-made `.git` symlink, and the cost is that such a repo matches as if
+	// it had no `.git` directory.
+	if fi, err := os.Lstat(gitDir); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		gitDir = target
+	} else if fi, err := os.Stat(gitDir); err != nil || !fi.IsDir() {
 		// A worktree's .git is a FILE, and a bare repo has none. Matching the
 		// target itself is the closest honest approximation, and it is what a
 		// `gitdir:~/projects/x/` pattern means to a human either way.

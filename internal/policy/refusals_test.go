@@ -1157,6 +1157,11 @@ func TestGoldenRefusals(t *testing.T) {
 		{"grant_through_authorable_link_destination_carries_a_forging_rune", refusalGrantThroughAuthorableLinkCarriesAForgingRune},
 		{"identity_key_through_authorable_link", refusalIdentityKeyThroughAuthorableLink},
 		{"identity_key_through_authorable_link_destination_carries_a_forging_rune", refusalIdentityKeyThroughAuthorableLinkCarriesAForgingRune},
+		// The target and $HOME go through the same ownership rule as a grant.
+		{"target_through_authorable_link", refusalTargetThroughAuthorableLink},
+		{"target_link_carries_a_forging_rune", refusalTargetLinkCarriesAForgingRune},
+		{"home_through_authorable_link", refusalHomeThroughAuthorableLink},
+		{"home_link_carries_a_forging_rune", refusalHomeCarriesAForgingRune},
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
 		{"kind_conflict_tmpfs_over_sys_bind", refusalKindConflictTmpfsOverSysBind},

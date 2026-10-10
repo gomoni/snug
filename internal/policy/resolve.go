@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -48,6 +49,59 @@ type unusableTarget struct{ error }
 func (unusableTarget) Is(target error) bool { return target == ErrTargetUnusable }
 
 func (e unusableTarget) Unwrap() error { return e.error }
+
+// CanonicalTarget returns the realpath of ctx.Target, or the refusal that stops
+// snug sandboxing it. It is the one author of "which directory is the target":
+// Resolve uses it, and so does `snug proxy <dir>`, so a link planted on the path
+// cannot make a later invocation sandbox, or open a door into, a directory the
+// human did not name.
+//
+// A failure to canonicalise is an ErrTargetUnusable error wrapping the fs error,
+// so errors.Is(err, fs.ErrNotExist) still answers "nothing there". Every other
+// error is a policy refusal: a link on the path that a sandbox could have
+// planted (see authorableLinks for who counts), or a link walk that cannot say
+// who wrote the links. A sandbox run with write access to a parent of the target
+// can replace the target with a link; the next `snug <target>` would otherwise
+// get write access to the link's destination.
+func CanonicalTarget(env Environ, ctx Context) (string, error) {
+	target, err := env.EvalSymlinks(ctx.Target)
+	if err != nil {
+		return "", unusableTarget{fmt.Errorf("target %q: %w", ctx.Target, err)}
+	}
+	if err := refuseAuthorableLinkOnPath(env, "target", ctx.Target, target,
+		"name the real directory yourself: snug "+VisibleText(target)+
+			" (or `cd -P` there first; `snug .` keeps the path you cd'd through)"); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// refuseAuthorableLinkOnPath refuses asked when its path passes through a link
+// authorableLinks does not trust. real is the EvalSymlinks answer; the link walk
+// must reach the same place, or one of the two is not seeing the host the other
+// is. what is "target" or "$HOME" and fix is the sentence telling a human who
+// made the link what to write instead.
+func refuseAuthorableLinkOnPath(env Environ, what, asked, real, fix string) error {
+	walked, links, err := authorableLinks(env, env.Uid(), asked)
+	if err != nil {
+		return fmt.Errorf("cannot verify who wrote the links on the %s's path: %s: %s",
+			what, VisibleText(asked), visibleErr(err))
+	}
+	if walked != real {
+		return fmt.Errorf("%s %s: snug's link walk reached %s but the host resolves it to %s; "+
+			"refusing rather than guess", what, VisibleText(asked), VisibleText(walked), VisibleText(real))
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	l := links[0]
+	return fmt.Errorf("%s %s resolves through the link %s -> %s (%s), so a sandbox run that once had "+
+		"write access to %s could have planted it; snug will not sandbox %s in its place.\n"+
+		"      If you made that link, %s. If you did not, delete it and treat everything near it "+
+		"as sandbox-written.",
+		what, VisibleText(asked), VisibleText(l.At), VisibleText(l.Text), ownerPhrase(l, env.Uid()),
+		VisibleText(path.Dir(l.At)), VisibleText(real), fix)
+}
 
 // Resolve turns a selection of profiles into a Policy.
 //
@@ -93,9 +147,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, unusableTarget{errors.New("no target directory: pass a directory as snug's " +
 			"positional argument")}
 	}
-	target, err := env.EvalSymlinks(ctx.Target)
+	target, err := CanonicalTarget(env, ctx)
 	if err != nil {
-		return nil, unusableTarget{fmt.Errorf("target %q: %w", ctx.Target, err)}
+		return nil, err
 	}
 	if fi, err := env.Stat(target); err != nil {
 		return nil, unusableTarget{fmt.Errorf("target %q: %w", target, err)}
@@ -119,6 +173,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	home, err := env.EvalSymlinks(ctx.Home)
 	if err != nil {
 		return nil, fmt.Errorf("$HOME %q: %w", ctx.Home, err)
+	}
+	if err := refuseAuthorableLinkOnPath(env, "$HOME", ctx.Home, home,
+		"set HOME to "+VisibleText(home)+" instead"); err != nil {
+		return nil, err
 	}
 
 	vars := map[string]string{

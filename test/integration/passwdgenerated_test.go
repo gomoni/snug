@@ -23,16 +23,24 @@ func TestPasswdHomeIsHOMEByConstruction(t *testing.T) {
 	cases := []struct {
 		name string
 		home func(t *testing.T) string
+		// refused: the HOME link is owned by the invoking user, so a sandbox
+		// could have planted it and snug refuses it (#636). The Silverblue shape
+		// this case was written for has a ROOT-owned /home link, which a test
+		// without root cannot create; this case now pins the refusal instead,
+		// and the root-owned form is held by the policy-level
+		// TestDefaultSelectionAndClaudeResolveOnARootLinkedHost. Not covered
+		// end to end: pw_dir under a root-owned $HOME link.
+		refused bool
 	}{
-		{"synthetic HOME", func(t *testing.T) string { return t.TempDir() }},
-		{"HOME is a symlink", func(t *testing.T) string {
+		{"synthetic HOME", func(t *testing.T) string { return t.TempDir() }, false},
+		{"HOME is a user-owned symlink", func(t *testing.T) string {
 			real := t.TempDir()
 			link := filepath.Join(t.TempDir(), "homelink")
 			if err := os.Symlink(real, link); err != nil {
 				t.Fatal(err)
 			}
 			return link
-		}},
+		}, true},
 	}
 
 	for _, tc := range cases {
@@ -45,6 +53,15 @@ func TestPasswdHomeIsHOMEByConstruction(t *testing.T) {
 			}
 
 			env := baseEnv("HOME=" + home)
+			if tc.refused {
+				r := runEnv(t, env, nil, proj, `echo SHOULD-NOT-RUN`)
+				if r.ran || r.code != exitPolicyCode || !strings.Contains(r.out, "$HOME") ||
+					!strings.Contains(r.out, "set HOME to "+resolvedHome) {
+					t.Errorf("a user-owned $HOME link: ran=%v exit %d, want a refusal (exit %d) naming the fix:\n%s",
+						r.ran, r.code, exitPolicyCode, r.out)
+				}
+				return
+			}
 			r := runEnv(t, env, nil, proj,
 				`getent passwd "$(id -u)"
 echo ---

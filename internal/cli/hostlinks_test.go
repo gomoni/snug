@@ -107,7 +107,7 @@ func TestDefaultSelectionAndClaudeResolveOnARootLinkedHost(t *testing.T) {
 
 func targetLinkedHost() *envFakeEnv {
 	env := newEnvFakeEnv()
-	env.hostLink(1000, "/home/u/asked\u202e", "/home/u/proj/sub")
+	env.hostLink(0, "/home/u/asked\u202e", "/home/u/proj/sub")
 	return env
 }
 
@@ -192,7 +192,7 @@ func TestDryRunNamesWhatTheTargetWasAskedAs(t *testing.T) {
 func TestDryRunTargetAskedEscapesAnEscapeSequence(t *testing.T) {
 	const asked = "/home/u/a\x1b[2K\x1b[1Asnug: verified safe"
 	env := newEnvFakeEnv()
-	env.hostLink(1000, asked, "/home/u/proj/sub")
+	env.hostLink(0, asked, "/home/u/proj/sub")
 	_, p := targetLinkReport(t, asked, env)
 	screen := dryRunText(p, p.BwrapArgs(0, 0), config{}, nil)
 	if !strings.Contains(screen, "verified safe") {
