@@ -954,9 +954,9 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"changes how the sandbox's network stack segments packets, never what it can "+
 				"reach — a pasta cosmetic, exposed for pathological networks"))
 	}
-	// An explicit "off" is the base state: its row would print the consequence
-	// of a feature that is not on.
-	if m, err := policy.ParsePodmanMode(p.Podman); p.Podman != "" && (err != nil || m != policy.PodmanOff) {
+	// A floor word never reaches here: the profile loader refuses it, and an
+	// absent key is "".
+	if p.Podman != "" {
 		show("podman", capRows(p.Podman,
 			"starts a container engine and delegates your whole subuid range, "+
 				"even with no network profile selected"))
@@ -966,7 +966,7 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
 				"it in YOUR browser only if it is exactly the Claude login page snug pins"))
 	}
-	if m, err := policy.ParseGitMode(p.Git); p.Git != "" && (err != nil || m != policy.GitOff) {
+	if p.Git != "" {
 		show("git", capRows(p.Git,
 			"~/.gitconfig is REGENERATED from a whitelist, never bound - it names "+
 				"programs git would run"))
