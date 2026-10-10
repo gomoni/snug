@@ -107,7 +107,7 @@ func TestDefaultSelectionAndClaudeResolveOnARootLinkedHost(t *testing.T) {
 
 func targetLinkedHost() *envFakeEnv {
 	env := newEnvFakeEnv()
-	env.hostLink(1000, "/home/u/asked‮", "/home/u/proj/sub")
+	env.hostLink(1000, "/home/u/asked\u202e", "/home/u/proj/sub")
 	return env
 }
 
@@ -128,7 +128,7 @@ func targetLinkReport(t *testing.T, asked string, env *envFakeEnv) (Report, *pol
 // Both formats, the redirected and the plain case, and the asked path's forging
 // rune: a link's NAME is as sandbox-chosen as its destination.
 func TestDryRunNamesWhatTheTargetWasAskedAs(t *testing.T) {
-	const asked = "/home/u/asked‮"
+	const asked = "/home/u/asked\u202e"
 
 	rep, p := targetLinkReport(t, asked, targetLinkedHost())
 	if p.Target != "/home/u/proj/sub" || p.TargetAsked != asked {
@@ -148,7 +148,7 @@ func TestDryRunNamesWhatTheTargetWasAskedAs(t *testing.T) {
 	if !strings.Contains(line, "/home/u/proj/sub") || !strings.Contains(line, "/home/u/asked") {
 		t.Errorf("TARGET line %q names neither the resolved nor the asked path", line)
 	}
-	if strings.ContainsRune(line, '‮') {
+	if strings.ContainsRune(line, '\u202e') {
 		t.Errorf("TARGET line renders the asked path's U+202E raw: %q", line)
 	}
 
@@ -166,7 +166,7 @@ func TestDryRunNamesWhatTheTargetWasAskedAs(t *testing.T) {
 	if doc["target"] != "/home/u/proj/sub" {
 		t.Errorf("target = %v", doc["target"])
 	}
-	if strings.ContainsRune(buf.String(), '‮') {
+	if strings.ContainsRune(buf.String(), '\u202e') {
 		t.Errorf("the document carries U+202E raw")
 	}
 

@@ -326,7 +326,7 @@ func TestMissingCoverRefusesNotDrops(t *testing.T) {
 	}
 	hlMustResolve(t, hlRegistry(redirect, cover), build(true), "redirect", "cover") // control
 	_, err := hlResolve(hlRegistry(redirect, cover), build(false), "redirect", "cover")
-	hlWantRefusal(t, err, "/s/l", "/s/secret", "nothing else in this run grants")
+	hlWantRefusal(t, err, "/s/l", "/s/secret", "no other grant in this run exposes as")
 }
 
 // TestOptionalGrantThroughUserLinkStillRefuses fails if marking a grant optional

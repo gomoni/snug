@@ -153,10 +153,10 @@ next:
 	d := failed[0]
 	return fmt.Errorf("profile %q grants %s, which resolves through the link %s -> %s (%s), "+
 		"so a sandbox run that once had write access there could have planted it; "+
-		"snug will not follow it to %s, which nothing else in this run grants. "+
+		"snug will not follow it to %s, which no other grant in this run exposes as %s or wider. "+
 		"If you made that link, grant the destination yourself (%s = [\"%s\"], or \"%s:%s\" to keep the path); "+
 		"if you did not, delete the link and treat everything near it as sandbox-written.",
 		string(d.profile), VisibleText(d.requested), VisibleText(d.link.At), VisibleText(d.link.Text),
-		ownerPhrase(d.link, d.uid), VisibleText(d.real),
+		ownerPhrase(d.link, d.uid), VisibleText(d.real), d.key,
 		d.key, VisibleText(d.real), VisibleText(d.real), VisibleText(d.requested))
 }
