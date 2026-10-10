@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -243,17 +244,33 @@ func TestDryRunArgvCarriesTheBrowserFIFOBind(t *testing.T) {
 	})
 	var doc struct {
 		Bwrap struct {
-			Argv []string `json:"argv"`
+			Argv        []string `json:"argv"`
+			BindSources []struct {
+				FD     int    `json:"fd"`
+				Host   string `json:"host"`
+				Guest  string `json:"guest"`
+				Access string `json:"access"`
+			} `json:"bind_sources"`
 		} `json:"bwrap"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	// The bind is by descriptor: the argv names the fd, and bind_sources names
+	// the host path that fd is opened from.
 	a := doc.Bwrap.Argv
 	for i := 0; i+2 < len(a); i++ {
-		if a[i] == "--bind" && a[i+2] == policy.BrowserFIFOGuest && strings.HasSuffix(a[i+1], "/"+browserFIFOName) {
-			return
+		if a[i] != "--bind-fd" || a[i+2] != policy.BrowserFIFOGuest {
+			continue
 		}
+		for _, s := range doc.Bwrap.BindSources {
+			if strconv.Itoa(s.FD) == a[i+1] && s.Guest == policy.BrowserFIFOGuest &&
+				s.Access == "rw" && strings.HasSuffix(s.Host, "/"+browserFIFOName) {
+				return
+			}
+		}
+		t.Fatalf("--bind-fd %s %s has no rw bind source ending in /%s:\n%+v",
+			a[i+1], policy.BrowserFIFOGuest, browserFIFOName, doc.Bwrap.BindSources)
 	}
-	t.Fatalf("no --bind <rt>/%s %s in the dry-run argv:\n%q", browserFIFOName, policy.BrowserFIFOGuest, a)
+	t.Fatalf("no --bind-fd N %s in the dry-run argv:\n%q", policy.BrowserFIFOGuest, a)
 }
