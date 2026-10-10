@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -48,6 +49,59 @@ type unusableTarget struct{ error }
 func (unusableTarget) Is(target error) bool { return target == ErrTargetUnusable }
 
 func (e unusableTarget) Unwrap() error { return e.error }
+
+// CanonicalTarget returns the realpath of ctx.Target, or the refusal that stops
+// snug sandboxing it. It is the one author of "which directory is the target":
+// Resolve uses it, and so does `snug proxy <dir>`, so a link planted on the path
+// cannot make a later invocation sandbox, or open a door into, a directory the
+// human did not name.
+//
+// A failure to canonicalise is an ErrTargetUnusable error wrapping the fs error,
+// so errors.Is(err, fs.ErrNotExist) still answers "nothing there". Every other
+// error is a policy refusal: a link on the path that a sandbox could have
+// planted (see authorableLinks for who counts), or a link walk that cannot say
+// who wrote the links. A sandbox run with write access to a parent of the target
+// can replace the target with a link; the next `snug <target>` would otherwise
+// get write access to the link's destination.
+func CanonicalTarget(env Environ, ctx Context) (string, error) {
+	target, err := env.EvalSymlinks(ctx.Target)
+	if err != nil {
+		return "", unusableTarget{fmt.Errorf("target %q: %w", ctx.Target, err)}
+	}
+	if err := refuseAuthorableLinkOnPath(env, "target", ctx.Target, target,
+		"name the real directory yourself: snug "+VisibleText(target)+
+			" (or `cd -P` there first; `snug .` keeps the path you cd'd through)"); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// refuseAuthorableLinkOnPath refuses asked when its path passes through a link
+// authorableLinks does not trust. real is the EvalSymlinks answer; the link walk
+// must reach the same place, or one of the two is not seeing the host the other
+// is. what is "target" or "$HOME" and fix is the sentence telling a human who
+// made the link what to write instead.
+func refuseAuthorableLinkOnPath(env Environ, what, asked, real, fix string) error {
+	walked, links, err := authorableLinks(env, env.Uid(), asked)
+	if err != nil {
+		return fmt.Errorf("cannot verify who wrote the links on the %s's path: %s: %s",
+			what, VisibleText(asked), visibleErr(err))
+	}
+	if walked != real {
+		return fmt.Errorf("%s %s: snug's link walk reached %s but the host resolves it to %s; "+
+			"refusing rather than guess", what, VisibleText(asked), VisibleText(walked), VisibleText(real))
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	l := links[0]
+	return fmt.Errorf("%s %s resolves through the link %s -> %s (%s), so a sandbox run that once had "+
+		"write access to %s could have planted it; snug will not sandbox %s in its place.\n"+
+		"      If you made that link, %s. If you did not, delete it and treat everything near it "+
+		"as sandbox-written.",
+		what, VisibleText(asked), VisibleText(l.At), VisibleText(l.Text), ownerPhrase(l, env.Uid()),
+		VisibleText(path.Dir(l.At)), VisibleText(real), fix)
+}
 
 // Resolve turns a selection of profiles into a Policy.
 //
@@ -93,9 +147,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, unusableTarget{errors.New("no target directory: pass a directory as snug's " +
 			"positional argument")}
 	}
-	target, err := env.EvalSymlinks(ctx.Target)
+	target, err := CanonicalTarget(env, ctx)
 	if err != nil {
-		return nil, unusableTarget{fmt.Errorf("target %q: %w", ctx.Target, err)}
+		return nil, err
 	}
 	if fi, err := env.Stat(target); err != nil {
 		return nil, unusableTarget{fmt.Errorf("target %q: %w", target, err)}
@@ -112,9 +166,17 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, fmt.Errorf("cannot determine $HOME: it is unset or empty; set $HOME to an " +
 			"absolute, existing directory")
 	}
+	askedTarget := ""
+	if ctx.Target != target {
+		askedTarget = ctx.Target
+	}
 	home, err := env.EvalSymlinks(ctx.Home)
 	if err != nil {
 		return nil, fmt.Errorf("$HOME %q: %w", ctx.Home, err)
+	}
+	if err := refuseAuthorableLinkOnPath(env, "$HOME", ctx.Home, home,
+		"set HOME to "+VisibleText(home)+" instead"); err != nil {
+		return nil, err
 	}
 
 	vars := map[string]string{
@@ -125,6 +187,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 
 	p := &Policy{
 		Target:         target,
+		TargetAsked:    askedTarget,
 		Home:           home,
 		Hostname:       "snug",
 		Chdir:          target,
@@ -208,6 +271,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
 	// envresolve.go for why deciding during the fold cannot name every claimant.
 	envClaims := newEnvClaims()
+	// Bind grants whose path went through a link a sandbox could have planted,
+	// and those that did not. Judged after the fold: a redirect is allowed when
+	// another grant of this run already exposes its destination.
+	var diverted []divertedGrant
+	var literal []literalGrant
 	for _, name := range names {
 		prof := set[name]
 		optional := map[string]bool{}
@@ -261,6 +329,25 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				}
 				if err := underTargetIsLiteral(target, host, real); err != nil {
 					return fmt.Errorf("profile %q: %w", name, err)
+				}
+				resolved, links, err := authorableLinks(env, env.Uid(), host)
+				if err != nil {
+					return fmt.Errorf("profile %q: %s: cannot verify who wrote the links on this path: %s",
+						name, VisibleText(host), visibleErr(err))
+				}
+				if resolved != real {
+					return fmt.Errorf("profile %q: %s: snug's link walk reached %s but the host resolves it to %s; "+
+						"refusing rather than guess", name, VisibleText(host), VisibleText(resolved), VisibleText(real))
+				}
+				if len(links) > 0 {
+					key := "ro"
+					if access == AccessRW {
+						key = "rw"
+					}
+					diverted = append(diverted, divertedGrant{profile: name, key: key, requested: host,
+						real: real, link: links[0], access: access, uid: env.Uid()})
+				} else {
+					literal = append(literal, literalGrant{real: real, access: access})
 				}
 				m.Host = real
 			}
@@ -399,6 +486,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				// turns `snug profile show` and `--dry-run` into hard failures
 				// for a profile whose key is merely absent. The hole being
 				// closed here is the sandbox-writable one.
+				asked := expanded
 				if _, ok := under(target, expanded); ok {
 					real, err := env.EvalSymlinks(expanded)
 					if err != nil {
@@ -409,6 +497,21 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 						return nil, fmt.Errorf("profile %q: identity.%s: %w", name, f.Key, err)
 					}
 					expanded = real
+				}
+				// Every path field, under the target or not, and with no cover: a
+				// link a sandbox could have planted chooses which host key the
+				// sandbox can sign with. An absent key stays legal (ENOENT is a
+				// plain component).
+				if dest, links, err := authorableLinks(env, env.Uid(), asked); err != nil {
+					return nil, fmt.Errorf("profile %q: identity.%s %s: cannot verify who wrote the links on this path: %s",
+						name, f.Key, VisibleText(asked), visibleErr(err))
+				} else if len(links) > 0 {
+					l := links[0]
+					return nil, fmt.Errorf("profile %q: identity.%s %s resolves through the link %s (%s); "+
+						"a sandbox run could have planted it to choose which host key the sandbox can sign with. "+
+						"If you made it, write the destination %s instead; if you did not, delete it.",
+						name, f.Key, VisibleText(asked), VisibleText(l.At), ownerPhrase(l, env.Uid()),
+						VisibleText(dest))
 				}
 				fv.SetString(expanded)
 			}
@@ -532,6 +635,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		if err := collectEnv(envClaims, name, prof.Environ, vars, env); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := refuseAuthorableRedirects(diverted, literal); err != nil {
+		return nil, err
 	}
 
 	// Unconditional: @claude names plugins and declares no door, so a policy

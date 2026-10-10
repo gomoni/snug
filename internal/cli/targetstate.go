@@ -68,6 +68,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/vdir"
 	"golang.org/x/sys/unix"
 )
@@ -525,17 +526,20 @@ func liveRunCandidates(real string, runs []runState) string {
 	return b.String()
 }
 
-// canonicalTarget resolves abs (already filepath.Abs'd) to the same realpath
-// policy.Resolve and the target lock both use — see the comment above
-// selectLiveRun. exists is false when abs, or a symlink it passes through,
-// does not exist on disk: a directory with no on-disk presence cannot have a
-// live run, so the caller reports that as "no live run" rather than surfacing
-// a raw EvalSymlinks error. Any OTHER failure (permission denied on an
-// intermediate component, a loop, ...) is returned as err with exists=false,
-// and the caller must not treat that as "no live run" either — it is a
-// different refusal with a different message.
+// canonicalTarget resolves abs (already filepath.Abs'd) through
+// policy.CanonicalTarget, the function Resolve names the target with, so a link
+// planted on the path cannot make `snug proxy` pick a different live run than
+// the one `snug <dir>` would have started. The target lock hashes the same
+// realpath — see the comment above selectLiveRun. exists is false when abs, or
+// a symlink it passes through, does not exist on disk: a directory with no
+// on-disk presence cannot have a live run, so the caller reports that as "no
+// live run" rather than surfacing a raw EvalSymlinks error. Any OTHER failure
+// (permission denied on an intermediate component, a loop, a link snug will not
+// trust, ...) is returned as err with exists=false, and the caller must not
+// treat that as "no live run" either — it is a different refusal with a
+// different message.
 func canonicalTarget(abs string) (real string, exists bool, err error) {
-	real, err = filepath.EvalSymlinks(abs)
+	real, err = policy.CanonicalTarget(policy.OSEnviron{}, policy.Context{Target: abs})
 	if err != nil {
 		// errors.Is, not os.IsNotExist: the predicate must survive a %w wrap,
 		// and the one place it did not was issue #124.

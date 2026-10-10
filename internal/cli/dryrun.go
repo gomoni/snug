@@ -80,7 +80,11 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	// four lines above a block that had been escaping since the value class was
 	// found, which is the shape CLAUDE.md records: a guard added to one block
 	// and not the one above it (issue #65).
-	fmt.Fprintf(out, "TARGET   %s  %s\n", visibleValue(p.Target), targetAnnotation(p))
+	resolvedFrom := ""
+	if p.TargetAsked != "" {
+		resolvedFrom = fmt.Sprintf("  (resolved from %s)", visibleValue(p.TargetAsked))
+	}
+	fmt.Fprintf(out, "TARGET   %s  %s%s\n", visibleValue(p.Target), targetAnnotation(p), resolvedFrom)
 	fmt.Fprintf(out, "HOME     %s  %s\n", visibleValue(p.Home), homeAnnotation(p))
 	fmt.Fprintf(out, "PROFILES %s\n", visibleValue(policy.JoinNames(p.Selected, " ")))
 	if implied := p.Implied(); len(implied) > 0 {

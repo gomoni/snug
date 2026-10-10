@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -40,6 +42,23 @@ func TestEngineKeyIgnoresTheProfileSelection(t *testing.T) {
 	}
 }
 
+// rootOwnedLinks is the real host with every symlink reported as root-owned,
+// because the link this test makes is its own, and Resolve refuses a target
+// that passes through a link a non-root owner wrote.
+type rootOwnedLinks struct{ policy.OSEnviron }
+
+func (rootOwnedLinks) Lstat(p string) (fs.FileInfo, error) {
+	fi, err := os.Lstat(p)
+	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		return fi, err
+	}
+	return rootOwnedInfo{fi}, nil
+}
+
+type rootOwnedInfo struct{ fs.FileInfo }
+
+func (rootOwnedInfo) Sys() any { return &syscall.Stat_t{Uid: 0} }
+
 // TestEngineKeyUsesTheCanonicalTarget is a REGRESSION PIN, not a bug fix, and
 // its own doc comment says so because a test that claims to close a hole it
 // never found is worse than no test (CLAUDE.md).
@@ -73,7 +92,7 @@ func TestEngineKeyUsesTheCanonicalTarget(t *testing.T) {
 	}
 	sel := []policy.ProfileName{"sys", "rw"}
 
-	env := policy.OSEnviron{}
+	env := rootOwnedLinks{}
 	polReal, err := policy.Resolve(reg, sel, policy.Context{Target: real, Home: home,
 		Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u"}, env)
 	if err != nil {

@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
+	"path"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,6 +26,9 @@ type fakeInfo struct {
 	// asked WHAT the path is. rejectEndpointSource (issues #219, #287) asks
 	// exactly that, so the fixture stops lying.
 	mode fs.FileMode
+	// sys is what Sys() returns; a symlink fixture puts a *syscall.Stat_t here
+	// so the resolver can read the link's owner.
+	sys any
 }
 
 func (f fakeInfo) Name() string       { return f.name }
@@ -30,7 +36,7 @@ func (f fakeInfo) Size() int64        { return 0 }
 func (f fakeInfo) Mode() fs.FileMode  { return f.mode }
 func (f fakeInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeInfo) IsDir() bool        { return f.dir }
-func (f fakeInfo) Sys() any           { return nil }
+func (f fakeInfo) Sys() any           { return f.sys }
 
 type fakeEnv struct {
 	dirs map[string]bool
@@ -77,7 +83,18 @@ type fakeEnv struct {
 	// treats as walkUnknown — a permission error reading a host symlink's own
 	// text, distinct from the component itself simply not existing.
 	readlinkErrs map[string]error
-	env          map[string]string
+	// linkOwners is the uid owning each fixture symlink. The default, 0, models
+	// the host's own configuration (/home -> /var/home): root-owned.
+	linkOwners map[string]uint32
+	// resolveParents makes EvalSymlinks follow a link at any ANCESTOR of the
+	// path, as a real one does. Off by default: most fixtures name a link only
+	// at the exact path they grant and mean nothing about its parents.
+	resolveParents bool
+	// uid overrides Uid() when non-zero; asRoot makes Uid() 0, which uid cannot
+	// express because its zero value means "unset".
+	uid    int
+	asRoot bool
+	env    map[string]string
 }
 
 func newFakeEnv() *fakeEnv {
@@ -131,6 +148,7 @@ func newFakeEnv() *fakeEnv {
 			"/opt/gems-a": true, "/opt/gems-b": true, "/opt/tool": true,
 		},
 		links:        map[string]string{},
+		linkOwners:   map[string]uint32{},
 		symlinkErrs:  map[string]error{},
 		statErrs:     map[string]error{},
 		readlinkErrs: map[string]error{},
@@ -155,7 +173,22 @@ func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 		return "", err
 	}
 	if t, ok := f.links[p]; ok {
+		if !strings.HasPrefix(t, "/") {
+			t = filepath.Join(filepath.Dir(p), t)
+		}
+		if f.resolveParents {
+			return f.EvalSymlinks(t)
+		}
 		return t, nil
+	}
+	for q := path.Dir(p); f.resolveParents && q != "/" && q != "."; q = path.Dir(q) {
+		if _, ok := f.links[q]; ok {
+			r, err := f.EvalSymlinks(q)
+			if err != nil {
+				return "", err
+			}
+			return f.EvalSymlinks(r + strings.TrimPrefix(p, q))
+		}
 	}
 	// Every kind this fixture can hold resolves to itself. It used to answer
 	// for directories alone, so a fixture FILE — or, since issue #219, a
@@ -200,7 +233,7 @@ func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
 		return nil, err
 	}
 	if _, ok := f.links[p]; ok {
-		return fakeInfo{name: p, mode: fs.ModeSymlink}, nil
+		return fakeInfo{name: p, mode: fs.ModeSymlink, sys: &syscall.Stat_t{Uid: f.linkOwners[p]}}, nil
 	}
 	return f.Stat(p)
 }
@@ -223,7 +256,15 @@ func (f *fakeEnv) LookupEnv(k string) (string, bool) {
 	v, ok := f.env[k]
 	return v, ok
 }
-func (f *fakeEnv) Uid() int { return 1000 }
+func (f *fakeEnv) Uid() int {
+	if f.asRoot {
+		return 0
+	}
+	if f.uid != 0 {
+		return f.uid
+	}
+	return 1000
+}
 func (f *fakeEnv) Gid() int { return 1000 }
 
 // LookPath is never called by anything this file exercises — Resolve itself

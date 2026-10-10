@@ -345,11 +345,14 @@ type Graft struct {
 // bwrap argv — and, once they exist, of the pasta argv and the container
 // proxy's decisions too. One author means those cannot drift apart.
 type Policy struct {
-	Target   string // canonical host path of the writable project directory
-	Home     string // EvalSymlinks($HOME); pw_dir IS Home in the generated /etc/passwd, by construction
-	Hostname string
-	Chdir    string
-	Command  []string
+	Target string // canonical host path of the writable project directory
+	// TargetAsked is the path the target was named by, set only when resolving
+	// it changed it. It is shown by --dry-run and read by nothing that decides.
+	TargetAsked string
+	Home        string // EvalSymlinks($HOME); pw_dir IS Home in the generated /etc/passwd, by construction
+	Hostname    string
+	Chdir       string
+	Command     []string
 
 	Mounts map[string]Mount
 

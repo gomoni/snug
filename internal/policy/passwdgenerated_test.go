@@ -48,7 +48,10 @@ func TestGeneratedPasswdDirIsAuthoredHOME(t *testing.T) {
 			env: func() *fakeEnv {
 				env := newFakeEnv()
 				env.links["/home/u"] = "/var/home/u"
-				env.dirs["/var/home/u"] = true
+				env.resolveParents = true
+				for _, d := range []string{"/var/home/u", "/var/home/u/proj", "/var/home/u/proj/sub"} {
+					env.dirs[d] = true
+				}
 				return env
 			},
 		},

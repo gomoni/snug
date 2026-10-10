@@ -188,3 +188,41 @@ func TestExtractGitConfigCarriesNoKeyThatNamesAProgram(t *testing.T) {
 		}
 	}
 }
+
+// TestGitDirSymlinkDoesNotChooseIdentity fails if extractGitConfig follows a
+// `.git` symlink in the target. The target is writable, so the link is whatever
+// the sandbox left there, and following it lets repo content choose which
+// `includeIf gitdir:` identity fires. The real `.git` directory under the
+// pattern is the positive control: without it a matcher that never fires would
+// pass the negative. Not covered: git's own behaviour on such a repo (git
+// follows the link), which is the stated cost of this refusal to follow.
+func TestGitDirSymlinkDoesNotChooseIdentity(t *testing.T) {
+	globalFile, work, other := writeGitFixture(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", globalFile)
+
+	got, err := extractGitConfig("/home/u", work, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["user.email"] != "included@example.invalid" {
+		t.Fatalf("control: a real .git directory under the pattern did not fire (user.email = %q), "+
+			"so the assertion below proves nothing", got["user.email"])
+	}
+
+	// other is outside the pattern; its .git directory is replaced by a link
+	// into the repository that is inside it.
+	if err := os.RemoveAll(filepath.Join(other, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(work, ".git"), filepath.Join(other, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = extractGitConfig("/home/u", other, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["user.email"] != "global@example.invalid" {
+		t.Errorf("user.email = %q: a .git symlink chose the included identity; want the global one",
+			got["user.email"])
+	}
+}
