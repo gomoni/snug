@@ -76,6 +76,7 @@ const MaxSSHPublicKeyBytes = 64 << 10
 //
 // open is how the file is opened, and it is the only thing the two public
 // families differ in: every reader below follows links except RequiredNoLinks.
+//
 //lint:ignore ST1008 openErr and problem are two halves of one answer; see the doc comment above
 func read(path string, maxBytes int64, open func(string) (*os.File, error)) (data []byte, openErr error, problem string) {
 	f, err := open(path)
