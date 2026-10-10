@@ -4,9 +4,7 @@ package integration
 
 import (
 	"fmt"
-	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,43 +15,9 @@ import (
 // Hardening round for the login bridge: each test below turns one line of the
 // bridge's review checklist into a negative that runs against the real
 // binary. They share loginFixture and the loginprobe/fakeopener stand-ins
-// with loginbridge_test.go; the probe's script= option runs a /bin/sh script
+// (loginbridgehelpers_test.go) with loginbridge_test.go; the probe's script= option runs a /bin/sh script
 // as the sandbox's side of /login, so a test can do things Claude Code never
 // would (compete for the FIFO, replace its path, flood it).
-
-// loginScript stages a shell script in the fixture's target and returns the
-// probe argument that runs it.
-func (f *loginFixture) loginScript(t *testing.T, body string) string {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.proj, "attack.sh"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return "script=attack.sh"
-}
-
-func loginRunCount(t *testing.T, rec string) int {
-	t.Helper()
-	s, _ := loginRec(t, rec, "runs")
-	return len(s)
-}
-
-// loginWaitPort polls until localhost:port accepts (held) or refuses
-// (!held) on 127.0.0.1, within d.
-func loginWaitPort(t *testing.T, port int, held bool, d time.Duration) bool {
-	t.Helper()
-	for end := time.Now().Add(d); ; time.Sleep(25 * time.Millisecond) {
-		c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-		if err == nil {
-			c.Close()
-		}
-		if (err == nil) == held {
-			return true
-		}
-		if time.Now().After(end) {
-			return false
-		}
-	}
-}
 
 func loginVmRSS(t *testing.T, pid int) int64 {
 	t.Helper()
@@ -108,14 +72,8 @@ echo "STEALER-GONE"
 		map[bool]string{true: "SEEN by snug (opener ran)", false: "STOLEN (opener never ran)"}[seen])
 	handToPayload(t, f.proj, "go1", "x")
 	waitForLogLine(t, s, "W2-RC 0", 20*time.Second)
-
-	for end := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		if _, ran := loginRec(t, f.rec, "ran"); ran {
-			break
-		}
-		if time.Now().After(end) {
-			t.Fatalf("after the competing reader died, snug never saw a request: the bridge is wedged:\n%s", s.log())
-		}
+	if !loginWaitOpenerRan(t, f.rec, 10*time.Second) {
+		t.Fatalf("after the competing reader died, snug never saw a request: the bridge is wedged:\n%s", s.log())
 	}
 	argv, _ := loginRec(t, f.rec, "argv")
 	wantURL := fmt.Sprintf(loginRebuiltFmt, port, loginChallenge, loginState)
@@ -125,10 +83,7 @@ echo "STEALER-GONE"
 	if n := loginRunCount(t, f.rec); n != 1 {
 		t.Errorf("the opener ran %d times for two writes inside the supersede window, want 1", n)
 	}
-	handToPayload(t, f.proj, "release", "x")
-	if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-		t.Fatalf("snug exited %d:\n%s", code, s.log())
-	}
+	f.releaseOK(t, s)
 	if strings.Contains(s.log(), "panic") {
 		t.Errorf("snug panicked:\n%s", s.log())
 	}
@@ -171,9 +126,7 @@ echo VALID-FLOOD-DONE
 	if grew := after - before; grew > 24<<20 {
 		t.Errorf("snug's RSS grew by %d bytes over a 20 MB flood", grew)
 	}
-	for end := time.Now().Add(10 * time.Second); loginRunCount(t, f.rec) == 0 && time.Now().Before(end); {
-		time.Sleep(50 * time.Millisecond)
-	}
+	loginWaitOpenerRan(t, f.rec, 10*time.Second)
 	if n := loginRunCount(t, f.rec); n != 1 {
 		t.Errorf("the opener ran %d times for a flood of valid URLs in one supersede window, want 1", n)
 	}
@@ -184,10 +137,7 @@ echo VALID-FLOOD-DONE
 	if !strings.Contains(log, "further refusals suppressed") {
 		t.Errorf("no suppression line after 20 MB of refusals:\n%.600s", log)
 	}
-	handToPayload(t, f.proj, "release", "x")
-	if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-		t.Fatalf("snug exited %d after the flood:\n%s", code, s.log())
-	}
+	f.releaseOK(t, s)
 }
 
 // TestTheFIFOPathCannotBeReplacedFromInside fails if anything inside can
@@ -252,16 +202,10 @@ echo "INO-AFTER $(ino)"
 	if v, _ := loginField(out, "W-RC"); v != "0" {
 		t.Errorf("the shim failed after the attacks (%q):\n%s", v, out)
 	}
-	for end := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		if _, ran := loginRec(t, f.rec, "ran"); ran {
-			break
-		}
-		if time.Now().After(end) {
-			t.Fatalf("a request written after the attacks never reached snug:\n%s", s.log())
-		}
+	if !loginWaitOpenerRan(t, f.rec, 10*time.Second) {
+		t.Fatalf("a request written after the attacks never reached snug:\n%s", s.log())
 	}
-	handToPayload(t, f.proj, "release", "x")
-	loginWaitExit(t, s, 20*time.Second)
+	f.release(t, s)
 }
 
 // TestSandboxChosenBytesNeverReachSnugsScreenRaw fails if a line the sandbox
@@ -291,8 +235,7 @@ echo HOSTILE-WRITTEN
 	waitForLogLine(t, s, "HOSTILE-WRITTEN", 20*time.Second)
 	waitForLogLine(t, s, "refused an open request from the sandbox", 10*time.Second)
 	time.Sleep(500 * time.Millisecond)
-	handToPayload(t, f.proj, "release", "x")
-	loginWaitExit(t, s, 20*time.Second)
+	f.release(t, s)
 	out := s.log()
 	for _, bad := range []string{"\x1b", "\x9b", "\u009b", "\u202e", "\a", "\x7f", "\x00"} {
 		if strings.Contains(out, bad) {
@@ -307,46 +250,6 @@ echo HOSTILE-WRITTEN
 	}
 }
 
-// loginHeldFlow starts the probe holding a flow open (the fake opener only
-// records) and waits until host localhost:P accepts. It returns the sandbox,
-// the port and the run's token.
-func loginHeldFlow(t *testing.T, f *loginFixture) (*bgSandbox, int, string) {
-	t.Helper()
-	tok := orphanToken()
-	s := f.start(t, "token="+tok, "go=go", "release=release", "dial=ctl@tcp:127.0.0.1:PORT")
-	out := waitForLogLine(t, s, "SHIM-RC", 15*time.Second)
-	port := loginPort(t, out)
-	if !loginWaitPort(t, port, true, 10*time.Second) {
-		t.Fatalf("precondition: no flow holds localhost:%d on the host:\n%s", port, s.log())
-	}
-	if live := pidsWithToken(tok, s.pid()); len(live) == 0 {
-		t.Fatalf("precondition: the token sweep finds no process of this run besides snug, so a "+
-			"clean sweep afterwards would prove nothing:\n%s", s.log())
-	}
-	return s, port, tok
-}
-
-func loginAssertRunGone(t *testing.T, port int, tok string, why string) {
-	t.Helper()
-	if !loginWaitPort(t, port, false, 5*time.Second) {
-		t.Errorf("localhost:%d still accepts connections 5s after %s", port, why)
-	}
-	requireLoginRefused(t, "tcp4", fmt.Sprintf("127.0.0.1:%d", port), "after "+why)
-	if loginHostHasV6(t) {
-		requireLoginRefused(t, "tcp6", fmt.Sprintf("[::1]:%d", port), "after "+why)
-	}
-	var left []int
-	for end := time.Now().Add(8 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		if left = pidsWithToken(tok); len(left) == 0 {
-			break
-		}
-	}
-	if len(left) != 0 {
-		defer killAll(left)
-		t.Errorf("%d process(es) with the run's token survived %s: %s", len(left), why, describePIDs(left))
-	}
-}
-
 // TestSIGKILLOfThePayloadMidFlowReleasesTheHostPort fails if killing the
 // sandbox's payload while a login is pending leaves snug running, localhost:P
 // held on either family, or any process of the run alive. The payload is the
@@ -358,7 +261,8 @@ func TestSIGKILLOfThePayloadMidFlowReleasesTheHostPort(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
 	f := newLoginFixture(t, "hold")
-	s, port, tok := loginHeldFlow(t, f)
+	tok := orphanToken()
+	s, port := loginHeldFlow(t, f, tok)
 
 	var payload []int
 	for _, pid := range pidsWithToken(tok, s.pid()) {
@@ -388,7 +292,8 @@ func TestSIGKILLOfTheStageMidFlowCollapsesTheRun(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
 	f := newLoginFixture(t, "hold")
-	s, port, tok := loginHeldFlow(t, f)
+	tok := orphanToken()
+	s, port := loginHeldFlow(t, f, tok)
 
 	stage, ok := findDescendant(s.pid(), isServingStage, 5*time.Second)
 	if !ok {

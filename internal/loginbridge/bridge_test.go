@@ -218,6 +218,23 @@ func browse(t *testing.T, port int, req string) string {
 	return string(b)
 }
 
+// openFlow opens a flow on a free port through the rig's bridge, failing the
+// test if Handle refuses it.
+func (r *rig) openFlow(t *testing.T) Flow {
+	t.Helper()
+	f := testFlow(t)
+	if err := r.b.Handle(f); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// sendCallback is the browser's valid callback for f, and the whole answer.
+func sendCallback(t *testing.T, f Flow) string {
+	t.Helper()
+	return browse(t, f.Port, callbackReq(f.Port, testState, ""))
+}
+
 func callbackReq(port int, state string, extra string) string {
 	return "GET /callback?code=AbC-12.3_x~&state=" + state + " HTTP/1.1\r\n" +
 		"Host: localhost:" + strconv.Itoa(port) + "\r\n" + extra + "\r\n"
@@ -234,10 +251,7 @@ func refuses(port int) bool {
 
 func TestTheRelayedRequestCarriesNoBrowserHeader(t *testing.T) {
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	browse(t, f.Port, callbackReq(f.Port, testState,
 		"Cookie: session=hostsecret\r\nReferer: https://claude.com/x\r\nAuthorization: Bearer hostsecret\r\n"+
 			"User-Agent: Mozilla/5.0\r\nX-Forwarded-For: 10.0.0.1\r\n"))
@@ -257,11 +271,8 @@ func TestTheBrowserGetsSnugsPageNotTheSandboxs(t *testing.T) {
 	r := newRig(t)
 	r.sandbox.answer = "HTTP/1.1 302 Found\r\nSet-Cookie: pwn=1; Domain=localhost\r\n" +
 		"Location: https://evil.example/\r\nContent-Type: text/html\r\n\r\n<script>alert(1)</script>"
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
-	resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	f := r.openFlow(t)
+	resp := sendCallback(t, f)
 	head, body, _ := strings.Cut(resp, "\r\n\r\n")
 	for _, bad := range []string{"Set-Cookie", "Location", "evil.example", "<script", "pwn"} {
 		if strings.Contains(resp, bad) {
@@ -289,11 +300,8 @@ func TestTheBrowserGetsSnugsPageNotTheSandboxs(t *testing.T) {
 func TestAnotherUIDIsRefused(t *testing.T) {
 	r := newRig(t)
 	r.peerUID = os.Getuid() + 1
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
-	resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	f := r.openFlow(t)
+	resp := sendCallback(t, f)
 	if !strings.HasPrefix(resp, "HTTP/1.1 403 ") || !strings.Contains(resp, "another user") {
 		t.Fatalf("resp: %s", resp)
 	}
@@ -312,11 +320,8 @@ func TestAnUnresolvablePeerIsRefused(t *testing.T) {
 	r := newRig(t)
 	r.peerOK = false
 	r.peerUID = os.Getuid()
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
-	resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	f := r.openFlow(t)
+	resp := sendCallback(t, f)
 	if !strings.HasPrefix(resp, "HTTP/1.1 403 ") {
 		t.Fatalf("resp: %s", resp)
 	}
@@ -327,10 +332,7 @@ func TestAnUnresolvablePeerIsRefused(t *testing.T) {
 
 func TestBadHostHeaderIsRefused(t *testing.T) {
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	p := strconv.Itoa(f.Port)
 	cb := "GET /callback?code=x&state=" + testState + " HTTP/1.1\r\n"
 	for name, req := range map[string]string{
@@ -427,12 +429,9 @@ func TestFlowLimits(t *testing.T) {
 		r := newRig(t)
 		r.sandbox.release = make(chan struct{})
 		r.sandbox.received = make(chan struct{}, 1)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		done := make(chan string)
-		go func() { done <- browse(t, f.Port, callbackReq(f.Port, testState, "")) }()
+		go func() { done <- sendCallback(t, f) }()
 		<-r.sandbox.received
 		r.clock.Advance(SupersedeAfter + time.Minute)
 		if err := r.b.Handle(testFlow(t)); err == nil || !strings.Contains(err.Error(), "a login is pending") {
@@ -446,10 +445,7 @@ func TestFlowLimits(t *testing.T) {
 
 	t.Run("a 404 does not end the flow", func(t *testing.T) {
 		r := newRig(t)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		p := strconv.Itoa(f.Port)
 		for _, req := range []string{
 			"GET / HTTP/1.1\r\nHost: localhost:" + p + "\r\n\r\n",
@@ -464,7 +460,7 @@ func TestFlowLimits(t *testing.T) {
 		if len(r.sandbox.requests()) != 0 {
 			t.Fatal("a 404 relayed")
 		}
-		if resp := browse(t, f.Port, callbackReq(f.Port, testState, "")); !strings.Contains(resp, "answered HTTP 200") {
+		if resp := sendCallback(t, f); !strings.Contains(resp, "answered HTTP 200") {
 			t.Fatalf("the right callback after 404s: %s", resp)
 		}
 	})
@@ -490,7 +486,7 @@ func TestFlowLimits(t *testing.T) {
 			if err := r.b.Handle(f); err != nil {
 				t.Fatalf("open %d: %v", i+1, err)
 			}
-			if resp := browse(t, f.Port, callbackReq(f.Port, testState, "")); !strings.Contains(resp, "answered HTTP 200") {
+			if resp := sendCallback(t, f); !strings.Contains(resp, "answered HTTP 200") {
 				t.Fatalf("relay %d: %s", i+1, resp)
 			}
 		}
@@ -504,10 +500,7 @@ func TestFlowLimits(t *testing.T) {
 
 	t.Run("the TTL closes the listeners", func(t *testing.T) {
 		r := newRig(t)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		r.clock.Advance(FlowTTL - time.Second)
 		if refuses(f.Port) {
 			t.Fatal("closed before the TTL")
@@ -527,10 +520,7 @@ func TestFlowLimits(t *testing.T) {
 	t.Run("a failing opener cancels the flow", func(t *testing.T) {
 		r := newRig(t)
 		r.opener.err = errors.New("xdg-open (/x) failed: exit status 3")
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		waitFor(t, func() bool { return refuses(f.Port) })
 		waitFor(t, func() bool { return strings.Contains(r.stderr.String(), "The login was cancelled") })
 	})
@@ -550,10 +540,7 @@ func TestFlowLimits(t *testing.T) {
 
 	t.Run("close ends the flow", func(t *testing.T) {
 		r := newRig(t)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		r.b.Close()
 		if !refuses(f.Port) {
 			t.Fatal("listening after Close")

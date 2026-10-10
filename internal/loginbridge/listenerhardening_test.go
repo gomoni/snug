@@ -76,10 +76,7 @@ func wantRelay(port int, code string) string {
 func TestAPipelinedSecondRequestIsNeverProcessed(t *testing.T) {
 	t.Run("valid then valid relays once", func(t *testing.T) {
 		r := newRig(t)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		resp := browse(t, f.Port, callbackReq(f.Port, testState, "")+callbackReq(f.Port, testState, ""))
 		if n := strings.Count(resp, "HTTP/1.1 "); n != 1 {
 			t.Errorf("the connection carried %d responses, want 1:\n%s", n, resp)
@@ -95,10 +92,7 @@ func TestAPipelinedSecondRequestIsNeverProcessed(t *testing.T) {
 
 	t.Run("refused then valid does not relay", func(t *testing.T) {
 		r := newRig(t)
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		p := strconv.Itoa(f.Port)
 		first := "GET /favicon.ico HTTP/1.1\r\nHost: localhost:" + p + "\r\n\r\n"
 		resp := browse(t, f.Port, first+callbackReq(f.Port, testState, ""))
@@ -110,7 +104,7 @@ func TestAPipelinedSecondRequestIsNeverProcessed(t *testing.T) {
 		}
 		// Control: the flow is alive, so the zero above is the pipelining
 		// refusal and not a flow that had already ended.
-		if resp := browse(t, f.Port, callbackReq(f.Port, testState, "")); !strings.Contains(resp, "answered HTTP 200") {
+		if resp := sendCallback(t, f); !strings.Contains(resp, "answered HTTP 200") {
 			t.Fatalf("the flow did not survive: %s", resp)
 		}
 	})
@@ -137,10 +131,7 @@ func TestFramingHeadersOnTheCallbackCannotSmuggleASecondRelay(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t)
-			f := testFlow(t)
-			if err := r.b.Handle(f); err != nil {
-				t.Fatal(err)
-			}
+			f := r.openFlow(t)
 			body := second
 			if strings.HasPrefix(hdr, "Transfer-Encoding") {
 				body = chunked
@@ -170,10 +161,7 @@ func TestFramingHeadersOnTheCallbackCannotSmuggleASecondRelay(t *testing.T) {
 // the control that the zero before it is the refusal's doing.
 func TestRequestFormsAndHostTricksAreRefused(t *testing.T) {
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	p := strconv.Itoa(f.Port)
 	cb := "/callback?code=x&state=" + testState
 	ok := "Host: localhost:" + p + "\r\n"
@@ -272,10 +260,7 @@ func firstLineOf(s string) string {
 func TestSlowConnectionsDelayTheCallbackButNeverBlockItForever(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(f.Port))
 	start := time.Now()
 	var conns []net.Conn
@@ -307,7 +292,7 @@ func TestSlowConnectionsDelayTheCallbackButNeverBlockItForever(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	dropped := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	dropped := sendCallback(t, f)
 	if dropped != "" {
 		t.Fatalf("control: the ninth connection was answered while eight slots were held: %q", dropped)
 	}
@@ -317,7 +302,7 @@ func TestSlowConnectionsDelayTheCallbackButNeverBlockItForever(t *testing.T) {
 
 	var relayedAt time.Duration
 	for time.Since(start) < headReadDeadline+4*time.Second {
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		resp := sendCallback(t, f)
 		if strings.Contains(resp, "answered HTTP 200") {
 			relayedAt = time.Since(start)
 			break
@@ -358,10 +343,7 @@ func TestSlowConnectionsDelayTheCallbackButNeverBlockItForever(t *testing.T) {
 // a byte, and then the human's callback relays immediately.
 func TestAnotherUIDCannotHoldConnectionSlots(t *testing.T) {
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	r.mu.Lock()
 	r.peerUID = os.Getuid() + 1
 	r.mu.Unlock()
@@ -381,7 +363,7 @@ func TestAnotherUIDCannotHoldConnectionSlots(t *testing.T) {
 	r.mu.Lock()
 	r.peerUID = os.Getuid()
 	r.mu.Unlock()
-	if resp := browse(t, f.Port, callbackReq(f.Port, testState, "")); !strings.Contains(resp, "answered HTTP 200") {
+	if resp := sendCallback(t, f); !strings.Contains(resp, "answered HTTP 200") {
 		t.Fatalf("the human's callback after the strangers: %s", resp)
 	}
 }
@@ -433,10 +415,7 @@ func TestARelayThatCouldSplitTheRequestIsRefusedOrStaysEncoded(t *testing.T) {
 	for _, code := range raw {
 		t.Run(fmt.Sprintf("refused/%q", code), func(t *testing.T) {
 			r := newRig(t)
-			f := testFlow(t)
-			if err := r.b.Handle(f); err != nil {
-				t.Fatal(err)
-			}
+			f := r.openFlow(t)
 			p := strconv.Itoa(f.Port)
 			// A raw space would end the request-target, so it is sent as the
 			// whole request line splitting; the others ride in the target.
@@ -457,10 +436,7 @@ func TestARelayThatCouldSplitTheRequestIsRefusedOrStaysEncoded(t *testing.T) {
 	} {
 		t.Run("encoded/"+code, func(t *testing.T) {
 			r := newRig(t)
-			f := testFlow(t)
-			if err := r.b.Handle(f); err != nil {
-				t.Fatal(err)
-			}
+			f := r.openFlow(t)
 			p := strconv.Itoa(f.Port)
 			req := "GET /callback?code=" + code + "&state=" + testState + " HTTP/1.1\r\nHost: localhost:" + p + "\r\n\r\n"
 			resp := browse(t, f.Port, req)
@@ -488,11 +464,8 @@ func TestAFailedRelayEndsTheFlowAndAnswersOnlyWithSnugsText(t *testing.T) {
 		return nil, errors.New("connecting to 127.0.0.1:1 inside the sandbox: connection refused")
 	}}
 	r.b.d.Relayer = rel
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
-	resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	f := r.openFlow(t)
+	resp := sendCallback(t, f)
 	if !strings.HasPrefix(resp, "HTTP/1.1 502 ") {
 		t.Fatalf("want a 502:\n%s", resp)
 	}
@@ -533,11 +506,8 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 				}
 			}
 		})}
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		f := r.openFlow(t)
+		resp := sendCallback(t, f)
 		if !strings.Contains(resp, "answered HTTP 200") || strings.Contains(resp, "AAAA") {
 			t.Fatalf("browser answer:\n%.300s", resp)
 		}
@@ -561,11 +531,8 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 		r := newRig(t)
 		r.sandbox.answer = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n" +
 			"HTTP/1.1 302 Found\r\nLocation: https://evil.example/\r\nSet-Cookie: a=b; Domain=localhost\r\n\r\n<script>1</script>"
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		f := r.openFlow(t)
+		resp := sendCallback(t, f)
 		if n := strings.Count(resp, "HTTP/1.1 "); n != 1 {
 			t.Errorf("the browser got %d responses, want 1:\n%s", n, resp)
 		}
@@ -583,11 +550,8 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 		t.Parallel()
 		r := newRig(t)
 		r.sandbox.answer = "HTTP/1.1 200 <script>alert(1)</script>\r\n\r\n"
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		f := r.openFlow(t)
+		resp := sendCallback(t, f)
 		if !strings.Contains(resp, "answered HTTP 200.") || strings.Contains(resp, "script") {
 			t.Errorf("browser answer:\n%s", resp)
 		}
@@ -597,11 +561,8 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 		t.Parallel()
 		r := newRig(t)
 		r.sandbox.answer = "SSH-2.0-EvilServer\r\nsecret-token\r\n"
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		f := r.openFlow(t)
+		resp := sendCallback(t, f)
 		if !strings.HasPrefix(resp, "HTTP/1.1 502 ") || strings.Contains(resp, "EvilServer") || strings.Contains(resp, "secret-token") {
 			t.Errorf("browser answer:\n%s", resp)
 		}
@@ -611,11 +572,8 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 		t.Parallel()
 		r := newRig(t)
 		r.sandbox.answer = "HTTP/1.1 200 " + strings.Repeat("A", 2*maxStatusLine) + "\r\n\r\n"
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
-		resp := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+		f := r.openFlow(t)
+		resp := sendCallback(t, f)
 		if !strings.HasPrefix(resp, "HTTP/1.1 502 ") || strings.Contains(resp, "AAAA") {
 			t.Errorf("browser answer:\n%.300s", resp)
 		}
@@ -635,10 +593,7 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 				time.Sleep(time.Second)
 			}
 		})}
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		start := time.Now()
 		resp := patientBrowse(t, f.Port, callbackReq(f.Port, testState, ""))
 		took := time.Since(start)
@@ -661,10 +616,7 @@ func TestTheSandboxsAnswerNeverReachesTheBrowser(t *testing.T) {
 		r.b.d.Relayer = &relayerFunc{left: 1, dial: answeringPipe(func(c net.Conn) {
 			time.Sleep(relayDeadline + 5*time.Second)
 		})}
-		f := testFlow(t)
-		if err := r.b.Handle(f); err != nil {
-			t.Fatal(err)
-		}
+		f := r.openFlow(t)
 		start := time.Now()
 		resp := patientBrowse(t, f.Port, callbackReq(f.Port, testState, ""))
 		took := time.Since(start)
@@ -733,10 +685,7 @@ func TestOpenBudgetHoldsAcrossEveryWayAFlowEnds(t *testing.T) {
 // opens once the supersede window has passed.
 func TestARefusedOpenLeavesTheLiveFlowAlone(t *testing.T) {
 	r := newRig(t)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	r.clock.Advance(SupersedeAfter + time.Second)
 	r.b.d.Listening = func(int) (bool, error) { return false, nil }
 	if err := r.b.Handle(testFlow(t)); err == nil {
@@ -806,10 +755,7 @@ func TestSandboxChosenTextIsEscapedOnEveryListenerNotice(t *testing.T) {
 			}
 			for i := range mk(Flow{}) {
 				r := newRig(t)
-				f := testFlow(t)
-				if err := r.b.Handle(f); err != nil {
-					t.Fatal(err)
-				}
+				f := r.openFlow(t)
 				c := mk(f)[i]
 				browse(t, f.Port, c.req)
 				out := r.stderr.String()
@@ -835,14 +781,11 @@ func TestASecondCallbackWhileTheFirstIsInFlightIsNotRelayed(t *testing.T) {
 	r := newRig(t)
 	r.sandbox.release = make(chan struct{})
 	r.sandbox.received = make(chan struct{}, 2)
-	f := testFlow(t)
-	if err := r.b.Handle(f); err != nil {
-		t.Fatal(err)
-	}
+	f := r.openFlow(t)
 	first := make(chan string)
-	go func() { first <- browse(t, f.Port, callbackReq(f.Port, testState, "")) }()
+	go func() { first <- sendCallback(t, f) }()
 	<-r.sandbox.received
-	second := browse(t, f.Port, callbackReq(f.Port, testState, ""))
+	second := sendCallback(t, f)
 	if !strings.HasPrefix(second, "HTTP/1.1 404 ") || !strings.Contains(second, "already delivered") {
 		t.Fatalf("the second callback was not refused as already delivered:\n%s", second)
 	}

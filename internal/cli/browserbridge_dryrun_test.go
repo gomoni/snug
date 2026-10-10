@@ -100,21 +100,120 @@ func TestGoldenBrowserBridgeScreens(t *testing.T) {
 	}))
 }
 
+// TestGoldenBrowserBridgeJSON pins the machine document for the bridge as a
+// DIFF against the same selection without it, not as a second whole document.
+// It fails if turning the bridge on moves any line outside
+// json.browser-bridge.diff — seccomp, topology, pasta and every unrelated
+// mount and environment row included — and, through the base pin, if the
+// bridge-off document under this fake host (WAYLAND_DISPLAY set, xdg-open on
+// PATH) stops being exactly json.net.json. The two pins together determine
+// every byte of the bridge-on document.
 func TestGoldenBrowserBridgeJSON(t *testing.T) {
 	// The FIFO's host path carries this process's pid and $XDG_RUNTIME_DIR;
 	// both are pinned so the document is stable.
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	env := newBridgeEnv(false)
-	p := resolveBridge(t, env, true)
-	if err := planBrowserFIFO(p, nil); err != nil {
+	render := func(on bool, pinSeccomp bool) string {
+		t.Helper()
+		p := resolveBridge(t, env, on)
+		if on {
+			if err := planBrowserFIFO(p, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rep := buildReport(env, p, p.BwrapArgs(0, 0), config{json: true}, nil, nil)
+		if pinSeccomp {
+			rep.Seccomp = jsonGoldenSeccomp
+		}
+		var b bytes.Buffer
+		if err := renderJSON(&b, rep); err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(b.String(), runDirName(), "run-PID")
+	}
+
+	// Base pin: without the key, this host renders json.net.json byte for
+	// byte, so the context the diff below applies to is itself a golden.
+	base, err := os.ReadFile(filepath.Join("testdata", "json.net.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	rep := buildReport(env, p, nil, config{}, nil, nil)
-	var b bytes.Buffer
-	if err := renderJSON(&b, rep); err != nil {
-		t.Fatal(err)
+	if off := render(false, true); off != string(base) {
+		t.Fatalf("with the key off, the bridge's fake host no longer renders json.net.json — "+
+			"the diff golden would apply to an unpinned base.\n%s", unifiedLineDiff(string(base), off))
 	}
-	goldenText(t, "json.browser-bridge.json", strings.ReplaceAll(b.String(), runDirName(), "run-PID"))
+
+	// The seccomp block is left REAL on both sides here: it cancels out of
+	// the diff unless the bridge changes it, which is the property.
+	delta := unifiedLineDiff(render(false, false), render(true, false))
+	if !strings.Contains(delta, `"browser_bridge"`) {
+		t.Fatalf("control: the diff has no browser_bridge object — the key never reached the document:\n%s", delta)
+	}
+	goldenText(t, "json.browser-bridge.diff", delta)
+}
+
+// unifiedLineDiff renders the line diff from a to b with two lines of context
+// per hunk and no line numbers, so a hunk does not churn when an unrelated
+// grant moves the lines above it. Equal inputs render "".
+func unifiedLineDiff(a, b string) string {
+	x, y := strings.SplitAfter(a, "\n"), strings.SplitAfter(b, "\n")
+	// lcs[i][j] is the LCS length of x[i:] and y[j:].
+	lcs := make([][]int, len(x)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(y)+1)
+	}
+	for i := len(x) - 1; i >= 0; i-- {
+		for j := len(y) - 1; j >= 0; j-- {
+			if x[i] == y[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	type op struct {
+		tag  byte
+		line string
+	}
+	var ops []op
+	i, j := 0, 0
+	for i < len(x) || j < len(y) {
+		switch {
+		case i < len(x) && j < len(y) && x[i] == y[j]:
+			ops = append(ops, op{' ', x[i]})
+			i, j = i+1, j+1
+		case i < len(x) && (j == len(y) || lcs[i+1][j] >= lcs[i][j+1]):
+			ops = append(ops, op{'-', x[i]})
+			i++
+		default:
+			ops = append(ops, op{'+', y[j]})
+			j++
+		}
+	}
+	const ctx = 2
+	var out strings.Builder
+	last := -1 // index of the last op written
+	for k, o := range ops {
+		if o.tag == ' ' {
+			continue
+		}
+		start := max(k-ctx, last+1)
+		if start > last+1 || last == -1 {
+			out.WriteString("@@\n")
+		}
+		for c := start; c <= k; c++ {
+			out.WriteByte(ops[c].tag)
+			out.WriteString(strings.TrimSuffix(ops[c].line, "\n") + "\n")
+		}
+		last = k
+		// Trailing context, stopping short of the next change so it is
+		// written once.
+		for c := k + 1; c < len(ops) && c <= k+ctx && ops[c].tag == ' '; c++ {
+			out.WriteString(" " + strings.TrimSuffix(ops[c].line, "\n") + "\n")
+			last = c
+		}
+	}
+	return out.String()
 }
 
 // TestBrowserBridgeRowsAreAbsentWhenTheKeyIsOff pins the negative: a

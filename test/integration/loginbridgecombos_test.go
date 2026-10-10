@@ -3,16 +3,13 @@
 package integration
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,174 +20,7 @@ import (
 // Second hardening round for the login bridge: the bridge together with the
 // other holes a selection can carry (an http door, an ssh-agent proxy, a second
 // run), the dry run measured against a real run, and what a run leaves on the
-// host. Fixtures are the ones loginbridge_test.go builds.
-
-// profilesDir is the user profile directory this fixture's XDG_CONFIG_HOME
-// names, the one newLoginFixture wrote login.toml into.
-func (f *loginFixture) profilesDir(t *testing.T) string {
-	t.Helper()
-	cfg := ""
-	for _, e := range f.env {
-		if v, ok := strings.CutPrefix(e, "XDG_CONFIG_HOME="); ok {
-			cfg = v
-		}
-	}
-	if cfg == "" {
-		t.Fatal("the fixture environment names no XDG_CONFIG_HOME")
-	}
-	return filepath.Join(cfg, "snug", "profiles.d")
-}
-
-func (f *loginFixture) addProfile(t *testing.T, name, toml string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.profilesDir(t), name+".toml"), []byte(toml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// startWith is start with more profiles selected and a payload prelude, run by
-// the same bash before ./loginprobe.
-func (f *loginFixture) startWith(t *testing.T, extraProfiles []string, prelude string, probeArgs ...string) *bgSandbox {
-	t.Helper()
-	args := append([]string{}, loginBridgeArgs...)
-	for _, p := range extraProfiles {
-		args = append(args, "-p", p)
-	}
-	return startBgSandbox(t, f.env, args, f.proj, prelude+"\n./loginprobe "+strings.Join(probeArgs, " "))
-}
-
-// loginRuntimeDir is a short XDG_RUNTIME_DIR the test owns, so the run
-// directory it reads is this test's alone.
-func loginRuntimeDir(t *testing.T) string {
-	t.Helper()
-	d, err := os.MkdirTemp("", "snug-lbrt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(d) })
-	return d
-}
-
-// loginCount counts the lines of out that start with prefix. It is not
-// strings.Count: "DOOR-RECEIVED " contains "RECEIVED ".
-func loginCount(out, prefix string) int {
-	n := 0
-	for _, l := range strings.Split(out, "\n") {
-		if strings.HasPrefix(l, prefix) {
-			n++
-		}
-	}
-	return n
-}
-
-// loginHostRequest plays the human's browser from the host: one request on
-// 127.0.0.1:port with Host localhost:port, as the test's own uid, and the whole
-// answer back. A refused connection is the error.
-func loginHostRequest(t *testing.T, port int, target string) (string, error) {
-	t.Helper()
-	c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), 3*time.Second)
-	if err != nil {
-		return "", err
-	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(25 * time.Second))
-	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: localhost:%d\r\nConnection: close\r\n\r\n", target, port)
-	b, err := io.ReadAll(c)
-	if err != nil && len(b) == 0 {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func loginCallbackTarget(code, state string) string {
-	return "/callback?code=" + code + "&state=" + state
-}
-
-// loginDry is the part of `snug --dry-run --json` these tests read.
-type loginDry struct {
-	Mounts []struct {
-		Guest     string `json:"guest"`
-		Kind      string `json:"kind"`
-		Access    string `json:"access"`
-		RunScoped bool   `json:"run_scoped"`
-	} `json:"mounts"`
-	Bwrap struct {
-		Argv []string `json:"argv"`
-	} `json:"bwrap"`
-	Pasta struct {
-		Argv []string `json:"argv"`
-	} `json:"pasta"`
-	BrowserBridge *struct {
-		Login []string `json:"login"`
-	} `json:"browser_bridge"`
-}
-
-func loginDryRun(t *testing.T, env []string, proj string, args ...string) loginDry {
-	t.Helper()
-	cmd := exec.Command(snugBin, append(append([]string{"--dry-run", "--json"}, args...), proj)...)
-	cmd.Env = env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("snug --dry-run --json %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	var d loginDry
-	if err := json.Unmarshal(stdout.Bytes(), &d); err != nil {
-		t.Fatalf("the dry-run document is not JSON (%v):\n%s", err, stdout.String())
-	}
-	if len(d.Bwrap.Argv) == 0 {
-		t.Fatalf("the dry-run document carries no bwrap argv, so every comparison below would be "+
-			"against nothing:\n%s", stdout.String())
-	}
-	return d
-}
-
-var (
-	loginRunDirRE  = regexp.MustCompile(`run-[0-9]+`)
-	loginDataFDRE  = regexp.MustCompile(`(--(?:ro-)?bind-data|--file) [0-9]+ `)
-	loginProfileRE = regexp.MustCompile(`^--setenv SNUG_PROFILES (\S+)$`)
-)
-
-// loginArgvOps splits a bwrap argv into one string per operation (a flag and
-// its operands, with a --perms or --size modifier kept with the operation it
-// modifies) and normalises the three things that differ between two dry runs
-// of the same policy: the pid in the run directory, the number of a data
-// descriptor, and the profile list. The profile list is returned apart so the
-// caller can say what it is.
-func loginArgvOps(argv []string) (ops []string, profiles string) {
-	var cur []string
-	var raw []string
-	flush := func() {
-		if len(cur) > 0 {
-			raw = append(raw, strings.Join(cur, " "))
-			cur = nil
-		}
-	}
-	for _, tok := range argv {
-		if strings.HasPrefix(tok, "--") {
-			flush()
-		}
-		cur = append(cur, tok)
-	}
-	flush()
-	var mod string
-	for _, op := range raw {
-		if strings.HasPrefix(op, "--perms ") || strings.HasPrefix(op, "--size ") {
-			mod += op + " "
-			continue
-		}
-		op = mod + op
-		mod = ""
-		op = loginRunDirRE.ReplaceAllString(op, "run-N")
-		op = loginDataFDRE.ReplaceAllString(op, "$1 <fd> ")
-		if m := loginProfileRE.FindStringSubmatch(op); m != nil {
-			profiles = m[1]
-			op = "--setenv SNUG_PROFILES <list>"
-		}
-		ops = append(ops, op)
-	}
-	return ops, profiles
-}
+// host. Fixtures and helpers are in loginbridgehelpers_test.go.
 
 // loginRemoveOnce removes the first occurrence of want from ops, or fails.
 func loginRemoveOnce(t *testing.T, ops []string, want string) []string {
@@ -223,22 +53,21 @@ func loginRemoveOnce(t *testing.T, ops []string, want string) []string {
 func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
-	rt := loginRuntimeDir(t)
-	f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
-	f.addProfile(t, "door", "[profile.door]\ndescription = \"one http door\"\nlisten_names = [\"web\"]\n")
+	f, rt := newLoginFixtureRT(t, "hold")
+	f.addProfile(t, "door", loginDoorProfile)
 
 	// The dry run first: the door's argv is the door's argv with or without the
 	// bridge, and the bridge adds its three operations and nothing else.
-	base := []string{"-p", "@claude", "-p", "@net", "-p", "door"}
+	base := append(append([]string{}, loginKeylessArgs...), "-p", "door")
 	without := loginDryRun(t, f.env, f.proj, base...)
 	with := loginDryRun(t, f.env, f.proj, append(append([]string{}, base...), "-p", "login")...)
 	wOps, wProf := loginArgvOps(without.Bwrap.Argv)
 	bOps, bProf := loginArgvOps(with.Bwrap.Argv)
-	if !loginHasOp(wOps, "--perms 0755 --ro-bind-data <fd> /snug/bin/http-door-handover") {
+	if !slices.Contains(wOps, "--perms 0755 --ro-bind-data <fd> /snug/bin/http-door-handover") {
 		t.Fatalf("control: the door's handover script is not in the argv without the bridge, so "+
 			"'the door is unchanged' would be about an argv with no door:\n%s", strings.Join(wOps, "\n"))
 	}
-	if !loginHasOp(wOps, "--setenv LISTEN_FDS 1") && !strings.Contains(strings.Join(wOps, "\n"), "LISTEN_FDS") {
+	if !slices.Contains(wOps, "--setenv LISTEN_FDS 1") && !strings.Contains(strings.Join(wOps, "\n"), "LISTEN_FDS") {
 		t.Fatalf("control: no LISTEN_FDS in the door's argv:\n%s", strings.Join(wOps, "\n"))
 	}
 	rest := bOps
@@ -279,9 +108,7 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	waitForLogLine(t, s, "SHIM-RC", 20*time.Second)
 	out := waitForLogLine(t, s, "DOOR-READY web", 10*time.Second)
 	port := loginPort(t, out)
-	if !loginWaitPort(t, port, true, 10*time.Second) {
-		t.Fatalf("precondition: no flow holds localhost:%d:\n%s", port, s.log())
-	}
+	requireLoginHeld(t, s, port, false)
 
 	// The door carries traffic while the flow is pending.
 	sock := filepath.Join(s.runDir(rt), "door-web.sock")
@@ -333,8 +160,7 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	if n := loginCount(log, "RECEIVED "); n != 1 {
 		t.Errorf("the sandbox's own listener received %d requests, want exactly the one relayed:\n%s", n, log)
 	}
-	raw, _ := loginField(log, "RECEIVED")
-	got, _ := strconv.Unquote(raw)
+	got := loginReceived(t, log)
 	want := fmt.Sprintf("GET /callback?code=CODE-A_1&state=%s HTTP/1.1\r\nHost: localhost:%d\r\nConnection: close\r\n\r\n",
 		loginState, port)
 	if got != want {
@@ -347,23 +173,11 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 		t.Errorf("a callback reached the door's socket: %s", d)
 	}
 
-	handToPayload(t, f.proj, "release", "x")
-	if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-		t.Fatalf("snug exited %d:\n%s", code, s.log())
-	}
+	f.releaseOK(t, s)
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Errorf("the door socket %s survived the run (stat: %v)", sock, err)
 	}
-	requireLoginRefused(t, "tcp4", fmt.Sprintf("127.0.0.1:%d", port), "after the run")
-}
-
-func loginHasOp(ops []string, want string) bool {
-	for _, op := range ops {
-		if op == want {
-			return true
-		}
-	}
-	return false
+	requireLoginPortClosed(t, port, "after the run")
 }
 
 // TestTwoRunsWithTheBridgeNeverShareAFlow fails if two concurrent snug runs
@@ -393,11 +207,8 @@ func TestTwoRunsWithTheBridgeNeverShareAFlow(t *testing.T) {
 	prelude := `echo "FIFO-SRC $(awk '$5 == "/snug/browser.fifo" {print $4}' /proc/self/mountinfo)"`
 
 	a := fA.startWith(t, nil, prelude, "release=release", "wait=40s")
-	outA := waitForLogLine(t, a, "SHIM-RC", 20*time.Second)
-	portP := loginPort(t, outA)
-	if !loginWaitPort(t, portP, true, 10*time.Second) {
-		t.Fatalf("precondition: run A holds no localhost:%d:\n%s", portP, a.log())
-	}
+	portP := loginPort(t, waitForLogLine(t, a, "SHIM-RC", 20*time.Second))
+	requireLoginHeld(t, a, portP, false)
 
 	// Run B names A's port. Its own kernel accepts that: the port is only its
 	// own loopback's.
@@ -434,14 +245,7 @@ func TestTwoRunsWithTheBridgeNeverShareAFlow(t *testing.T) {
 	if !loginWaitPort(t, portQ, true, 10*time.Second) {
 		t.Fatalf("run B's second open did not hold localhost:%d after the first was refused:\n%s", portQ, b.log())
 	}
-	// Polled, not read once: the bridge binds the port BEFORE it starts the
-	// opener, so the wait above can succeed while the opener's record is
-	// still unwritten.
-	for deadline := time.Now().Add(5 * time.Second); loginRunCount(t, fB.rec) == 0; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			break
-		}
-	}
+	loginWaitOpenerRan(t, fB.rec, 5*time.Second)
 	argvB, _ := loginRec(t, fB.rec, "argv")
 	if !strings.Contains(argvB, fmt.Sprintf("localhost%%3A%d%%2Fcallback", portQ)) || loginRunCount(t, fB.rec) != 1 {
 		t.Errorf("run B's one open did not carry its second port %d (runs=%d):\n%s", portQ, loginRunCount(t, fB.rec), argvB)
@@ -511,15 +315,8 @@ func TestTwoRunsWithTheBridgeNeverShareAFlow(t *testing.T) {
 			t.Errorf("run %s's listener received %s, want its own code and state", c.name, got)
 		}
 	}
-	for _, c := range []struct {
-		s *bgSandbox
-		f *loginFixture
-	}{{a, fA}, {b, fB}} {
-		handToPayload(t, c.f.proj, "release", "x")
-		if code := loginWaitExit(t, c.s, 20*time.Second); code != 0 {
-			t.Errorf("snug exited %d:\n%s", code, c.s.log())
-		}
-	}
+	fA.releaseOK(t, a)
+	fB.releaseOK(t, b)
 }
 
 // TestTheLoginBridgeBesideTheSSHAgentProxy fails if selecting
@@ -534,8 +331,7 @@ func TestTheLoginBridgeBesideTheSSHAgentProxy(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
 	pub, agent := sshAgentAndKey(t)
-	rt := loginRuntimeDir(t)
-	f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt, "SSH_AUTH_SOCK="+agent)
+	f, rt := newLoginFixtureRT(t, "hold", "SSH_AUTH_SOCK="+agent)
 	f.addProfile(t, "pinned", "[profile.pinned]\n"+
 		"description = \"one throwaway key\"\n"+
 		"[profile.pinned.identity.ssh]\n"+
@@ -550,9 +346,7 @@ echo "AGENT-SRC $(awk -v p="$SSH_AUTH_SOCK" '$5 == p {print $4}' /proc/self/moun
 	s := f.startWith(t, []string{"pinned"}, prelude, "release=release", "wait=30s")
 	out := waitForLogLine(t, s, "SHIM-RC", 20*time.Second)
 	port := loginPort(t, out)
-	if !loginWaitPort(t, port, true, 10*time.Second) {
-		t.Fatalf("precondition: no flow holds localhost:%d:\n%s", port, s.log())
-	}
+	requireLoginHeld(t, s, port, false)
 
 	agentPath, ok := loginField(out, "AGENT-PATH")
 	if !ok || agentPath == "" {
@@ -599,10 +393,7 @@ echo "AGENT-SRC $(awk -v p="$SSH_AUTH_SOCK" '$5 == p {print $4}' /proc/self/moun
 	if err != nil || !strings.Contains(resp, "answered HTTP 302") {
 		t.Errorf("with the agent proxy selected the callback was not relayed: %q (err %v)", firstLine(resp), err)
 	}
-	handToPayload(t, f.proj, "release", "x")
-	if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-		t.Fatalf("snug exited %d:\n%s", code, s.log())
-	}
+	f.releaseOK(t, s)
 }
 
 // loginMountpoints parses the mount points out of "MP <path>" lines.
@@ -661,13 +452,12 @@ func TestDryRunNamesTheMountsAndEnvironmentARealRunHas(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"claude net login", []string{"-p", "@claude", "-p", "@net", "-p", "login"}},
-		{"claude net login door", []string{"-p", "@claude", "-p", "@net", "-p", "login", "-p", "door"}},
+		{"claude net login", loginBridgeArgs},
+		{"claude net login door", append(append([]string{}, loginBridgeArgs...), "-p", "door")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rt := loginRuntimeDir(t)
-			f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
-			f.addProfile(t, "door", "[profile.door]\ndescription = \"one http door\"\nlisten_names = [\"web\"]\n")
+			f, rt := newLoginFixtureRT(t, "hold")
+			f.addProfile(t, "door", loginDoorProfile)
 
 			dry := loginDryRun(t, f.env, f.proj, tc.args...)
 			ops, _ := loginArgvOps(dry.Bwrap.Argv)
@@ -711,7 +501,7 @@ echo "BROWSER-IS $BROWSER"
 			}
 
 			fifoWant := "--bind " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo"
-			if !loginHasOp(ops, fifoWant) {
+			if !slices.Contains(ops, fifoWant) {
 				t.Errorf("--dry-run's argv lacks %q", fifoWant)
 			}
 			src, _ := loginField(r.out, "FIFO-SRC")
@@ -721,13 +511,13 @@ echo "BROWSER-IS $BROWSER"
 			if opts, _ := loginField(r.out, "SHIM-MOUNT"); !strings.HasPrefix(opts, "ro,") {
 				t.Errorf("inside, the shim mount options are %q, want read-only as --dry-run says", opts)
 			}
-			if !loginHasOp(ops, "--perms 0755 --ro-bind-data <fd> /snug/bin/snug-browser") {
+			if !slices.Contains(ops, "--perms 0755 --ro-bind-data <fd> /snug/bin/snug-browser") {
 				t.Errorf("--dry-run's argv lacks the shim's read-only data mount")
 			}
 			if v, _ := loginField(r.out, "BROWSER-IS"); v != "/snug/bin/snug-browser" {
 				t.Errorf("BROWSER inside is %q", v)
 			}
-			if !loginHasOp(ops, "--setenv BROWSER /snug/bin/snug-browser") {
+			if !slices.Contains(ops, "--setenv BROWSER /snug/bin/snug-browser") {
 				t.Errorf("--dry-run's argv lacks BROWSER")
 			}
 			if dry.BrowserBridge == nil || !reflect.DeepEqual(dry.BrowserBridge.Login, []string{"claude"}) {
@@ -747,8 +537,7 @@ func TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireSandbox(t)
 	f := newLoginFixture(t, "hold")
-	off := []string{"-p", "@claude", "-p", "@net"}
-	on := append(append([]string{}, off...), "-p", "login")
+	off, on := loginKeylessArgs, loginBridgeArgs
 	for _, c := range []struct {
 		flag string
 		key  string
@@ -780,63 +569,8 @@ func TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn(t *testing.T) {
 	}
 }
 
-// loginHostLeftovers is what a finished run leaves in the places the bridge
-// could add to: the entries of $XDG_RUNTIME_DIR/snug, and the per-target
-// records in the uid-derived directory, with pids and hashes folded away so a
-// keyed and a keyless run compare.
-func loginHostLeftovers(t *testing.T, rt, proj string) string {
-	t.Helper()
-	var names []string
-	if _, err := os.Stat(filepath.Join(rt, "snug")); err == nil {
-		for _, n := range loginDirNames(t, filepath.Join(rt, "snug")) {
-			names = append(names, loginRunDirRE.ReplaceAllString(n, "run-N"))
-		}
-	}
-	for _, ext := range []string{".json", ".lock"} {
-		if m, _ := filepath.Glob(targetRecordGlob(t, uidRuntimeSnugDir(t), proj, ext)); len(m) > 0 {
-			names = append(names, fmt.Sprintf("%d target %s records", len(m), ext))
-		}
-	}
-	return strings.Join(names, ",")
-}
-
-// loginKeylessBaseline runs the same shape of run without the key, to the same
-// exit, and returns what it leaves. It is the definition of "nothing the bridge
-// added" the keyed run is measured against.
-func loginKeylessBaseline(t *testing.T, script string, wantCode int) string {
-	t.Helper()
-	rt := loginRuntimeDir(t)
-	f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
-	r := runEnv(t, f.env, []string{"-p", "@claude", "-p", "@net"}, f.proj, script).mustRun(t)
-	if r.code != wantCode {
-		t.Fatalf("control: the keyless baseline exited %d, want %d:\n%s", r.code, wantCode, r.out)
-	}
-	return loginHostLeftovers(t, rt, f.proj)
-}
-
 func loginPIDAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
-}
-
-// loginHeldFlowIn starts the probe in f's run, waits for the flow to hold the
-// host port and returns what the exit checks need. The probe's argv carries a
-// token the host can search for; the control is that the search finds the run
-// while it lives.
-func loginHeldFlowIn(t *testing.T, f *loginFixture, payloadAfter string, probeArgs ...string) (*bgSandbox, int, string) {
-	t.Helper()
-	tok := orphanToken()
-	args := append([]string{"token=" + tok, "release=release", "wait=30s"}, probeArgs...)
-	s := startBgSandbox(t, f.env, loginBridgeArgs, f.proj, "./loginprobe "+strings.Join(args, " ")+"\n"+payloadAfter)
-	out := waitForLogLine(t, s, "SHIM-RC", 20*time.Second)
-	port := loginPort(t, out)
-	if !loginWaitPort(t, port, true, 10*time.Second) {
-		t.Fatalf("precondition: no flow holds localhost:%d:\n%s", port, s.log())
-	}
-	if live := pidsWithToken(tok, s.pid()); len(live) == 0 {
-		t.Fatalf("precondition: the token sweep finds no process of this run besides snug, so a clean "+
-			"sweep afterwards would prove nothing:\n%s", s.log())
-	}
-	return s, port, tok
 }
 
 // TestAfterANormalExitTheHostHoldsNothingOfTheRun fails if a run that exits
@@ -861,17 +595,13 @@ func TestAfterANormalExitTheHostHoldsNothingOfTheRun(t *testing.T) {
 	baseline := loginKeylessBaseline(t, "true", 0)
 
 	t.Run("completed flow", func(t *testing.T) {
-		rt := loginRuntimeDir(t)
-		f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
+		f, rt := newLoginFixtureRT(t, "hold")
 		s, port, tok := loginHeldFlowIn(t, f, "")
 		resp, err := loginHostRequest(t, port, loginCallbackTarget("CODE-E_1", loginState))
 		if err != nil || !strings.Contains(resp, "answered HTTP 302") {
 			t.Fatalf("control: the callback was not relayed: %q (%v)\n%s", firstLine(resp), err, s.log())
 		}
-		handToPayload(t, f.proj, "release", "x")
-		if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-			t.Fatalf("snug exited %d:\n%s", code, s.log())
-		}
+		f.releaseOK(t, s)
 		loginAssertRunGone(t, port, tok, "a normal exit")
 		if got := loginHostLeftovers(t, rt, f.proj); got != baseline {
 			t.Errorf("a normal exit with the bridge leaves %q, the keyless run leaves %q", got, baseline)
@@ -879,17 +609,15 @@ func TestAfterANormalExitTheHostHoldsNothingOfTheRun(t *testing.T) {
 	})
 
 	t.Run("pending flow and a lingering opener", func(t *testing.T) {
-		rt := loginRuntimeDir(t)
-		f := newLoginFixture(t, "linger", "XDG_RUNTIME_DIR="+rt, "FAKEOPENER_LINGER=8s")
+		f, rt := newLoginFixtureRT(t, "linger", "FAKEOPENER_LINGER=8s")
 		s, port, tok := loginHeldFlowIn(t, f, "", "serve=0")
-		if _, ok := loginRec(t, f.rec, "pid"); !ok {
-			for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-				if _, ok = loginRec(t, f.rec, "pid"); ok {
-					break
-				}
+		var raw string
+		var ok bool
+		for end := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			if raw, ok = loginRec(t, f.rec, "pid"); ok || time.Now().After(end) {
+				break
 			}
 		}
-		raw, ok := loginRec(t, f.rec, "pid")
 		if !ok {
 			t.Fatalf("control: the fake opener never recorded its pid:\n%s", s.log())
 		}
@@ -897,10 +625,7 @@ func TestAfterANormalExitTheHostHoldsNothingOfTheRun(t *testing.T) {
 		if err != nil || !loginPIDAlive(opener) {
 			t.Fatalf("control: the fake opener %q is not alive while the flow is pending (%v)", raw, err)
 		}
-		handToPayload(t, f.proj, "release", "x")
-		if code := loginWaitExit(t, s, 20*time.Second); code != 0 {
-			t.Fatalf("snug exited %d:\n%s", code, s.log())
-		}
+		f.releaseOK(t, s)
 		stillThere := loginPIDAlive(opener)
 		t.Logf("after snug exited, the lingering opener (pid %d) is %s", opener,
 			map[bool]string{true: "still running (detached, as designed)", false: "gone"}[stillThere])
@@ -933,22 +658,18 @@ func TestAfterAPayloadCrashTheHostHoldsNothingOfTheRun(t *testing.T) {
 	budget(t, 90*time.Second)
 	requireLoginBridgeEnv(t)
 	for _, tc := range []struct {
-		name   string
-		tail   string
-		want   int
-		anyBad bool
+		name string
+		tail string
+		want int
 	}{
-		{"exit 7", "exit 7", 7, false},
-		{"SIGSEGV", "kill -SEGV $$", 139, true},
+		{"exit 7", "exit 7", 7},
+		{"SIGSEGV", "kill -SEGV $$", 139},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			baseline := loginKeylessBaseline(t, tc.tail, tc.want)
-			rt := loginRuntimeDir(t)
-			f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
+			f, rt := newLoginFixtureRT(t, "hold")
 			s, port, tok := loginHeldFlowIn(t, f, tc.tail, "serve=0")
-			handToPayload(t, f.proj, "release", "x")
-			code := loginWaitExit(t, s, 20*time.Second)
-			if code != tc.want {
+			if code := f.release(t, s); code != tc.want {
 				t.Errorf("snug exited %d for a payload that did %q, want %d:\n%s", code, tc.tail, tc.want, s.log())
 			}
 			loginAssertRunGone(t, port, tok, "a payload crash ("+tc.name+")")
@@ -991,8 +712,7 @@ func loginProcsInNetns(ino string) []int {
 func TestAfterSIGKILLOfSnugNoHelperOrNamespaceOfTheRunSurvives(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
-	rt := loginRuntimeDir(t)
-	f := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
+	f, rt := newLoginFixtureRT(t, "hold")
 	pastaBefore := pastaPIDs()
 
 	s, port, tok := loginHeldFlowIn(t, f, "", "serve=0")
@@ -1021,29 +741,19 @@ func TestAfterSIGKILLOfSnugNoHelperOrNamespaceOfTheRunSurvives(t *testing.T) {
 	s.proc.wait()
 
 	loginAssertRunGone(t, port, tok, "SIGKILL of snug")
-	var left []int
-	for end := time.Now().Add(8 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		left = nil
+	left := loginPollUntilNone(8*time.Second, func() (left []int) {
 		for _, p := range pastaDuring {
 			if _, err := os.Stat(fmt.Sprintf("/proc/%d", p)); err == nil {
 				left = append(left, p)
 			}
 		}
-		if len(left) == 0 {
-			break
-		}
-	}
+		return left
+	})
 	if len(left) != 0 {
 		defer killAll(left)
 		t.Errorf("pasta of the run survived SIGKILL of snug: %s", describePIDs(left))
 	}
-	var inNS []int
-	for end := time.Now().Add(8 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		if inNS = loginProcsInNetns(ino); len(inNS) == 0 {
-			break
-		}
-	}
-	if len(inNS) != 0 {
+	if inNS := loginPollUntilNone(8*time.Second, func() []int { return loginProcsInNetns(ino) }); len(inNS) != 0 {
 		defer killAll(inNS)
 		t.Errorf("%d process(es) still hold the run's network namespace %s: %s", len(inNS), ino, describePIDs(inNS))
 	}
@@ -1055,12 +765,5 @@ func TestAfterSIGKILLOfSnugNoHelperOrNamespaceOfTheRunSurvives(t *testing.T) {
 			"normal exit prove nothing", got)
 	}
 
-	next := newLoginFixture(t, "hold", "XDG_RUNTIME_DIR="+rt)
-	r := runEnv(t, next.env, loginBridgeArgs, next.proj, "true").mustRun(t)
-	if r.code != 0 {
-		t.Fatalf("the follow-up run failed (%d):\n%s", r.code, r.out)
-	}
-	if _, err := os.Stat(s.runDir(rt)); !os.IsNotExist(err) {
-		t.Errorf("the SIGKILLed run's directory %s survived the next run (stat: %v)", s.runDir(rt), err)
-	}
+	loginAssertNextRunSweeps(t, rt, s.runDir(rt))
 }
