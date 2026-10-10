@@ -83,7 +83,9 @@ type Profile struct {
 	// after the sandbox is already running.
 	ListenNames []string
 
-	// Network is "isolated" | "egress", joined by max. There is
+	// Network is "isolated" | "egress", joined by max. "isolated" is the floor:
+	// it is what an absent key means and what String() spells, and the parser
+	// refuses it in a profile because it can have no effect. There is
 	// deliberately no "offline": offline is the ABSENCE of a net profile, so it
 	// cannot be re-enabled by adding one.
 	Network string
@@ -100,6 +102,8 @@ type Profile struct {
 	NSS bool
 
 	// Podman is "off" | "socket" | "build", joined by max like every other scalar.
+	// "off" is the floor: an absent key means it, and the parser refuses it
+	// written.
 	Podman string
 
 	// Login names the providers whose sign-in the login bridge completes
@@ -107,7 +111,8 @@ type Profile struct {
 	// LoginSet: it is an ordinary key, not a builtin.
 	Login []string
 
-	// Git is "off" | "extract", joined by max. "extract" reconstructs the
+	// Git is "off" | "extract", joined by max. "off" is the floor: an absent key
+	// means it, and the parser refuses it written. "extract" reconstructs the
 	// sandbox's git config from the host's — whitelisted keys only, never a
 	// bind. See gitextract.go for why binding the file is the wrong shape.
 	Git string

@@ -78,7 +78,7 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 		{
 			name: "network",
 			body: "[profile.p]\nnetwork = \"bridge\"\n",
-			says: []string{"bridge", "isolated", "egress"},
+			says: []string{"bridge", "egress"},
 		},
 		{
 			name: "identity.ssh.agent",

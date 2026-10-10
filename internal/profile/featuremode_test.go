@@ -14,11 +14,11 @@ import (
 // identity.ssh.agent.
 func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 	for _, tc := range []struct{ key, value, accepted string }{
-		{"podman", "sockets", "off, socket or build"},
-		{"podman", "Socket", "off, socket or build"},
-		{"git", "extracted", "extract or off"},
-		{"network", "host", "isolated or egress"},
-		{"network", "egress ", "isolated or egress"},
+		{"podman", "sockets", "socket or build"},
+		{"podman", "Socket", "socket or build"},
+		{"git", "extracted", "extract"},
+		{"network", "host", "egress"},
+		{"network", "egress ", "egress"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			_, err := parse([]byte("[profile.x]\n"+tc.key+" = "+strconv.Quote(tc.value)+"\n"), "mine.toml", true)
@@ -52,12 +52,12 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 		})
 	}
 
-	// POSITIVE CONTROL: every accepted spelling parses, the no-ops included,
-	// and so does leaving each key out. Without it the test above passes on a
-	// parse that refuses every value.
+	// POSITIVE CONTROL: every accepted spelling parses, and so does leaving
+	// each key out. Without it the test above passes on a parse that refuses
+	// every value. The floors are refused and graded by
+	// policy.TestProfileFloorValuesAreRefused.
 	for _, body := range []string{
-		"", `podman = "off"`, `podman = "socket"`, `podman = "build"`,
-		`git = "off"`, `git = "extract"`, `network = "isolated"`, `network = "egress"`,
+		"", `podman = "socket"`, `podman = "build"`, `git = "extract"`, `network = "egress"`,
 		`login = []`, `login = ["claude"]`, `login = ["claude", "claude"]`,
 	} {
 		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err != nil {

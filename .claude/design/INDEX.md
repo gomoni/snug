@@ -144,7 +144,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 
 Keys that would only ever *weaken* the sandbox in a way profiles must not control — notably `seccomp` — **are not profile keys at all**. `--no-seccomp` is a CLI flag only. A human may weaken; a file may not.
 
-`network = "isolated"` is therefore a no-op, and there is deliberately no `network = "offline"`. **Offline is the absence of the `@net` profile.** If you write `include = ["@net", "@net-offline"]`, the result is `@net` — and that is correct, not a bug: you asked for the union of two grant sets, one of which was empty. To be offline, do not include `@net`.
+**The floor of a max-joined key is display-only.** `network = "isolated"`, `podman = "off"` and `git = "off"` are refused by the profile parser (`git = "off" changes nothing: "off" is the default and a profile can only add. Remove the line.`), because the line can have no effect; an absent key already means the floor, and the floor word still appears in `profile show`, `--dry-run` and JSON. There is deliberately no `network = "offline"`. **Offline is the absence of the `@net` profile.** If you write `include = ["@net", "@net-offline"]`, the result is `@net` — and that is correct, not a bug: you asked for the union of two grant sets, one of which was empty. To be offline, do not include `@net`.
 
 ### 2.4 Monotonicity by construction — the actual argument
 

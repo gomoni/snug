@@ -49,14 +49,19 @@ func (m GitMode) String() string {
 	return "off"
 }
 
+// ParseGitMode parses a profile's `git` value. An empty string is the absent
+// key and means the floor; the written word "off" is refused, as is anything
+// unknown.
 func ParseGitMode(s string) (GitMode, error) {
 	switch s {
-	case "", "off":
+	case "":
 		return GitOff, nil
+	case "off":
+		return GitOff, errFloorValue("git", s)
 	case "extract":
 		return GitExtract, nil
 	default:
-		return GitOff, fmt.Errorf("unknown git mode %q (want extract or off)", s)
+		return GitOff, fmt.Errorf("unknown git mode %q (want extract)", s)
 	}
 }
 
