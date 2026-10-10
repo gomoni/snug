@@ -1340,6 +1340,8 @@ func TestGoldenRefusals(t *testing.T) {
 		{"relocated_lstat_error", refusalRelocatedLstatError},
 		{"relocated_link_budget_exceeded", refusalRelocatedLinkBudgetExceeded},
 		{"relocated_after_me", refusalRelocatedAfterMe},
+		{"relocated_into_snugs_own_tree", refusalRelocatedIntoSnugsOwnTree},
+		{"profile_symlink_into_snugs_own_tree", func(t testing.TB) error { return resolveLinkGrant("/proc", "/usr:/p/x") }},
 
 		// the name grammar (§2.3): name ::= [A-Za-z_][A-Za-z0-9_]*
 		{"env_name_empty", refusalEnv(EnvGrants{Set: map[string]string{"": "x"}})},

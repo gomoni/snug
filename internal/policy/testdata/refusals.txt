@@ -583,6 +583,19 @@ profile grantee puts a bind of /irrelevant at /G/a/b, and resolving where it lan
        so it does not exist yet when bwrap creates this mountpoint.
        snug cannot tell where this destination lands, so it refuses rather than guess.
 
+== relocated_into_snugs_own_tree ==
+profile evil puts a bind of /usr at /G/sub/mnt, but that is
+       not where it lands.
+       profile evil grants ro on /G (the host's /cover), and /cover/sub on the host
+       is a symlink to "/proc". bwrap resolves a mount destination INSIDE the sandbox, so it
+       creates the mountpoint at
+       /proc/mnt instead — inside /proc, which is snug's own and no profile may mount over.
+       Fix: /proc is snug's own, so no grant may be made there either. Remove the
+       grant, or change the symlink so it lands somewhere a grant may go.
+
+== profile_symlink_into_snugs_own_tree ==
+grant /p/x (from l) resolves through the symlink /p -> /proc, landing at /proc/x, at or inside /proc, which is snug's own; no grant may be made there. Remove the grant, or point the symlink somewhere else
+
 == env_name_empty ==
 environ.set has an entry with an empty name. A variable with no name cannot be set; delete the line
 
