@@ -78,7 +78,10 @@ import (
 // and nothing stopped some other string being passed where this one was
 // meant. The checks were real; nothing carried them forward. A type does.
 func openRuntimeDir() (*runtimeDir, error) {
-	base, snugName := runtimeBase()
+	base, snugName, err := canonicalRuntimeBase()
+	if err != nil {
+		return nil, err
+	}
 
 	root, err := os.OpenRoot(base)
 	if err != nil {
@@ -207,7 +210,10 @@ func plannedSocket(name string) (string, error) {
 	if err := checkSocketName(name); err != nil {
 		return "", err
 	}
-	base, snugName := runtimeBase()
+	base, snugName, err := canonicalRuntimeBase()
+	if err != nil {
+		return "", err
+	}
 	return filepath.Join(base, snugName, runDirName(), name), nil
 }
 
@@ -268,6 +274,22 @@ func runtimeDirCandidates() []string {
 		}
 	}
 	return out
+}
+
+// canonicalRuntimeBase is runtimeBase with the base run through
+// EvalSymlinks. Every socket under it is bound into the sandbox by descriptor
+// (policy.BindSocket), and that open refuses a link at any component, so a
+// $XDG_RUNTIME_DIR that is itself reached through a link (a /run -> /var/run
+// host, say) has to be spelled by its target here, once, for the real run and
+// for --dry-run alike.
+func canonicalRuntimeBase() (base, snugName string, err error) {
+	base, snugName = runtimeBase()
+	real, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", "", fmt.Errorf("runtime directory: resolving %s: %w - snug keeps its per-run "+
+			"state there; check that it exists and is a directory you own with mode 0700", base, err)
+	}
+	return real, snugName, nil
 }
 
 // runtimeDirs holds the *runtimeDir this process has claimed for each run

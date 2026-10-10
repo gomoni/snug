@@ -83,6 +83,15 @@ const (
 	// child, which is why the seal is not optional (see internal/fdseal).
 	fdSandboxBase = 6
 
+	// fdNetSock, fdNetlinkSock and fdNetnsN sit at 250..252 because the
+	// pass-through block carries one descriptor per bind source on top of
+	// everything else, so the budget below it has to scale with the number of
+	// grants. The numbers are dup3'd onto, so they only exist if the process's
+	// RLIMIT_NOFILE soft limit is above them: this relies on the Go runtime
+	// raising the soft limit to the hard limit at startup (syscall/rlimit.go),
+	// and on a host whose hard limit is at least 253. Below that dup3 fails
+	// loudly, naming the number; there is no fallback to lower ones.
+	//
 	// fdNetSock is an AF_INET datagram socket CREATED INSIDE N, kept for the
 	// whole run so the stage can answer "is pasta's interface up in N?" after it
 	// has left N.
@@ -98,7 +107,7 @@ const (
 	// started BEFORE pasta and parked until pasta came up. That parking is what
 	// a SIGKILL of snug could release early. One descriptor removes the whole
 	// ordering constraint.
-	fdNetSock = 66
+	fdNetSock = 250
 
 	// fdNetlinkSock is an AF_NETLINK/NETLINK_ROUTE socket CREATED INSIDE N,
 	// alongside fdNetSock and for the same reason: a socket's namespace is
@@ -108,7 +117,7 @@ const (
 	// as a /32 or /128 (sealHostAddresses in loopback.go) — the fix for a
 	// host service reachable via an address pasta does not copy onto snug0
 	// (its own link-local, or a second alias on another interface).
-	fdNetlinkSock = 67
+	fdNetlinkSock = 251
 
 	// fdNetnsN is the descriptor P1 pins on N before it leaves. Chosen high so
 	// it never collides with the pass-through block above, whose size is
@@ -128,7 +137,7 @@ const (
 	// covers the other direction and is the half checkFDBudget cannot see:
 	// this process's OWN descriptors, allocated above the block by the Go
 	// runtime rather than by any policy, landing here first.
-	fdNetnsN = 68
+	fdNetnsN = 252
 )
 
 // fdPremainSlack is how many descriptor numbers are left free BETWEEN the top
@@ -220,7 +229,7 @@ func checkFDBudget(n int) error {
 			"internal/stage/fds.go above the block — they are a free choice, not kernel "+
 			"constants, and each descriptor is dup3'd to its number explicitly. Do not lower "+
 			"the descriptor count: it is what the resolved policy actually needs (one per "+
-			"generated file, one for the seccomp filter, one for bwrap's --info-fd, two more "+
+			"generated file, one per bind source, one for the seccomp filter, one for bwrap's --info-fd, two more "+
 			"for the --block-fd/--sync-fd gate on a container run, and one for the args memfd)",
 			n, fdSandboxBase, fdSandboxBase+n-1, fdSandboxBase+maxPassthrough, fdNetSock-1,
 			fdNetSock, fdNetlinkSock, fdNetnsN, maxPassthrough)

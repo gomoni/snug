@@ -3478,14 +3478,15 @@ func TestDryRunShowsARefusedPolicy(t *testing.T) {
 	proj, _ := target(t)
 
 	// POSITIVE CONTROL: with the defaults, --dry-run succeeds and the argv
-	// genuinely mounts /usr. Without this, "no --ro-bind /usr" below could be
+	// genuinely mounts /usr. Without this, "no --ro-bind-fd N /usr" below could be
 	// true of a --dry-run that never renders any argv at all.
 	out, code := cli(t, nil, "--dry-run", proj)
 	if code != 0 {
 		t.Fatalf("control: --dry-run with the defaults should succeed, got %d:\n%s", code, out)
 	}
-	if !strings.Contains(out, "--ro-bind /usr") {
-		t.Fatalf("control: expected --ro-bind /usr in the default argv:\n%s", out)
+	usrBind := regexp.MustCompile(`--ro-bind-fd \d+ /usr\n`)
+	if !usrBind.MatchString(out) {
+		t.Fatalf("control: expected --ro-bind-fd N /usr in the default argv:\n%s", out)
 	}
 
 	out, code = cli(t, nil, "--dry-run", "--no-defaults", proj)
@@ -3499,7 +3500,7 @@ func TestDryRunShowsARefusedPolicy(t *testing.T) {
 	if !strings.Contains(out, "--remount-ro /") {
 		t.Errorf("the refused policy's argv should still show --remount-ro /:\n%s", out)
 	}
-	if strings.Contains(out, "--ro-bind /usr") {
+	if usrBind.MatchString(out) {
 		t.Errorf("the floor must not grant /usr:\n%s", out)
 	}
 }

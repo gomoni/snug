@@ -2,20 +2,23 @@ package cli
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// argvContainsDevBind reports whether args contains either bwrap flag that
-// can put a real device node behind a bind — `--dev-bind` or its `-try`
-// spelling. Factored out so the positive control below (which does NOT go
+// argvContainsDevBind reports whether args contains any bwrap flag that
+// can put a real device node behind a bind: every spelling beginning
+// `--dev-bind`, so `--dev-bind`, `--dev-bind-try` and a `--dev-bind-fd` that this
+// bwrap does not list but that would be the obvious sibling of `--ro-bind-fd`.
+// Factored out so the positive control below (which does NOT go
 // through a resolved Policy — see its own comment for why one cannot) is
 // checking the SAME comparison the sweep uses, not a second copy of it that
 // could quietly diverge.
 func argvContainsDevBind(args []string) bool {
-	return slices.Contains(args, "--dev-bind") || slices.Contains(args, "--dev-bind-try")
+	return slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "--dev-bind") })
 }
 
 // TestBwrapArgvNeverAllowsDeviceAccess is what makes validate.go's device
@@ -59,7 +62,7 @@ func TestBwrapArgvNeverAllowsDeviceAccess(t *testing.T) {
 		}
 		checked++
 
-		if flags := p.BwrapFlags(1000, 1000, func(string) int { return 9 }); argvContainsDevBind(flags) {
+		if flags := p.BwrapFlags(1000, 1000, policy.FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }}); argvContainsDevBind(flags) {
 			t.Errorf("builtin %s: BwrapFlags allows device access (--dev-bind/--dev-bind-try) — a "+
 				"real device node would be reachable through this bind, which bwrap's own "+
 				"`nosuid,nodev` (the property rejectEndpointSource's doc comment leans on to leave "+
@@ -103,6 +106,7 @@ func TestArgvContainsDevBindDetectsBothSpellings(t *testing.T) {
 	}{
 		{"plain --dev-bind", []string{"--ro-bind", "/usr", "/usr", "--dev-bind", "/dev/null", "/dev/probe"}, true},
 		{"the -try spelling", []string{"--dev-bind-try", "/dev/null", "/dev/probe"}, true},
+		{"the descriptor spelling", []string{"--dev-bind-fd", "10", "/dev/probe"}, true},
 		{"ordinary argv, neither spelling present", []string{"--ro-bind", "/usr", "/usr", "--tmpfs", "/tmp"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

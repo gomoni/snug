@@ -502,10 +502,12 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				// link a sandbox could have planted chooses which host key the
 				// sandbox can sign with. An absent key stays legal (ENOENT is a
 				// plain component).
-				if dest, links, err := authorableLinks(env, env.Uid(), asked); err != nil {
+				dest, links, err := authorableLinks(env, env.Uid(), asked)
+				if err != nil {
 					return nil, fmt.Errorf("profile %q: identity.%s %s: cannot verify who wrote the links on this path: %s",
 						name, f.Key, VisibleText(asked), visibleErr(err))
-				} else if len(links) > 0 {
+				}
+				if len(links) > 0 {
 					l := links[0]
 					return nil, fmt.Errorf("profile %q: identity.%s %s resolves through the link %s (%s); "+
 						"a sandbox run could have planted it to choose which host key the sandbox can sign with. "+
@@ -513,7 +515,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 						name, f.Key, VisibleText(asked), VisibleText(l.At), ownerPhrase(l, env.Uid()),
 						VisibleText(dest))
 				}
-				fv.SetString(expanded)
+				// dest, not expanded: the key is opened with RESOLVE_NO_SYMLINKS
+				// (hostread.RequiredNoLinks), so the stored path must already
+				// be spelled without the trusted links authorableLinks followed.
+				fv.SetString(dest)
 			}
 			// Identity does NOT join. Two profiles pinning different accounts
 			// is a question with no safe answer — silently picking one would
@@ -1039,6 +1044,21 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// Topology inconsistent with its own Net/Podman — Validate refuses exactly
 	// that (see the rule below).
 	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
+
+	// The launcher opens every bind source with RESOLVE_NO_SYMLINKS, so a host
+	// that is not already canonical would be refused at launch with a message
+	// about a swapped link. Refused here instead, where the cause is a snug bug
+	// and not a concurrent sandbox.
+	for _, m := range p.SortedMounts() {
+		if m.Kind != KindBind || BindByPath(m.Host) {
+			continue
+		}
+		if real, err := env.EvalSymlinks(m.Host); err != nil || real != m.Host {
+			return nil, fmt.Errorf("snug bug: bind host not canonical: %s (guest %s) must name itself "+
+				"under EvalSymlinks, because it is opened without following links",
+				VisibleText(m.Host), VisibleText(m.Guest))
+		}
+	}
 
 	if err := p.Validate(env); err != nil {
 		return p, err

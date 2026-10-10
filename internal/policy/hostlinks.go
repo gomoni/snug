@@ -19,10 +19,27 @@ const maxAuthorableHops = 40
 // written: At is the link's own path, Text its unresolved text, Owner its uid.
 // OwnerKnown is false when the host gave no owner to read, and Owner is then 0
 // without meaning root.
+//
+// Parent is the directory the link sits in, as it is now. A link keeps its
+// owner when it is renamed, so a root-owned link moved into a directory a
+// sandbox can write is still root-owned; the directory is the other half of
+// whether root put it there.
 type authoredLink struct {
 	At, Text   string
 	Owner      uint32
 	OwnerKnown bool
+
+	ParentOwner uint32
+	ParentMode  fs.FileMode
+	ParentKnown bool
+}
+
+// trustedParent reports whether a directory is one only root can change: owned
+// by uid 0 with no group or other write. The sticky bit does not help, it
+// only stops deleting someone else's entry and not renaming one's own into
+// place.
+func trustedParent(owner uint32, mode fs.FileMode) bool {
+	return owner == 0 && mode.Perm()&0o022 == 0
 }
 
 // authorableLinks walks p component by component from "/" on the host, the way
@@ -32,13 +49,17 @@ type authoredLink struct {
 // root-owned /opt/x -> /home/u/y followed by a user-owned y -> / is only caught
 // because the second hop is looked at too.
 //
-// A link is authorable unless it is owned by uid 0 and snug itself is not uid 0.
-// A sandbox can create links owned by the invoking uid or by a subuid, never by
-// uid 0, so root ownership is the one trace of "a human or a package manager
-// wrote this" that survives past targets and deleted profiles. Under uid 0 no
-// link is trusted, because a root-run snug cannot tell its own links from
-// planted ones. A Sys() that is not a *syscall.Stat_t carries no owner, and is
-// treated as authorable.
+// A link is authorable unless it is owned by uid 0, the directory it sits in is
+// owned by uid 0 with no group or other write permission, and snug itself is
+// not uid 0. A sandbox can create links owned by the invoking uid or by a
+// subuid, never by uid 0, but rename(2) keeps the owner: a root-owned link
+// sitting in a directory the invoking user (or a subuid) can write could have
+// been moved there from somewhere root wrote it, so ownership alone does not
+// say who chose its place. Root ownership of both is the trace of "a human or
+// a package manager wrote this" that survives past targets and deleted
+// profiles. Under uid 0 no link is trusted, because a root-run snug cannot
+// tell its own links from planted ones. A Sys() that is not a *syscall.Stat_t,
+// on the link or on its parent, carries no owner and is treated as authorable.
 //
 // A component that does not exist is plain (fs.ErrNotExist), so a grant or an
 // identity key that is merely absent stays legal. Any other Lstat or Readlink
@@ -78,14 +99,23 @@ func authorableLinks(h HostLinks, uid int, p string) (resolved string, links []a
 		if err != nil {
 			return "", nil, err
 		}
-		owner, known := uint32(0), false
+		l := authoredLink{At: cand, Text: text}
 		authorable := true
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			owner, known = st.Uid, true
-			authorable = owner != 0 || uid == 0
+			l.Owner, l.OwnerKnown = st.Uid, true
+			if l.Owner == 0 && uid != 0 {
+				pfi, err := h.Lstat(resolved)
+				if err != nil {
+					return "", nil, err
+				}
+				if pst, ok := pfi.Sys().(*syscall.Stat_t); ok {
+					l.ParentOwner, l.ParentMode, l.ParentKnown = pst.Uid, pfi.Mode(), true
+					authorable = !trustedParent(l.ParentOwner, l.ParentMode)
+				}
+			}
 		}
 		if authorable {
-			links = append(links, authoredLink{At: cand, Text: text, Owner: owner, OwnerKnown: known})
+			links = append(links, l)
 		}
 		if strings.HasPrefix(text, "/") {
 			resolved = "/"
@@ -102,6 +132,19 @@ func ownerPhrase(l authoredLink, uid int) string {
 	}
 	if !l.OwnerKnown {
 		return "whose owner snug could not read, so it is not trusted"
+	}
+	if l.Owner == 0 {
+		if !l.ParentKnown {
+			return "owned by root, but snug could not read who owns the directory it is in, so it is not trusted"
+		}
+		if l.ParentOwner != 0 {
+			if int(l.ParentOwner) == uid {
+				return fmt.Sprintf("owned by root but in a directory uid %d owns, so it could have been moved there", uid)
+			}
+			return fmt.Sprintf("owned by root but in a directory owned by uid %d, not root", l.ParentOwner)
+		}
+		return fmt.Sprintf("owned by root but in a directory that group or other users can write (mode %04o), so it could have been moved there",
+			l.ParentMode.Perm())
 	}
 	return fmt.Sprintf("owned by uid %d, not root", l.Owner)
 }
