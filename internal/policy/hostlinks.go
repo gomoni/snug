@@ -162,9 +162,19 @@ func TrustedExecutable(h HostLinks, uid int, p string) error {
 			}
 			return fmt.Errorf("cannot be read: %w", err)
 		}
+		// Name the one condition that failed: inside a user namespace the
+		// owner reads as an unmapped uid while the mode is fine, and a
+		// message blaming both reads as if the mode were the problem.
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || !fi.IsDir() || !trustedParent(st.Uid, fi.Mode()) {
-			return fmt.Errorf("directory %s is not owned by root or can be written by group or other (mode %04o)",
+		switch {
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", VisibleText(d))
+		case !ok:
+			return fmt.Errorf("directory %s has an owner snug could not read", VisibleText(d))
+		case st.Uid != 0:
+			return fmt.Errorf("directory %s is owned by uid %d, not root", VisibleText(d), st.Uid)
+		case !trustedParent(st.Uid, fi.Mode()):
+			return fmt.Errorf("directory %s can be written by group or other (mode %04o)",
 				VisibleText(d), fi.Mode().Perm())
 		}
 	}
