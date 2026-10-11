@@ -1,0 +1,12 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "keep it offline" -> drop @net, ro /srv/pg
+# intent (README.md, accepted): -> @podman-build
+# intent (README.md, declined): @net — conflicts with "keep it offline"
+# intent (README.md, accepted over "keep it offline"): -> rw /srv/pg
+[profile.offline]
+include = [
+  # ABUSE (@podman-build): the sandbox can build an image from a Dockerfile it wrote, which means running arbitrary commands in a container — but that is already true of `@podman-socket`, so this adds no new execution.
+  "@podman-build",
+]
+rw = ["/srv/pg"]

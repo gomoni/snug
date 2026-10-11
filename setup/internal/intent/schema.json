@@ -1,0 +1,63 @@
+{
+  "$comment": "The one contract between the intent model and snug-setup. The model emits {\"actions\":[...]}; Go validates every action against this schema (and llama-server constrains decoding with it), then applies it to the draft profile. Nothing here is a grant by itself: Go renders TOML, asks the human, and snug parses the file like any other.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actions"],
+  "properties": {
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["op", "name"],
+           "properties": {"op": {"const": "use_profile"}, "name": {"$ref": "#/$defs/builtin"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "name"],
+           "properties": {"op": {"const": "drop_profile"}, "name": {"$ref": "#/$defs/builtin"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "path", "access"],
+           "properties": {"op": {"const": "grant_path"}, "path": {"$ref": "#/$defs/path"},
+                          "access": {"enum": ["ro", "rw", "tmpfs"]}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "path"],
+           "properties": {"op": {"const": "drop_path"}, "path": {"$ref": "#/$defs/path"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "host", "name"],
+           "properties": {"op": {"const": "stage_binary"}, "host": {"$ref": "#/$defs/path"},
+                          "name": {"type": "string", "pattern": "^[A-Za-z0-9._+-]{1,64}$"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "name", "verb"],
+           "properties": {"op": {"const": "set_env"}, "name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"},
+                          "verb": {"enum": ["set", "inherit", "prepend"]},
+                          "value": {"type": "string", "maxLength": 256}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "name"],
+           "properties": {"op": {"const": "open_door"}, "name": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 32}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "kind"],
+           "properties": {"op": {"const": "list_identities"}, "kind": {"$ref": "#/$defs/idkind"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "kind", "account"],
+           "properties": {"op": {"const": "select_identity"}, "kind": {"$ref": "#/$defs/idkind"},
+                          "account": {"type": "string", "maxLength": 128}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "path"],
+           "properties": {"op": {"const": "read_file"}, "path": {"type": "string", "maxLength": 256}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "name"],
+           "properties": {"op": {"const": "name_profile"}, "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op"],
+           "properties": {"op": {"const": "show"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op"],
+           "properties": {"op": {"const": "save"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "code"],
+           "properties": {"op": {"const": "refuse"}, "code": {"$ref": "#/$defs/refusal"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "topic"],
+           "properties": {"op": {"const": "note"}, "topic": {"$ref": "#/$defs/topic"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "question"],
+           "properties": {"op": {"const": "ask"}, "question": {"type": "string", "maxLength": 200}}}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "builtin": {"enum": ["@target-rw", "@parent-ro", "@git", "@net", "@claude", "@podman-socket", "@podman-build"]},
+    "path": {"type": "string", "pattern": "^(/|~/|\\{home\\}|\\{target\\}|\\{target_parent\\})", "maxLength": 256},
+    "idkind": {"enum": ["ssh", "github", "git"]},
+    "refusal": {"enum": ["host_network", "host_port", "desktop_socket", "deny_rule", "sensitive_home", "whole_home",
+                         "secret_in_env", "docker_sock", "port_publish", "repo_profile", "no_seccomp", "out_of_scope"]},
+    "topic": {"enum": ["help", "profiles", "defaults", "net", "parent_ro", "podman_offline", "podman_build", "port_publish",
+                       "compose_subdir_volume", "secrets_file", "identity_one", "git", "claude", "layering", "readonly_target"]}
+  }
+}

@@ -141,6 +141,11 @@ gate:
 	# speaks to the kube proxy from inside. Built lazily by kube_test.go.
 	go vet ./test/integration/testdata/kubeprobe
 	go test ./...
+	# setup/ is its own module, so every `./...` above stops at its go.mod and
+	# never vets or tests snug-setup. gofmt and the forging-rune check walk
+	# files, not modules, and already cover it. Run from inside setup/ so the
+	# root module never requires it.
+	cd setup && go vet ./... && go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
 # is the automated half of the checklist; the by-hand half that survives in
