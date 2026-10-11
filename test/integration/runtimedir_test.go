@@ -129,12 +129,22 @@ func TestStaleRuntimeDirectoryIsSweptOnTheNextRun(t *testing.T) {
 	}
 	// PRECONDITION: and its lock is released — SIGKILL releases an flock the
 	// same as a clean exit, which is the mechanism the sweep depends on.
+	// Polled, not read once: the lock is an open file description, and a
+	// child the killed snug had just forked holds a copy until its own exec
+	// closes it (O_CLOEXEC), so the release can trail dying.Wait by a moment.
 	lf, err := os.OpenFile(filepath.Join(dyingDir, "lock"), os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Flock(int(lf.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		t.Fatalf("precondition: the SIGKILLed run's lock is still held: %v", err)
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		err := unix.Flock(int(lf.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("precondition: the SIGKILLed run's lock is still held 5s after it died: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	unix.Flock(int(lf.Fd()), unix.LOCK_UN)
 	lf.Close()

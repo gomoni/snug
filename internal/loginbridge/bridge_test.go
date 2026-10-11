@@ -400,6 +400,10 @@ func TestFlowLimits(t *testing.T) {
 		if err := r.b.Handle(f1); err != nil {
 			t.Fatal(err)
 		}
+		// Each flow's opener runs in its own goroutine, so without this wait
+		// f2's open can land before f1's under load and the order check
+		// below reads them swapped.
+		waitFor(t, func() bool { return len(r.opener.opened()) == 1 })
 		r.clock.Advance(SupersedeAfter - time.Second)
 		f2 := testFlow(t)
 		err := r.b.Handle(f2)
