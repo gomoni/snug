@@ -166,7 +166,7 @@ func TestSIGKILLBeforeThePayloadStartsLeavesNoInit(t *testing.T) {
 			candidates = descendantsOf(bg.cmd.Process.Pid)
 			bwraps := 0
 			for _, pid := range candidates {
-				if commOf(pid) == "bwrap" {
+				if isSandboxBwrap(pid) {
 					bwraps++
 				}
 			}
