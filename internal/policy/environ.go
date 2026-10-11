@@ -237,36 +237,24 @@ type Context struct {
 	// defaults the host's does (issue #43).
 	HostSSHConfig SSHValues
 
-	// HostPasswdHome is field 6 (pw_dir) of the host's `getent passwd <uid>`
-	// line, read by the caller. It is a HOST-side fact only: Resolve's own
-	// generated /etc/passwd carries `home`, the HOME it authors, in that
-	// field instead, which is what makes getpwuid()->pw_dir == $HOME true
-	// inside the sandbox by construction. The one remaining reader is
-	// systemSSHConfigCandidates, filtering the host's ssh_config chain, which
-	// the HOST's ssh found via the HOST's pw_dir.
+	// HostPasswdHome is field 6 (pw_dir) of this account's passwd entry,
+	// exactly as the account database spells it. Home is the same directory,
+	// spelled as $HOME spells it when $HOME is set (AccountHome checked that
+	// they agree). systemSSHConfigCandidates filters on both spellings.
 	HostPasswdHome string
 
 	// HostUserName is field 1 (pw_name) of the same getent passwd line, and
 	// HostGroupName is field 1 (gr_name) of the host's `getent group <gid>`
 	// line for this uid's primary gid. Both are read by the caller through
-	// getent, which resolves through NSS the way the host's own `id` does —
+	// internal/getent: getent, which resolves through NSS the way the host's own `id` does —
 	// cgo-free Go can only parse /etc/passwd as text and never sees an
 	// sssd or LDAP account. getent is the only source of either name, USER
 	// and LOGNAME are authored unconditionally below regardless of `nss`, and
-	// there is no fallback name for them — see HostAccountErr for the refusal
-	// that follows from a lookup failure.
+	// there is no fallback name for them: a failed lookup refuses the run in the
+	// caller before Resolve. Inside a snug sandbox the source is the generated
+	// /etc/passwd instead.
 	HostUserName  string
 	HostGroupName string
-
-	// HostAccountErr is set by the caller when the getent lookup that fills
-	// HostUserName, HostGroupName and HostPasswdHome failed — missing getent,
-	// no NSS entry for this uid, a timeout, a malformed line — and is empty
-	// on success. Resolve refuses with this text, verbatim, regardless of
-	// Policy.NSS: USER and LOGNAME need HostUserName on every run, `nss` or
-	// not, and there is no fallback value invariant 5 permits. The caller
-	// never refuses on this failure itself, precisely so Resolve stays the
-	// one place a policy failure is reported.
-	HostAccountErr string
 
 	// KnownHosts is the subset of the host's known_hosts for the pinned host,
 	// filtered by the caller. Binding the whole file would tell the sandbox

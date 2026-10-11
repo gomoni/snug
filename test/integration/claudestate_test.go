@@ -161,7 +161,7 @@ func TestClaudeTrustEntryIsSnugsOwnAndNamesOnlyTheTarget(t *testing.T) {
 	const begin, end = "---BEGIN-CLAUDE-JSON---", "---END-CLAUDE-JSON---"
 	insideJSON := func(t *testing.T, home string) map[string]any {
 		t.Helper()
-		r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+		r := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, `
 			echo `+begin+`
 			cat "$HOME/.claude.json"
 			echo
@@ -266,7 +266,7 @@ func TestProjectMCPJSONInsideNamesNoServers(t *testing.T) {
 	}
 
 	const begin, end = "---BEGIN-MCP---", "---END-MCP---"
-	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+	r := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, `
 		cd "$SNUG_TARGET" || { echo NO-TARGET; exit 1; }
 		echo `+begin+`
 		cat .mcp.json
@@ -363,7 +363,7 @@ func TestADanglingSymlinkAtAProjectedNameWritesNothingToTheHost(t *testing.T) {
 	// NOT mustRun: the payload must NOT run. snug refuses before the sandbox
 	// exists, because it cannot reinterpret through a link and running anyway
 	// would hand Claude Code a file snug did not author.
-	res := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `echo RAN`)
+	res := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, `echo RAN`)
 	if res.ran {
 		t.Errorf("the payload ran with a symlink at .mcp.json; snug must refuse rather than "+
 			"leave the file un-reinterpreted:\n%s", res.out)

@@ -163,8 +163,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// add() while the GUEST side and anything derived from {home} were not.
 	// Fails closed, like the target.
 	if ctx.Home == "" {
-		return nil, fmt.Errorf("cannot determine $HOME: it is unset or empty; set $HOME to an " +
-			"absolute, existing directory")
+		return nil, errors.New("internal error: Context.Home is empty; the caller must take the home " +
+			"directory from AccountHome before Resolve")
 	}
 	askedTarget := ""
 	if ctx.Target != target {
@@ -177,6 +177,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	if err := refuseAuthorableLinkOnPath(env, "$HOME", ctx.Home, home,
 		"set HOME to "+VisibleText(home)+" instead"); err != nil {
 		return nil, err
+	}
+	if slices.Contains(systemTrees, home) {
+		return nil, fmt.Errorf("home directory %q is a system tree: @home would put a writable tmpfs "+
+			"over it, and a payload could write files every program reads (for /etc, ld.so.preload). "+
+			"Give the account a home directory of its own", VisibleText(home))
 	}
 
 	vars := map[string]string{
@@ -867,27 +872,14 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		From:    []string{"(snug)"},
 	})
 
-	// getent's lookup runs on EVERY invocation (internal/cli's
-	// lookupHostAccount), whether or not any selected profile's `nss` folds
-	// true: USER and LOGNAME are authored unconditionally below, there is no
-	// fallback name for either (invariant 5), and getent is the only source of
-	// one. A failure there — missing getent, no NSS entry for this uid, a
-	// timeout, a malformed line — refuses the whole run, not just the three
-	// generated files p.NSS gates next.
-	if ctx.HostAccountErr != "" {
-		return nil, errors.New(ctx.HostAccountErr)
-	}
-
 	// /etc/passwd, /etc/group and /etc/nsswitch.conf are GENERATED too, but
 	// only when some selected profile's `nss = true` folded true (p.NSS,
 	// above) — @sys sets it in base.toml, and a profile that wants the three
 	// files without @sys may set it too. @sys used to bind the host's
 	// /etc/passwd verbatim, and with the uid unmapped in the sandbox's own
-	// user namespace that made getpwuid()->pw_dir the HOST's home directory
-	// rather than $HOME — every program that takes its home from the passwd
-	// entry rather than from $HOME (ssh chief among them) then disagreed with
-	// the sandbox it was running in. Generating the one line for this uid
-	// instead makes getpwuid(getuid())->pw_dir == $HOME true by construction.
+	// user namespace the entry did not describe the sandbox it was running
+	// in. Generating the one line for this uid instead makes
+	// getpwuid(getuid())->pw_dir == $HOME true by construction.
 	//
 	// Without `nss`, none of the three is generated, and a profile that wants
 	// one binds its own host copy — the ordinary grant language, no special

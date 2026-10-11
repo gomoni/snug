@@ -180,12 +180,11 @@ func TestAnExpiredTokenIsNamedBeforeTheRun(t *testing.T) {
 // artifact asserting the ABSENCE of a credential that is present is worse than
 // one that says nothing.
 //
-// The cause was claudeCredentialsMount keying on an exact p.Home match with no
-// Authored check and no fallback — four hundred lines below two siblings that
-// both carry those guards under a comment stating the measured reason: Resolve
-// canonicalises $HOME while claudeFiles is handed the raw os.UserHomeDir()
-// value, so on a host whose home is a symlink (/home -> /var/home, the default
-// on Silverblue-shaped systems) the key misses.
+// The cause was a mismatch between the key the lookup built from p.Home and
+// the home claudeFiles staged under: main.go handed claudeFiles a raw
+// os.UserHomeDir() value while Resolve canonicalised $HOME. main.go now hands
+// claudeFiles pol.Home, so staging and lookup share one key and there is no
+// fallback to carry the mismatch.
 //
 // CONTROL: a policy with NO credential mount must still reach the other arm.
 // Otherwise "the block says PROJECTED" would pass on a lookup that had been
@@ -193,14 +192,8 @@ func TestAnExpiredTokenIsNamedBeforeTheRun(t *testing.T) {
 func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 	home := writeHostCredential(t, `{"claudeAiOauth":{"accessToken":"sk-ant-oat-FIXTURE"}}`)
 
-	// The split the bug lived in: the policy's Home is the CANONICAL path,
-	// while the staging ran against the path the user's $HOME actually named.
-	canonical := filepath.Join(home, "canonical")
-	if err := os.MkdirAll(canonical, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	p := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: canonical}
-	stageClaudeCredentials(p, home, nil) // staged under `home`, not `canonical`
+	p := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: home}
+	stageClaudeCredentials(p, p.Home, nil)
 
 	out := captureFile(t, func(f io.Writer) { describeCredsOnly(t, f, p) })
 	if strings.Contains(out, "staged NOTHING") {
@@ -213,7 +206,7 @@ func TestTheCredsBlockNeverDeniesACredentialItStaged(t *testing.T) {
 	}
 
 	// CONTROL: nothing staged reaches the other arm.
-	empty := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: canonical}
+	empty := &policy.Policy{Mounts: map[string]policy.Mount{}, Home: home}
 	quiet := captureFile(t, func(f io.Writer) { describeCredsOnly(t, f, empty) })
 	if !strings.Contains(quiet, "staged NOTHING") {
 		t.Errorf("control: a policy with no credential mount did not reach the NOT-staged "+

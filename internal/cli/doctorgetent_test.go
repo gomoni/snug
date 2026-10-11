@@ -28,11 +28,13 @@ func TestReportGetentIsSilentWhenFound(t *testing.T) {
 // all, so the two must not drift.
 func TestReportGetentMissingNamesTheFix(t *testing.T) {
 	out := captureStdout(t, func() {
-		if reportGetent(func() (string, error) { return "", errors.New("exec: \"getent\": executable file not found in $PATH") }) {
+		if reportGetent(func() (string, error) {
+			return "", errors.New("/usr/bin/getent: does not exist; /bin/getent: does not exist")
+		}) {
 			t.Error("reportGetent returned true for a lookup that failed")
 		}
 	})
-	for _, want := range []string{"getent", "every run will refuse", "glibc", "libc-bin", "glibc-common", "musl"} {
+	for _, want := range []string{"getent", "/usr/bin/getent: does not exist", "every run will refuse", "glibc", "libc-bin", "glibc-common", "musl"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("reportGetent's report does not carry %q:\n%s", want, out)
 		}

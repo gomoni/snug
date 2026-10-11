@@ -16,7 +16,7 @@ import (
 func ephemeralTargetHome(t *testing.T) (home string, env []string) {
 	t.Helper()
 	home = t.TempDir()
-	env = baseEnv("HOME=" + home)
+	env = baseEnv(fixtureHome(home)...)
 	return home, env
 }
 

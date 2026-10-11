@@ -44,6 +44,11 @@ func TestSnugCLIHelperProcess(t *testing.T) {
 		}
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
+	// The case's HOME is a scratch directory, which the account database
+	// does not know; the subprocess is told the account's home is that one.
+	lookupHostAccount = func() (name, pwHome, gname, from string, err error) {
+		return "u", os.Getenv("HOME"), "u", "a test stub", nil
+	}
 	Main() // calls os.Exit; never returns
 }
 

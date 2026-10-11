@@ -872,13 +872,20 @@ exact sysctl when something is missing.
 
 **`getent` on the host, from glibc.** snug writes the sandbox's own one-line
 `/etc/passwd` and `/etc/group` so that the home directory there is `$HOME`, and
-takes the user and group names from `getent passwd`/`getent group`. `getent`
-is snug's only source of host account data — the subuid owner `snug doctor`
+takes the user name, group name and home directory from `getent passwd`/`getent group`.
+`getent` is snug's only source of host account data — the subuid owner `snug doctor`
 and the container engine look up too — and resolves through glibc NSS, so sssd
-and LDAP accounts work. No fallback: no `getent`
-or no entry for your uid means snug refuses. Package: `glibc` (openSUSE),
-`libc-bin` (Debian/Ubuntu), `glibc-common` (Fedora). On a non-glibc host provide
-a compact `getent`, as musl does. `snug doctor` reports it only when missing.
+and LDAP accounts work. It is run only from `/usr/bin/getent` or `/bin/getent`,
+and only when root owns it and every directory above it; `$PATH` is not searched.
+No fallback: no usable `getent` or no entry for your uid means snug refuses.
+Package: `glibc` (openSUSE), `libc-bin` (Debian/Ubuntu), `glibc-common` (Fedora),
+`musl-utils` (musl). `snug doctor` reports it only when missing.
+
+The home directory is the account's, not `$HOME`'s. A `$HOME` that names another
+directory is refused (exit 77) and snug says what to unset; an unset `$HOME` is
+taken from the account. Inside a snug sandbox there is no host `getent` to ask,
+so snug reads the one-line `/etc/passwd` the outer snug generated — which needs
+a profile with `nss = true`, such as `@sys`.
 
 **Networking also needs `/dev/net/tun`**: `pasta` puts a tap device in the
 sandbox's own network namespace, so the node has to be present and openable.

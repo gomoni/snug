@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// fakeGetent points LookPath at a shell script that prints out and exits with
+// fakeGetent points Locate at a shell script that prints out and exits with
 // code, for the duration of one test: parsing is judged on bytes this test
 // chose, not on whatever accounts the machine running it happens to have.
 //
@@ -35,9 +35,9 @@ func fakeGetent(t *testing.T, out string, code int) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	orig := LookPath
-	LookPath = func() (string, error) { return script, nil }
-	t.Cleanup(func() { LookPath = orig })
+	orig := Locate
+	Locate = func() (string, error) { return script, nil }
+	t.Cleanup(func() { Locate = orig })
 }
 
 func TestPasswdByUIDParsesTheEntry(t *testing.T) {
@@ -135,9 +135,9 @@ func TestWaitDelayBoundsAChildHoldingThePipe(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	orig := LookPath
-	LookPath = func() (string, error) { return script, nil }
-	t.Cleanup(func() { LookPath = orig })
+	orig := Locate
+	Locate = func() (string, error) { return script, nil }
+	t.Cleanup(func() { Locate = orig })
 
 	start := time.Now()
 	_, err := PasswdByUID(1000)
@@ -164,9 +164,9 @@ func TestStderrIsEscaped(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	orig := LookPath
-	LookPath = func() (string, error) { return script, nil }
-	t.Cleanup(func() { LookPath = orig })
+	orig := Locate
+	Locate = func() (string, error) { return script, nil }
+	t.Cleanup(func() { Locate = orig })
 
 	_, err := PasswdByUID(1000)
 	if err == nil {
@@ -192,9 +192,9 @@ func TestStderrIsBounded(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	orig := LookPath
-	LookPath = func() (string, error) { return script, nil }
-	t.Cleanup(func() { LookPath = orig })
+	orig := Locate
+	Locate = func() (string, error) { return script, nil }
+	t.Cleanup(func() { Locate = orig })
 
 	_, err := PasswdByUID(1000)
 	if err == nil {
@@ -207,11 +207,14 @@ func TestStderrIsBounded(t *testing.T) {
 }
 
 func TestMissingGetentNamesTheFix(t *testing.T) {
-	orig := LookPath
-	LookPath = func() (string, error) { return "", errors.New(`exec: "getent": executable file not found in $PATH`) }
-	t.Cleanup(func() { LookPath = orig })
-	_, err := PasswdByUID(1000)
-	if err == nil || !strings.Contains(err.Error(), "libc-bin") {
-		t.Fatalf("got %v, want a refusal naming the package", err)
+	_, err := locate(fakeLinks{}, 1000, []string{"/usr/bin/getent", "/bin/getent"})
+	if err == nil {
+		t.Fatal("locate found a getent on an empty filesystem")
+	}
+	for _, want := range []string{"/usr/bin/getent: does not exist", "/bin/getent: does not exist",
+		"libc-bin", "musl-utils", "does not search $PATH"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q lacks %q", err.Error(), want)
+		}
 	}
 }

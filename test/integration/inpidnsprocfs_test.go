@@ -57,6 +57,25 @@ func TestAnOfflineRunSurvivesAnOuterPidNamespaceWithNoSecondPid(t *testing.T) {
 	}
 	proj, _ := target(t)
 
+	// authoredAccount: the run happens inside a raw user namespace, which snug
+	// refuses as "not a snug sandbox" unless /etc/passwd looks like snug's own.
+	// The bwrap below gives it that root WITHOUT a pid namespace of its own, so
+	// the pid history this test is about stays the outer unshare's. /proc is a
+	// bind for the same reason: a fresh procfs needs a pid namespace the
+	// wrapper owns. The data files are opened by the shell per command, because
+	// bwrap reads each descriptor to its end.
+	acct := newAuthoredAccount(t)
+	wrap := []string{"bwrap", "--unshare-user", "--die-with-parent"}
+	wrap = append(wrap, acct.Root...)
+	wrap = append(wrap, "--dev-bind", "/dev", "/dev", "--bind", "/proc", "/proc")
+	wrap = append(wrap, acct.Account...)
+	wrap = append(wrap, "--", snugBin)
+	var wrapped []string
+	for _, a := range wrap {
+		wrapped = append(wrapped, shQuote(a))
+	}
+	inner := strings.Join(wrapped, " ")
+
 	// One shell, because the state being tested is the pid namespace's own
 	// history: the /bin/true calls, the control reads and the run all have to
 	// happen in the same namespace, in that order.
@@ -64,7 +83,11 @@ func TestAnOfflineRunSurvivesAnOuterPidNamespaceWithNoSecondPid(t *testing.T) {
 		"/bin/true; /bin/true; /bin/true; /bin/true",
 		"echo OUTER-NS=$(readlink /proc/self/ns/pid)",
 		"if [ -e /proc/2 ]; then echo PID2=present; else echo PID2=absent; fi",
-		"exec " + shQuote(snugBin) + " " + shQuote(proj) + " -- /bin/echo PAYLOAD-RAN",
+		// Control for the account harness, run AFTER the pid-2 read so it
+		// cannot change what that read measures; it only advances the counter
+		// further, which the real run needs anyway.
+		inner + " --dry-run " + shQuote(proj) + " -- /bin/true " + acct.ShellRedirects(),
+		"exec " + inner + " " + shQuote(proj) + " -- /bin/echo PAYLOAD-RAN " + acct.ShellRedirects(),
 	}, "\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -102,6 +125,7 @@ func TestAnOfflineRunSurvivesAnOuterPidNamespaceWithNoSecondPid(t *testing.T) {
 		t.Fatalf("control: the run happened in pid namespace %q and this test process is in "+
 			"%q — a fresh outer namespace is the whole precondition:\n%s", outer, ownNS, got)
 	}
+	wantAuthoredSource(t, got)
 	if !strings.Contains(got, "PID2=absent") {
 		t.Fatalf("control: pid 2 still exists in that namespace, so bwrap's read of the outer "+
 			"/proc/2 would find SOMETHING and the failure being tested cannot occur:\n%s", got)

@@ -52,8 +52,9 @@ var SystemSSHConfigPaths = []string{
 //   - NOT UNDER Home NOR HostPasswdHome. The user's own ~/.ssh/config is in
 //     the chain and is not a system file: snug generates that one only when an
 //     identity is pinned (identity.go), and replacing it here would silently
-//     displace a file the human wrote for themselves. Both, because the chain
-//     comes from the host's ssh, which found that file from pw_dir, not $HOME.
+//     displace a file the human wrote for themselves. Both are tested because
+//     they are two spellings of one directory, and the chain comes from the
+//     host's ssh, which found that file from pw_dir.
 //   - NOR ANYWHERE INSIDE THE TARGET, and this one was found by attacking the
 //     change rather than by writing it. A human's own `Include <some
 //     repo>/ssh_config` puts a path from the SANDBOXED TREE into the chain,

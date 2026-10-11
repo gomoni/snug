@@ -125,6 +125,80 @@ func authorableLinks(h HostLinks, uid int, p string) (resolved string, links []a
 	return resolved, links, nil
 }
 
+// TrustedExecutable returns nil when p names a regular file that only root
+// could have put there and that snug may therefore run on the host without
+// asking where $PATH pointed: no link on the way a sandbox could have planted
+// (authorableLinks), every directory from "/" to the file's own passing
+// trustedParent, and the file itself owned by uid 0, writable by neither
+// group nor other, with some execute bit set.
+//
+// The error is a reason a human can act on, not prefixed with p: the caller
+// names the path. It is a refusal when a component cannot be read, never a
+// pass. Owner 65534, the uid a root-owned file shows as inside a user
+// namespace that does not map root, is not root here: only owner 0 passes.
+func TrustedExecutable(h HostLinks, uid int, p string) error {
+	resolved, links, err := authorableLinks(h, uid, p)
+	if err != nil {
+		return fmt.Errorf("cannot be resolved: %w", err)
+	}
+	if len(links) > 0 {
+		l := links[0]
+		return fmt.Errorf("%s is a link (to %s, %s)", VisibleText(l.At), VisibleText(l.Text), ownerPhrase(l, uid))
+	}
+	dirs := []string{"/"}
+	cur := "/"
+	for _, c := range strings.Split(path.Dir(resolved), "/") {
+		if c == "" {
+			continue
+		}
+		cur = path.Join(cur, c)
+		dirs = append(dirs, cur)
+	}
+	for _, d := range dirs {
+		fi, err := h.Lstat(d)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return errors.New("does not exist")
+			}
+			return fmt.Errorf("cannot be read: %w", err)
+		}
+		// Name the one condition that failed: inside a user namespace the
+		// owner reads as an unmapped uid while the mode is fine, and a
+		// message blaming both reads as if the mode were the problem.
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		switch {
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", VisibleText(d))
+		case !ok:
+			return fmt.Errorf("directory %s has an owner snug could not read", VisibleText(d))
+		case st.Uid != 0:
+			return fmt.Errorf("directory %s is owned by uid %d, not root", VisibleText(d), st.Uid)
+		case !trustedParent(st.Uid, fi.Mode()):
+			return fmt.Errorf("directory %s can be written by group or other (mode %04o)",
+				VisibleText(d), fi.Mode().Perm())
+		}
+	}
+	fi, err := h.Lstat(resolved)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return errors.New("does not exist")
+		}
+		return fmt.Errorf("cannot be read: %w", err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("%s is not a regular file", VisibleText(resolved))
+	case !ok || st.Uid != 0:
+		return fmt.Errorf("%s is not owned by root", VisibleText(resolved))
+	case fi.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("%s can be written by group or other (mode %04o)", VisibleText(resolved), fi.Mode().Perm())
+	case fi.Mode().Perm()&0o111 == 0:
+		return fmt.Errorf("%s is not executable", VisibleText(resolved))
+	}
+	return nil
+}
+
 // ownerPhrase is the parenthesis in a refusal naming an authorable link.
 func ownerPhrase(l authoredLink, uid int) string {
 	if uid == 0 {

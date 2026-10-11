@@ -65,7 +65,7 @@ func TestSymlinkedGeneratedParentCreatesNoHostFile(t *testing.T) {
 		"email = \"snug-signing-integration@example.invalid\"\n"
 
 	env := writeProfiles(t, map[string]string{"repro": repro, "pinned": identity},
-		"HOME="+home, "SSH_AUTH_SOCK="+sock)
+		append(fixtureHome(home), "SSH_AUTH_SOCK="+sock)...)
 
 	out, code := cli(t, env, "--no-defaults", "-p", "@sys", "-p", "repro", "-p", "pinned",
 		proj, "--", "true")

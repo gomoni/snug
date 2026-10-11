@@ -52,7 +52,7 @@ func scratchHomeEnv(t *testing.T) []string {
 	if err := os.MkdirAll(cfg, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return []string{"HOME=" + home, "XDG_CONFIG_HOME=" + cfg}
+	return append(fixtureHome(home), "XDG_CONFIG_HOME="+cfg)
 }
 
 // wrapperScript is a "#!/bin/sh exec <real podman> \"$@\"" pass-through —

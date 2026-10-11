@@ -52,7 +52,7 @@ func TestPasswdHomeIsHOMEByConstruction(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			env := baseEnv("HOME=" + home)
+			env := baseEnv(fixtureHome(home)...)
 			if tc.refused {
 				r := runEnv(t, env, nil, proj, `echo SHOULD-NOT-RUN`)
 				if r.ran || r.code != exitPolicyCode || !strings.Contains(r.out, "$HOME") ||
@@ -110,7 +110,7 @@ func TestSSHReadsGeneratedConfigUnderSyntheticHOME(t *testing.T) {
 		"[profile.pinned.identity.ssh]\n" +
 		"agent = \"proxy\"\n" +
 		"key = \"" + pub + "\"\n"
-	env := writeProfiles(t, map[string]string{"pinned": pinned}, "HOME="+home, "SSH_AUTH_SOCK="+sock)
+	env := writeProfiles(t, map[string]string{"pinned": pinned}, append(fixtureHome(home), "SSH_AUTH_SOCK="+sock)...)
 
 	r := runEnv(t, env, []string{"-p", "pinned"}, proj, "ssh -G github.com").mustRun(t)
 	for _, want := range []string{"identitiesonly yes", "stricthostkeychecking accept-new"} {

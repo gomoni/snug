@@ -61,8 +61,8 @@ func runSplit(t *testing.T, env []string, args ...string) (stdout, stderr string
 // TestQuietRunsAreQuiet is the deleted checklist's "starts nothing" promise
 // (§2a) read off stderr rather than off prose: an ordinary
 // `snug -p @podman-socket <dir> -- /bin/true`, with no -v, writes NOTHING to
-// stderr, and --dry-run -p @podman-socket renders no NOTES block at all while
-// the same real run under -v does. notes.go's own doc comment states why the
+// stderr, and --dry-run -p @podman-socket renders no NOTES block beyond the
+// account line while the same real run under -v does. notes.go's own doc comment states why the
 // two disagree rather than one of them being a bug: startContainers returns
 // at its --dry-run branch before warnAboutPodmanClient and before the
 // /etc/resolv.conf probe, because those belong to an engine --dry-run never
@@ -108,14 +108,35 @@ func TestQuietRunsAreQuiet(t *testing.T) {
 			"(raw stderr, before filtering the fake engine's own line: %q)", vStderr)
 	}
 
-	// 3. --dry-run renders no NOTES block for this same selection.
+	// 3. --dry-run renders no NOTES block for this same selection, beyond the
+	// one note every run now has: the account line, which both the dry run and
+	// the real run reach. Every OTHER note in the block is a failure, and the
+	// account line is asserted present so this cannot pass on a block that
+	// stopped rendering at all.
 	dry, dryCode := cli(t, env, "--dry-run", "-p", "@podman-socket", proj, "--", "/bin/true")
 	if dryCode != 0 {
 		t.Fatalf("snug --dry-run -p @podman-socket <dir> exited %d, want 0:\n%s", dryCode, dry)
 	}
-	if strings.Contains(dry, "NOTES") {
-		t.Errorf("--dry-run -p @podman-socket rendered a NOTES block; notes.go's own doc "+
-			"comment says this selection should render none because the notes that fire "+
-			"under -v belong to code startContainers's --dry-run branch never reaches:\n%s", dry)
+	i := strings.Index(dry, "\nNOTES")
+	if i < 0 {
+		t.Fatalf("control: --dry-run rendered no NOTES block, so the account line every run has "+
+			"is missing:\n%s", dry)
+	}
+	block, _, _ := strings.Cut(dry[i+1:], "\n\n")
+	sawAccount := false
+	for _, line := range strings.Split(block, "\n")[1:] {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+		case strings.HasPrefix(line, "snug: account: "):
+			sawAccount = true
+		default:
+			t.Errorf("--dry-run -p @podman-socket rendered a note other than the account line; "+
+				"notes.go's own doc comment says the notes that fire under -v belong to code "+
+				"startContainers's --dry-run branch never reaches: %q\n%s", line, dry)
+		}
+	}
+	if !sawAccount {
+		t.Errorf("control: the NOTES block has no account line:\n%s", block)
 	}
 }
