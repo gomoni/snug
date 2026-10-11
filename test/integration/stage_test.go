@@ -52,16 +52,22 @@ func cmdlineOf(pid int) []string {
 	return parts
 }
 
-// isSandboxBwrap is a bwrap that builds a sandbox, as opposed to the
+// isSandboxBwrap is a live bwrap that builds a sandbox, as opposed to the
 // `bwrap --help` snug runs once per process to check it supports
 // --ro-bind-fd. That probe is short-lived, but a test that stops its parent
 // on first sight of a bwrap can catch it and wait forever for a sandbox the
-// stopped parent never forks.
+// stopped parent never forks. Once the probe exits it lingers as a zombie
+// until reaped, still named bwrap but with an empty cmdline, so a zombie and
+// an unreadable cmdline are not a sandbox bwrap either.
 func isSandboxBwrap(pid int) bool {
-	if commOf(pid) != "bwrap" {
+	if commOf(pid) != "bwrap" || stateOf(pid) == "Z" {
 		return false
 	}
-	for _, a := range cmdlineOf(pid) {
+	argv := cmdlineOf(pid)
+	if len(argv) == 0 {
+		return false
+	}
+	for _, a := range argv {
 		if a == "--help" {
 			return false
 		}
