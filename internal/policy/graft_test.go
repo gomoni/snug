@@ -905,7 +905,7 @@ func TestGraftNeverReachesBwrapArgs(t *testing.T) {
 		t.Fatalf("fixture: a valid graft was rejected: %v", err)
 	}
 
-	args := p.BwrapFlags(1000, 1000, func(string) int { return 9 })
+	args := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }})
 	for _, a := range args {
 		if a == g.Guest {
 			t.Errorf("bwrap argv contains the graft's Guest (%s) — a graft must never reach the "+
@@ -951,7 +951,7 @@ func TestGraftNeverReachesBwrapArgs(t *testing.T) {
 				t.Errorf("panic message %v does not say \"unhandled Kind\"", r)
 			}
 		}()
-		leaking.BwrapFlags(1000, 1000, func(string) int { return 9 })
+		leaking.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }})
 	}()
 }
 

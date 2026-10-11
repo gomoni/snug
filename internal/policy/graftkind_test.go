@@ -261,7 +261,7 @@ func TestEngineMountpointsTrackTheArgvThatCreatesThem(t *testing.T) {
 // path anywhere in the argv: a bare Contains would also match the path as the
 // operand of some other flag, which is how a sweep passes for the wrong reason.
 func argvCreatesDir(p *Policy, guest string) bool {
-	flags := p.BwrapFlags(1000, 1000, func(string) int { return -1 })
+	flags := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return -1 }, Bind: func(string) (int, bool) { return -1, true }})
 	for i := 0; i+1 < len(flags); i++ {
 		if flags[i] == "--dir" && flags[i+1] == guest {
 			return true
@@ -365,7 +365,7 @@ func refusalGraftKindProcAtTheWrongPath(t testing.TB) error {
 // property, asserted where it can be read.
 func TestRemountReadOnlyIsTheLastFilesystemOperation(t *testing.T) {
 	p := mustResolve(t, append(slices.Clone(testDefaults), "@podman-socket")...)
-	flags := p.BwrapFlags(1000, 1000, func(string) int { return 9 })
+	flags := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }})
 
 	last := -1
 	for i, f := range flags {

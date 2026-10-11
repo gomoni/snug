@@ -28,10 +28,10 @@
 --symlink usr/sbin /sbin
 --size 1073741824
 --tmpfs /tmp
---ro-bind /usr /usr
+--ro-bind-fd 20 /usr
 --ro-bind-data 10 /etc/group
---ro-bind /etc/ld.so.cache /etc/ld.so.cache
---ro-bind /etc/ld.so.conf /etc/ld.so.conf
+--ro-bind-fd 21 /etc/ld.so.cache
+--ro-bind-fd 22 /etc/ld.so.conf
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
 --ro-bind-data 13 /etc/resolv.conf
@@ -51,7 +51,7 @@
 --tmpfs /home/u/.local
 --size 1073741824
 --tmpfs /home/u/proj
---ro-bind-try /home/u/.local/bin/claude /snug/bin/claude
+--ro-bind-fd 23 /snug/bin/claude
 --ro-bind-data 18 /home/u/.claude/CLAUDE.md
 --perms 0600
 --file 19 /home/u/.claude/settings.json
@@ -59,7 +59,7 @@
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind /home/u/proj/sub /home/u/proj/sub
+--bind-fd 24 /home/u/proj/sub
 --remount-ro /
 --clearenv
 --setenv HOME /home/u

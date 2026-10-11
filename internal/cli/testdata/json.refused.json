@@ -444,8 +444,8 @@
       "--ro-bind",
       "/proc/sys",
       "/proc/sys",
-      "--ro-bind",
-      "/home/u/proj",
+      "--ro-bind-fd",
+      "14",
       "/home/u/proj",
       "--remount-ro",
       "/",
@@ -487,6 +487,15 @@
     ],
     "argv0_resolved": false,
     "argv0_note": "argv[0] is the bare name \"bwrap\" and snug does not exec that name: it calls exec.LookPath(\"bwrap\") against the HOST user's own $PATH at the moment the run starts, and execs the absolute path that search returns. WHICH bwrap runs is therefore a fact about that $PATH then — a directory earlier on it than /usr/bin chooses the binary, after this artifact has said everything it has to say. Settle it by hand with: command -v bwrap",
+    "bind_sources": [
+      {
+        "fd": 14,
+        "host": "/home/u/proj",
+        "guest": "/home/u/proj",
+        "access": "ro",
+        "optional": false
+      }
+    ],
     "incomplete": false
   },
   "pasta": null

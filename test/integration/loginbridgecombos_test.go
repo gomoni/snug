@@ -61,8 +61,8 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	base := append(append([]string{}, loginKeylessArgs...), "-p", "door")
 	without := loginDryRun(t, f.env, f.proj, base...)
 	with := loginDryRun(t, f.env, f.proj, append(append([]string{}, base...), "-p", "login")...)
-	wOps, wProf := loginArgvOps(without.Bwrap.Argv)
-	bOps, bProf := loginArgvOps(with.Bwrap.Argv)
+	wOps, wProf := loginArgvOps(t, without)
+	bOps, bProf := loginArgvOps(t, with)
 	if !slices.Contains(wOps, "--perms 0755 --ro-bind-data <fd> /snug/bin/http-door-handover") {
 		t.Fatalf("control: the door's handover script is not in the argv without the bridge, so "+
 			"'the door is unchanged' would be about an argv with no door:\n%s", strings.Join(wOps, "\n"))
@@ -72,7 +72,7 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	}
 	rest := bOps
 	for _, add := range []string{
-		"--bind " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo",
+		"--bind-fd " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo",
 		"--perms 0755 --ro-bind-data <fd> /snug/bin/snug-browser",
 		"--setenv BROWSER /snug/bin/snug-browser",
 	} {
@@ -420,7 +420,7 @@ func loginDryDests(ops []string) (required, allowed []string) {
 			continue
 		}
 		switch f[0] {
-		case "--bind", "--ro-bind", "--dev-bind", "--ro-bind-data", "--bind-data":
+		case "--bind", "--ro-bind", "--dev-bind", "--ro-bind-data", "--bind-data", "--ro-bind-fd", "--bind-fd":
 			required = append(required, f[len(f)-1])
 		case "--bind-try", "--ro-bind-try", "--dev-bind-try":
 			allowed = append(allowed, f[len(f)-1])
@@ -460,7 +460,7 @@ func TestDryRunNamesTheMountsAndEnvironmentARealRunHas(t *testing.T) {
 			f.addProfile(t, "door", loginDoorProfile)
 
 			dry := loginDryRun(t, f.env, f.proj, tc.args...)
-			ops, _ := loginArgvOps(dry.Bwrap.Argv)
+			ops, _ := loginArgvOps(t, dry)
 			required, allowed := loginDryDests(ops)
 			if len(required) < 10 {
 				t.Fatalf("control: the dry run lists %d mounts, so the comparison below is about almost nothing: %v", len(required), required)
@@ -500,7 +500,7 @@ echo "BROWSER-IS $BROWSER"
 				}
 			}
 
-			fifoWant := "--bind " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo"
+			fifoWant := "--bind-fd " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo"
 			if !slices.Contains(ops, fifoWant) {
 				t.Errorf("--dry-run's argv lacks %q", fifoWant)
 			}

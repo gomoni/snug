@@ -98,6 +98,48 @@ func TestAuthorableLinksCatchesEveryHop(t *testing.T) {
 	}
 }
 
+// TestRootOwnedLinkInADirectoryOthersCanWriteIsAuthorable fails if root
+// ownership of the link alone is trusted: rename keeps the owner, so a
+// root-owned link moved into a directory the user (or anyone) can write was
+// placed by whoever could write there. The control is the same link in a
+// directory only root can change.
+func TestRootOwnedLinkInADirectoryOthersCanWriteIsAuthorable(t *testing.T) {
+	cases := []struct {
+		name  string
+		owner uint32
+		mode  fs.FileMode
+		want  string
+	}{
+		{"parent owned by the user", 1000, 0o755, "a directory uid 1000 owns"},
+		{"parent root-owned and world-writable sticky", 0, 0o1777, "group or other users can write (mode 0777)"},
+		{"parent root-owned and group-writable", 0, 0o775, "group or other users can write (mode 0775)"},
+		{"parent owned by another user", 4242, 0o755, "owned by uid 4242, not root"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := newFakeEnv()
+			env.links["/opt/x"] = "/home/u"
+			env.dirOwners["/opt"], env.dirModes["/opt"] = c.owner, c.mode
+			_, links, err := authorableLinks(env, 1000, "/opt/x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(links) != 1 {
+				t.Fatalf("links = %+v, want the root-owned link judged authorable", links)
+			}
+			if got := ownerPhrase(links[0], 1000); !strings.Contains(got, c.want) {
+				t.Errorf("ownerPhrase = %q, want it to contain %q", got, c.want)
+			}
+		})
+	}
+
+	env := newFakeEnv()
+	env.links["/opt/x"] = "/home/u"
+	if _, links, err := authorableLinks(env, 1000, "/opt/x"); err != nil || len(links) != 0 {
+		t.Errorf("control: a root-owned link in a root-owned 0755 directory: links=%+v err=%v", links, err)
+	}
+}
+
 func TestAuthorableLinksLoopRefuses(t *testing.T) {
 	env := newFakeEnv()
 	env.links["/opt/a"] = "/opt/a"
@@ -416,7 +458,9 @@ func TestUserLinkAboveTheGrantRootIsRefused(t *testing.T) {
 
 // TestIdentityKeyThroughUserLinkOutsideTargetIsRefused fails if a pinned key
 // path outside {target} is trusted: a planted ~/.ssh link chooses which host
-// key the proxy will sign with. Both key fields are covered.
+// key the proxy will sign with. Both key fields are covered. The control also
+// holds that a trusted link is stored by its destination, because the key is
+// opened without following links.
 func TestIdentityKeyThroughUserLinkOutsideTargetIsRefused(t *testing.T) {
 	env := newFakeEnv()
 	env.hlLink(hlUser, "/home/u/.ssh", "/home/u/other-ssh")
@@ -433,7 +477,7 @@ func TestIdentityKeyThroughUserLinkOutsideTargetIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("control: a root-owned link on the key path was refused: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/.ssh/id.pub" {
+	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/other-ssh/id.pub" {
 		t.Errorf("identity = %+v", p.Identity)
 	}
 }
@@ -449,7 +493,7 @@ func TestAbsentIdentityKeyStillResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an absent key was refused: %v", err)
 	}
-	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/.ssh/missing/deploy.pub" {
+	if p.Identity == nil || p.Identity.SSH.Key != "/home/u/real-ssh/missing/deploy.pub" {
 		t.Errorf("identity = %+v", p.Identity)
 	}
 }

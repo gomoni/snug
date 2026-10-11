@@ -291,7 +291,7 @@ func TestBwrapPreCreatesTheTargetGraftDestination(t *testing.T) {
 	base := filepath.Base(p.Target)
 	targetDir := EngineBindsDir + "/" + base
 
-	args := p.BwrapFlags(1000, 1000, func(string) int { return 10 })
+	args := p.BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 10 }, Bind: func(string) (int, bool) { return 10, true }})
 
 	indexOfDir := func(dir string) int {
 		for i := 0; i+1 < len(args); i++ {

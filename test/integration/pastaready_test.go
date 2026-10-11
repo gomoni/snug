@@ -261,7 +261,9 @@ func TestANetRunWhosePastaDiesDuringTheBwrapBuildIsRefused(t *testing.T) {
 		"while [ -e /proc/$p ]; do :; done; : > " + deadFile + " ) </dev/null >/dev/null 2>&1 &\n" +
 		"exec " + realPasta + " \"$@\"\n"
 	// bwrap runs with an empty environment: absolute paths and builtins only.
-	bwrapScript := "#!/bin/sh\n: > " + goFile + "\n" +
+	// snug asks bwrap --help once, before anything starts, to learn it can bind
+	// by descriptor; that call must not take part in the handshake.
+	bwrapScript := "#!/bin/sh\n[ \"$1\" = --help ] && exec " + realBwrap + " \"$@\"\n: > " + goFile + "\n" +
 		"while [ ! -e " + deadFile + " ]; do :; done\n" +
 		"exec " + realBwrap + " \"$@\"\n"
 	for name, body := range map[string]string{"pasta": pastaScript, "bwrap": bwrapScript} {

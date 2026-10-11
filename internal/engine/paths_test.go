@@ -42,14 +42,16 @@ func TestEngineKeyIgnoresTheProfileSelection(t *testing.T) {
 	}
 }
 
-// rootOwnedLinks is the real host with every symlink reported as root-owned,
-// because the link this test makes is its own, and Resolve refuses a target
-// that passes through a link a non-root owner wrote.
+// rootOwnedLinks is the real host with every symlink, and every directory a
+// link can sit in, reported as root-owned and not group- or other-writable,
+// because the link this test makes is its own in a directory it owns, and
+// Resolve refuses a target that passes through a link a non-root owner wrote
+// or that sits where a non-root owner could have moved it.
 type rootOwnedLinks struct{ policy.OSEnviron }
 
 func (rootOwnedLinks) Lstat(p string) (fs.FileInfo, error) {
 	fi, err := os.Lstat(p)
-	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+	if err != nil || (fi.Mode()&fs.ModeSymlink == 0 && !fi.IsDir()) {
 		return fi, err
 	}
 	return rootOwnedInfo{fi}, nil
@@ -57,7 +59,8 @@ func (rootOwnedLinks) Lstat(p string) (fs.FileInfo, error) {
 
 type rootOwnedInfo struct{ fs.FileInfo }
 
-func (rootOwnedInfo) Sys() any { return &syscall.Stat_t{Uid: 0} }
+func (i rootOwnedInfo) Mode() fs.FileMode { return i.FileInfo.Mode() &^ 0o022 }
+func (rootOwnedInfo) Sys() any            { return &syscall.Stat_t{Uid: 0} }
 
 // TestEngineKeyUsesTheCanonicalTarget is a REGRESSION PIN, not a bug fix, and
 // its own doc comment says so because a test that claims to close a hole it

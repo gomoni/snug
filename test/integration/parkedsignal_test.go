@@ -75,7 +75,7 @@ func TestASignalWhileThePayloadIsParkedNeverReleasesIt(t *testing.T) {
 				deadline := time.Now().Add(30 * time.Second)
 				for stage == 0 {
 					for _, pid := range descendantsOf(p0) {
-						if commOf(pid) == "bwrap" {
+						if isSandboxBwrap(pid) {
 							if pp, ok := ppidOf(pid); ok && commOf(pp) != "bwrap" {
 								_ = syscall.Kill(pp, syscall.SIGSTOP)
 								stage = pp
@@ -95,7 +95,7 @@ func TestASignalWhileThePayloadIsParkedNeverReleasesIt(t *testing.T) {
 				for {
 					bwraps := 0
 					for _, pid := range descendantsOf(p0) {
-						if commOf(pid) == "bwrap" {
+						if isSandboxBwrap(pid) {
 							bwraps++
 						}
 					}
