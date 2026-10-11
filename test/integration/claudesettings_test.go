@@ -91,7 +91,7 @@ printenv
 echo ` + endP + `
 echo '{}' > "$HOME/.claude/settings.json" && echo WRITE-OK || echo WRITE-FAIL
 `
-	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, script).mustRun(t)
+	r := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, script).mustRun(t)
 
 	// ── 1. Positive control first ────────────────────────────────────────────
 	// CLAUDE.md's rule, applied before anything else is asked of the output: a

@@ -231,13 +231,22 @@ var (
 // read sees the fixture too, not the real host's file.
 func cliWithFakeHostResolvConf(t *testing.T, resolvConf string, args ...string) (string, int) {
 	t.Helper()
-	bwrapArgs := append([]string{"--dev-bind", "/", "/"}, resolvConfOverlay(t, resolvConf)...)
+	// authoredAccount, not `--dev-bind / /`: snug refuses a bare user namespace as
+	// "not a snug sandbox", so the wrapper's root has the shape snug accepts.
+	// /proc is a bind and not a fresh procfs, because this wrapper has no pid
+	// namespace of its own to mount one for.
+	acct := newAuthoredAccount(t)
+	bwrapArgs := append([]string{"--unshare-user", "--die-with-parent"}, acct.Root...)
+	bwrapArgs = append(bwrapArgs, "--dev-bind", "/dev", "/dev", "--bind", "/proc", "/proc")
+	bwrapArgs = append(bwrapArgs, resolvConfOverlay(t, resolvConf)...)
+	bwrapArgs = append(bwrapArgs, acct.Account...)
 	bwrapArgs = append(append(bwrapArgs, "--share-net", "--", snugBin), args...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bwrap", bwrapArgs...)
 	cmd.Env = baseEnv()
+	cmd.ExtraFiles = acct.Files(t)
 	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
 
@@ -324,6 +333,7 @@ func TestTheFakeResolvConfHarnessReallySubstitutes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--dry-run -p @net exited %d:\n%s", code, screen)
 	}
+	wantAuthoredSource(t, screen)
 	if !strings.Contains(screen, "198.51.100.53") {
 		t.Errorf("--dry-run's dns line does not name the fixture's resolver:\n%s", screen)
 	}
@@ -372,6 +382,7 @@ func TestNoResolverHostFailsFastAndSaysSo(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--dry-run -p @net exited %d:\n%s", code, screen)
 	}
+	wantAuthoredSource(t, screen)
 	if !strings.Contains(screen, "NONE") {
 		t.Errorf("--dry-run does not print the 'dns NONE' arm for a host with no resolver at all:\n%s", screen)
 	}

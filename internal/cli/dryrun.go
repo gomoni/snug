@@ -2016,54 +2016,21 @@ func claudeTrustCarried(p *policy.Policy, m policy.Mount) bool {
 // shape that lets a screen describe one mount while a sibling function describes
 // another.
 //
-// The obvious spelling — p.Mounts[filepath.Join(p.Home, ".claude.json")] — is
-// the primary lookup and is not sufficient on its own. Resolve canonicalises
-// $HOME (EvalSymlinks), while claudeFiles is handed main.go's raw
-// os.UserHomeDir() value, so on a host whose home is a symlink the two paths
-// differ and the exact-match lookup misses. That mismatch is worth fixing where
-// it lives rather than here, but its failure mode HERE is the one this whole
-// block exists to prevent: the mount is still in the policy, snug still
-// pre-answers the trust prompt, and the only line on screen that says so
-// silently disappears. So the fallback names the file rather than the path.
-//
-// It cannot misfire on a profile's grant: Mount.Authored is set by
+// The lookup is exact because claudeFiles stages under p.Home, the same
+// canonical path this key is built from. Mount.Authored is set by
 // Policy.Replace and nothing else, i.e. only by snug's own post-resolution
-// writers.
+// writers, so a profile's grant of the same path is not mistaken for it.
 func claudeStateMount(p *policy.Policy) (policy.Mount, bool) {
-	if m, ok := p.Mounts[filepath.Join(p.Home, ".claude.json")]; ok {
-		return m, m.Authored && m.Kind == policy.KindData
-	}
-	for _, m := range p.Mounts {
-		if m.Authored && m.Kind == policy.KindData && filepath.Base(m.Guest) == ".claude.json" {
-			return m, true
-		}
-	}
-	return policy.Mount{}, false
+	m, ok := p.Mounts[filepath.Join(p.Home, ".claude.json")]
+	return m, ok && m.Authored && m.Kind == policy.KindData
 }
 
 // claudeSettingsMount returns the ~/.claude/settings.json mount this block
-// describes, if snug authored one.
-//
-// Same two-step lookup as claudeStateMount, for the identical measured reason:
-// Resolve canonicalises $HOME (EvalSymlinks) while claudeFiles is handed
-// main.go's raw os.UserHomeDir() value, so on a host whose home is a symlink
-// the exact-match lookup on p.Home can miss even though stageClaudeSettings put
-// the mount in the policy under a different, equally valid key. The basename
-// fallback matches on BOTH path components (".claude" and "settings.json"),
-// not just the leaf, because "settings.json" alone is not a distinctive enough
-// name to trust as a fallback the way ".claude.json" is.
+// describes, if snug authored one. Exact lookup under p.Home, for the reason
+// claudeStateMount gives.
 func claudeSettingsMount(p *policy.Policy) (policy.Mount, bool) {
-	if m, ok := p.Mounts[filepath.Join(p.Home, ".claude", "settings.json")]; ok {
-		return m, m.Authored && m.Kind == policy.KindData
-	}
-	for _, m := range p.Mounts {
-		if m.Authored && m.Kind == policy.KindData &&
-			filepath.Base(m.Guest) == "settings.json" &&
-			filepath.Base(filepath.Dir(m.Guest)) == ".claude" {
-			return m, true
-		}
-	}
-	return policy.Mount{}, false
+	m, ok := p.Mounts[filepath.Join(p.Home, ".claude", "settings.json")]
+	return m, ok && m.Authored && m.Kind == policy.KindData
 }
 
 // claudeSettingsCarriedNames decodes the GENERATED settings.json content to
@@ -3313,34 +3280,16 @@ const argv0NoteWidth = 78 - 1
 // credential is staged" and "a credential is staged" are different runs, and a
 // human reading this screen is entitled to know which one they are about to
 // start.
-// The lookup is claudeSettingsMount's, verbatim in shape, and it was NOT that
-// on first writing — the first version keyed on `m.Guest == want && m.Kind ==
-// KindData` with neither an Authored check nor a fallback, four hundred lines
-// below the sibling whose own comment states the measured hazard. A red-team
-// pass found it, and the failure is the worst direction a trust screen can
-// fail in: on a host whose $HOME is a symlink (the default on Silverblue- and
-// MicroOS-shaped systems, /home -> /var/home), the screen printed "creds NOT
-// staged ... Claude Code will start LOGGED OUT" while the SAME screen's mount
-// table and bwrap argv showed the access token being handed over.
 //
-// Both guards therefore matter here, for the reasons their originals give:
-// Resolve canonicalises $HOME while claudeFiles is handed main.go's raw
-// os.UserHomeDir() value, so the exact-match key can miss; and `Authored`
-// rather than `Kind == KindData` alone, because authored()'s own comment
-// records that the KindData spelling is a PROXY for "snug wrote this" that has
-// already drifted once.
+// The lookup is exact under p.Home, which is where claudeFiles stages it. It
+// requires `Authored` rather than `Kind == KindData` alone, because
+// authored()'s own comment records that the KindData spelling is a PROXY for
+// "snug wrote this" that has already drifted once. A miss here is the worst
+// direction a trust screen can fail in: the screen would print "creds NOT
+// staged" while the mount table showed the access token being handed over.
 func claudeCredentialsMount(p *policy.Policy) (policy.Mount, bool) {
-	if m, ok := p.Mounts[filepath.Join(p.Home, ".claude", ".credentials.json")]; ok {
-		return m, m.Authored && m.Kind == policy.KindData
-	}
-	for _, m := range p.Mounts {
-		if m.Authored && m.Kind == policy.KindData &&
-			filepath.Base(m.Guest) == ".credentials.json" &&
-			filepath.Base(filepath.Dir(m.Guest)) == ".claude" {
-			return m, true
-		}
-	}
-	return policy.Mount{}, false
+	m, ok := p.Mounts[filepath.Join(p.Home, ".claude", ".credentials.json")]
+	return m, ok && m.Authored && m.Kind == policy.KindData
 }
 
 // claudeCredentialNames renders policy.ClaudeCredentialAllowlist for the

@@ -107,7 +107,7 @@ func doctor(argv []string) int {
 		}
 	}
 
-	if !reportGetent(getent.LookPath) {
+	if !reportGetent(getent.Locate) {
 		ok = false
 	}
 
@@ -356,24 +356,24 @@ func doctor(argv []string) int {
 	return 0
 }
 
-// reportGetent prints the programs-section row for getent, ONLY when it is
-// missing: it is load-bearing for every run (issue #612's generated
-// /etc/passwd and /etc/group take their account and group name from it, with
-// no fallback), but that is true of libc itself, and this section reports
-// what is WRONG rather than inventorying everything present. lookup is
-// injected — the same shape as reportSubuidDelegation's check — and doctor's
-// own call site passes getent.LookPath, the identical var every
-// internal/getent lookup calls, so this row and an actual refusal can never
-// disagree about whether getent is there.
+// reportGetent prints the programs-section row for getent, ONLY when no
+// candidate is usable: it is load-bearing for every run outside a sandbox
+// (the account name and home directory come from it, with no fallback), but
+// that is true of libc itself, and this section reports what is WRONG rather
+// than inventorying everything present. lookup is injected, and doctor's own
+// call site passes getent.Locate, the identical var every internal/getent
+// lookup calls, so this row and an actual refusal can never disagree about
+// whether a usable getent is there. The error carries one reason per
+// candidate path.
 func reportGetent(lookup func() (string, error)) bool {
-	if _, err := lookup(); err == nil {
+	_, err := lookup()
+	if err == nil {
 		return true
 	}
-	fmt.Println("  ❌ getent not found on PATH — every run will refuse")
-	fmt.Println("     💬 snug takes the sandbox's account and group name from the host's " +
-		"`getent`, with no fallback")
+	fmt.Println("  ❌ no usable getent — every run will refuse")
+	fmt.Printf("     💬 %s\n", policy.VisibleText(err.Error()))
 	fmt.Println("     📦 zypper in glibc  |  apt install libc-bin  |  dnf install glibc-common")
-	fmt.Println("     🔧 on a non-glibc host, provide a compact getent, as musl does")
+	fmt.Println("     🔧 on a musl host: musl-utils")
 	return false
 }
 

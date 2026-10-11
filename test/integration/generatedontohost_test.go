@@ -73,7 +73,7 @@ func TestSnugRefusesToWriteItsGeneratedFilesOntoTheHost(t *testing.T) {
 		"rw = [\"{home}/.ssh\"]\n"
 
 	env := writeProfiles(t, map[string]string{"pinned": identity, "sshrw": sshrw},
-		"HOME="+home, "SSH_AUTH_SOCK="+sock)
+		append(fixtureHome(home), "SSH_AUTH_SOCK="+sock)...)
 
 	t.Run("the policy is refused and nothing is written", func(t *testing.T) {
 		out, code := cli(t, env, "-p", "pinned", "-p", "sshrw", proj, "--", "true")

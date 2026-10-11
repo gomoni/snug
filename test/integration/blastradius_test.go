@@ -69,7 +69,7 @@ func TestBlastRadiusInsideASandbox(t *testing.T) {
 		env := writeProfile(t, "[profile.sshrw]\n"+
 			"description = \"a plain rw grant over the host's ssh directory\"\n"+
 			"# ABUSE: the payload can read and destroy the host's key material.\n"+
-			"rw = [\"{home}/.ssh\"]\n", "HOME="+fakeHome)
+			"rw = [\"{home}/.ssh\"]\n", fixtureHome(fakeHome)...)
 
 		in := runEnv(t, env, []string{"-p", "sshrw"}, proj,
 			guard+"; echo guard-exit=$?").mustRun(t)

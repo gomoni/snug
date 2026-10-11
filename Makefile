@@ -1,15 +1,22 @@
 BIN := bin/snug
+FIXTURE := bin/snug-fixture
 
 # Bidi and control characters that render as something other than what they say.
 FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
 
 
-.PHONY: all build test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
+.PHONY: all build fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
 
 all: build
 
 build:
 	go build -o $(BIN) ./cmd/snug
+
+# The integration suite's snug: the same program plus internal/cli's
+# accountfixture.go, which lets a test name the directory it reports as the
+# account's home. Never an install or release target's input.
+fixture:
+	go build -tags snugfixture -o $(FIXTURE) ./cmd/snug
 
 # Everything here runs with no privileges and no namespaces, which is the point
 # of keeping internal/policy pure: the security-critical tests work in any CI.
@@ -27,6 +34,7 @@ gate:
 		exit 1; \
 	fi
 	go vet ./...
+	go vet -tags snugfixture ./internal/cli ./cmd/snug
 	# `go vet ./...` does NOT compile build-tagged files, so the integration
 	# harness could sit broken indefinitely and every gate would still be green.
 	# Type-checking it costs nothing and needs no privileges — unlike running it.
@@ -229,7 +237,7 @@ gate:
 # a strict local run would invert what it measures.
 SNUG_INTEGRATION_SUITES = integration-sandbox integration-signals
 
-integration:
+integration: fixture
 	@for suite in $(SNUG_INTEGRATION_SUITES); do \
 		echo "── $$suite ─────────────────────────────────────────────────────"; \
 		$(MAKE) --no-print-directory $$suite || exit $$?; \
@@ -240,6 +248,8 @@ integration:
 # /bin/sh the guard would swallow it, which is the failure mode these two
 # targets exist to prevent — a job that goes green having proved nothing.
 SHELL := /bin/bash
+
+export SNUG_FIXTURE_BIN ?= $(CURDIR)/$(FIXTURE)
 
 SIGNALS_LOG ?= $(CURDIR)/.integration-signals.log
 HOSTLESS_LOG ?= $(CURDIR)/.integration-hostless.log

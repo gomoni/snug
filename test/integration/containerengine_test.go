@@ -2152,7 +2152,7 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 			t.Skip("SKIP: bwrap not found")
 		}
 		proj, _ := target(t)
-		out, code := runUnderMaskedSubuid(t, env, "-p", "@podman-socket", proj, "--", "/bin/echo", "SHOULD-NOT-RUN")
+		out, code := runUnderMaskedSubuid(t, env, "-v", "-p", "@podman-socket", proj, "--", "/bin/echo", "SHOULD-NOT-RUN")
 		if strings.Contains(out, "SHOULD-NOT-RUN") {
 			t.Fatalf("the payload ran despite a masked /etc/subuid:\n%s", out)
 		}
@@ -2163,6 +2163,10 @@ func TestPreflightRefusesUnconfinableEngine(t *testing.T) {
 			t.Errorf("the refusal does not name subuid, the actual fix:\n%s", out)
 		}
 		assertNoStageStarted(t, proj)
+		// Control: -v prints the account line before the preflight runs, so the
+		// refusal above came from the masked subuid under a harness snug accepted
+		// as a sandbox, not from the account lookup refusing the wrapper.
+		wantAuthoredSource(t, out)
 	})
 }
 
@@ -2260,21 +2264,24 @@ func assertNoStageStarted(t *testing.T, proj string) {
 // mock "empty" without editing a real system file).
 func runUnderMaskedSubuid(t *testing.T, env []string, args ...string) (string, int) {
 	t.Helper()
-	full := []string{
-		"--unshare-user", "--unshare-pid",
-		"--bind", "/", "/",
+	// authoredAccount: snug refuses a bare user namespace as "not a snug
+	// sandbox", so the wrapper's root has the shape snug accepts.
+	acct := newAuthoredAccount(t)
+	full := []string{"--unshare-user", "--unshare-pid", "--die-with-parent"}
+	full = append(full, acct.Root...)
+	full = append(full,
 		"--dev-bind", "/dev", "/dev",
 		"--proc", "/proc",
-		"--ro-bind", "/dev/null", "/etc/subuid",
-		"--die-with-parent",
-		"--", snugBin,
-	}
+		"--ro-bind", "/dev/null", "/etc/subuid")
+	full = append(full, acct.Account...)
+	full = append(full, "--", snugBin)
 	full = append(full, args...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bwrap", full...)
 	cmd.Env = env
+	cmd.ExtraFiles = acct.Files(t)
 	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {

@@ -1,6 +1,8 @@
 // Package getent is snug's ONE entrypoint for host account data: every user
 // or group name, uid, home or shell snug learns about the host comes from
-// glibc's getent(1), run on the host.
+// glibc's getent(1), run on the host from a root-owned path (Locate) with an
+// empty environment — or, inside a snug sandbox, from the one passwd and group
+// line snug generated (Account).
 //
 // getent resolves through NSS — files, sssd, LDAP, systemd userdb, nscd — the
 // way the host's own `id` does. cgo-free Go's os/user can only parse
@@ -61,12 +63,6 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 
 func (w *cappedWriter) String() string { return w.b.String() }
 
-// LookPath resolves getent on $PATH. It is the ONE call, shared by every
-// lookup below and `snug doctor`'s programs section, so a doctor report and
-// an actual run's refusal can never disagree about whether getent is there.
-// A variable so a test can simulate a host without getent.
-var LookPath = func() (string, error) { return exec.LookPath("getent") }
-
 // Passwd is one passwd(5) entry, as getent printed it.
 type Passwd struct {
 	Name  string
@@ -85,9 +81,17 @@ type Group struct {
 }
 
 // PasswdByUID runs `getent passwd <uid>` and refuses a line whose uid field is
-// not the one asked for.
+// not the one asked for. Inside a snug sandbox it answers from the generated
+// /etc/passwd for this process's own uid and wraps ErrNoEntry for any other.
 func PasswdByUID(uid int) (Passwd, error) {
-	pw, err := passwd(strconv.Itoa(uid))
+	src, err := currentSource()
+	if err != nil {
+		return Passwd{}, err
+	}
+	if src.FromPasswd {
+		return authoredByUID(uid)
+	}
+	pw, err := passwd(src.Getent, strconv.Itoa(uid))
 	if err != nil {
 		return Passwd{}, err
 	}
@@ -101,7 +105,8 @@ func PasswdByUID(uid int) (Passwd, error) {
 
 // PasswdByName runs `getent passwd <name>` and refuses a line whose name field
 // is not the one asked for. A name that is all digits is refused before
-// getent runs, because getent reads it as a uid.
+// getent runs, because getent reads it as a uid. Inside a snug sandbox only
+// this sandbox's own account name is answered; any other is refused.
 func PasswdByName(name string) (Passwd, error) {
 	if name == "" {
 		return Passwd{}, errors.New("getent passwd: empty account name")
@@ -110,7 +115,14 @@ func PasswdByName(name string) (Passwd, error) {
 		return Passwd{}, fmt.Errorf("getent passwd %q: a numeric name is read as a uid, "+
 			"not as a name", name)
 	}
-	pw, err := passwd(name)
+	src, err := currentSource()
+	if err != nil {
+		return Passwd{}, err
+	}
+	if src.FromPasswd {
+		return authoredByName(name)
+	}
+	pw, err := passwd(src.Getent, name)
 	if err != nil {
 		return Passwd{}, err
 	}
@@ -123,10 +135,18 @@ func PasswdByName(name string) (Passwd, error) {
 }
 
 // GroupByGID runs `getent group <gid>` and refuses a line whose gid field is
-// not the one asked for.
+// not the one asked for. Inside a snug sandbox it answers from the generated
+// /etc/group for this process's own gid and wraps ErrNoEntry for any other.
 func GroupByGID(gid int) (Group, error) {
+	src, err := currentSource()
+	if err != nil {
+		return Group{}, err
+	}
+	if src.FromPasswd {
+		return authoredByGID(gid)
+	}
 	key := strconv.Itoa(gid)
-	line, err := Run("group", key)
+	line, err := runAt(src.Getent, "group", key)
 	if err != nil {
 		return Group{}, err
 	}
@@ -149,8 +169,8 @@ func GroupByGID(gid int) (Group, error) {
 	return Group{Name: f[0], GID: gid}, nil
 }
 
-func passwd(key string) (Passwd, error) {
-	line, err := Run("passwd", key)
+func passwd(getent, key string) (Passwd, error) {
+	line, err := runAt(getent, "passwd", key)
 	if err != nil {
 		return Passwd{}, err
 	}
@@ -174,21 +194,21 @@ func passwd(key string) (Passwd, error) {
 }
 
 // Run runs `getent database key` and returns its one line of output with the
-// trailing newline stripped, refusing anything else: getent missing, a
-// non-zero exit (2 wraps ErrNoEntry), a timeout, or output that is not
-// EXACTLY one line ending in EXACTLY one '\n' — a second line, a missing
+// trailing newline stripped, refusing anything else: no usable getent
+// (Locate), a non-zero exit (2 wraps ErrNoEntry), a timeout, or output that is
+// not EXACTLY one line ending in EXACTLY one '\n' — a second line, a missing
 // newline, or a '\r' all mean the bytes are not the single line the caller's
 // field split expects, and parsing past that would attribute a byte to the
-// wrong field.
+// wrong field. getent runs with an empty environment.
 func Run(database, key string) (string, error) {
-	getent, err := LookPath()
+	getent, err := Locate()
 	if err != nil {
-		return "", fmt.Errorf("snug takes host account data only from `getent`, and could "+
-			"not find it on $PATH (%v). Install glibc's getent — package `glibc` on "+
-			"openSUSE, `libc-bin` on Debian/Ubuntu, `glibc-common` on Fedora — or, on a "+
-			"non-glibc host, provide a compact getent, as musl does", err)
+		return "", err
 	}
+	return runAt(getent, database, key)
+}
 
+func runAt(getent, database, key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 
@@ -199,6 +219,7 @@ func Run(database, key string) (string, error) {
 	// child inheriting the pipe would
 	// otherwise hold Run past Timeout for as long as that child lives.
 	cmd.WaitDelay = time.Second
+	cmd.Env = []string{}
 	stdout := &cappedWriter{limit: maxCapturedOutput}
 	stderr := &cappedWriter{limit: maxCapturedOutput}
 	cmd.Stdout, cmd.Stderr = stdout, stderr

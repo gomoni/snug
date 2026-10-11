@@ -535,6 +535,30 @@ func run(cfg config) int {
 	}
 	notes := newNotes(live, cfg.verbose)
 
+	// The account comes first, before anything reads a file under $HOME:
+	// profile.Load, the config file and the XDG defaults all derive their
+	// directories from it, and a $HOME that is not this account's home must
+	// stop the run before any of them is read from there. An unset HOME is
+	// set to the account's, so every later os.UserHomeDir() agrees.
+	// There is no fallback for a failed lookup: a placeholder name or home
+	// would be a silent narrowing (invariant 5).
+	env := policy.OSEnviron{}
+	name, pwHome, gname, accountFrom, err := lookupHostAccount()
+	if err != nil {
+		return refuse(cfg, exitPolicy, err)
+	}
+	home, err := policy.AccountHome(env, pwHome, os.Getenv("HOME"))
+	if err != nil {
+		return refuse(cfg, exitPolicy, err)
+	}
+	if os.Getenv("HOME") == "" {
+		if err := os.Setenv("HOME", home); err != nil {
+			return refuse(cfg, exitPolicy, err)
+		}
+	}
+	notes.aside("snug: account: %s, home %s (from %s)\n", policy.VisibleText(name),
+		policy.VisibleText(home), policy.VisibleText(accountFrom))
+
 	reg, bad, err := profile.Load()
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
@@ -600,8 +624,6 @@ func run(cfg config) int {
 		sweepOrphanedSandboxes()
 	}
 
-	env := policy.OSEnviron{}
-	home, _ := os.UserHomeDir()
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -627,21 +649,6 @@ func run(cfg config) int {
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
 
-	// Run on EVERY invocation, whether or not this selection wants the
-	// generated /etc/passwd and /etc/group (issue #612): getent is the only
-	// source of USER/LOGNAME, which are authored regardless of `nss`, and
-	// it also fills HostPasswdHome, the host-side fact
-	// systemSSHConfigCandidates needs regardless. It never refuses HERE — a
-	// placeholder name would be the silent narrowing invariant 5 forbids.
-	// The failure is carried into Context.HostAccountErr instead, and
-	// Resolve refuses on it unconditionally.
-	name, pwHome, gname, accountErr := lookupHostAccount()
-	accountErrText := ""
-	if accountErr != nil {
-		accountErrText = accountErr.Error()
-		pwHome = ""
-	}
-
 	ctx := policy.Context{
 		Target:          abs,
 		Home:            home,
@@ -657,7 +664,6 @@ func run(cfg config) int {
 		HostPasswdHome:  pwHome,
 		HostUserName:    name,
 		HostGroupName:   gname,
-		HostAccountErr:  accountErrText,
 		HostGit:         hostGit,
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and
@@ -775,7 +781,7 @@ func run(cfg config) int {
 		}
 	}()
 
-	if err := claudeFiles(pol, home, notes); err != nil {
+	if err := claudeFiles(pol, pol.Home, notes); err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
 

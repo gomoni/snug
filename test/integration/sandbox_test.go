@@ -89,6 +89,9 @@ import (
 
 var (
 	snugBin string
+	// snugFixtureBin is snugBin built with -tags snugfixture, which reports
+	// $SNUG_FIXTURE_ACCOUNT_HOME as the account's home. See fixtureHome.
+	snugFixtureBin string
 
 	// emptyConfig is an empty $XDG_CONFIG_HOME handed to every snug invocation.
 	// See baseEnv.
@@ -220,6 +223,19 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "building snug:", err)
 		os.RemoveAll(dir)
 		os.Exit(1)
+	}
+
+	snugFixtureBin = os.Getenv("SNUG_FIXTURE_BIN")
+	if _, err := os.Stat(snugFixtureBin); snugFixtureBin == "" || err != nil {
+		snugFixtureBin = filepath.Join(dir, "snug-fixture")
+		buildFixture := exec.Command("go", "build", "-tags", "snugfixture", "-o", snugFixtureBin, "./cmd/snug")
+		buildFixture.Dir = "../.."
+		buildFixture.Stderr = os.Stderr
+		if err := buildFixture.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "building snug-fixture:", err)
+			os.RemoveAll(dir)
+			os.Exit(1)
+		}
 	}
 
 	emptyConfig = filepath.Join(dir, "xdg-config")
@@ -546,6 +562,26 @@ func baseEnv(extra ...string) []string {
 	return append(env, extra...)
 }
 
+// fixtureHome is the environment for a run whose account home is a scratch
+// directory. snug refuses a $HOME that is not the account's home directory,
+// so a test that wants a fake home has to say, to a binary built for tests,
+// that the account lives there. cli picks that binary by the second entry.
+// A test that leaves HOME unset or elsewhere is exercising the refusal.
+func fixtureHome(home string) []string {
+	return []string{"HOME=" + home, "SNUG_FIXTURE_ACCOUNT_HOME=" + home}
+}
+
+// snugFor is snugFixtureBin when env names a fixture account home, snugBin
+// otherwise.
+func snugFor(env []string) string {
+	for _, e := range env {
+		if strings.HasPrefix(e, "SNUG_FIXTURE_ACCOUNT_HOME=") {
+			return snugFixtureBin
+		}
+	}
+	return snugBin
+}
+
 // cli invokes snug directly and returns its combined output and exit code. It is
 // the bottom of the stack: `run` and the --dry-run tests both sit on it.
 func cli(t *testing.T, env []string, args ...string) (string, int) {
@@ -557,7 +593,7 @@ func cli(t *testing.T, env []string, args ...string) (string, int) {
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, snugBin, args...)
+	cmd := exec.CommandContext(ctx, snugFor(env), args...)
 	cmd.Env = env
 	cmd.WaitDelay = waitDelay
 	out, err := cmd.CombinedOutput()
@@ -1737,7 +1773,7 @@ func TestCommandVClaudeResolvesToTheStagedBinary(t *testing.T) {
 	}
 	writeScript(t, filepath.Join(home, ".local", "bin", "claude"), "CLAUDE-RAN")
 
-	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, `
+	r := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, `
 echo "PATH=[$PATH]"
 echo "CMDV=[$(command -v claude)]"
 claude

@@ -140,8 +140,8 @@ func TestAnUnknownModeInAProfileIsRefusedNotNarrowed(t *testing.T) {
 func stubHostAccount(t *testing.T, home string) {
 	t.Helper()
 	orig := lookupHostAccount
-	lookupHostAccount = func() (name, pwHome, gname string, err error) {
-		return "u", home, "u", nil
+	lookupHostAccount = func() (name, pwHome, gname, from string, err error) {
+		return "u", home, "u", "a test stub", nil
 	}
 	t.Cleanup(func() { lookupHostAccount = orig })
 }

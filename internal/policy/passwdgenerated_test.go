@@ -247,46 +247,6 @@ func TestGeneratedNSSwitchContent(t *testing.T) {
 	}
 }
 
-// TestHostAccountErrRefusesRegardlessOfNSS pins the refusal move: the cli's
-// own getent lookup never refuses (main.go), so a failure reaches Resolve as
-// ctx.HostAccountErr — and Resolve refuses on it unconditionally, because
-// USER and LOGNAME need HostUserName on every run and there is no fallback
-// name for either, `nss` or not.
-func TestHostAccountErrRefusesRegardlessOfNSS(t *testing.T) {
-	const lookupFailed = "getent passwd 1000: no entry (exit 2). Give 1000 an NSS entry"
-
-	t.Run("no nss: the getent failure still refuses", func(t *testing.T) {
-		reg := testRegistry()
-		reg["usr"] = &Profile{Name: "usr", RO: []string{"/usr"}}
-		ctx := testCtx()
-		ctx.HostAccountErr = lookupFailed
-		ctx.HostUserName, ctx.HostGroupName = "", ""
-		p, err := Resolve(reg, []ProfileName{"usr", "@target-rw"}, ctx, newFakeEnv())
-		if err == nil {
-			t.Fatal("Resolve accepted a selection with no `nss` profile despite a recorded getent failure")
-		}
-		if err.Error() != lookupFailed {
-			t.Errorf("error = %q, want the recorded HostAccountErr verbatim: %q", err.Error(), lookupFailed)
-		}
-		if p != nil {
-			t.Fatal("fixture: expected a nil policy alongside the refusal")
-		}
-	})
-
-	t.Run("with @sys: the getent failure is the refusal", func(t *testing.T) {
-		ctx := testCtx()
-		ctx.HostAccountErr = lookupFailed
-		ctx.HostUserName, ctx.HostGroupName = "", ""
-		_, err := Resolve(testRegistry(), testDefaults, ctx, newFakeEnv())
-		if err == nil {
-			t.Fatal("Resolve accepted a selection with @sys despite a recorded getent failure")
-		}
-		if err.Error() != lookupFailed {
-			t.Errorf("error = %q, want the recorded HostAccountErr verbatim: %q", err.Error(), lookupFailed)
-		}
-	})
-}
-
 // TestPasswdReplacesAProfileBindOfEtc: @sys sets `nss = true`, and a SECOND
 // profile granting `ro = ["/etc"]` covers /etc/passwd, /etc/group and
 // /etc/nsswitch.conf by ANCESTRY, at the map key "/etc" rather than at any of

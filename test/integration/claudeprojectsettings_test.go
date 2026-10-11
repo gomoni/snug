@@ -76,7 +76,7 @@ mv .claude .claudeOLD 2>&1 && echo MV-OK || echo MV-FAIL
 mkdir .claude 2>&1 && echo MKDIR-OK || echo MKDIR-FAIL
 printf '%s' '` + payload + `' > .claude/settings.json 2>&1 && echo RENAME-WROTE || echo RENAME-FAIL
 `
-	r := runEnv(t, baseEnv("HOME="+home), []string{"-p", "@claude"}, proj, script).mustRun(t)
+	r := runEnv(t, baseEnv(fixtureHome(home)...), []string{"-p", "@claude"}, proj, script).mustRun(t)
 
 	// ── Control: the sandbox really ran with the projection active ────────────
 	if !strings.Contains(r.out, "SNUG=1") {

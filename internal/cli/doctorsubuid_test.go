@@ -246,8 +246,8 @@ func TestTheSubuidReportNamesTheUnconventionalBaseAsUnconventional(t *testing.T)
 // becoming "1000", which subuidOwnerPresent would then fail to match against
 // the real owner's line in /etc/subuid.
 func TestSubuidEntryNameFallsBackOnlyOnNoEntry(t *testing.T) {
-	orig := getent.LookPath
-	t.Cleanup(func() { getent.LookPath = orig })
+	orig := getent.Locate
+	t.Cleanup(func() { getent.Locate = orig })
 
 	t.Run("no NSS entry falls back to the uid", func(t *testing.T) {
 		dir := t.TempDir()
@@ -255,7 +255,7 @@ func TestSubuidEntryNameFallsBackOnlyOnNoEntry(t *testing.T) {
 		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		getent.LookPath = func() (string, error) { return script, nil }
+		getent.Locate = func() (string, error) { return script, nil }
 		name, err := subuidEntryName()
 		if err != nil {
 			t.Fatalf("subuidEntryName refused on ErrNoEntry: %v", err)
@@ -271,7 +271,7 @@ func TestSubuidEntryNameFallsBackOnlyOnNoEntry(t *testing.T) {
 		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'NSS module load error' >&2\nexit 1\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		getent.LookPath = func() (string, error) { return script, nil }
+		getent.Locate = func() (string, error) { return script, nil }
 		name, err := subuidEntryName()
 		if err == nil {
 			t.Fatalf("subuidEntryName fell back to %q instead of refusing", name)

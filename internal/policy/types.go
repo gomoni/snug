@@ -349,7 +349,7 @@ type Policy struct {
 	// TargetAsked is the path the target was named by, set only when resolving
 	// it changed it. It is shown by --dry-run and read by nothing that decides.
 	TargetAsked string
-	Home        string // EvalSymlinks($HOME); pw_dir IS Home in the generated /etc/passwd, by construction
+	Home        string // EvalSymlinks of the account's home directory; the generated /etc/passwd's pw_dir is this
 	Hostname    string
 	Chdir       string
 	Command     []string
