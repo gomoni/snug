@@ -112,10 +112,28 @@
        "--symlink",
        "usr/bin",
 @@
+       "/tmp",
+       "--ro-bind-fd",
+-      "17",
++      "18",
+       "/usr",
+       "--ro-bind-data",
+@@
+       "/etc/group",
+       "--ro-bind-fd",
+-      "18",
++      "19",
+       "/etc/ld.so.cache",
+       "--ro-bind-fd",
+-      "19",
++      "20",
+       "/etc/ld.so.conf",
+       "--ro-bind-data",
+@@
        "/proc/sys",
        "/proc/sys",
-+      "--bind",
-+      "/run/user/1000/snug/run-PID/browser.fifo",
++      "--bind-fd",
++      "21",
 +      "/snug/browser.fifo",
        "--size",
        "1073741824",
@@ -129,6 +147,13 @@
 +      "/snug/bin/snug-browser",
        "--size",
        "1073741824",
+@@
+       "/home/u/.local/state",
+       "--bind-fd",
+-      "20",
++      "22",
+       "/home/u/proj/sub",
+       "--remount-ro",
 @@
        "--clearenv",
        "--setenv",
@@ -151,3 +176,38 @@
 +      "@home,@net,@sys,@target-rw,bridge",
        "--setenv",
        "SNUG_TARGET",
+@@
+     "bind_sources": [
+       {
+-        "fd": 17,
++        "fd": 18,
+         "host": "/usr",
+         "guest": "/usr",
+@@
+       },
+       {
+-        "fd": 18,
++        "fd": 19,
+         "host": "/etc/ld.so.cache",
+         "guest": "/etc/ld.so.cache",
+@@
+       },
+       {
+-        "fd": 19,
++        "fd": 20,
+         "host": "/etc/ld.so.conf",
+         "guest": "/etc/ld.so.conf",
+@@
+       },
+       {
+-        "fd": 20,
++        "fd": 21,
++        "host": "/run/user/1000/snug/run-PID/browser.fifo",
++        "guest": "/snug/browser.fifo",
++        "access": "rw",
++        "optional": false
++      },
++      {
++        "fd": 22,
+         "host": "/home/u/proj/sub",
+         "guest": "/home/u/proj/sub",

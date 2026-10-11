@@ -1,7 +1,7 @@
 ── bwrap ─────────────────────────────────────────────────────────────────
 (this argv determines the network posture on its own: --unshare-net creates
  the sandbox's own empty network namespace, so running it by hand reproduces
- it.)
+ it; running it by hand needs each listed descriptor opened on its path first.)
 bwrap
   --ro-bind /usr /usr
   -- /bin/sh
@@ -11,3 +11,10 @@ bwrap
  is therefore a fact about that $PATH then — a directory earlier on it than
  /usr/bin chooses the binary, after this artifact has said everything it has
  to say. Settle it by hand with: command -v bwrap)
+bind sources — snug opens each at launch with O_PATH and RESOLVE_NO_SYMLINKS
+and refuses the run if any path component is a symlink by then; the numbers
+above are illustrative, the run assigns its own:
+  fd 17  ro  /usr
+  fd 18  ro  /etc/ld.so.cache
+  fd 19  ro  /etc/ld.so.conf
+  fd 20  rw  /home/u/proj/sub

@@ -148,7 +148,7 @@ func cloneflagNames(flags uintptr) []string {
 // TestBwrapUnshareSetIsExhaustive describe, not a second copy of the list.
 func bwrapStageUnshareFlags() []string {
 	p := &policy.Policy{Topology: policy.Topology{Netns: policy.NetnsStage}}
-	flags := p.BwrapFlags(0, 0, func(string) int { return 0 })
+	flags := p.BwrapFlags(0, 0, policy.FDs{Data: func(string) int { return 0 }, Bind: func(string) (int, bool) { return 0, true }})
 	var out []string
 	for _, f := range flags {
 		if !strings.HasPrefix(f, "--unshare-") {

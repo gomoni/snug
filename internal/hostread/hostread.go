@@ -32,10 +32,14 @@
 package hostread
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // MaxSSHPublicKeyBytes bounds identity.ssh.key. An OpenSSH public key line is
@@ -54,11 +58,13 @@ const MaxSSHPublicKeyBytes = 64 << 10
 // Two kinds of failure come back distinctly, because Optional and Required
 // below disagree about what to do with each:
 //
-//   - openErr is whatever os.OpenFile reported — absent (ENOENT), permission
+//   - openErr is whatever the open reported — absent (ENOENT), permission
 //     denied, too many symlinks, and so on. It is returned RAW, unwrapped,
 //     so a caller that wants to distinguish "does not exist" from "exists
 //     but I may not read it" can still do so with errors.Is against it,
-//     exactly as a caller of os.ReadFile could.
+//     exactly as a caller of os.ReadFile could. openNoLinks is the one
+//     exception: it wraps its ELOOP and ENOSYS refusals with an explanation,
+//     and the errno stays reachable with errors.Is.
 //   - problem is a human-readable reason for a failure that only becomes
 //     visible once the file is OPEN: wrong type, oversized, a stat or read
 //     that failed outright. It is never about whether the file exists.
@@ -68,12 +74,12 @@ const MaxSSHPublicKeyBytes = 64 << 10
 // in front of it and get one sentence. Clause below hands it over unchanged;
 // Optional and Required supply "it" so their existing callers read as before.
 //
+// open is how the file is opened, and it is the only thing the two public
+// families differ in: every reader below follows links except RequiredNoLinks.
+//
 //lint:ignore ST1008 openErr and problem are two halves of one answer; see the doc comment above
-func read(path string, maxBytes int64) (data []byte, openErr error, problem string) {
-	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
-	// effect on the read below. It exists solely so opening a FIFO returns
-	// instead of blocking forever — the whole of issue #337.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+func read(path string, maxBytes int64, open func(string) (*os.File, error)) (data []byte, openErr error, problem string) {
+	f, err := open(path)
 	if err != nil {
 		return nil, err, ""
 	}
@@ -102,6 +108,37 @@ func read(path string, maxBytes int64) (data []byte, openErr error, problem stri
 			"(its reported size was %d)", maxBytes, fi.Size())
 	}
 	return data, nil, ""
+}
+
+// openFollowing opens path the ordinary way. O_NONBLOCK applies to the OPEN;
+// for a regular file it has no further effect on the read. It exists solely so
+// opening a FIFO returns instead of blocking forever — the whole of issue #337.
+func openFollowing(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
+
+// openNoLinks is openFollowing through openat2(2) with RESOLVE_NO_SYMLINKS, so
+// a link at any component, the last included, fails the open instead of being
+// followed. O_NOCTTY keeps a terminal device from becoming the controlling
+// terminal; the type check in read refuses it afterwards anyway.
+func openNoLinks(path string) (*os.File, error) {
+	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC | unix.O_NOCTTY,
+		Resolve: unix.RESOLVE_NO_SYMLINKS,
+	})
+	switch {
+	case err == nil:
+		return os.NewFile(uintptr(fd), path), nil
+	case errors.Is(err, unix.ELOOP):
+		return nil, fmt.Errorf("%s: a component is a symlink, or became one after snug resolved "+
+			"the path; another process with write access to a parent directory (e.g. a concurrent "+
+			"sandbox) may be redirecting this file: %w", path, err)
+	case errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EPERM):
+		return nil, fmt.Errorf("%s: snug needs openat2(2) (Linux 5.6+) to open this file race-free; "+
+			"a seccomp filter around snug may be blocking it, and there is no fallback to opening "+
+			"by path: %w", path, err)
+	}
+	return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 }
 
 // Optional reads path the way a file whose ABSENCE is an ordinary state must
@@ -139,7 +176,7 @@ func Optional(path string, maxBytes int64) (data []byte, note string) {
 // suffix of its own, and that requirement is what kept a second copy of this
 // read sequence alive in internal/cli. One sequence, two renderings.
 func Clause(path string, maxBytes int64) (data []byte, clause string) {
-	data, openErr, problem := read(path, maxBytes)
+	data, openErr, problem := read(path, maxBytes, openFollowing)
 	if openErr != nil {
 		return nil, "" // absent, or unreadable by permission: nothing to stage
 	}
@@ -168,7 +205,25 @@ func itIs(clause string) string {
 // becoming a fatal error while "a config file that exists but will not read"
 // stays one (invariant 5: no silent downgrade).
 func Required(path string, maxBytes int64) ([]byte, error) {
-	data, openErr, problem := read(path, maxBytes)
+	return required(path, maxBytes, openFollowing)
+}
+
+// RequiredNoLinks is Required for a path snug has already resolved to its
+// final spelling and means to open WITHOUT following a link: a pinned key
+// file, read after the policy that names it was checked. A link at any
+// component fails the open, so a link planted between the check and this read
+// cannot choose which file the key comes from. The caller must pass the
+// resolved path (policy.Resolve stores identity key paths that way); a path
+// that merely contains a link a human trusts is refused here, by design.
+//
+// Errors are Required's, plus the openat2 refusals: a link anywhere on the
+// path, and a kernel or filter that does not offer openat2(2).
+func RequiredNoLinks(path string, maxBytes int64) ([]byte, error) {
+	return required(path, maxBytes, openNoLinks)
+}
+
+func required(path string, maxBytes int64, open func(string) (*os.File, error)) ([]byte, error) {
+	data, openErr, problem := read(path, maxBytes, open)
 	if openErr != nil {
 		return nil, openErr
 	}

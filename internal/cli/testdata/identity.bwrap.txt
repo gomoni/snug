@@ -26,10 +26,10 @@
 --symlink usr/sbin /sbin
 --size 1073741824
 --tmpfs /tmp
---ro-bind /usr /usr
+--ro-bind-fd 23 /usr
 --ro-bind-data 10 /etc/group
---ro-bind /etc/ld.so.cache /etc/ld.so.cache
---ro-bind /etc/ld.so.conf /etc/ld.so.conf
+--ro-bind-fd 24 /etc/ld.so.cache
+--ro-bind-fd 25 /etc/ld.so.conf
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
 --ro-bind-data 13 /etc/resolv.conf
@@ -39,7 +39,7 @@
 --ro-bind-data 15 /proc/key-users
 --ro-bind-data 16 /proc/keys
 --ro-bind /proc/sys /proc/sys
---bind /run/user/1000/snug/run-N/ssh-agent.sock /snug/ssh-agent.sock
+--bind-fd 26 /snug/ssh-agent.sock
 --size 1073741824
 --tmpfs /home/u/.cache
 --size 1073741824
@@ -61,7 +61,7 @@
 --ro-bind-data 19 /home/u/.ssh/id_snug.pub
 --ro-bind-data 20 /home/u/.ssh/id_snug_signing.pub
 --ro-bind-data 21 /home/u/.ssh/known_hosts
---bind /home/u/proj/sub /home/u/proj/sub
+--bind-fd 27 /home/u/proj/sub
 --ro-bind-data 22 /home/u/.config/git/allowed_signers
 --remount-ro /
 --clearenv

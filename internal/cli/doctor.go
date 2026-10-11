@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomoni/snug/internal/bwrapinfo"
 	"github.com/gomoni/snug/internal/getent"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
@@ -98,6 +99,12 @@ func doctor(argv []string) int {
 		ok = false
 	} else {
 		fmt.Printf("  ✅ %s\n     📍 %s\n", firstLine(capture(bwrap, "--version")), bwrap)
+		// Every run binds its grants by descriptor, so a bwrap that cannot is
+		// a bwrap that cannot run a sandbox: the same refusal sandbox.Run gives.
+		if berr := bwrapinfo.RequireBindFD(bwrap); berr != nil {
+			fmt.Printf("  ❌ %v\n", berr)
+			ok = false
+		}
 	}
 
 	if !reportGetent(getent.LookPath) {

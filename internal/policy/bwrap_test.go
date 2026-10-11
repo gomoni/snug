@@ -2,6 +2,7 @@ package policy
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,21 +11,22 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
-// Golden argv files are the review artifact for a security change: a diff here
-// is a diff in the sandbox's boundary, and it is what a human actually reads
-// before approving. Regenerate with `go test ./internal/policy -update`, then
-// READ the diff — never update one without saying in the commit what changed.
-func TestGoldenBwrapArgs(t *testing.T) {
-	cases := []struct {
-		name string
-		sel  []ProfileName
-		ctx  Context
-		// env supplies this case's fake host. nil means newFakeEnv() — every
-		// case but one shares the plain fixture, and PATH stays off it
-		// deliberately (see "sanitise" below) so the shared fixture does not
-		// silently grow a host value every future case inherits.
-		env func() *fakeEnv
-	}{
+// goldenCase is one row of TestGoldenBwrapArgs, named so the sweeps that must
+// cover every golden selection (TestEveryBindCompilesToAnFDExceptProcfs) walk
+// the same table instead of keeping a second list.
+type goldenCase struct {
+	name string
+	sel  []ProfileName
+	ctx  Context
+	// env supplies this case's fake host. nil means newFakeEnv() — every
+	// case but one shares the plain fixture, and PATH stays off it
+	// deliberately (see "sanitise" below) so the shared fixture does not
+	// silently grow a host value every future case inherits.
+	env func() *fakeEnv
+}
+
+func goldenCases() []goldenCase {
+	return []goldenCase{
 		{"sys", []ProfileName{"@sys", "@target-rw"}, testCtx(), nil},
 		// What a bare `snug <dir>` produces: the `defaults` setting. It is
 		// byte-identical to the parent-ro case today, because `home` arrives via
@@ -93,7 +95,14 @@ func TestGoldenBwrapArgs(t *testing.T) {
 		// the selection inherits or sanitises them.
 		{"declared", declaredProbeSelection(), testCtx(), declaredProbeEnv},
 	}
+}
 
+// Golden argv files are the review artifact for a security change: a diff here
+// is a diff in the sandbox's boundary, and it is what a human actually reads
+// before approving. Regenerate with `go test ./internal/policy -update`, then
+// READ the diff — never update one without saying in the commit what changed.
+func TestGoldenBwrapArgs(t *testing.T) {
+	cases := goldenCases()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newFakeEnv()
@@ -194,6 +203,29 @@ func TestBwrapArgsAreOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestBindSourcesAreOrderIndependent fails if the list the launcher opens
+// descriptors from (or the stub numbers dry-run prints against it) depends on
+// the order profiles were named: the fd numbers are positional, so an
+// order-dependent list would make the same policy launch with a different
+// argv.
+func TestBindSourcesAreOrderIndependent(t *testing.T) {
+	a := mustResolve(t, "@sys", "@home", "@target-rw", "@parent-ro")
+	b := mustResolve(t, "@parent-ro", "@target-rw", "@home", "@sys")
+	if len(a.BindSources()) == 0 {
+		t.Fatal("control: the selection has no bind sources, so the comparison measures nothing")
+	}
+	render := func(p *Policy) string {
+		var s strings.Builder
+		for _, m := range p.BindSources() {
+			fmt.Fprintf(&s, "%s %s %v %v %d\n", m.Host, m.Guest, m.Access, m.Optional, p.StubBindFDs()[m.Guest])
+		}
+		return s.String()
+	}
+	if render(a) != render(b) {
+		t.Errorf("BindSources depends on profile order:\n%s\nvs\n%s", render(a), render(b))
+	}
+}
+
 // Ancestors must be emitted before descendants, or a read-only parent bind
 // shadows the writable child and the sandbox silently loses its project.
 func TestParentBindPrecedesChildBind(t *testing.T) {
@@ -204,10 +236,10 @@ func TestParentBindPrecedesChildBind(t *testing.T) {
 
 	parent, child := -1, -1
 	for i, a := range args {
-		if a == "/home/u/proj" && i > 0 && args[i-1] == "--ro-bind" {
+		if a == "/home/u/proj" && i > 1 && args[i-2] == "--ro-bind-fd" {
 			parent = i
 		}
-		if a == "/home/u/proj/sub" && i > 0 && args[i-1] == "--bind" {
+		if a == "/home/u/proj/sub" && i > 1 && args[i-2] == "--bind-fd" {
 			child = i
 		}
 	}
@@ -364,7 +396,7 @@ func slicesContains(hay []string, needle string) bool {
 // BwrapFlags must therefore contain no separator, so a caller has somewhere
 // safe to add flags.
 func TestBwrapFlagsHasNoSeparator(t *testing.T) {
-	for i, a := range mustResolveDefaults(t).BwrapFlags(1000, 1000, func(string) int { return 9 }) {
+	for i, a := range mustResolveDefaults(t).BwrapFlags(1000, 1000, FDs{Data: func(string) int { return 9 }, Bind: func(string) (int, bool) { return 9, true }}) {
 		if a == "--" {
 			t.Fatalf("BwrapFlags contains a `--` separator at %d; anything a caller appends "+
 				"after it would be passed to the payload instead of to bwrap", i)

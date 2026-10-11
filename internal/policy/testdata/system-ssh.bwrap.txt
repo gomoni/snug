@@ -16,12 +16,12 @@
 --remount-ro /dev
 --size 1073741824
 --tmpfs /dev/shm
---ro-bind /etc /etc
---ro-bind-try /opt /opt
+--ro-bind-fd 18 /etc
+--ro-bind-fd 19 /opt
 --proc /proc
 --size 1073741824
 --tmpfs /tmp
---ro-bind /usr /usr
+--ro-bind-fd 20 /usr
 --ro-bind-data 10 /etc/group
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
@@ -44,7 +44,7 @@
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind /home/u/proj/sub /home/u/proj/sub
+--bind-fd 21 /home/u/proj/sub
 --ro-bind-data 17 /usr/etc/ssh/ssh_config
 --remount-ro /
 --clearenv

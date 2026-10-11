@@ -136,6 +136,10 @@ type Report struct {
 	// redirect advice are true for the stdout case and false for the others.
 	StdioTerminals policy.StdioSet
 	BwrapArgv      []string
+	// BindSources is policy.BindSources with the descriptor number BwrapArgv
+	// prints for each: the mounts snug opens itself at launch and hands bwrap
+	// by descriptor. The numbers are illustrative.
+	BindSources []reportBindSource
 	// BwrapIncomplete is true when BwrapArgv, run standalone, will NOT
 	// reproduce this policy's actual network posture — see
 	// BwrapIncompleteReason for why. Refs #332 F1d: making the argv look more
@@ -488,6 +492,10 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 		StdioTerminals: p.StdioTerminals,
 		BwrapArgv:      args,
 	}
+	stubFDs := p.StubBindFDs()
+	for _, m := range p.BindSources() {
+		rep.BindSources = append(rep.BindSources, reportBindSource{FD: stubFDs[m.Guest], Mount: m})
+	}
 	if refusedBy != nil {
 		rep.Outcome = "refused"
 		rep.Refusal = refusedBy.Error()
@@ -839,4 +847,11 @@ func buildSeccompReport(cfg config) reportSeccomp {
 		s.CompatArch, _ = sandbox.CompatArchName()
 	}
 	return s
+}
+
+// reportBindSource is one policy.BindSources entry and the illustrative
+// descriptor number the argv gives it.
+type reportBindSource struct {
+	FD    int
+	Mount policy.Mount
 }
