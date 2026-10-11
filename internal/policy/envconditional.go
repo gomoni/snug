@@ -71,7 +71,7 @@ var conditionalEnvs = []conditionalEnv{
 		on:       func(p *Policy) bool { return p.Podman != PodmanOff },
 		by: func(prof *Profile) bool {
 			m, err := ParsePodmanMode(prof.Podman)
-			return prof.Podman != "" && err == nil && m != PodmanOff
+			return err == nil && m != PodmanOff
 		},
 		writes: "points the container clients at its filtering proxy",
 	},
@@ -104,7 +104,7 @@ var conditionalEnvs = []conditionalEnv{
 		on: func(p *Policy) bool { return p.Git == GitExtract || p.Identity != nil },
 		by: func(prof *Profile) bool {
 			m, err := ParseGitMode(prof.Git)
-			return prof.Identity != nil || (prof.Git != "" && err == nil && m == GitExtract)
+			return prof.Identity != nil || (err == nil && m == GitExtract)
 		},
 		writes: "points git at the ~/.gitconfig it generates",
 	},

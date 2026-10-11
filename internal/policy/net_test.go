@@ -271,13 +271,16 @@ func TestParseNetModeAcceptsTwoModesAndNothingElse(t *testing.T) {
 		text string
 		want NetMode
 	}{
-		{"isolated", NetIsolated},
 		{"egress", NetEgress},
 	} {
 		got, err := ParseNetMode(tc.text)
 		if err != nil || got != tc.want {
 			t.Errorf("ParseNetMode(%q) = %v, %v; want %v, nil", tc.text, got, err, tc.want)
 		}
+	}
+
+	if _, err := ParseNetMode("isolated"); err == nil {
+		t.Error(`ParseNetMode("isolated") parsed; the floor is display-only`)
 	}
 
 	for _, text := range []string{"bridge", "slirp4netns", "none", "EGRESS", ""} {
@@ -289,7 +292,7 @@ func TestParseNetModeAcceptsTwoModesAndNothingElse(t *testing.T) {
 		}
 		// The message names the accepted set, which is what a reader needs and
 		// the only thing it should name.
-		for _, says := range []string{"isolated", "egress"} {
+		for _, says := range []string{"egress"} {
 			if !strings.Contains(err.Error(), says) {
 				t.Errorf("ParseNetMode(%q) does not name %q as an accepted mode: %v",
 					text, says, err)

@@ -744,16 +744,30 @@ func (m PodmanMode) String() string {
 	return "off"
 }
 
+// errFloorValue is the refusal for the floor of a max-joined key written in a
+// profile. The floor is what an absent key already means and every join takes
+// the larger side, so the line can only ever do nothing; accepting it would let
+// an author believe it closes something another profile opened.
+func errFloorValue(key, floor string) error {
+	return fmt.Errorf("%s = %q changes nothing: %q is the default and a profile can only add. Remove the line.",
+		key, floor, floor)
+}
+
+// ParsePodmanMode parses a profile's `podman` value. An empty string is the
+// absent key and means the floor; the written word "off" is refused, as is
+// anything unknown.
 func ParsePodmanMode(s string) (PodmanMode, error) {
 	switch s {
-	case "", "off":
+	case "":
 		return PodmanOff, nil
+	case "off":
+		return PodmanOff, errFloorValue("podman", s)
 	case "socket":
 		return PodmanSocket, nil
 	case "build":
 		return PodmanBuild, nil
 	default:
-		return 0, fmt.Errorf("unknown podman mode %q (want off, socket or build)", s)
+		return 0, fmt.Errorf("unknown podman mode %q (want socket or build)", s)
 	}
 }
 

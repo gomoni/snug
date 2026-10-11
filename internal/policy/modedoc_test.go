@@ -57,10 +57,22 @@ var modeParsers = []modeParser{
 		func(s string) error { _, err := ParseGitMode(s); return err }},
 }
 
+// sameSet grades a documented value list against a mode's constants. The first
+// constant is the floor: it is display-only, so the documentation must list it
+// (String() spells it) and the parser must refuse it; every other value must
+// be listed and accepted.
 func sameSet(t *testing.T, where, key string, documented, accepted []string, parse func(string) error) {
 	t.Helper()
+	floor := accepted[0]
 	for _, v := range documented {
-		if err := parse(v); err != nil {
+		err := parse(v)
+		if v == floor {
+			if err == nil {
+				t.Errorf("%s documents %s = %q, the floor, and the parser accepts it; a profile can only add", where, key, v)
+			}
+			continue
+		}
+		if err != nil {
 			t.Errorf("%s documents %s = %q and the parser refuses it: %v", where, key, v, err)
 		}
 	}

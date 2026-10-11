@@ -50,14 +50,16 @@ func (m NetMode) String() string {
 	}
 }
 
+// ParseNetMode parses a profile's `network` value. It refuses "isolated", the
+// floor, and anything unknown; String still spells the floor for display.
 func ParseNetMode(s string) (NetMode, error) {
 	switch s {
 	case "isolated":
-		return NetIsolated, nil
+		return 0, errFloorValue("network", s)
 	case "egress":
 		return NetEgress, nil
 	default:
-		return 0, fmt.Errorf("unknown network mode %q (want isolated or egress)", s)
+		return 0, fmt.Errorf("unknown network mode %q (want egress)", s)
 	}
 }
 

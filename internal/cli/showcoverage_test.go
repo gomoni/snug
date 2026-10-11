@@ -275,25 +275,3 @@ func TestProfileShowRendersNoCapabilityRowsForAPathOnlyProfile(t *testing.T) {
 		}
 	}
 }
-
-// TestProfileShowRendersNoRowForAnExplicitOff fails if `podman = "off"` or
-// `git = "off"` renders the consequence of the feature being on. Resolve reads
-// both as the base state — no engine, no subuid range, no generated
-// ~/.gitconfig — so the row would tell a human a profile grants what it does not.
-func TestProfileShowRendersNoRowForAnExplicitOff(t *testing.T) {
-	got := showProfileText(t, `
-[profile.offs]
-description = "offs description"
-podman = "off"
-git    = "off"
-`, "offs")
-	if !strings.Contains(got, "offs description") {
-		t.Fatalf("PRECONDITION: the profile did not render at all:\n%s", got)
-	}
-	for _, consequence := range []string{"subuid", "container engine", ".gitconfig"} {
-		if strings.Contains(got, consequence) {
-			t.Errorf("an explicit off rendered %q, the consequence of the feature being on:\n%s",
-				consequence, got)
-		}
-	}
-}
