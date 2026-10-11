@@ -314,6 +314,13 @@ func (p *Policy) Validate(env Environ) error {
 		// (.claude/design/INDEX.md §3.3).
 		if m.Kind != KindSymlink {
 			if via, resolved := resolveViaDeepest(links, g); via != "" {
+				if at, ours := landingInSnugsOwn(resolved); ours {
+					return fmt.Errorf("grant %s (from %s) resolves through the symlink %s -> %s, landing at %s, "+
+						"at or inside %s, which is snug's own; no grant may be made there. "+
+						"Remove the grant, or point the symlink somewhere else",
+						VisibleText(g), strings.Join(m.From, "+"), VisibleText(via),
+						VisibleText(links[via]), VisibleText(resolved), VisibleText(at))
+				}
 				return fmt.Errorf("grant %s (from %s) resolves through the symlink %s -> %s, landing at %s; "+
 					"bwrap cannot create a mountpoint at a symlink destination — grant %s instead",
 					g, strings.Join(m.From, "+"), via, links[via], resolved, resolved)
@@ -1334,6 +1341,25 @@ func snugsOwnAncestorOf(guest string) (at string, own ownedPath, ok bool) {
 	return "", ownedPath{}, false
 }
 
+// landingInSnugsOwn reports whether a mountpoint landing at path is one snug
+// refuses as its own, and which of snug's paths decided: path is that path, an
+// ancestor of it, or lies inside it. A refusal that tells the user to "grant
+// <landing> instead" must ask this first, or the advice is a dead end. A path
+// strictly inside StagedBinDir is not own: staging a single executable there
+// is the one grant that directory exists for.
+func landingInSnugsOwn(path string) (at string, ok bool) {
+	if at, _, ok := snugsOwnCovered(path); ok {
+		return at, true
+	}
+	if at, _, ok := snugsOwnAncestorOf(path); ok && at != StagedBinDir {
+		return at, true
+	}
+	if t, ok := namesKernelTree(path); ok {
+		return t.path, true
+	}
+	return "", false
+}
+
 func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 	keys := make([]string, 0, len(snugsOwn))
 	for k := range snugsOwn {
@@ -1970,18 +1996,28 @@ func relocatedError(p *Policy, m Mount, via, text, landing string) error {
 			VisibleText(cover.Guest))
 	}
 
+	fix := fmt.Sprintf("grant %s — the path the sandbox really has.", VisibleText(landing))
+	if own, ours := landingInSnugsOwn(landing); ours {
+		// The shadowing sentence above describes landing on a profile's grant;
+		// here the landing is snug's own tree, so say that instead.
+		tail = fmt.Sprintf("inside %s, which is snug's own and no profile may mount over.",
+			VisibleText(own))
+		fix = fmt.Sprintf("%s is snug's own, so no grant may be made there either. Remove the\n"+
+			"       grant, or change the symlink so it lands somewhere a grant may go.",
+			VisibleText(own))
+	}
+
 	return fmt.Errorf("profile %s puts %s at %s, but that is\n"+
 		"       not where it lands.\n"+
 		"       profile %s grants %s on %s (the host's %s), and %s on the host\n"+
 		"       is a symlink to %q. bwrap resolves a mount destination INSIDE the sandbox, so it\n"+
 		"       creates the mountpoint at\n"+
 		"       %s instead — %s\n"+
-		"       Fix: grant %s — the path the sandbox really has.",
+		"       Fix: %s",
 		provenance(m), describeNode(m), VisibleText(m.Guest),
 		provenance(outer), outer.Access, at, VisibleText(host),
 		VisibleText(hostVia), VisibleText(text),
-		VisibleText(landing), tail,
-		VisibleText(landing))
+		VisibleText(landing), tail, fix)
 }
 
 // rejectRelocatedGrant refuses a non-Authored mount whose guest destination,
