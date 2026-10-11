@@ -1,0 +1,6 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "~/data read-only but ~/data/out writable" -> ro ~/data, rw ~/data/out
+[profile.data]
+ro = ["~/data"]
+rw = ["~/data/out"]

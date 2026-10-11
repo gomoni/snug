@@ -1,0 +1,11 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "run claude, read the siblings, my gh" -> @claude, @parent-ro, stage ~/bin/gh as gh
+[profile.agent]
+include = [
+  # ABUSE (@claude): the sandbox can spend your Anthropic credits and read your Claude settings and personal skills.
+  "@claude",
+  # ABUSE (@parent-ro): a hostile process inside the sandbox can read every file under the target's parent — every sibling project, their .git/config, their .env files, any credential anyone left in one, and any SOCKET sitting in the tree.
+  "@parent-ro",
+]
+ro = ["~/bin/gh:/snug/bin/gh"]

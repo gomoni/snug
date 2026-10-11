@@ -1,0 +1,23 @@
+[project]
+name = "snug-setup-train"
+version = "0.0.0"
+description = "Dataset, LoRA fine-tune, GGUF export and evaluation for snug-setup's intent model"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.9",
+    "transformers>=4.57",
+    "peft>=0.17",
+    "datasets>=4.0",
+    "accelerate>=1.10",
+    "gguf>=0.17",
+    "sentencepiece",
+    "protobuf",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

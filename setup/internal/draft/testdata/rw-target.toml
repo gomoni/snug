@@ -1,0 +1,4 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "give me write access here" -> @target-rw
+[profile.webapp]

@@ -1,0 +1,520 @@
+package draft
+
+import (
+	"errors"
+	"flag"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gomoni/snug/setup/internal/intent"
+)
+
+var update = flag.Bool("update", false, "rewrite golden files")
+
+type fakeInfo struct{ mode fs.FileMode }
+
+func (fakeInfo) Name() string        { return "x" }
+func (fakeInfo) Size() int64         { return 0 }
+func (f fakeInfo) Mode() fs.FileMode { return f.mode }
+func (fakeInfo) ModTime() time.Time  { return time.Time{} }
+func (f fakeInfo) IsDir() bool       { return f.mode.IsDir() }
+func (fakeInfo) Sys() any            { return nil }
+
+func testHost() Host {
+	links := map[string]string{"/home/alice/link-to-ssh": "/home/alice/.ssh"}
+	return Host{
+		Home: "/home/alice", Target: "/home/alice/src/webapp", RuntimeDir: "/run/user/1000",
+		EvalSymlinks: func(p string) (string, error) {
+			if r, ok := links[p]; ok {
+				return r, nil
+			}
+			return p, nil
+		},
+		Stat: func(p string) (fs.FileInfo, error) {
+			switch {
+			case strings.Contains(p, "missing"):
+				return nil, fs.ErrNotExist
+			case strings.HasSuffix(p, ".sock"), strings.HasSuffix(p, "/agent.4242"):
+				return fakeInfo{fs.ModeSocket}, nil
+			}
+			return fakeInfo{0o644}, nil
+		},
+	}
+}
+
+func act(op string, kv ...string) intent.Action {
+	a := intent.Action{Op: op}
+	for i := 0; i < len(kv); i += 2 {
+		switch kv[i] {
+		case "name":
+			a.Name = kv[i+1]
+		case "path":
+			a.Path = kv[i+1]
+		case "access":
+			a.Access = kv[i+1]
+		case "host":
+			a.Host = kv[i+1]
+		case "verb":
+			a.Verb = kv[i+1]
+		case "kind":
+			a.Kind = kv[i+1]
+		case "account":
+			a.Account = kv[i+1]
+		case "value":
+			a.Value, a.HasValue = kv[i+1], true
+		}
+	}
+	return a
+}
+
+func TestSafetyRulesRefuse(t *testing.T) {
+	cases := []struct {
+		path string
+		code string
+	}{
+		{"~/.ssh", "sensitive_home"},
+		{"~/.ssh/id_ed25519", "sensitive_home"},
+		{"{home}/.aws", "sensitive_home"},
+		{"/home/alice/.gnupg", "sensitive_home"},
+		{"~/.config/gh", "sensitive_home"},
+		{"~/.config/gh/hosts.yml", "sensitive_home"},
+		{"~/.netrc", "sensitive_home"},
+		{"~/.docker", "sensitive_home"},
+		{"~/.kube", "sensitive_home"},
+		{"~/.claude", "sensitive_home"},
+		{"~/.local/share/keyrings", "sensitive_home"},
+		{"~/.config", "sensitive_home"},
+		{"~/.local/share", "sensitive_home"},
+		{"~/data/../.ssh", "sensitive_home"},
+		{"~/link-to-ssh", "sensitive_home"},
+		{"/home/alice", "whole_home"},
+		{"{home}", "whole_home"},
+		{"/home", "whole_home"},
+		{"/", "whole_home"},
+		{"/proc", CodeKernelPath},
+		{"/proc/self/mem", CodeKernelPath},
+		{"/dev", CodeKernelPath},
+		{"/dev/shm", CodeKernelPath},
+		{"/sys/fs", CodeKernelPath},
+		{"/snug", CodeKernelPath},
+		{"/snug/bin", CodeKernelPath},
+		{"/var/run/docker.sock", "docker_sock"},
+		{"/run/podman/podman.sock", "docker_sock"},
+		{"/run/docker", "docker_sock"},
+		{"/tmp/.X11-unix", "desktop_socket"},
+		{"/tmp/.X11-unix/X0", "desktop_socket"},
+		{"/run/user/1000", "desktop_socket"},
+		{"/run/user/1000/wayland-0", "desktop_socket"},
+		{"/run/user", "desktop_socket"},
+		{"/run/dbus", "desktop_socket"},
+		{"/run", "desktop_socket"},
+		{"/srv/thing.sock", "desktop_socket"},
+		{"/tmp/ssh-XXXX/agent.4242", "desktop_socket"},
+		{"/srv/a:b", CodeBadValue},
+		{"/srv/a\"b", CodeBadValue},
+	}
+	for _, c := range cases {
+		for _, access := range []string{"ro", "rw", "tmpfs"} {
+			d := New(testHost())
+			o := d.Apply(act(intent.OpGrantPath, "path", c.path, "access", access))
+			if o.Refused != c.code {
+				t.Errorf("grant %s %s: refused=%q (%s), want %q", access, c.path, o.Refused, o.Msg, c.code)
+			}
+			if !d.Empty() {
+				t.Errorf("grant %s %s changed the draft", access, c.path)
+			}
+		}
+	}
+}
+
+func TestSafetyRulesAllowOrdinary(t *testing.T) {
+	for _, p := range []string{"/srv/data", "~/data", "~/src", "{target}/out", "/opt/cache", "~/.cache/pip"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "" {
+			t.Errorf("%s refused: %+v", p, o)
+		}
+	}
+}
+
+func TestStageBinaryChecksHostPath(t *testing.T) {
+	d := New(testHost())
+	if o := d.Apply(act(intent.OpStageBinary, "host", "~/.ssh/id_ed25519", "name", "ssh-key")); o.Refused != "sensitive_home" {
+		t.Errorf("%+v", o)
+	}
+	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/foo", "name", "..")); o.Refused != CodeBadValue {
+		t.Errorf("%+v", o)
+	}
+	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/missing", "name", "foo")); o.Refused != CodeBadValue {
+		t.Errorf("missing file: %+v", o)
+	}
+	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/foo", "name", "foo")); o.Refused != "" || !strings.Contains(d.Render(), `"~/bin/foo:/snug/bin/foo"`) {
+		t.Errorf("%+v\n%s", o, d.Render())
+	}
+}
+
+func TestEnvRules(t *testing.T) {
+	refused := []struct {
+		a    intent.Action
+		code string
+	}{
+		{act(intent.OpSetEnv, "name", "GITHUB_TOKEN", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "MY_PASSWORD", "verb", "inherit"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "aws_secret_access_key", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "OPENAI_API_KEY", "verb", "inherit"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "APIKEY", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "DB_CREDENTIALS", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(intent.OpSetEnv, "name", "HOME", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "PATH", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "SHELL", "verb", "inherit"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "USER", "verb", "set", "value", "root"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "LOGNAME", "verb", "set", "value", "root"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "TMPDIR", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "PS1", "verb", "set", "value", "x"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "SNUG_TARGET", "verb", "set", "value", "/"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "SNUG", "verb", "inherit"), CodeReservedEnv},
+		{act(intent.OpSetEnv, "name", "LD_PRELOAD", "verb", "set", "value", "/x.so"), CodeNoVerb},
+		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "prepend", "value", "/x"), CodeUnknownList},
+		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "a\nb"), CodeBadValue},
+		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "{tmp}/x"), CodeBadValue},
+		{act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"), CodeNotGranted},
+		{act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "bin"), CodeBadValue},
+	}
+	for _, c := range refused {
+		d := New(testHost())
+		if o := d.Apply(c.a); o.Refused != c.code {
+			t.Errorf("%+v: %+v, want %s", c.a, o, c.code)
+		}
+		if !d.Empty() {
+			t.Errorf("%+v changed the draft", c.a)
+		}
+	}
+	d := New(testHost())
+	for _, a := range []intent.Action{
+		act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
+		act(intent.OpSetEnv, "name", "PAGER", "verb", "inherit"),
+		act(intent.OpGrantPath, "path", "~/go/bin", "access", "ro"),
+		act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
+	} {
+		if o := d.Apply(a); o.Refused != "" || !o.Changed {
+			t.Errorf("%+v: %+v", a, o)
+		}
+	}
+}
+
+func TestRelativePathsResolveAgainstTarget(t *testing.T) {
+	for _, p := range []string{"here", ".", "", "./"} {
+		d := New(testHost())
+		d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw"))
+		if len(d.RW) != 1 || d.RW[0] != "{target}" {
+			t.Errorf("%q -> %v", p, d.RW)
+		}
+	}
+	d := New(testHost())
+	d.Apply(act(intent.OpGrantPath, "path", "out/cache", "access", "rw"))
+	if len(d.RW) != 1 || d.RW[0] != "/home/alice/src/webapp/out/cache" {
+		t.Errorf("%v", d.RW)
+	}
+}
+
+func TestReadonlyTarget(t *testing.T) {
+	d := New(testHost())
+	d.Apply(act(intent.OpGrantPath, "path", "{target}", "access", "ro"))
+	if !d.ReadOnlyTarget {
+		t.Fatal("not readonly")
+	}
+	out := d.Render()
+	for _, want := range []string{`"@home"`, `"@sys"`, `ro = ["{target}"]`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s:\n%s", want, out)
+		}
+	}
+	if !strings.HasPrefix(d.RunLine("/p"), "snug --no-defaults -p NAME /p") {
+		t.Error(d.RunLine("/p"))
+	}
+	d.Apply(act(intent.OpUseProfile, "name", "@target-rw"))
+	if d.ReadOnlyTarget || strings.Contains(d.RunLine("/p"), "--no-defaults") {
+		t.Error("@target-rw should end the read-only target")
+	}
+}
+
+func TestLayering(t *testing.T) {
+	d := New(testHost())
+	d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "ro"))
+	d.Apply(act(intent.OpGrantPath, "path", "~/data/out", "access", "rw"))
+	if len(d.RO) != 1 || len(d.RW) != 1 {
+		t.Fatalf("%v %v", d.RO, d.RW)
+	}
+	d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "rw"))
+	if len(d.RO) != 0 || len(d.RW) != 2 {
+		t.Fatalf("ro->rw: %v %v", d.RO, d.RW)
+	}
+	if o := d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "ro")); o.Changed {
+		t.Errorf("ro after rw should not narrow: %+v", o)
+	}
+	if o := d.Apply(act(intent.OpDropPath, "path", "~/data")); !o.Changed || len(d.RW) != 1 {
+		t.Errorf("%+v %v", o, d.RW)
+	}
+	if o := d.Apply(act(intent.OpDropPath, "path", "~/nothing")); o.Refused != CodeNoSuchEntry {
+		t.Errorf("%+v", o)
+	}
+}
+
+func TestProfilesInteract(t *testing.T) {
+	d := New(testHost())
+	d.Apply(act(intent.OpUseProfile, "name", "@podman-socket"))
+	d.Apply(act(intent.OpUseProfile, "name", "@podman-build"))
+	if len(d.Include) != 1 || d.Include[0] != "@podman-build" {
+		t.Errorf("%v", d.Include)
+	}
+	if o := d.Apply(act(intent.OpUseProfile, "name", "@podman-socket")); o.Changed {
+		t.Errorf("%+v", o)
+	}
+	d.Apply(act(intent.OpDropProfile, "name", "@podman-socket"))
+	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	if len(d.Include) != 1 {
+		t.Errorf("%v", d.Include)
+	}
+	d.Apply(act(intent.OpDropProfile, "name", "@net"))
+	if !d.Empty() {
+		t.Errorf("%+v", d)
+	}
+}
+
+func TestParentROInHomeRefused(t *testing.T) {
+	h := testHost()
+	h.Target = "/home/alice/webapp"
+	d := New(h)
+	if o := d.Apply(act(intent.OpUseProfile, "name", "@parent-ro")); o.Refused != "whole_home" {
+		t.Errorf("%+v", o)
+	}
+}
+
+func TestNameProfile(t *testing.T) {
+	d := New(testHost())
+	if o := d.Apply(act(intent.OpNameProfile, "name", "my_work")); o.Refused == "" {
+		t.Error("underscore accepted")
+	}
+	if o := d.Apply(act(intent.OpNameProfile, "name", "work")); !o.Changed || d.Name != "work" {
+		t.Error("name not set")
+	}
+	if !d.Apply(act(intent.OpShow)).NotMine {
+		t.Error("show is not the draft's")
+	}
+}
+
+func TestCloneIsDeep(t *testing.T) {
+	d := New(testHost())
+	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	d.SetGit("A", "a@x")
+	c := d.Clone()
+	c.Apply(act(intent.OpUseProfile, "name", "@git"))
+	c.Git.Name = "B"
+	c.Include[0] = "@claude"
+	if len(d.Include) != 1 || d.Include[0] != "@net" || d.Git.Name != "A" {
+		t.Errorf("clone shares state: %+v", d)
+	}
+}
+
+func TestSummary(t *testing.T) {
+	d := New(testHost())
+	d.Name = "webapp"
+	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	d.Apply(act(intent.OpUseProfile, "name", "@git"))
+	d.Apply(act(intent.OpGrantPath, "path", "/srv/data", "access", "rw"))
+	d.SetSSH("/home/alice/.ssh/id_work.pub")
+	d.SetGH("github.com", "alice-corp")
+	_, user := intent.FormatPrompt(intent.Context{Target: d.Host.Target, Draft: d.Summary()}, "x")
+	want := "draft: name=webapp include=@net,@git rw=/srv/data ro=- tmpfs=- env=- identity=ssh:id_work,github:alice-corp"
+	if !strings.Contains(user, want) {
+		t.Errorf("%s", user)
+	}
+}
+
+func TestIdentityRender(t *testing.T) {
+	d := New(testHost())
+	d.Name = "ent"
+	d.SetSSH("/home/alice/.ssh/id_ent.pub")
+	d.SetGH("ghe.corp.example", "alice")
+	out := d.Render()
+	if strings.Count(out, `host = "ghe.corp.example"`) != 2 {
+		t.Errorf("a non-default host must be written to both blocks:\n%s", out)
+	}
+	d2 := New(testHost())
+	d2.Name = "p"
+	d2.SetGH("github.com", "alice")
+	d2.SetSSH("/home/alice/.ssh/id_a.pub")
+	if strings.Contains(d2.Render(), "host =") {
+		t.Errorf("default host written:\n%s", d2.Render())
+	}
+	if !strings.Contains(d2.Render(), `key = "{home}/.ssh/id_a.pub"`) || !strings.Contains(d2.Render(), `agent = "proxy"`) {
+		t.Error(d2.Render())
+	}
+}
+
+var normRE = regexp.MustCompile(`\s+`)
+
+func normalise(s string) string {
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		l = strings.TrimSpace(l)
+		l = strings.TrimPrefix(l, "#")
+		lines = append(lines, l)
+	}
+	return normRE.ReplaceAllString(strings.Join(lines, " "), " ")
+}
+
+func TestAbuseSentencesAreStillInBaseToml(t *testing.T) {
+	raw, err := os.ReadFile("../../../internal/profile/profiles/base.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := normalise(string(raw))
+	for name, sentence := range Abuse {
+		if !strings.Contains(base, sentence) {
+			t.Errorf("the abuse sentence for %s is not in base.toml any more:\n%s", name, sentence)
+		}
+	}
+	for _, n := range append([]string{"@sys", "@home"}, intent.Builtins...) {
+		if Abuse[n] == "" {
+			t.Errorf("no abuse sentence for %s", n)
+		}
+	}
+}
+
+type scenario struct {
+	name string
+	// say is the human's request the steps are recorded under.
+	say   string
+	steps []intent.Action
+	setup func(*Draft)
+}
+
+func scenarios() []scenario {
+	return []scenario{
+		{name: "rw-target", say: "give me write access here", steps: []intent.Action{act(intent.OpNameProfile, "name", "webapp"), act(intent.OpUseProfile, "name", "@target-rw")}},
+		{name: "readonly-target", say: "read-only here", steps: []intent.Action{act(intent.OpNameProfile, "name", "review"), act(intent.OpGrantPath, "path", "{target}", "access", "ro")}},
+		{name: "net-git-identity", say: "needs internet and my git name", steps: []intent.Action{act(intent.OpNameProfile, "name", "work"), act(intent.OpUseProfile, "name", "@net"), act(intent.OpUseProfile, "name", "@git")},
+			setup: func(d *Draft) {
+				d.SetSSH("/home/alice/.ssh/id_work.pub")
+				d.SetGH("github.com", "alice-corp")
+				d.SetGit("Alice Doe", "alice@corp.example")
+			}},
+		{name: "podman-build", say: "build images with podman, online", steps: []intent.Action{act(intent.OpNameProfile, "name", "images"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@podman-build"), act(intent.OpUseProfile, "name", "@net")}},
+		{name: "env-and-path", say: "add ~/go/bin to PATH, vim, my pager, scratch /work", steps: []intent.Action{
+			act(intent.OpNameProfile, "name", "tools"),
+			act(intent.OpGrantPath, "path", "~/go/bin", "access", "ro"),
+			act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
+			act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
+			act(intent.OpSetEnv, "name", "PAGER", "verb", "inherit"),
+			act(intent.OpGrantPath, "path", "/work", "access", "tmpfs"),
+		}},
+		{name: "door", say: "serve my web app", steps: []intent.Action{act(intent.OpNameProfile, "name", "serve"), act(intent.OpUseProfile, "name", "@net"), act(intent.OpOpenDoor, "name", "web")}},
+		{name: "layering", say: "~/data read-only but ~/data/out writable", steps: []intent.Action{act(intent.OpNameProfile, "name", "data"), act(intent.OpGrantPath, "path", "~/data", "access", "ro"), act(intent.OpGrantPath, "path", "~/data/out", "access", "rw")}},
+		{name: "claude-parent", say: "run claude, read the siblings, my gh", steps: []intent.Action{act(intent.OpNameProfile, "name", "agent"), act(intent.OpUseProfile, "name", "@claude"), act(intent.OpUseProfile, "name", "@parent-ro"),
+			act(intent.OpStageBinary, "host", "~/bin/gh", "name", "gh")}},
+		{name: "compose", say: "podman online with /srv/pg and /srv/uploads", steps: []intent.Action{act(intent.OpNameProfile, "name", "stack"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@net"),
+			act(intent.OpGrantPath, "path", "/srv/pg", "access", "ro"), act(intent.OpGrantPath, "path", "/srv/uploads", "access", "rw")}},
+		{name: "ledger-conflict", say: "keep it offline", steps: []intent.Action{act(intent.OpNameProfile, "name", "offline"), act(intent.OpDropProfile, "name", "@net"),
+			act(intent.OpGrantPath, "path", "/srv/pg", "access", "ro")},
+			setup: func(d *Draft) {
+				d.Propose(act(intent.OpUseProfile, "name", "@podman-build"), SourceFile, "README.md", 2)
+				for _, accept := range []bool{false, true} {
+					a := act(intent.OpUseProfile, "name", "@net")
+					if accept {
+						a = act(intent.OpGrantPath, "path", "/srv/pg", "access", "rw")
+					}
+					if _, p := d.Propose(a, SourceFile, "README.md", 2); p != nil {
+						d.Decide(*p, accept)
+					}
+				}
+			}},
+	}
+}
+
+func build(t *testing.T, s scenario) *Draft {
+	d := New(testHost())
+	for _, a := range s.steps {
+		if o, _ := d.Propose(a, SourceUser, s.say, 1); o.Refused != "" {
+			t.Fatalf("%s: %+v refused: %+v", s.name, a, o)
+		}
+	}
+	if s.setup != nil {
+		s.setup(d)
+	}
+	return d
+}
+
+func TestGolden(t *testing.T) {
+	for _, s := range scenarios() {
+		got := build(t, s).Render()
+		path := filepath.Join("testdata", s.name+".toml")
+		if *update {
+			if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != string(want) {
+			t.Errorf("%s differs from %s:\n%s", s.name, path, got)
+		}
+	}
+}
+
+// TestGoldenParsesInSnug builds snug from the root module and has it read every
+// golden file as a user profile. It is skipped, loudly, when the build is
+// impossible; the golden files are then unchecked against snug's parser.
+func TestGoldenParsesInSnug(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "snug")
+	cmd := exec.Command("go", "build", "-o", bin, "./cmd/snug")
+	cmd.Dir = "../../.."
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cannot build snug from the root module: %v\n%s", err, out)
+	}
+	for _, s := range scenarios() {
+		xdg := t.TempDir()
+		dir := filepath.Join(xdg, "snug", "profiles.d")
+		os.MkdirAll(dir, 0o755)
+		d := build(t, s)
+		if err := os.WriteFile(filepath.Join(dir, d.Name+".toml"), []byte(d.Render()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c := exec.Command(bin, "profile", "show", d.Name)
+		c.Env = append(os.Environ(), "XDG_CONFIG_HOME="+xdg, "HOME="+t.TempDir())
+		out, err := c.CombinedOutput()
+		if err != nil {
+			var ee *exec.ExitError
+			errors.As(err, &ee)
+			t.Errorf("%s: snug profile show %s: %v\n%s\n--- file ---\n%s", s.name, d.Name, err, out, d.Render())
+		}
+	}
+}
+
+// TestProfileTextCannotHideWhatItSays: a path or an environment value the
+// model chose is written into the profile a human reads before selecting it.
+// A bidi override, a zero-width space or a C1 control there renders as text
+// the file does not contain, so it is refused like a C0 control.
+func TestProfileTextCannotHideWhatItSays(t *testing.T) {
+	for _, bad := range []string{"\U0000202E", "\U00002066", "\U0000200B", "\U0000FEFF", "\U000E0041", "\U00002028", "\u009b"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", "/srv/a"+bad+"b", "access", "ro")); o.Refused != CodeBadValue {
+			t.Errorf("grant_path with %U: %+v", []rune(bad)[0], o)
+		}
+		if o := d.Apply(intent.Action{Op: intent.OpSetEnv, Name: "EDITOR", Verb: "set", Value: "vim" + bad, HasValue: true}); o.Refused != CodeBadValue {
+			t.Errorf("set_env with %U: %+v", []rune(bad)[0], o)
+		}
+		if !d.Empty() {
+			t.Errorf("%U reached the profile:\n%s", []rune(bad)[0], d.Render())
+		}
+	}
+}

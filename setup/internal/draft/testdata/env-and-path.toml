@@ -1,0 +1,15 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "add ~/go/bin to PATH, vim, my pager, scratch /work" -> ro ~/go/bin, env PATH (prepend), env EDITOR (set), env PAGER (inherit), tmpfs /work
+[profile.tools]
+ro = ["~/go/bin"]
+tmpfs = ["/work"]
+
+[profile.tools.environ.set]
+EDITOR = "vim"
+
+[profile.tools.environ.inherit]
+PAGER = true
+
+[profile.tools.environ.prepend]
+PATH = ["~/go/bin"]

@@ -1,0 +1,12 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "podman online with /srv/pg and /srv/uploads" -> @podman-socket, @net, ro /srv/pg, rw /srv/uploads
+[profile.stack]
+include = [
+  # ABUSE (@podman-socket): the sandbox can run arbitrary code in a container that shares the sandbox's OWN network namespace — so it reaches exactly what the sandbox reaches and no more: with @net, the whole internet, as the sandbox already could; WITHOUT @net, nothing.
+  "@podman-socket",
+  # ABUSE (@net): the sandbox can reach the whole internet — exfiltrate anything it can read, fetch and run anything it likes.
+  "@net",
+]
+ro = ["/srv/pg"]
+rw = ["/srv/uploads"]

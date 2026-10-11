@@ -1,0 +1,11 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "read-only here" -> ro {target}
+[profile.review]
+include = [
+  # ABUSE (@sys): the sandbox can read every world-readable file in /usr and the few /etc entries below.
+  "@sys",
+  # ABUSE (@home): a hostile process inside the sandbox can write anything it likes into any of these directories.
+  "@home",
+]
+ro = ["{target}"]

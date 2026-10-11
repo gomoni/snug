@@ -1,0 +1,21 @@
+# Written by snug-setup. Nothing in this file is trusted because snug-setup wrote it:
+# snug parses it like any other profile. Read it before you select it.
+# intent (you): "needs internet and my git name" -> @net, @git
+[profile.work]
+include = [
+  # ABUSE (@net): the sandbox can reach the whole internet — exfiltrate anything it can read, fetch and run anything it likes.
+  "@net",
+  # ABUSE (@git): the sandbox learns the name and email you commit under, and nothing else from your git config.
+  "@git",
+]
+
+# ABUSE: the sandbox gets a SIGNING ORACLE for the pinned ssh key(s). It can push to any repository the authentication key reaches, authenticate to any host that trusts it.
+# One identity per profile; two accounts are two profiles.
+[profile.work.identity.ssh]
+key = "{home}/.ssh/id_work.pub" # the PUBLIC half
+agent = "proxy"
+[profile.work.identity.git]
+name = "Alice Doe"
+email = "alice@corp.example"
+[profile.work.identity.gh]
+user = "alice-corp"

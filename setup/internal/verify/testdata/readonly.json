@@ -1,0 +1,9 @@
+{
+  "snug": {"format": 2, "outcome": "ok", "lossy": false, "exit_code": 0, "policy_resolved": true},
+  "profiles": {"selected": ["review"], "implied": ["@home", "@sys"]},
+  "mounts": [
+    {"guest": "/usr", "host": "/usr", "kind": "bind", "access": "ro", "from": ["@sys"]},
+    {"guest": "/home/alice/src/webapp", "host": "/home/alice/src/webapp", "kind": "bind", "access": "ro", "from": ["review"]}
+  ],
+  "network": {"mode": "isolated", "egress": false}
+}
