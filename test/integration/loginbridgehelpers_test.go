@@ -519,12 +519,20 @@ func loginDirNames(t *testing.T, dir string) []string {
 type loginDry struct {
 	Mounts []struct {
 		Guest     string `json:"guest"`
+		Host      string `json:"host"`
 		Kind      string `json:"kind"`
 		Access    string `json:"access"`
 		RunScoped bool   `json:"run_scoped"`
 	} `json:"mounts"`
 	Bwrap struct {
-		Argv []string `json:"argv"`
+		Argv        []string `json:"argv"`
+		BindSources []struct {
+			FD       int    `json:"fd"`
+			Host     string `json:"host"`
+			Guest    string `json:"guest"`
+			Access   string `json:"access"`
+			Optional bool   `json:"optional"`
+		} `json:"bind_sources"`
 	} `json:"bwrap"`
 	Pasta struct {
 		Argv []string `json:"argv"`
@@ -557,16 +565,35 @@ func loginDryRun(t *testing.T, env []string, proj string, args ...string) loginD
 var (
 	loginRunDirRE  = regexp.MustCompile(`run-[0-9]+`)
 	loginDataFDRE  = regexp.MustCompile(`(--(?:ro-)?bind-data|--file) [0-9]+ `)
+	loginBindFDRE  = regexp.MustCompile(`--(?:ro-)?bind-fd [0-9]+ `)
 	loginProfileRE = regexp.MustCompile(`^--setenv SNUG_PROFILES (\S+)$`)
 )
 
 // loginArgvOps splits a bwrap argv into one string per operation (a flag and
 // its operands, with a --perms or --size modifier kept with the operation it
-// modifies) and normalises the three things that differ between two dry runs
-// of the same policy: the pid in the run directory, the number of a data
-// descriptor, and the profile list. The profile list is returned apart so the
-// caller can say what it is.
-func loginArgvOps(argv []string) (ops []string, profiles string) {
+// modifies) and normalises the things that differ between two dry runs of the
+// same policy: the pid in the run directory, the number of a data descriptor,
+// and the profile list. The profile list is returned apart so the caller can
+// say what it is.
+//
+// A grant bound by descriptor (--ro-bind-fd N guest, --bind-fd N guest) is
+// rewritten to "--ro-bind-fd HOST guest" / "--bind-fd HOST guest", HOST being
+// the host side the document's bwrap.bind_sources entry for descriptor N
+// names. The descriptor number is dropped because adding a grant shifts it;
+// the host and the access are kept because they are what the number stands
+// for. The rewrite fails the test when the descriptor has no bind_sources
+// entry, when that entry's guest or access disagrees with the flag, when its
+// host disagrees with the same guest's host in the document's mounts, or when
+// a bind_sources entry is not used by exactly one flag, so a document whose
+// two halves drift apart cannot be normalised into agreement.
+func loginArgvOps(t *testing.T, d loginDry) (ops []string, profiles string) {
+	t.Helper()
+	argv := d.Bwrap.Argv
+	mountHost := map[string]string{}
+	for _, m := range d.Mounts {
+		mountHost[m.Guest] = m.Host
+	}
+	used := map[int]int{}
 	var cur []string
 	var raw []string
 	flush := func() {
@@ -590,6 +617,35 @@ func loginArgvOps(argv []string) (ops []string, profiles string) {
 		}
 		op = mod + op
 		mod = ""
+		if f := strings.Fields(op); len(f) == 3 && (f[0] == "--ro-bind-fd" || f[0] == "--bind-fd") {
+			fd, err := strconv.Atoi(f[1])
+			if err != nil {
+				t.Fatalf("%q: descriptor is not a number", op)
+			}
+			found := -1
+			for i, bs := range d.Bwrap.BindSources {
+				if bs.FD == fd {
+					found = i
+				}
+			}
+			if found < 0 {
+				t.Fatalf("%q: bwrap.bind_sources has no entry for descriptor %d", op, fd)
+			}
+			bs := d.Bwrap.BindSources[found]
+			used[fd]++
+			wantAccess := map[string]string{"--ro-bind-fd": "ro", "--bind-fd": "rw"}[f[0]]
+			if bs.Guest != f[2] || bs.Access != wantAccess {
+				t.Fatalf("%q: bind_sources[fd %d] says guest %q access %q", op, fd, bs.Guest, bs.Access)
+			}
+			if h, ok := mountHost[bs.Guest]; !ok || h != bs.Host {
+				t.Fatalf("%q: bind_sources[fd %d] host is %q but the document's mount at %s has host %q (present %v)",
+					op, fd, bs.Host, bs.Guest, h, ok)
+			}
+			op = f[0] + " " + bs.Host + " " + bs.Guest
+		}
+		if loginBindFDRE.MatchString(op) {
+			t.Fatalf("%q: a descriptor bind in a shape loginArgvOps does not normalise, so it would be compared by raw fd number", op)
+		}
 		op = loginRunDirRE.ReplaceAllString(op, "run-N")
 		op = loginDataFDRE.ReplaceAllString(op, "$1 <fd> ")
 		if m := loginProfileRE.FindStringSubmatch(op); m != nil {
@@ -597,6 +653,12 @@ func loginArgvOps(argv []string) (ops []string, profiles string) {
 			op = "--setenv SNUG_PROFILES <list>"
 		}
 		ops = append(ops, op)
+	}
+	for _, bs := range d.Bwrap.BindSources {
+		if used[bs.FD] != 1 {
+			t.Fatalf("bwrap.bind_sources lists descriptor %d (%s -> %s) but %d argv flags use it, want exactly 1",
+				bs.FD, bs.Host, bs.Guest, used[bs.FD])
+		}
 	}
 	return ops, profiles
 }
