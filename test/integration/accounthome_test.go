@@ -403,8 +403,22 @@ unshare -U -m --map-user=` + uid + ` --map-group=` + gid + ` --keep-caps -- /bin
 		t.Errorf("the inner snug did not refuse (want exit %d) over a forged /etc/passwd:\n%s",
 			exitPolicyCode, shadowed)
 	}
-	if !strings.Contains(shadowed, "/etc/passwd: its mount is not read-only") {
-		t.Errorf("the refusal is not the mount rule's (the forged file is on a writable mount):\n%s", shadowed)
+	// Which of the mount rule's tests fires first depends on what backs the
+	// forger's directory: a writable tmpfs here, ext4 on the CI runner. Any
+	// of them is the rule refusing; a refusal for some other reason is not.
+	mountRule := false
+	for _, why := range []string{"/etc/passwd: its mount is not read-only",
+		"/etc/passwd: it is on a ", "/etc/passwd: it is on device "} {
+		if strings.Contains(shadowed, why) {
+			mountRule = true
+		}
+	}
+	if !mountRule {
+		t.Errorf("the refusal is not the mount rule's:\n%s", shadowed)
+	}
+	if !strings.Contains(shadowed, "the file there now is not it") ||
+		strings.Contains(shadowed, "generate none") {
+		t.Errorf("the refusal names the missing-file fix (nss) for a file that is there but forged:\n%s", shadowed)
 	}
 	if strings.Contains(shadowed, "account: forger") {
 		t.Errorf("the inner snug took the forged account:\n%s", shadowed)

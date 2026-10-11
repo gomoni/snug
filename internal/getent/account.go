@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -187,9 +188,15 @@ func readAuthored() (Passwd, Group, error) {
 // is what a snug sandbox has and an ordinary host does not.
 func notSnug(mountinfo []byte, rootID int, why error) error {
 	if rootIsReadOnlyTmpfs(mountinfo, rootID) {
-		return fmt.Errorf("inside snug, the account comes from the generated /etc/passwd, and this "+
-			"run's profiles generate none; select a profile with nss = true (for example @sys) in "+
-			"the outer run (%v)", why)
+		if errors.Is(why, fs.ErrNotExist) {
+			return fmt.Errorf("inside snug, the account comes from the generated /etc/passwd, and this "+
+				"run's profiles generate none; select a profile with nss = true (for example @sys) in "+
+				"the outer run (%v)", why)
+		}
+		// A file is there and it is not snug's: something mounted over it
+		// or replaced it, so "select nss" would name the wrong fix.
+		return fmt.Errorf("inside snug, the account comes from snug's generated /etc/passwd, and the "+
+			"file there now is not it (%v); snug will not read an account from it", why)
 	}
 	return fmt.Errorf("this is a user namespace but not a snug sandbox: snug reads the account from a "+
 		"root-owned getent on the host, or from snug's own generated /etc/passwd inside snug, and "+
