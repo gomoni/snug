@@ -120,3 +120,22 @@ func TestCLIGoldensHaveNoPathBindOutsideProc(t *testing.T) {
 		t.Error("control: no descriptor binds in any golden, so the sweep above measured nothing")
 	}
 }
+
+// TestPlannedSocketWithAMissingRuntimeBase: --dry-run names a socket path
+// without opening anything, so a $XDG_RUNTIME_DIR that does not exist (a CI
+// host with no /run/user/<uid>) must still yield a label rather than refusing
+// the whole dry run. The real run's openRuntimeDir still refuses there.
+func TestPlannedSocketWithAMissingRuntimeBase(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "absent")
+	t.Setenv("XDG_RUNTIME_DIR", base)
+	got, err := plannedSocket("agent.sock")
+	if err != nil {
+		t.Fatalf("plannedSocket refused a missing runtime base: %v", err)
+	}
+	if want := filepath.Join(base, "snug") + "/"; !strings.HasPrefix(got, want) {
+		t.Errorf("plannedSocket = %q, want it under %q", got, want)
+	}
+	if _, err := openRuntimeDir(); err == nil {
+		t.Error("control: openRuntimeDir accepted a runtime base that does not exist")
+	}
+}
