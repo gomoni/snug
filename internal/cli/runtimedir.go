@@ -211,7 +211,13 @@ func plannedSocket(name string) (string, error) {
 		return "", err
 	}
 	base, snugName, err := canonicalRuntimeBase()
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		// A label, not an open: a base that does not exist yet (a CI host
+		// with $XDG_RUNTIME_DIR set but no /run/user/<uid>) still has a name
+		// to show, and the real run's openRuntimeDir refuses on it with the
+		// same message --dry-run would otherwise print here.
+		base, snugName = runtimeBase()
+	} else if err != nil {
 		return "", err
 	}
 	return filepath.Join(base, snugName, runDirName(), name), nil
