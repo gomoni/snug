@@ -733,7 +733,10 @@ while [ ! -f done ]; do sleep 0.2; done
 	// Preconditions: the host reaches the bridge's listener on both families,
 	// and the opener ran for this flow.
 	requireLoginHeld(t, s, port, haveV6)
-	if _, ran := loginRec(t, f.rec, "ran"); !ran {
+	// The bridge binds the port before it reads the shim's request and starts
+	// the opener, so "OPEN-RC 0" and a held port do not mean the record exists
+	// yet. Wait for the record; a timeout still fails if the opener never ran.
+	if !loginWaitOpenerRan(t, f.rec, 10*time.Second) {
 		t.Fatalf("precondition: the fake opener never ran:\n%s", s.log())
 	}
 
