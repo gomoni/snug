@@ -1595,6 +1595,8 @@ func (e *Engine) writeStorageConf(pol *policy.Policy, podman string) (string, er
 // execute bit is set, not whether THIS uid may execute it. A file that passes
 // here and still cannot be run fails later in podman, which is the honest place
 // for it — snug is choosing what to name, not promising it will work.
+//
+//lint:ignore U1000 kept for its own test of the absoluteness refusal; see writeStorageConf
 func helperBesideEngine(podman, name string) (string, error) {
 	if podman == "" {
 		return "", nil

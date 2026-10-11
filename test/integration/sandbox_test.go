@@ -3188,7 +3188,9 @@ ro = ["/usr/share/misc"]
 	for _, tc := range []struct{ profile, wantIn string }{
 		{"hide-ssl", "/etc/ssl"},
 		{"mask-misc", "/usr/share/misc"},
-		{"greedy", "root is snug's own"},
+		// A bind of / contains snug's runtime directory, and that refusal runs
+		// before the fold reaches the root-is-snug's-own one.
+		{"greedy", "runtime directory"},
 		{"greedy-tmpfs", "root is snug's own"},
 	} {
 		out, code := cli(t, env, "--dry-run", "-p", tc.profile, proj)

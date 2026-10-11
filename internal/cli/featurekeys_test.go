@@ -25,6 +25,11 @@ var featureKeyProfiles = map[policy.ProfileName]*policy.Profile{
 	"k-git":           {Name: "k-git", Git: "extract"},
 	"k-net":           {Name: "k-net", Network: "egress", DNS: true},
 	"k-nss":           {Name: "k-nss", NSS: true},
+	// login = ["claude"] alone refuses at Resolve for want of egress
+	// (issue #455), so this fixture carries `network` itself rather than
+	// composing with k-net — the base "rt" profile already grants /usr, which
+	// is the shell this key also needs.
+	"k-login": {Name: "k-login", Login: []string{"claude"}, Network: "egress", DNS: true},
 }
 
 // featureRegistry is the builtins plus featureKeyProfiles plus "rt", a runtime

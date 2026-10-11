@@ -1,3 +1,5 @@
+//lint:file-ignore SA5009 the wrong-verb Sprintf rows are the measurement this file re-runs
+
 package policy
 
 import (

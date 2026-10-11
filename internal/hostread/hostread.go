@@ -67,6 +67,8 @@ const MaxSSHPublicKeyBytes = 64 << 10
 // file", not "it is not a regular file" — so a caller can put its own subject
 // in front of it and get one sentence. Clause below hands it over unchanged;
 // Optional and Required supply "it" so their existing callers read as before.
+//
+//lint:ignore ST1008 openErr and problem are two halves of one answer; see the doc comment above
 func read(path string, maxBytes int64) (data []byte, openErr error, problem string) {
 	// O_NONBLOCK applies to the OPEN; for a regular file it has no further
 	// effect on the read below. It exists solely so opening a FIFO returns

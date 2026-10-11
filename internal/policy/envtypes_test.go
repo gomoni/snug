@@ -923,3 +923,16 @@ func TestEveryMergeableListIsPathValued(t *testing.T) {
 			"an arrow")
 	}
 }
+
+// TestBROWSERHasATypeAndANote: a profile writing BROWSER when the login bridge
+// is off must not render "unknown: snug has no type for this name".
+func TestBROWSERHasATypeAndANote(t *testing.T) {
+	for _, verb := range []EnvVerb{VerbSet, VerbInherit} {
+		if IsUnknownEnv("BROWSER", verb) {
+			t.Errorf("BROWSER at %s is unknown", verb)
+		}
+		if EnvNote("BROWSER", verb) == "" {
+			t.Errorf("BROWSER at %s has no annotation", verb)
+		}
+	}
+}

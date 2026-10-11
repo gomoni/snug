@@ -299,6 +299,7 @@ const (
 	// this is a VALUE check rather than a pass: a plain tag forwards, and the
 	// buildkit `type=…,dest=…` syntax is refused. `=` and `,` cannot occur in a
 	// legal image tag, so the refusal cannot reject a tag a client meant.
+	//lint:ignore U1000 an abuse sentence kept beside the refusal it explains, read by humans, not code
 	buildOutputIsATagOnly = "A hostile process inside the sandbox can use this to name the tag " +
 		"the built image is committed under, and nothing else. The libpod endpoint does not read " +
 		"this parameter at all — the tag comes from `t` — and the buildkit type=/dest= syntax " +

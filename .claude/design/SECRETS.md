@@ -627,6 +627,21 @@ both still hold, and nothing writes the host's file. What bounds the minted one
 is the run's lifetime and §8's list of what a run can hand sideways before it
 ends.
 
+**The login bridge mints exactly what the paste flow mints, behind the human's
+browser approval.** With `login = ["claude"]` in a user profile
+([`LOGIN-BRIDGE.md`](LOGIN-BRIDGE.md)), the sandbox hands snug the loopback
+authorize URL and snug opens a rebuilt copy of it in the host browser. **[R]**
+The client builds that URL and the manual one from the same `state` and
+`code_challenge`, and its scope carries `org:create_api_key` **[M]**, so the
+token that comes back is the same credential `/login` mints by pasting: an
+access token and a `refreshToken`, written by the client into the sandbox's
+tmpfs, able to mint an API key, dead with the run, never synced back. The
+bridge adds no credential and no channel to the host's file; what it adds is
+WHEN the consent page appears, which the sandbox chooses. Nothing is minted
+until the human approves on claude.com, and claude.com asked for that click
+in the one real login measured (`LOGIN-BRIDGE.md` §11). That is a remote
+default: if it ever stops asking, the snug confirmation page comes back.
+
 **Residual egress, and it is the same sentence facing two ways. [M]** With the
 socket set *and network available*, eleven TLS connections still bypass it:
 `api.anthropic.com:443` ×10 and `http-intake.logs.us5.datadoghq.com:443`.

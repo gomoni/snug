@@ -525,7 +525,10 @@ func (p *Policy) PastaArgs(t PastaTarget) []string {
 		"-t", "none",
 		"-u", "none",
 
-		// ns -> host forwards. THE FIX. Never remove these.
+		// ns -> host forwards. THE FIX. Never remove these. They are also
+		// what keeps the login bridge's host listener out of reach of the
+		// sandbox and its containers; the bridge's peer-uid gate is not,
+		// because a pasta forward is the human's uid (LOGIN-BRIDGE.md §6).
 		"-T", "none",
 		"-U", "none",
 

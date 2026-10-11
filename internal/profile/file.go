@@ -68,6 +68,7 @@ type rawProfile struct {
 
 	Podman   string       `toml:"podman"`
 	Git      string       `toml:"git"`
+	Login    []string     `toml:"login"`
 	Identity *rawIdentity `toml:"identity"`
 }
 
@@ -374,6 +375,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			NSS:         r.NSS,
 			Podman:      r.Podman,
 			Git:         r.Git,
+			Login:       r.Login,
 			Identity:    identity,
 			Source:      source,
 			Trusted:     trusted,
@@ -382,8 +384,8 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 	return reg, nil
 }
 
-// checkFeatureModes refuses a `network`, `podman` or `git` value no run can
-// use. Resolve refuses it too, but `snug profile show` and `snug profile list`
+// checkFeatureModes refuses a `network`, `podman` or `git` value, or a `login`
+// element, no run can use. Resolve refuses it too, but `snug profile show` and `snug profile list`
 // do not resolve, so without this the screen a human reads to decide whether
 // to select a profile rendered `podman  sockets` with the consequence row of
 // a running engine. The same shape as toIdentity's ParseSSHMode call: a second
@@ -397,6 +399,9 @@ func checkFeatureModes(r rawProfile) error {
 		}
 	}
 	if _, err := policy.ParsePodmanMode(r.Podman); err != nil {
+		return err
+	}
+	if _, err := policy.ParseLoginSet(r.Login); err != nil {
 		return err
 	}
 	_, err := policy.ParseGitMode(r.Git)

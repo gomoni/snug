@@ -33,6 +33,7 @@ Kept sections are not renumbered: code comments and other documents cite `INDEX 
 | [`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) | Why the container engine's `policy.json` is a PROJECTION of the host's rather than a permissive file snug writes over it: the measured containers/image schema rules snug mirrors, why a non-empty `dir` scope refuses, why `sigstoreSigned` refuses, and where the key copies live. |
 | [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) | Why `~/.claude/settings.json` is generated rather than bound: the key inventory measured against claude 2.1.232, the ten-scalar allowlist, the `env` door to `ANTHROPIC_API_KEY` it closed, and the plugin-hook channel it does **not** close (issue #68). |
 | [`SECRETS.md`](SECRETS.md) | Which credentials reach a sandbox and why: the credential-versus-capability rule, the severity model, the three mechanisms (agent proxy, smaller credential, wrapper) with the test that picks one, what snug owes when it runs a tool on the payload's behalf, and the shapes that are refused with the measurement that refused them. |
+| [`LOGIN-BRIDGE.md`](LOGIN-BRIDGE.md) | How Claude Code's `/login` completes through the host browser when a user profile sets `login = ["claude"]`: the FIFO and shim the sandbox hands one URL through, the pinned authorize predicate and rebuild, relay sockets the stage creates inside the sandbox's netns, the host listener's uid gate and one-shot rebuilt callback, the limits, and the two measurements still open — whether claude.com redirects a returning user without a click, and the real callback's key set. |
 | [`CONTAINER-CLIENT.md`](CONTAINER-CLIENT.md) | Which container CLI actually works inside the sandbox, measured — and the `podman` stub that replaces a host-escape shim. |
 | [`ENVIRONMENT-VARIABLES.md`](ENVIRONMENT-VARIABLES.md) | The environment configuration format: five `environ` verbs, the variable type table, resolution order, and the measured evidence behind each rule. |
 | [`PSEUDOFS-AUDIT.md`](PSEUDOFS-AUDIT.md) | What `/proc`, `/sys` and `/dev` expose, measured against a real host. |
@@ -132,6 +133,7 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | `podman` | `off < socket < build` | `max` | more engine surface |
 | `dns` | `bool` | `OR` | working DNS |
 | `git` | `off < extract` | `max` | more of the host's git config carried |
+| `login` | provider set (`claude`) | union (a SET) | more login bridges on |
 | `ro` / `rw` | path sets | union + `Access.Join` | more access |
 
 **No key in the model is last-writer-wins**, and `mtu` is the one that would most easily become it — taking whichever profile the sorted fold reached last, which is exactly the shape of dependence §2.2 forbids. There is no "more open" MTU, so it cannot be a join either: two profiles disagreeing is a **symmetric ERROR naming both profiles and both values**, as `identity` is. It remains a pasta cosmetic — it changes how the sandbox's stack segments, never what it can reach — and the refusal costs nothing, because selecting two profiles that each pin a different MTU was never a coherent request.

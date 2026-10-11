@@ -19,6 +19,8 @@ import (
 // startEngine ever reaches the graft check. It returns the error
 // StartSandbox reported and the pid OnSandboxForked observed, so a caller can
 // assert both that the refusal fired and that nothing survived it.
+//
+//lint:ignore ST1008 the refusal is the result under test, and it reads first at every call site
 func startEngineRefusalFixture(t *testing.T, spec *EngineSpec, gated bool) (err error, forkedPID int) {
 	t.Helper()
 	bwrapPath, lookErr := exec.LookPath("bwrap")
@@ -69,7 +71,7 @@ func startEngineRefusalFixture(t *testing.T, spec *EngineSpec, gated bool) (err 
 		"--", "/bin/sleep", "30",
 	}
 
-	if werr := st.WaitNetReady(5*time.Second, "lo", nil); werr != nil {
+	if _, werr := st.WaitNetReady(5*time.Second, "lo", nil, 0); werr != nil {
 		t.Fatalf("PRECONDITION: netready failed: %v", werr)
 	}
 

@@ -717,6 +717,7 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		false, // NSS
 		"",    // Podman
 		"",    // Git
+		nil,   // Login
 		nil,   // Identity
 	}
 }

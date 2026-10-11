@@ -1,0 +1,153 @@
+@@
+       "@sys",
+       "@target-rw",
+-      "@net"
++      "@net",
++      "bridge"
+     ],
+     "implied": [
+@@
+     },
+     {
++      "guest": "/snug/browser.fifo",
++      "host": "/run/user/1000/snug/run-PID/browser.fifo",
++      "kind": "bind",
++      "access": "rw",
++      "from": [
++        "(browser)"
++      ],
++      "optional": false,
++      "authored": true,
++      "executable": false,
++      "yielded": false,
++      "run_scoped": true
++    },
++    {
+       "guest": "/home/u/.cache",
+       "host": "",
+@@
+     },
+     {
++      "guest": "/snug/bin/snug-browser",
++      "host": "",
++      "kind": "data",
++      "access": "ro",
++      "from": [
++        "(snug)"
++      ],
++      "optional": false,
++      "authored": true,
++      "executable": true,
++      "yielded": false,
++      "run_scoped": false
++    },
++    {
+       "guest": "/home/u/.local/share",
+       "host": "",
+@@
+     "host_addresses_sealed": true
+   },
++  "browser_bridge": {
++    "login": [
++      "claude"
++    ],
++    "opener": "/usr/bin/xdg-open",
++    "fifo": "/snug/browser.fifo",
++    "max_opens": 5,
++    "max_relays": 3
++  },
+   "topology": {
+     "processes": [
+@@
+   "environment": [
+     {
++      "name": "BROWSER",
++      "entries": [
++        {
++          "value": "/snug/bin/snug-browser",
++          "verb": "(snug)",
++          "from": null,
++          "authored_by": "",
++          "type_unknown": false,
++          "grant": "",
++          "grants_inside": 0
++        }
++      ]
++    },
++    {
+       "name": "HOME",
+       "entries": [
+@@
+       "entries": [
+         {
++          "value": "/snug/bin",
++          "verb": "(snug)",
++          "from": null,
++          "authored_by": "staged bin",
++          "type_unknown": false,
++          "grant": "not_granted",
++          "grants_inside": 1
++        },
++        {
+           "value": "/usr/bin",
+           "verb": "(snug)",
+@@
+       "entries": [
+         {
+-          "value": "@home,@net,@sys,@target-rw",
++          "value": "@home,@net,@sys,@target-rw,bridge",
+           "verb": "(snug)",
+           "from": null,
+@@
+       "--dir",
+       "/home",
++      "--perms",
++      "0755",
++      "--dir",
++      "/snug",
++      "--perms",
++      "0755",
++      "--dir",
++      "/snug/bin",
+       "--symlink",
+       "usr/bin",
+@@
+       "/proc/sys",
+       "/proc/sys",
++      "--bind",
++      "/run/user/1000/snug/run-PID/browser.fifo",
++      "/snug/browser.fifo",
+       "--size",
+       "1073741824",
+@@
+       "--tmpfs",
+       "/home/u/proj",
++      "--perms",
++      "0755",
++      "--ro-bind-data",
++      "17",
++      "/snug/bin/snug-browser",
+       "--size",
+       "1073741824",
+@@
+       "--clearenv",
+       "--setenv",
++      "BROWSER",
++      "/snug/bin/snug-browser",
++      "--setenv",
+       "HOME",
+       "/home/u",
+@@
+       "--setenv",
+       "PATH",
+-      "/usr/bin:/bin:/usr/sbin:/sbin",
++      "/snug/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+       "--setenv",
+       "PS1",
+@@
+       "--setenv",
+       "SNUG_PROFILES",
+-      "@home,@net,@sys,@target-rw",
++      "@home,@net,@sys,@target-rw,bridge",
+       "--setenv",
+       "SNUG_TARGET",

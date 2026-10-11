@@ -687,6 +687,7 @@ func maximalProfile() *Profile {
 		MTU:         1400,
 		NSS:         true,
 		Podman:      "socket",
+		Login:       []string{"claude"},
 		Git:         "extract",
 		Identity: &Identity{
 			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
@@ -732,6 +733,7 @@ func keyDrops() []keyDrop {
 		{"mtu", "MTU", func(p *Profile) { p.MTU = 0 }},
 		{"nss", "NSS", func(p *Profile) { p.NSS = false }},
 		{"podman", "Podman", func(p *Profile) { p.Podman = "" }},
+		{"login", "Login", func(p *Profile) { p.Login = nil }},
 		{"git", "Git", func(p *Profile) { p.Git = "" }},
 		{"identity.ssh.host", "Identity.SSH.Host", func(p *Profile) { p.Identity.SSH.Host = "" }},
 		{"identity.ssh.key", "Identity.SSH.Key", func(p *Profile) { p.Identity.SSH.Key = "" }},
@@ -809,107 +811,127 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 		return Resolve(reg, []ProfileName{p.Name}, testCtx(), newFakeEnv())
 	}
 
-	full, err := resolveWith(t, maximalProfile())
-	if err != nil {
-		t.Fatalf("the full fixture does not resolve, so every drop below would be compared "+
-			"against nothing: %v", err)
+	// login = ["claude"] refuses without egress, so against the maximal
+	// fixture the network drop only ever takes the refusal arm. The second base
+	// is the same fixture without login, so that drop still reaches the
+	// subset check.
+	withoutLogin := func() *Profile {
+		p := maximalProfile()
+		p.Login = nil
+		return p
 	}
+	for _, base := range []struct {
+		prefix string
+		make   func() *Profile
+	}{
+		{"", maximalProfile},
+		{"without_login/", withoutLogin},
+	} {
+		full, err := resolveWith(t, base.make())
+		if err != nil {
+			t.Fatalf("the %sfull fixture does not resolve, so every drop below would be compared "+
+				"against nothing: %v", base.prefix, err)
+		}
 
-	for _, d := range keyDrops() {
-		t.Run(d.key, func(t *testing.T) {
-			p := maximalProfile()
-			d.apply(p)
-			got, err := resolveWith(t, p)
-			if err != nil {
-				t.Logf("refused (a refusal is a pass): %v", firstLine(err.Error()))
-				return
-			}
+		for _, d := range keyDrops() {
+			t.Run(base.prefix+d.key, func(t *testing.T) {
+				p := base.make()
+				d.apply(p)
+				got, err := resolveWith(t, p)
+				if err != nil {
+					t.Logf("refused (a refusal is a pass): %v", firstLine(err.Error()))
+					return
+				}
 
-			for guest, m := range got.Mounts {
-				if m.Anchor {
-					continue // derived from the mount set, not granted; see TestResolveIsMonotone
-				}
-				if IsProcfsClosurePath(guest) && ProcfsClosuresSkipped(full) {
-					continue // TestResolveIsMonotone's named exception, seen from the other side
-				}
-				f, ok := full.Mounts[guest]
-				if !ok {
-					t.Errorf("dropping %s GRANTED %s (%s), absent from the full profile", d.key, guest, m.Kind)
-					continue
-				}
-				if f.Kind != m.Kind {
-					t.Errorf("dropping %s turned %s from %s into %s", d.key, guest, f.Kind, m.Kind)
-				}
-				if f.Access < m.Access {
-					t.Errorf("dropping %s gave %s %s where the full profile has %s", d.key, guest, m.Access, f.Access)
-				}
-			}
-
-			for name, v := range got.Env {
-				fv, ok := full.Env[name]
-				if !ok {
-					t.Errorf("dropping %s ADDED the variable %s", d.key, name)
-					continue
-				}
-				have := map[string]bool{}
-				for _, e := range fv.Entries {
-					have[e.Value] = true
-				}
-				for _, e := range v.Entries {
-					if e.Verb == VerbSnug {
-						continue // SNUG_PROFILES reports the selection, as in TestEnvIsMonotoneAsASet
+				for guest, m := range got.Mounts {
+					if m.Anchor {
+						continue // derived from the mount set, not granted; see TestResolveIsMonotone
 					}
-					if !have[e.Value] {
-						t.Errorf("dropping %s ADDED the %s entry %q", d.key, name, e.Value)
+					if IsProcfsClosurePath(guest) && ProcfsClosuresSkipped(full) {
+						continue // TestResolveIsMonotone's named exception, seen from the other side
 					}
-				}
-			}
-
-			if got.Net.Mode.Join(full.Net.Mode) != full.Net.Mode {
-				t.Errorf("dropping %s raised the network mode from %s to %s", d.key, full.Net.Mode, got.Net.Mode)
-			}
-			if got.Net.DNS && !full.Net.DNS {
-				t.Errorf("dropping %s turned DNS on", d.key)
-			}
-			if got.NSS && !full.NSS {
-				t.Errorf("dropping %s turned NSS on", d.key)
-			}
-			if got.Podman.Join(full.Podman) != full.Podman {
-				t.Errorf("dropping %s raised podman from %s to %s", d.key, full.Podman, got.Podman)
-			}
-			if got.Git.Join(full.Git) != full.Git {
-				t.Errorf("dropping %s raised git from %s to %s", d.key, full.Git, got.Git)
-			}
-			if got.Topology.Netns > full.Topology.Netns || got.Topology.Subuid > full.Topology.Subuid {
-				t.Errorf("dropping %s raised the topology from %s to %s", d.key, full.Topology, got.Topology)
-			}
-			for _, n := range got.PluginAllowlist {
-				if !slices.Contains(full.PluginAllowlist, n) {
-					t.Errorf("dropping %s ADDED plugin %q", d.key, n)
-				}
-			}
-			for _, n := range got.ListenNames {
-				if !slices.Contains(full.ListenNames, n) {
-					t.Errorf("dropping %s ADDED listen name %q", d.key, n)
-				}
-			}
-			if got.Identity != nil {
-				gv := reflect.ValueOf(got.Identity).Elem()
-				var fv reflect.Value
-				if full.Identity != nil {
-					fv = reflect.ValueOf(full.Identity).Elem()
-				}
-				for _, f := range identityFields {
-					g := gv.FieldByIndex(f.Index).String()
-					if g == "" {
+					f, ok := full.Mounts[guest]
+					if !ok {
+						t.Errorf("dropping %s GRANTED %s (%s), absent from the full profile", d.key, guest, m.Kind)
 						continue
 					}
-					if !fv.IsValid() || fv.FieldByIndex(f.Index).String() != g {
-						t.Errorf("dropping %s changed identity.%s to %q", d.key, f.Key, g)
+					if f.Kind != m.Kind {
+						t.Errorf("dropping %s turned %s from %s into %s", d.key, guest, f.Kind, m.Kind)
+					}
+					if f.Access < m.Access {
+						t.Errorf("dropping %s gave %s %s where the full profile has %s", d.key, guest, m.Access, f.Access)
 					}
 				}
-			}
-		})
+
+				for name, v := range got.Env {
+					fv, ok := full.Env[name]
+					if !ok {
+						t.Errorf("dropping %s ADDED the variable %s", d.key, name)
+						continue
+					}
+					have := map[string]bool{}
+					for _, e := range fv.Entries {
+						have[e.Value] = true
+					}
+					for _, e := range v.Entries {
+						if e.Verb == VerbSnug {
+							continue // SNUG_PROFILES reports the selection, as in TestEnvIsMonotoneAsASet
+						}
+						if !have[e.Value] {
+							t.Errorf("dropping %s ADDED the %s entry %q", d.key, name, e.Value)
+						}
+					}
+				}
+
+				if got.Net.Mode.Join(full.Net.Mode) != full.Net.Mode {
+					t.Errorf("dropping %s raised the network mode from %s to %s", d.key, full.Net.Mode, got.Net.Mode)
+				}
+				if got.Net.DNS && !full.Net.DNS {
+					t.Errorf("dropping %s turned DNS on", d.key)
+				}
+				if got.NSS && !full.NSS {
+					t.Errorf("dropping %s turned NSS on", d.key)
+				}
+				if got.Podman.Join(full.Podman) != full.Podman {
+					t.Errorf("dropping %s raised podman from %s to %s", d.key, full.Podman, got.Podman)
+				}
+				if got.Login.Join(full.Login) != full.Login {
+					t.Errorf("dropping %s added login providers: %s to %s", d.key, full.Login, got.Login)
+				}
+				if got.Git.Join(full.Git) != full.Git {
+					t.Errorf("dropping %s raised git from %s to %s", d.key, full.Git, got.Git)
+				}
+				if got.Topology.Netns > full.Topology.Netns || got.Topology.Subuid > full.Topology.Subuid {
+					t.Errorf("dropping %s raised the topology from %s to %s", d.key, full.Topology, got.Topology)
+				}
+				for _, n := range got.PluginAllowlist {
+					if !slices.Contains(full.PluginAllowlist, n) {
+						t.Errorf("dropping %s ADDED plugin %q", d.key, n)
+					}
+				}
+				for _, n := range got.ListenNames {
+					if !slices.Contains(full.ListenNames, n) {
+						t.Errorf("dropping %s ADDED listen name %q", d.key, n)
+					}
+				}
+				if got.Identity != nil {
+					gv := reflect.ValueOf(got.Identity).Elem()
+					var fv reflect.Value
+					if full.Identity != nil {
+						fv = reflect.ValueOf(full.Identity).Elem()
+					}
+					for _, f := range identityFields {
+						g := gv.FieldByIndex(f.Index).String()
+						if g == "" {
+							continue
+						}
+						if !fv.IsValid() || fv.FieldByIndex(f.Index).String() != g {
+							t.Errorf("dropping %s changed identity.%s to %q", d.key, f.Key, g)
+						}
+					}
+				}
+			})
+		}
 	}
 
 	// Without this, a key added to Profile would sit outside the sweep: the loop

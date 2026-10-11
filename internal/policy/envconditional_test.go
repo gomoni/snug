@@ -154,6 +154,23 @@ func TestConditionalEnvListenFDsRefused(t *testing.T) {
 	}
 }
 
+// TestBrowserIsAConditionalName: a profile's BROWSER in a selection whose
+// login = ["claude"] makes snug point BROWSER at its own login-bridge
+// shim (issue #455).
+func TestBrowserIsAConditionalName(t *testing.T) {
+	reg := testRegistry()
+	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
+	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
+		Set: map[string]string{"BROWSER": "/usr/bin/firefox"}}}
+	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge", "ptr"}, testCtx(), newFakeEnv())
+	if err == nil {
+		t.Fatal("BROWSER beside login = [\"claude\"] resolved")
+	}
+	if !strings.Contains(err.Error(), `bridge sets login = ["claude"]`) {
+		t.Errorf("refusal does not name the key that made snug the author: %v", err)
+	}
+}
+
 // Every name in the table is legal profile TEXT: the parse-time verdict does
 // not depend on the selection, so none of them may be refused there.
 func TestConditionalEnvNamesPassParseTime(t *testing.T) {
@@ -165,13 +182,14 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 			t.Errorf("%s is both unconditionally and conditionally owned", n)
 		}
 	}
-	// Ten written (the nine of issue #621 plus LISTEN_PID, which the #621 red
-	// team found exported by the staged door script), five that outrank them.
-	if got := len(ConditionalEnvNames()); got != 10 {
-		t.Errorf("ConditionalEnvNames() = %v, want 10 names", ConditionalEnvNames())
+	// Eleven written (the nine of issue #621, LISTEN_PID which the #621 red
+	// team found exported by the staged door script, and BROWSER for the
+	// login bridge of issue #455), five that outrank them.
+	if got := len(ConditionalEnvNames()); got != 11 {
+		t.Errorf("ConditionalEnvNames() = %v, want 11 names", ConditionalEnvNames())
 	}
-	if got := len(ConditionalEnvClaimed()); got != 15 {
-		t.Errorf("ConditionalEnvClaimed() = %v, want 15 names", ConditionalEnvClaimed())
+	if got := len(ConditionalEnvClaimed()); got != 16 {
+		t.Errorf("ConditionalEnvClaimed() = %v, want 16 names", ConditionalEnvClaimed())
 	}
 }
 

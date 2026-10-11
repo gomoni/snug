@@ -102,6 +102,11 @@ type Profile struct {
 	// Podman is "off" | "socket" | "build", joined by max like every other scalar.
 	Podman string
 
+	// Login names the providers whose sign-in the login bridge completes
+	// through the host browser, unioned across profiles like Plugins. See
+	// LoginSet: it is an ordinary key, not a builtin.
+	Login []string
+
 	// Git is "off" | "extract", joined by max. "extract" reconstructs the
 	// sandbox's git config from the host's — whitelisted keys only, never a
 	// bind. See gitextract.go for why binding the file is the wrong shape.

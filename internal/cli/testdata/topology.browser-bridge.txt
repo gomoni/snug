@@ -1,0 +1,74 @@
+
+TOPOLOGY
+  processes       4 — every long-lived process this run starts, snug included:
+                    snug        this process — resolves the policy and supervises
+                    stage (P1)  creates the sandbox's network namespace, pins it, leaves it
+                    pasta       attached to that namespace — the only egress path
+                    bwrap       the sandbox itself, and the payload inside it
+                  (__innetns is a setns shim that BECOMES bwrap rather than
+                  running beside it, so it is not one of the 4.)
+  login opener    xdg-open, started by snug once per accepted login, detached.
+                  snug waits at most 30s PER LOGIN for its exit status, and reaps
+                  it only while snug is alive: xdg-open itself, and the BROWSER it
+                  starts — YOURS, not a child of the sandbox — may outlive this run.
+  netns owner     stage
+  pid nesting     depth 2 — the stage forks bwrap into an intermediate pid AND
+                  mount namespace, so bwrap is pid 1 THERE and the sandbox's own
+                  pid namespace nests below it. No intermediate USER namespace on
+                  this arm: the stage is already root in U and holds the
+                  CAP_SYS_ADMIN the unshare needs, so it costs no nesting level.
+                  snug re-execs itself there as `snug __innetns`, which enters the
+                  netns, mounts a procfs of that pid namespace over /proc and then
+                  EXECS bwrap — still one process, not two.
+                  What it BUYS is that bwrap stops being an independent author of
+                  this run's death: pid 1 of a namespace ignores every signal it
+                  has no handler for, and bwrap installs none — so a terminal's
+                  Ctrl-C, which reaches the whole process group, no longer fells
+                  the sandbox before snug has decided anything.
+                  the sandbox's user namespace has a PRIVILEGED ANCESTOR: the
+                  stage is root in its own user namespace (U) for the whole run,
+                  holding CAP_SYS_ADMIN over the sandbox's network namespace (N)
+                  and over the sandbox's own mounts.
+                  It does NOT hold CAP_SYS_PTRACE: the stage drops it from its own
+                  bounding set before it forks anything, so bwrap and the container
+                  engine never receive it either. Bound: a process that makes its OWN
+                  user namespace — the payload, every container — has it again there,
+                  where it reaches nothing outside that namespace.
+  subuid          none (one uid, mapped by the stage itself:
+                  no /etc/subuid line, no newuidmap/newgidmap, no setuid binary
+                  on this path)
+  payload gate    the payload is PARKED (bwrap --block-fd) from the moment its
+                  mount tree is built until snug has confirmed the network helper
+                  is still running, so a helper that died while the sandbox was
+                  built is a refused run, not a payload with loopback only. The
+                  same pipe's write end is passed as --sync-fd and held by the
+                  sandbox's own pid 1, so snug being KILLED cannot release it,
+                  and a TERM/INT/HUP snug catches first tears the sandbox down
+                  instead of releasing it.
+                  Residual: the helper dying between the release and the
+                  payload's exec, or later, is a warning (loopback only); a
+                  signal landing between snug's last look and the byte starts
+                  the payload and then stops it.
+  control         an anonymous SOCK_SEQPACKET socketpair, inherited, between snug
+                  and the stage. UNREACHABLE from the sandbox: no pathname, no
+                  listener, and no descriptor for it in the payload's table. It
+                  carries at most two requests — is the network up, then start
+                  the sandbox — and the stage exits after the second.
+  host-visible    the stage's namespaces are nameable from the host by a
+                  same-uid process, as /proc/<stage>/ns/user and its pinned
+                  /proc/<stage>/fd/<n> for N. Measured equivalent to what such a
+                  process can already reach without a stage, via NS_GET_USERNS on
+                  the sandbox's own namespace descriptors. Same-uid is outside
+                  the threat model either way; it is listed so it is not a
+                  surprise.
+  lifetime        the stage exits when its one payload does, whatever the
+                  outcome, and dies with snug even if snug is SIGKILLed. Two
+                  mechanisms, covering different failures: an inherited pipe (the
+                  lifeline) for a stage that can still run code, and Pdeathsig
+                  for one that is stopped and cannot.
+  abuse sentence  a hostile process inside the sandbox gains no new reach — the
+                  stage is in neither its network namespace nor its pid
+                  namespace, binds nothing it can name, and holds no descriptor
+                  it can open — but its user namespace now has a privileged
+                  ancestor that lives for the whole run, so a userns-escape bug
+                  is worth more here than it was.

@@ -260,6 +260,13 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | `@podman-socket` | Run containers, via a filtering proxy over a per-sandbox engine. |
 | `@podman-build` | As `@podman-socket`, plus `podman build` with a filtered option set. |
 
+`/login` inside `@claude`: paste the code claude prints, or set
+`login = ["claude"]` in own profile — opt-in, needs `@net`, host
+`xdg-open` and a display; snug opens one pinned login URL in your browser.
+Tab may land in another browser window (seen: distrobox `xdg-open` to host
+flatpak Firefox) — look there before assuming nothing opened.
+Token lives on sandbox tmpfs, dies with run.
+
 
 ## Own profile
 

@@ -375,22 +375,54 @@ func (s *Stage) Pid() int { return s.pid }
 // returns, closing the host addresses pasta itself does not copy there (the
 // host's own link-local, and any second alias on another interface); see
 // sealHostAddresses in internal/stage/loopback.go.
-func (s *Stage) WaitNetReady(timeout time.Duration, iface string, hostAddrs []string) error {
-	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface, HostAddrs: hostAddrs}); err != nil {
-		return fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
+//
+// relaySockets is how many unconnected AF_INET stream sockets the stage
+// creates inside N and hands back (0 to 3; 0 on every run without the login
+// browser bridge). They are returned close-on-exec and owned by the caller,
+// and only after this side has checked each one itself: the count the event
+// claims, the count asked for and the count delivered all agree, each is
+// AF_INET and SOCK_STREAM, and SIOCGSKNS names the netns PinnedNetns names.
+// Any mismatch closes every descriptor received and returns an error; there
+// is no partial result.
+func (s *Stage) WaitNetReady(timeout time.Duration, iface string, hostAddrs []string,
+	relaySockets int) ([]*os.File, error) {
+	if relaySockets < 0 || relaySockets > maxRelaySockets {
+		return nil, fmt.Errorf("stage: %d login relay sockets requested; the stage creates "+
+			"between 0 and %d", relaySockets, maxRelaySockets)
 	}
-	ev, err := recvEventTimeout(s.control, timeout)
+	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface, HostAddrs: hostAddrs,
+		RelaySockets: relaySockets}); err != nil {
+		return nil, fmt.Errorf("stage: asking whether the sandbox's network is up: %w", err)
+	}
+	ev, fds, err := recvEventFDsTimeout(s.control, timeout)
 	if err != nil {
-		return fmt.Errorf("stage: waiting for the network to come up in the sandbox's "+
+		closeFDs(fds)
+		return nil, fmt.Errorf("stage: waiting for the network to come up in the sandbox's "+
 			"namespace: %w", err)
 	}
 	if ev.Op != "netready" {
-		return fmt.Errorf("stage: expected a \"netready\" event, got %q", ev.Op)
+		closeFDs(fds)
+		return nil, fmt.Errorf("stage: expected a \"netready\" event, got %q", ev.Op)
 	}
 	if ev.Err != "" {
-		return fmt.Errorf("stage: %s", ev.Err)
+		closeFDs(fds)
+		return nil, fmt.Errorf("stage: %s", ev.Err)
 	}
-	return nil
+	if err := verifyRelaySockets(fds, ev.RelaySockets, relaySockets, s.netns); err != nil {
+		closeFDs(fds)
+		return nil, fmt.Errorf("stage: refusing the run: %w.\n"+
+			"      The stage hands back exactly the sockets P0 asks for, created in the sandbox's "+
+			"own network namespace, and P1 is this same binary re-executed, so anything else is a "+
+			"snug bug rather than a host setting: report it with this message", err)
+	}
+	if len(fds) == 0 {
+		return nil, nil
+	}
+	files := make([]*os.File, len(fds))
+	for i, fd := range fds {
+		files[i] = os.NewFile(uintptr(fd), fmt.Sprintf("login-relay-%d", i))
+	}
+	return files, nil
 }
 
 // startRoundTripTimeout bounds P0's patience for the WHOLE "start" round trip:
@@ -657,6 +689,29 @@ func recvEventTimeout(f *os.File, timeout time.Duration) (event, error) {
 		return r.ev, r.err
 	case <-time.After(timeout):
 		return event{}, fmt.Errorf("timed out after %s", timeout)
+	}
+}
+
+// recvEventFDsTimeout is recvEventTimeout for recvEventFDs. Descriptors that
+// arrive after the deadline are closed by the reading goroutine instead of
+// staying open in P0 with nothing holding them.
+func recvEventFDsTimeout(f *os.File, timeout time.Duration) (event, []int, error) {
+	type result struct {
+		ev  event
+		fds []int
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		ev, fds, err := recvEventFDs(f)
+		ch <- result{ev, fds, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.ev, r.fds, r.err
+	case <-time.After(timeout):
+		go func() { closeFDs((<-ch).fds) }()
+		return event{}, nil, fmt.Errorf("timed out after %s", timeout)
 	}
 }
 

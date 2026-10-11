@@ -666,9 +666,7 @@ func TestEveryCheckedTopLevelKeyIsCanonicalised(t *testing.T) {
 	all := append([]string{}, refusedTopLevel...)
 	all = append(all, topLevelChecked...)
 	all = append(all, "HostConfig", "Labels", "EndpointsConfig")
-	for _, name := range sortedKeys(unexaminedTopLevelFields) {
-		all = append(all, name)
-	}
+	all = append(all, sortedKeys(unexaminedTopLevelFields)...)
 	for _, name := range all {
 		if canonicalKey[strings.ToLower(name)] != name {
 			t.Errorf("top-level %s is not in canonicalKey, so a client spelling it in "+

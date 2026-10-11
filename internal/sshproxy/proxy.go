@@ -122,8 +122,13 @@ type Proxy struct {
 	ln       net.Listener
 	audit    func(string)
 
-	wg   sync.WaitGroup
-	once sync.Once
+	// mu orders Serve's wg.Add against Close's wg.Wait: an Add that can run
+	// concurrently with a Wait on a zero counter is a misuse of WaitGroup, and
+	// the race detector reports it. Once closed is set, Serve adds nothing.
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
+	once   sync.Once
 }
 
 // New parses the PUBLIC key files and prepares a proxy pinned to all of them.
@@ -218,7 +223,14 @@ func (p *Proxy) Serve() {
 		if err != nil {
 			return // listener closed
 		}
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			c.Close()
+			return
+		}
 		p.wg.Add(1)
+		p.mu.Unlock()
 		go func() {
 			defer p.wg.Done()
 			defer c.Close()
@@ -229,6 +241,9 @@ func (p *Proxy) Serve() {
 
 func (p *Proxy) Close() {
 	p.once.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
 		p.ln.Close()
 		p.wg.Wait()
 	})

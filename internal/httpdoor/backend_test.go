@@ -281,7 +281,10 @@ func TestOversizedBodyAbortsClientConnection(t *testing.T) {
 	// Shrink the cap so the test does not have to push real megabytes.
 	oldCap := maxBodyBytes
 	maxBodyBytes = int64(len(body) - 1)
-	defer func() { maxBodyBytes = oldCap }()
+	// t.Cleanup, not defer, and registered BEFORE doorServer: cleanups run
+	// last-registered first, so srv.Close — which waits for the aborted
+	// handler — runs before the cap is restored under it.
+	t.Cleanup(func() { maxBodyBytes = oldCap })
 	srv := doorServer(t, d)
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	d.origin = "http://" + addr

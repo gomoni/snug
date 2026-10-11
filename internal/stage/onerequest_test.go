@@ -94,7 +94,7 @@ func TestTheStageReadsNoRequestAfterStart(t *testing.T) {
 	// property this test is about is layered on TOP of that one, not a
 	// replacement for it). "lo" is what an offline run with no pasta attached
 	// waits for — already up inside N before the stage ever left it.
-	if err := st.WaitNetReady(5*time.Second, "lo", nil); err != nil {
+	if _, err := st.WaitNetReady(5*time.Second, "lo", nil, 0); err != nil {
 		t.Fatalf("PRECONDITION: netready failed: %v", err)
 	}
 
