@@ -52,6 +52,23 @@ func cmdlineOf(pid int) []string {
 	return parts
 }
 
+// isSandboxBwrap is a bwrap that builds a sandbox, as opposed to the
+// `bwrap --help` snug runs once per process to check it supports
+// --ro-bind-fd. That probe is short-lived, but a test that stops its parent
+// on first sight of a bwrap can catch it and wait forever for a sandbox the
+// stopped parent never forks.
+func isSandboxBwrap(pid int) bool {
+	if commOf(pid) != "bwrap" {
+		return false
+	}
+	for _, a := range cmdlineOf(pid) {
+		if a == "--help" {
+			return false
+		}
+	}
+	return true
+}
+
 // isStageProcess identifies P1 by its ARGV, never by comm: the kernel sets
 // /proc/<pid>/comm from the FILENAME actually exec'd (here, always
 // /proc/self/exe, whose basename is "exe"), not from argv[0] — measured, ps
