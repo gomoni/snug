@@ -1,5 +1,6 @@
-// Package gbnf holds the GBNF grammar form of the intent schema, for engines
-// that take a grammar rather than a JSON schema.
+// Package gbnf holds the GBNF grammar form of the intent schema, for a client
+// that hands llama.cpp a grammar rather than a JSON schema. snug-setup's
+// backends send the JSON schema today and nothing loads Schema yet.
 package gbnf
 
 import _ "embed"

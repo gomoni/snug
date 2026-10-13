@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -219,4 +220,58 @@ func TestRemoteCapsAreUnconstrained(t *testing.T) {
 	}
 	var _ Backend = (*Remote)(nil)
 	var _ Backend = (*Server)(nil)
+}
+
+// TestRemoteOllamaShape: a server shaped like ollama's OpenAI endpoint wants
+// the model named; a missing one answers with an error body, and the user is
+// told which flag to change.
+func TestRemoteOllamaShape(t *testing.T) {
+	var seen map[string]any
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &seen)
+		if seen["model"] != "snug-setup:latest" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"error":{"message":"model \"%v\" not found, try pulling it first","type":"api_error"}}`, seen["model"])
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"actions\":[{\"op\":\"show\"}]}"}}]}`))
+	}))
+	defer srv.Close()
+	req := Request{System: "s", User: "u", MaxTokens: MaxTokens, Schema: intent.Schema}
+
+	_, err := (&Remote{URL: srv.URL}).Complete(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), `model "snug-setup" not found, try pulling it first`) || !strings.Contains(err.Error(), "--remote-model") {
+		t.Errorf("a missing model should name the flag: %v", err)
+	}
+	if path != "/v1/chat/completions" || seen["response_format"] == nil {
+		t.Errorf("path %s, body %v", path, seen)
+	}
+
+	got, err := (&Remote{URL: srv.URL + "/v1", ModelName: "snug-setup:latest"}).Complete(context.Background(), req)
+	if err != nil || !strings.Contains(got, "show") {
+		t.Fatalf("%q %v", got, err)
+	}
+	if seen["model"] != "snug-setup:latest" || path != "/v1/chat/completions" {
+		t.Errorf("model/path: %v %s", seen["model"], path)
+	}
+	rf := seen["response_format"].(map[string]any)
+	if rf["type"] != "json_schema" {
+		t.Errorf("response_format %v", rf)
+	}
+}
+
+func TestServerMessageShapes(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"error":"model \"x\" not found, try pulling it first"}`: `model "x" not found, try pulling it first`,
+		`{"error":{"message":"nope","type":"t"}}`:                 "nope",
+		"plain text\n":         "plain text",
+		`{"error":{"code":1}}`: `{"error":{"code":1}}`,
+	} {
+		if got := serverMessage([]byte(in)); got != want {
+			t.Errorf("%s -> %q, want %q", in, got, want)
+		}
+	}
 }

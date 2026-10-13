@@ -22,18 +22,20 @@ import (
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
-const usage = `usage: snug-setup (--model FILE.gguf | --llama-server-model FILE.gguf | --llm-url URL) [--llama-server PATH] [--threads N] [--offline] [--profile-dir DIR] [DIR]
+const usage = `usage: snug-setup (--model FILE.gguf | --llm-url URL) [--llama-server PATH] [--remote-model NAME] [--offline] [--profile-dir DIR] [DIR]
 
-  --model FILE.gguf              run the model inside this process (no server, no second process)
-  --llama-server-model FILE.gguf run llama-server on this model, on a private unix socket, for the session
-  --llm-url URL                  use a server that is already running (OpenAI-compatible), with its own model
-  --llama-server PATH            llama-server binary for --llama-server-model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/)
-  --threads N                    threads for --model (default: CPUs minus 2)
-  --offline                      never ask GitHub whether an ssh key belongs to an account
-  --plain                        accepted and ignored: snug-setup always asks nothing. Open questions are
-                                 answered with /accept, /decline and /pick lines (/help lists them).
-  --profile-dir DIR              where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
-  DIR                            the project directory the profile is for (default: the current directory)
+  --model FILE.gguf    run llama-server on this model, on a private unix socket, for the session
+  --llm-url URL        use a server that is already running (OpenAI-compatible), with its own model
+  --remote-model NAME  the model to ask for on the --llm-url server (ollama needs an installed model's name;
+                       llama-server ignores it). To use our GGUF in ollama, import it with a Modelfile that
+                       carries the Qwen chat template.
+  --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
+                       scripts/fetch-llama-server.sh puts the tested release there)
+  --offline            never ask GitHub whether an ssh key belongs to an account
+  --plain              accepted and ignored: snug-setup always asks nothing. Open questions are
+                       answered with /accept, /decline and /pick lines (/help lists them).
+  --profile-dir DIR    where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
+  DIR                  the project directory the profile is for (default: the current directory)
 `
 
 func main() {
@@ -48,10 +50,9 @@ func run() error {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var bf backendFlags
 	fs.StringVar(&bf.Model, "model", "", "")
-	fs.StringVar(&bf.ServerModel, "llama-server-model", "", "")
 	fs.StringVar(&bf.URL, "llm-url", "", "")
 	fs.StringVar(&bf.ServerBin, "llama-server", "", "")
-	fs.IntVar(&bf.Threads, "threads", 0, "")
+	fs.StringVar(&bf.RemoteModel, "remote-model", "", "")
 	offline := fs.Bool("offline", false, "")
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")

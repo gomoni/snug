@@ -1,8 +1,7 @@
 // Package llm is how snug-setup asks a model for actions. A Backend is chosen
 // once at construction (cmd/snug-setup) and nothing after that asks which one
-// it is: Remote talks to an OpenAI-compatible server, Server starts a
-// llama-server of its own and is a Remote, and package inproc runs the model
-// inside the process.
+// it is: Remote talks to an OpenAI-compatible server it did not start, and
+// Server starts a llama-server of its own and is a Remote.
 package llm
 
 import (
@@ -25,7 +24,14 @@ type Remote struct {
 	// the full /v1/chat/completions path.
 	URL  string
 	HTTP *http.Client
+	// ModelName is the "model" of the request. llama-server ignores it; ollama
+	// and hosted servers need the name of an installed model. Empty sends
+	// DefaultModelName.
+	ModelName string
 }
+
+// DefaultModelName is sent when Remote.ModelName is empty.
+const DefaultModelName = "snug-setup"
 
 // Caps reports an unconstrained backend: the request carries the schema as
 // response_format, but a server of unknown make may ignore it, and the
@@ -103,7 +109,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		return "", err
 	}
 	body, _ := json.Marshal(chatRequest{
-		Model: "snug-setup",
+		Model: c.modelName(),
 		Messages: []chatMessage{
 			{Role: "system", Content: r.System},
 			{Role: "user", Content: r.User},
@@ -123,7 +129,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to run the model in-process): %w", c.URL, err)
+		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to have snug-setup start llama-server): %w", c.URL, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -131,7 +137,12 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("model server answered %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		msg := serverMessage(raw)
+		err := fmt.Errorf("model server answered %s: %s", resp.Status, msg)
+		if strings.Contains(strings.ToLower(msg), "not found") {
+			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --remote-model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
+		}
+		return "", err
 	}
 	var out struct {
 		Choices []struct {
@@ -142,4 +153,32 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		return "", fmt.Errorf("model server at %s sent a reply that is not a chat completion", c.URL)
 	}
 	return out.Choices[0].Message.Content, nil
+}
+
+func (c *Remote) modelName() string {
+	if c.ModelName != "" {
+		return c.ModelName
+	}
+	return DefaultModelName
+}
+
+// serverMessage is the text of an error body: the string of {"error":"..."},
+// the message of {"error":{"message":"..."}}, or the body itself.
+func serverMessage(raw []byte) string {
+	var e struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) == nil && len(e.Error) > 0 {
+		var s string
+		if json.Unmarshal(e.Error, &s) == nil {
+			return s
+		}
+		var o struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(e.Error, &o) == nil && o.Message != "" {
+			return o.Message
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }

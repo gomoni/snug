@@ -10,7 +10,7 @@ import (
 
 // TestGBNFMentionsEveryOp: an op added to schema.json without regenerating
 // schema.gbnf would be accepted by the Go gate and the server backend and
-// impossible for the in-process one to emit. Each op, and each enum value of
+// impossible for a GBNF-taking client to emit. Each op, and each enum value of
 // $defs, must appear as a quoted literal in the grammar.
 func TestGBNFMentionsEveryOp(t *testing.T) {
 	var s struct {

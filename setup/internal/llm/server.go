@@ -31,7 +31,7 @@ func FindServer(explicit, home string) (string, error) {
 		sort.Strings(matches)
 		return matches[len(matches)-1], nil
 	}
-	return "", errors.New("no llama-server found: it is not on PATH and not under ~/.cache/snug-setup/llama.cpp/; pass --llama-server PATH, give --llm-url of a server that is already running, or use --model FILE.gguf to run the model in-process")
+	return "", errors.New("no llama-server found: it is not on PATH and not under ~/.cache/snug-setup/llama.cpp/. Run scripts/fetch-llama-server.sh from the snug repository (it downloads the release snug-setup is tested against, checks its sha256 and unpacks it there), install llama.cpp yourself and put llama-server on PATH, pass --llama-server PATH, or give --llm-url of a server that is already running")
 }
 
 // Tail keeps the last bytes written, for error messages. The zero value is
