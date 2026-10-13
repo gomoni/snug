@@ -205,6 +205,17 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 	ro.Name = "review"
 	say(ro, "read-only here", grant("{target}", "ro"))
 
+	// redteam setup r3 R3-3: a prepend under the target, with the grant
+	// the draft now asks for first, is one snug accepts.
+	os.MkdirAll(filepath.Join(target, "bin"), 0o755)
+	pathed := draft.New(h)
+	pathed.Name = "pathed"
+	say(pathed, "put the project's bin on PATH", grant("{target}/bin", "ro"),
+		intent.Action{Op: intent.OpSetEnv, Name: "PATH", Verb: "prepend", Value: "{target}/bin", HasValue: true})
+	if !strings.Contains(pathed.Render(), `PATH = ["{target}/bin"]`) {
+		t.Fatalf("the prepend did not land:\n%s", pathed.Render())
+	}
+
 	dropped := draft.New(h)
 	dropped.Name = "nowrite"
 	say(dropped, "no write access", drop("@target-rw"))
@@ -215,6 +226,7 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 	}{
 		{ok, nil},
 		{ro, nil},
+		{pathed, nil},
 		{dropped, []string{"asked to drop @target-rw; snug still selects it"}},
 	} {
 		doc, err := Run(ctx, hostfacts.ExecRunner, bin, c.d)

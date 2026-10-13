@@ -10,16 +10,28 @@ import (
 	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-// secretName and secretWord name the variables refused as credentials. The
-// substrings match anywhere; the words match one _-separated segment, so
-// PRIVATE_KEY and SSH_AUTH_SOCK are refused while KEYBOARD_LAYOUT and
-// AUTHOR_NAME are not. A connection URL for a database or queue routinely
-// carries user:password, so it is refused by name.
+// secretName, secretWord, secretURL and secretProxy name the variables refused
+// as credentials. The substrings match anywhere; the words match one
+// _-separated segment, so PRIVATE_KEY and SSH_AUTH_SOCK are refused while
+// KEYBOARD_LAYOUT and AUTHOR_NAME are not, and TOKEN must end a segment, so
+// GITHUB_TOKEN and APITOKEN_X are refused and TOKENIZERS_PARALLELISM is not. A
+// glued ...KEY at the end (OPENAIKEY) is refused. A connection URL for a
+// database, queue or index, and a proxy URL, routinely carry user:password, so
+// they are refused by name. Some harmless names are refused too
+// (PASSWORD_STORE_DIR, AUTH_TYPE); the human can set them by hand.
 var (
-	secretName = regexp.MustCompile(`(?i)TOKEN|SECRET|PASSWORD|API_?KEY|CREDENTIAL`)
-	secretWord = regexp.MustCompile(`(?i)(^|_)(KEYS?|PASS|PASSWD|PWD|AUTH|DSN|PRIVATE)(_|$)`)
-	secretURL  = regexp.MustCompile(`(?i)(^|_)(DATABASE|DB|REDIS|MONGO|MONGODB|POSTGRES|POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|BROKER)_UR[LI]$`)
+	secretName  = regexp.MustCompile(`(?i)TOKEN(_|$)|SECRET|PASSWORD|PASSPHRASE|API_?KEY|CREDENTIAL|COOKIE|BEARER|JWT|WEBHOOK|CONNECTION_STRING|CONN_STR|KEY$`)
+	secretWord  = regexp.MustCompile(`(?i)(^|_)(KEYS?|PASS|PASSWD|PWD|AUTH|DSN|PRIVATE|SESSION|SESSIONID|SK|HMAC|SALT)(_|$)`)
+	secretURL   = regexp.MustCompile(`(?i)((^|_)(DATABASE|DB|REDIS|MONGO|MONGODB|POSTGRES|POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|BROKER|KAFKA|ELASTICSEARCH|CLICKHOUSE|SMTP|MAIL|NATS|CACHE)|INDEX)_UR[LI](_[A-Z0-9]+)?$`)
+	secretProxy = regexp.MustCompile(`(?i)^(HTTPS?|ALL|FTP|SOCKS5?)_PROXY$`)
+	// secretValue is a set value that carries a credential whatever the name:
+	// URL userinfo, a known token prefix, an AWS access key id, a PEM block.
+	secretValue = regexp.MustCompile(`://[^/@\s]+@|^(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|glpat-|xox[abprs]-|sk-)|\bAKIA[0-9A-Z]{16}\b|-----BEGIN `)
 )
+
+func secretEnv(name string) bool {
+	return secretName.MatchString(name) || secretWord.MatchString(name) || secretURL.MatchString(name) || secretProxy.MatchString(name)
+}
 
 // writtenBySnug are the names snug (or bwrap, for PWD) writes itself: snug's
 // SnugOwnedEnv and bwrapOwnedEnv without the SNUG prefix, which setEnv refuses
@@ -58,8 +70,11 @@ func (d *Draft) setEnv(a intent.Action) Outcome {
 			return refuse(CodeUnknownList, name+" is not a path-list variable snug knows; prepend works for "+strings.Join(listVars, " "))
 		}
 	}
-	if secretName.MatchString(name) || secretWord.MatchString(name) || secretURL.MatchString(name) {
+	if secretEnv(name) {
 		return refuse("secret_in_env", fmt.Sprintf("%s looks like a credential", name))
+	}
+	if a.Verb != "inherit" && secretValue.MatchString(a.Value) {
+		return refuse("secret_in_env", fmt.Sprintf("the value for %s looks like a credential", name))
 	}
 	if a.Verb != "inherit" {
 		if hidden(a.Value) {
@@ -116,7 +131,7 @@ func (d *Draft) covered(path string) bool {
 			}
 		}
 	}
-	// The target is always visible: read-only by the draft's own grant, or
-	// writable by the @target-rw a bare `snug DIR` selects.
-	return under(e, filepath.Clean(d.Host.Target))
+	// The target is visible through @target-rw, but snug wants the profile
+	// that names a path to grant it, so the target is not counted here.
+	return false
 }

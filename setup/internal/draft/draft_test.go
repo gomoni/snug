@@ -241,7 +241,13 @@ func TestStageBinaryChecksHostPath(t *testing.T) {
 func TestSetEnvRefusesCredentialNames(t *testing.T) {
 	for _, name := range []string{"DATABASE_URL", "PRIVATE_KEY", "ACCESS_KEY", "AWS_ACCESS_KEY_ID", "DEPLOY_KEY",
 		"SIGNING_KEY", "SSH_AUTH_SOCK", "DB_PASS", "MYSQL_PWD", "REDIS_URL", "MONGODB_URI", "SENTRY_DSN", "NPM_AUTH",
-		"GPG_KEYS", "DB_PASSWD", "AUTH_HEADER"} {
+		"GPG_KEYS", "DB_PASSWD", "AUTH_HEADER",
+		// redteam setup r3 R3-1: still passed after the R2-1 fix.
+		"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "HTTP_PROXY", "BORG_PASSPHRASE", "GPG_PASSPHRASE",
+		"AZURE_STORAGE_CONNECTION_STRING", "CONN_STR", "SESSION_COOKIE", "OP_SESSION_my", "SESSION", "SESSIONID",
+		"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "OPENAIKEY", "PRIVKEY", "SLACK_WEBHOOK_URL",
+		"DISCORD_WEBHOOK", "JWT", "JWT_SIGNING", "BEARER", "HMAC", "SIGNING_SALT", "STRIPE_SK", "DATABASE_URL_RO",
+		"KAFKA_URL", "ELASTICSEARCH_URL", "SMTP_URL", "NATS_URL", "APITOKEN_X"} {
 		for _, verb := range []string{"inherit", "set"} {
 			d := New(testHost())
 			o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", verb, "value", "x"))
@@ -250,12 +256,47 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"EDITOR", "PAGER", "KEYBOARD_LAYOUT", "XKB_DEFAULT_LAYOUT", "LC_ALL", "MONKEY",
-		"PASSTHROUGH", "AUTHOR_NAME", "BASE_URL"} {
+	for _, name := range []string{"EDITOR", "PAGER", "KEYBOARD_LAYOUT", "XKB_DEFAULT_LAYOUT", "LC_ALL",
+		"PASSTHROUGH", "AUTHOR_NAME", "BASE_URL", "TOKENIZERS_PARALLELISM", "MAX_TOKENS", "NO_PROXY", "GOPROXY",
+		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "GNUPGHOME", "DOCKER_CONFIG", "KEYFILE"} {
 		d := New(testHost())
 		if o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", "inherit")); o.Refused != "" {
 			t.Errorf("inherit %s refused: %+v", name, o)
 		}
+	}
+}
+
+// TestSetEnvRefusesCredentialValues is redteam setup r3 R3-1's value half: a
+// harmless name with a credential for a value reached the TOML.
+func TestSetEnvRefusesCredentialValues(t *testing.T) {
+	for _, v := range []string{"postgres://u:pw@db/x", "https://user@host/x", "ghp_0123456789abcdef", "github_pat_11AB",
+		"glpat-xyz", "xoxb-123", "sk-abc123", "AKIAIOSFODNN7EXAMPLE", "id=AKIAIOSFODNN7EXAMPLE", "-----BEGIN OPENSSH PRIVATE KEY-----"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "secret_in_env" {
+			t.Errorf("set MY_SETTING=%q: refused=%q (%s), want secret_in_env", v, o.Refused, o.Msg)
+		}
+	}
+	for _, v := range []string{"vim", "https://example.com/x", "{target}/sk-notes", "mailto:a@b", "less -R"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "" {
+			t.Errorf("set MY_SETTING=%q refused: %+v", v, o)
+		}
+	}
+}
+
+// TestPrependUnderTargetNeedsAGrant is redteam setup r3 R3-3: setup counted
+// the target as granted, and snug refused the save with "prepends PATH=...,
+// which it does not grant". The draft now refuses it at once, naming the fix.
+func TestPrependUnderTargetNeedsAGrant(t *testing.T) {
+	d := New(testHost())
+	if o := d.Apply(act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != CodeNotGranted {
+		t.Errorf("prepend without a grant: %+v", o)
+	}
+	if o := d.Apply(act(intent.OpGrantPath, "path", "{target}/bin", "access", "ro")); o.Refused != "" {
+		t.Fatalf("%+v", o)
+	}
+	if o := d.Apply(act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != "" {
+		t.Errorf("prepend after the grant: %+v", o)
 	}
 }
 

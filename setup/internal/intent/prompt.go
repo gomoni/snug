@@ -1,6 +1,9 @@
 package intent
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // System is the fixed system message.
 const System = "You are snug-setup. Turn the request into snug profile actions. Reply with JSON only."
@@ -47,6 +50,34 @@ type File struct {
 	Body string `json:"body"`
 }
 
+// headers are the prefixes FormatPrompt starts its own lines with.
+var headers = []string{"target:", "draft:", "host ", "file ", "request:"}
+
+// fileBody returns a file's text for the prompt. The file comes from the
+// target, the least trusted input there is, so it cannot add a line of the
+// prompt's own: a control or formatting rune other than tab, and U+2028/2029,
+// are dropped, and a line that starts like one of FormatPrompt's is indented
+// by two spaces. An ordinary file is unchanged. prompt.py's _file_body is the
+// same rule, and testdata/prompts.jsonl holds the two equal.
+func fileBody(body string) string {
+	body = strings.Map(func(r rune) rune {
+		if r != '\n' && r != '\t' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029) {
+			return -1
+		}
+		return r
+	}, strings.TrimRight(body, "\n"))
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		for _, h := range headers {
+			if strings.HasPrefix(l, h) {
+				lines[i] = "  " + l
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func list(xs []string) string {
 	if len(xs) == 0 {
 		return "-"
@@ -58,7 +89,8 @@ func list(xs []string) string {
 // user message is byte-exact with setup/model/prompt.py: lines in the order
 // target, draft, host ssh, host github, host git, file, request; the host and
 // file lines are omitted when empty; lines are joined with "\n" and there is no
-// trailing newline; a file body has its trailing newlines stripped.
+// trailing newline; a file body has its trailing newlines stripped and goes
+// through fileBody.
 func FormatPrompt(c Context, request string) (system, user string) {
 	name := "-"
 	if c.Draft.Name != nil && *c.Draft.Name != "" {
@@ -107,7 +139,7 @@ func FormatPrompt(c Context, request string) (system, user string) {
 		lines = append(lines, "host git: "+strings.Join(c.Git, "; "))
 	}
 	if c.File != nil {
-		lines = append(lines, "file "+c.File.Name+":", strings.TrimRight(c.File.Body, "\n"))
+		lines = append(lines, "file "+c.File.Name+":", fileBody(c.File.Body))
 	}
 	lines = append(lines, "request: "+request)
 	return System, strings.Join(lines, "\n")
