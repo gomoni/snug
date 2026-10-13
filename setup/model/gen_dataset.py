@@ -13,6 +13,7 @@ or file body appears in it verbatim.
 
     uv run python gen_projects.py           # data/projects-gen.jsonl
     uv run python gen_dataset.py --n 2700 --seed 303 --out data/train-v3.jsonl
+    uv run python gen_dataset.py --n 3200 --seed 404 --single 0.47 --combo 0.27 --out data/train-v4.jsonl
 """
 
 import argparse
@@ -121,6 +122,14 @@ REL_BARE = [".git", "node_modules", ".env", "secrets/", ".git/", "build/", "test
 REL_PHRASE = ["the .git directory", "the secrets folder", "the vendor dir", "the .venv", "*.pem files", "the keys directory",
               "the docs folder", "the node_modules folder"]
 
+# The word a user types for a built-in profile, and the profile it names.
+BUILTIN_WORDS = {"@git": "@git", "my git identity": "@git", "the git author": "@git", "@claude": "@claude",
+                 "claude": "@claude", "claude code": "@claude", "@podman-socket": "@podman-socket",
+                 "podman": "@podman-socket", "the containers": "@podman-socket", "docker": "@podman-socket",
+                 "@podman-build": "@podman-build", "image building": "@podman-build", "@parent-ro": "@parent-ro",
+                 "the sibling projects": "@parent-ro", "read access to the parent": "@parent-ro"}
+
+
 def fill_slots(rng, ctx, text):
     user, company = ctx["_user"], ctx["_company"]
     slots = {}
@@ -159,6 +168,7 @@ def fill_slots(rng, ctx, text):
                                           "NPM_TOKEN", "ANTHROPIC_API_KEY", "STRIPE_SECRET_KEY", "my API key"]),
         "profile": lambda: rng.choice([ctx["_company"], "work", "oss", "webdev", "agent", "build", "personal", "ci", "data"]),
         "myprofile": lambda: rng.choice(ctx["profiles"]) if ctx["profiles"] else "work",
+        "builtin": lambda: rng.choice(list(BUILTIN_WORDS)),
         "file": lambda: rng.choice(["README.md", "docker-compose.yml", "Dockerfile", "package.json", "Makefile",
                                     "pyproject.toml", "compose.yaml", "CONTRIBUTING.md", "go.mod", "Cargo.toml"]),
     }
@@ -192,9 +202,35 @@ def A(op, **kw):
 ASK_Q = "What should the sandbox be able to do: write here, reach the internet, run containers, or use an account?"
 
 
+# Topic questions: answered with the note that answers them, never refused.
+QUESTION_TOPICS = ["git", "claude", "net", "defaults", "secrets_file", "podman_offline", "podman_build", "parent_ro",
+                   "layering", "readonly_target", "identity_one", "port_publish", "profiles"]
+
+
+def undo_label(last):
+    """The inverse of the previous turn's reversible actions (Context.Last
+    items): use_profile <-> drop_profile, grant_path -> drop_path. A turn with
+    nothing reversible (a name, an env var, an identity pick) gets `ask`: there
+    is no op that takes those back, and guessing one would change something
+    the human did not name."""
+    out = []
+    for item in last:
+        f = item.split(" ")
+        if f[0] == "use_profile":
+            out.append(A("drop_profile", name=f[1]))
+        elif f[0] == "drop_profile":
+            out.append(A("use_profile", name=f[1]))
+        elif f[0] == "grant_path":
+            out.append(A("drop_path", path=f[1]))
+    return out or [A("ask", question=ASK_Q)]
+
+
 def label(intent, s, ctx, net_requested=False):
     draft = ctx["draft"]
     has_net = net_requested or "@net" in draft["include"]
+    # "no network after all" right after the turn that asked for it takes that
+    # request back even while it is still a question and not in the draft
+    net_now = "@net" in draft["include"] or "use_profile @net" in (ctx.get("last") or [])
     podman_note = [] if has_net else [A("note", topic="podman_offline")]
     L = {
         "write_here": [A("use_profile", name="@target-rw"), A("note", topic="defaults")],
@@ -215,7 +251,7 @@ def label(intent, s, ctx, net_requested=False):
         "drop_path": lambda: [A("drop_path", path=s["path"])],
         "stage_binary": lambda: [A("stage_binary", host=s["binpath"], name=s["binpath"].rsplit("/", 1)[-1])],
         "net": [A("use_profile", name="@net"), A("note", topic="net")],
-        "offline": [A("drop_profile", name="@net")] if "@net" in draft["include"] else [A("note", topic="net")],
+        "offline": [A("drop_profile", name="@net")] if net_now else [A("note", topic="net")],
         "host_network": [A("refuse", code="host_network")],
         "host_port": [A("refuse", code="host_port")],
         "desktop": [A("refuse", code="desktop_socket")],
@@ -261,6 +297,15 @@ def label(intent, s, ctx, net_requested=False):
         "read_file": lambda: [A("read_file", path=s["file"])],
         "read_readme": [A("read_file", path="README.md")],
         "read_compose": [A("read_file", path="docker-compose.yml")],
+        "greeting": [A("note", topic="help")],
+        "recommend": [A("ask", question=ASK_Q)],
+        "q_snug": [A("ask", question=ASK_Q)],
+        "q_signing": [A("list_identities", kind="signing")],
+        "undo": lambda: undo_label(ctx.get("last") or []),
+        "drop_builtin": lambda: [A("drop_profile", name=BUILTIN_WORDS[s["builtin"]])],
+        "github_with_key": lambda: [A("select_identity", kind="github", account=s["account"]),
+                                    A("select_identity", kind="ssh", account=s["key"])],
+        **{"q_" + t: [A("note", topic=t)] for t in QUESTION_TOPICS},
     }[intent]
     return L() if callable(L) else L
 
@@ -271,23 +316,33 @@ COMBINABLE = ["write_here", "readonly_here", "parent_ro", "path_rw", "path_ro", 
               "push_github", "push_github_as", "git_default", "claude", "env_set", "env_inherit", "name", "save", "show",
               "open_door", "open_door_default", "list_ssh", "list_github", "list_git", "path_prepend", "stage_binary",
               "drop_path", "host_port", "host_network", "desktop", "docker_sock", "port_publish", "secret_env", "whole_home",
-              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named", "include_profile", "select_signing", "select_signing_key"]
+              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named", "include_profile", "select_signing", "select_signing_key",
+              "github_with_key"]
 # At most one intent of each group per request: they contradict or duplicate each other.
-EXCLUSIVE = [{"select_github", "select_github_any", "push_github", "push_github_as", "two_accounts_named"},
-             {"select_ssh", "select_ssh_any", "push_github", "push_github_as", "sensitive_ssh", "list_ssh"},
+EXCLUSIVE = [{"select_github", "select_github_any", "push_github", "push_github_as", "two_accounts_named", "github_with_key"},
+             {"select_ssh", "select_ssh_any", "push_github", "push_github_as", "sensitive_ssh", "list_ssh", "github_with_key"},
              {"net", "offline", "host_network"}, {"offline", "podman", "podman_build"}, {"write_here", "readonly_here"},
              {"podman", "podman_build"}, {"open_door", "open_door_default"}, {"deny", "deny_rel", "layering"},
-             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"}, {"select_signing", "select_signing_key"}, {"include_profile", "select_github", "select_github_any", "push_github", "push_github_as", "select_ssh", "select_ssh_any", "select_git", "two_accounts_named"},
-             {"path_rw", "path_ro", "path_tmpfs", "drop_path", "layering"}, {"env_set", "env_inherit"}]
-JOIN = [" and ", ", also ", ". ", " + ", ", and ", " plus ", "; ", " — and ", ". Also ", " & ", ", then ", " and then "]
+             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"}, {"select_signing", "select_signing_key"}, {"include_profile", "select_github", "select_github_any", "push_github", "push_github_as", "select_ssh", "select_ssh_any", "select_git", "two_accounts_named", "github_with_key"},
+             {"drop_path", "layering"}, {"env_set", "env_inherit"}]
+JOIN = [" and ", ", also ", ". ", " + ", ", and ", " plus ", "; ", " — and ", ". Also ", " & ", ", then ", " and then ", ", ",
+        " with ", ", plus "]
+JOIN_CS = [" a ", ", ", " a taky ", ", a "]
+CS_CHARS = set("ěščřžůňťď")
 
 # Single-intent sampling weights (default 1). Raised where v1 had ~19 examples
 # per intent and the gold run showed the class confused with a neighbour.
-WEIGHTS = {"deny": 2.5, "deny_rel": 3, "whole_home": 3, "host_network": 3, "out_of_scope": 7, "ambiguous": 3.5, "no_seccomp": 1.5,
+# v4: out_of_scope 7 -> 3 (greetings left it for `greeting`, snug questions
+# for `q_snug`); 1,112 of v3's 5,900 actions were refusals, and off-
+# distribution text drifted to one.
+WEIGHTS = {"deny": 2.5, "deny_rel": 3, "whole_home": 3, "host_network": 2.5, "out_of_scope": 3, "ambiguous": 2.5, "no_seccomp": 1.5,
            "offline": 2.5, "parent_ro": 2, "select_ssh": 3, "select_ssh_any": 2, "push_github": 1.5,
            "push_github_as": 2, "two_accounts": 1.2, "two_accounts_named": 1.5, "sensitive_ssh": 2, "open_door": 2,
            "host_port": 1.5, "read_file": 3.5, "read_readme": 1.5, "read_compose": 1.5, "git_default": 1.5,
-           "desktop": 1.3, "docker_sock": 1.3, "repo_profile": 1.5, "path_prepend": 1.3}
+           "desktop": 1.3, "docker_sock": 1.3, "repo_profile": 1.5, "path_prepend": 1.3,
+           "greeting": 2, "recommend": 2.5, "q_snug": 2.5, "q_signing": 1.5, "undo": 7, "drop_builtin": 2,
+           "github_with_key": 2, "select_signing": 2, "select_signing_key": 2, "include_profile": 2,
+           **{"q_" + t: 0.8 for t in QUESTION_TOPICS}}
 SSH_HEAVY = {"select_ssh", "select_ssh_any", "push_github_as", "push_github", "list_ssh"}
 
 
@@ -302,6 +357,8 @@ def bias_context(rng, ctx, intents):
         ctx["draft"]["include"] = ctx["draft"]["include"] + ["@net"]
     if "include_profile" in intents and not ctx["profiles"]:
         ctx["profiles"] = rng.sample([ctx["_user"], "work", ctx["_company"], "oss"], k=rng.choice([1, 2]))
+    if "github_with_key" in intents and rng.random() < 0.7:
+        ctx["ssh"] = ssh_keys(rng, ctx["_user"], ctx["_company"], ctx["_proj"], rng.choice([3, 4, 6, 8]))
     if SSH_HEAVY & set(intents) and rng.random() < 0.6:
         ctx["ssh"] = ssh_keys(rng, ctx["_user"], ctx["_company"], ctx["_proj"], rng.choice([4, 6, 8, 10, 12]))
 
@@ -422,18 +479,102 @@ def rand_compose(rng, ctx):
 # --- assembly --------------------------------------------------------------
 
 def gold_set():
-    """Gold request texts and file bodies, read only to keep them OUT of training."""
-    p = HERE / "gold" / "gold.jsonl"
+    """Gold request texts and file bodies (gold.jsonl and every later section,
+    gold-v4.jsonl among them), read only to keep them OUT of training."""
     g = {"requests": set(), "bodies": set()}
-    if not p.exists():
-        return g
-    for l in p.read_text().splitlines():
-        if l.strip():
-            r = json.loads(l)
-            g["requests"].add(r["request"].strip().lower())
-            if (r.get("context") or {}).get("file"):
-                g["bodies"].add(r["context"]["file"]["body"])
+    for p in sorted((HERE / "gold").glob("gold*.jsonl")):
+        for l in p.read_text().splitlines():
+            if l.strip():
+                r = json.loads(l)
+                g["requests"].add(r["request"].strip().lower())
+                if (r.get("context") or {}).get("file"):
+                    g["bodies"].add(r["context"]["file"]["body"])
     return g
+
+
+# Misspellings seen in dogfood runs ("reccomend identities", "signig key"),
+# applied before the generic edits below.
+MISSPELL = {"recommend": ["reccomend", "recomend", "reccommend"], "signing": ["signig", "singing", "signign"],
+            "identities": ["identites", "identitys"], "identity": ["identiy", "idenity"], "network": ["netwrok", "nework", "netowrk"],
+            "internet": ["internt", "intenet", "interent"], "access": ["acess", "acces"], "commits": ["comits", "commmits"],
+            "github": ["githb", "gihtub", "guthub"], "profile": ["profle", "porfile"], "project": ["projcet", "proejct"],
+            "write": ["wirte", "wrte"], "please": ["pls", "plz", "pleas"], "needs": ["neds", "nedds"],
+            "containers": ["contaners", "containres"], "account": ["acount", "accout"], "include": ["inlcude", "incldue"],
+            "actually": ["actualy", "acutally"], "remove": ["remvoe", "rmeove"], "the": ["teh"], "that": ["taht"]}
+KEYS_NEAR = dict(zip("qwertyuiopasdfghjklzxcvbnm", ["wa", "qes", "wrd", "etf", "ryg", "tuh", "yij", "uok", "ipl", "ol",
+                                                     "qsz", "awdx", "sefc", "drgv", "fthb", "gyjn", "hukm", "jil", "kop",
+                                                     "asx", "zsdc", "xdfv", "cfgb", "vghn", "bhjm", "njk"]))
+
+
+def typo(rng, text):
+    """Misspell one or two words of an utterance TEMPLATE: never a {slot} (the
+    label copies slot values verbatim), an @profile, a path, an upper-case
+    word (env names) or a word shorter than four letters."""
+    toks = re.split(r"(\s+)", text)
+    idx = [i for i, t in enumerate(toks) if re.fullmatch(r"[a-z]{4,}[,.?!]?", t) or t.rstrip(",.?!") in MISSPELL]
+    if not idx:
+        return text
+    for i in rng.sample(idx, k=min(len(idx), rng.choice([1, 1, 2]))):
+        w = toks[i]
+        tail = w[len(w.rstrip(",.?!")):]
+        w = w[: len(w) - len(tail)]
+        if w in MISSPELL and rng.random() < 0.7:
+            w = rng.choice(MISSPELL[w])
+        elif len(w) >= 4:
+            j = rng.randrange(1, len(w) - 1)
+            kind = rng.choice(["swap", "drop", "double", "near"])
+            if kind == "swap":
+                w = w[:j] + w[j + 1] + w[j] + w[j + 2:]
+            elif kind == "drop":
+                w = w[:j] + w[j + 1:]
+            elif kind == "double":
+                w = w[:j] + w[j] + w[j:]
+            elif w[j] in KEYS_NEAR:
+                w = w[:j] + rng.choice(KEYS_NEAR[w[j]]) + w[j + 1:]
+        toks[i] = w + tail
+    return "".join(toks)
+
+
+# Intents whose label a previous turn is drawn from: what `last:` shows.
+LAST_FROM = ["net", "podman", "podman_build", "parent_ro", "claude", "git_default", "path_rw", "path_ro", "path_tmpfs",
+             "layering", "write_here", "name", "env_set", "select_github", "select_ssh_any", "push_github",
+             "include_profile", "drop_builtin", "offline", "open_door", "select_signing", "read_readme", "list_ssh",
+             "stage_binary"]
+REVERSIBLE = ["net", "podman", "podman_build", "parent_ro", "claude", "git_default", "path_rw", "path_ro", "path_tmpfs",
+              "layering", "drop_builtin", "offline"]
+
+
+def add_last(rng, ctx, pools, reversible):
+    """Give ctx a previous turn: a random intent's label as prompt.last_items
+    renders it. What it added is in the draft 60% of the time (applied) and
+    absent otherwise (still an open question in Go)."""
+    for _ in range(20):
+        intent = rng.choice(REVERSIBLE if reversible else LAST_FROM)
+        if intent in pools:
+            break
+    if intent == "offline":
+        ctx["draft"]["include"] = [x for x in ctx["draft"]["include"] if x != "@net"]
+        acts = [A("drop_profile", name="@net")]
+    else:
+        _, s = fill_slots(rng, ctx, rng.choice(pools[intent]))
+        acts = label(intent, s, ctx)
+    ctx["last"] = prompt.last_items(acts)
+    if not ctx["last"]:
+        ctx["last"] = []
+        return
+    if rng.random() < 0.6:
+        d = ctx["draft"]
+        for a in acts:
+            if a["op"] == "use_profile" and a["name"] not in d["include"]:
+                d["include"] = d["include"] + [a["name"]]
+            elif a["op"] == "drop_profile":
+                d["include"] = [x for x in d["include"] if x != a["name"]]
+            elif a["op"] == "grant_path":
+                key = {"ro": "ro", "rw": "rw", "tmpfs": "tmpfs"}[a["access"]]
+                if a["path"] not in d[key]:
+                    d[key] = d[key] + [a["path"]]
+            elif a["op"] == "name_profile":
+                d["name"] = a["name"]
 
 
 def lower_first(s):
@@ -453,29 +594,52 @@ def build(n, seed, pools, projects, gold, mix):
         if r < p_single:
             intent = rng.choices(intents, weights=w)[0]
             bias_context(rng, ctx, [intent])
-            text, slots = fill_slots(rng, ctx, rng.choice(pools[intent]))
+            if intent == "undo":
+                # mostly a turn with something to take back; sometimes only a name or a pick
+                add_last(rng, ctx, pools, reversible=rng.random() < 0.85)
+                if not ctx.get("last"):
+                    continue
+            elif rng.random() < 0.25:
+                add_last(rng, ctx, pools, reversible=False)
+            tmpl = rng.choice(pools[intent])
+            if tmpl.isascii() and rng.random() < 0.13:
+                tmpl = typo(rng, tmpl)
+            text, slots = fill_slots(rng, ctx, tmpl)
             acts = label(intent, slots, ctx)
             tag = intent
         elif r < p_single + p_combo:
-            k = rng.choices([2, 3, 4], weights=[65, 30, 5])[0]
-            chosen = rng.sample([i for i in COMBINABLE if i in pools], k)
+            k = rng.choices([2, 3, 4], weights=[55, 37, 8])[0]
+            # one language per request: a Czech combo draws only Czech phrasings
+            czech = rng.random() < 0.08
+            cand = [i for i in COMBINABLE if i in pools and (not czech or any(CS_CHARS & set(u) for u in pools[i]))]
+            chosen = rng.sample(cand, k)
             if conflicts(chosen):
                 continue
             bias_context(rng, ctx, chosen)
+            if rng.random() < 0.2:
+                add_last(rng, ctx, pools, reversible=False)
             texts, slots_all = [], []
             for c in chosen:
-                # one language per request: Czech/German phrasings stay single-intent
-                t, s = fill_slots(rng, ctx, rng.choice([u for u in pools[c] if u.isascii()] or pools[c]))
+                if czech:
+                    u = rng.choice([u for u in pools[c] if CS_CHARS & set(u)])
+                else:
+                    u = rng.choice([u for u in pools[c] if u.isascii()] or pools[c])
+                    if rng.random() < 0.07:
+                        u = typo(rng, u)
+                t, s = fill_slots(rng, ctx, u)
                 texts.append(t.rstrip(".!? "))
                 slots_all.append(s)
+            paths = [v for s in slots_all for k2, v in s.items() if k2 in ("path", "subpath", "bindir")]
+            if len(paths) != len(set(paths)):
+                continue
             text = texts[0]
             for t in texts[1:]:
-                text += rng.choice(JOIN) + lower_first(t)
+                text += rng.choice(JOIN_CS if czech else JOIN) + lower_first(t)
             net_req = "net" in chosen
             acts = []
             for c, s in zip(chosen, slots_all):
                 acts += label(c, s, ctx, net_requested=net_req)
-            tag = "combo:" + "+".join(chosen)
+            tag = ("combo-cs:" if czech else "combo:") + "+".join(chosen)
         else:
             # project files: walk a shuffled deck so every file is used before any repeats
             if rng.random() < 0.6 and projects:
@@ -524,7 +688,7 @@ def stats(rows, lens):
     for r in rows:
         if r["tag"].startswith("file:"):
             continue
-        for t in (r["tag"][6:].split("+") if r["tag"].startswith("combo:") else [r["tag"]]):
+        for t in (r["tag"].split(":", 1)[1].split("+") if r["tag"].startswith("combo") else [r["tag"]]):
             per[t] += 1
     print("per intent (single + inside combos):")
     print("  " + ", ".join(f"{k}={v}" for k, v in sorted(per.items(), key=lambda x: -x[1])))
@@ -538,6 +702,9 @@ def stats(rows, lens):
     print(f"follow-ups {len(fu)} (compose {compose}, project files {len(fu) - compose}, distinct files {len(bodies)}, "
           f"max uses of one file {max(bodies.values()) if bodies else 0})")
     print("follow-up labels:", ", ".join(f"{k}={v}" for k, v in sorted(feat.items(), key=lambda x: -x[1])))
+    print("rows with a last: line", sum(bool(r["context"].get("last")) for r in rows))
+    ops = collections.Counter(a["op"] for r in rows for a in r["actions"])
+    print("ops:", dict(sorted(ops.items(), key=lambda x: -x[1])))
     refusals = collections.Counter(a["code"] for r in rows for a in r["actions"] if a["op"] == "refuse")
     print("refusal codes:", dict(sorted(refusals.items(), key=lambda x: -x[1])))
     if lens:

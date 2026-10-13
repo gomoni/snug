@@ -141,3 +141,47 @@ func TestFileCannotAddPromptLines(t *testing.T) {
 		t.Errorf("%d lines start like a prompt header, want 4:\n%s", own, user)
 	}
 }
+
+// TestLastFixture holds LastItems equal to prompt.py's last_items on the
+// shared fixture, and holds an account carrying a newline or U+2028 to one
+// line: the item goes back into the next prompt, and model output must not
+// write a "request:" line there.
+func TestLastFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/last.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		n++
+		var c struct {
+			Actions json.RawMessage `json:"actions"`
+			Last    []string        `json:"last"`
+		}
+		if err := json.Unmarshal([]byte(l), &c); err != nil {
+			t.Fatalf("line %d: %v", n, err)
+		}
+		acts, err := Parse([]byte(`{"actions":` + string(c.Actions) + `}`))
+		if err != nil {
+			t.Fatalf("line %d: %v", n, err)
+		}
+		got := LastItems(acts)
+		if !slices.Equal(got, c.Last) {
+			t.Errorf("line %d: LastItems %q, want %q", n, got, c.Last)
+		}
+		_, user := FormatPrompt(Context{Target: "/srv/p", Last: got}, "undo that")
+		want := 3 // target, draft, request
+		if len(got) > 0 {
+			want = 4 // and last
+		}
+		if lines := strings.Split(user, "\n"); len(lines) != want || strings.ContainsAny(user, "\u2028\u2029\u202e") {
+			t.Errorf("line %d: last items reshape the prompt:\n%s", n, user)
+		}
+	}
+	if n < 8 {
+		t.Fatalf("fixture has %d cases, want at least 8", n)
+	}
+}

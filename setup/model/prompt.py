@@ -12,7 +12,7 @@ import unicodedata
 SYSTEM = "You are snug-setup. Turn the request into snug profile actions. Reply with JSON only."
 
 
-_HEADERS = ("target:", "draft:", "host ", "file ", "request:")
+_HEADERS = ("target:", "draft:", "host ", "file ", "last:", "request:")
 
 
 def _file_body(body: str) -> str:
@@ -69,8 +69,36 @@ def format_user(ctx: dict, request: str) -> str:
     if f:
         lines.append(f"file {f['name']}:")
         lines.append(_file_body(f["body"]))
+    last = ctx.get("last") or []
+    if last:
+        lines.append("last: " + "; ".join(last))
     lines.append(f"request: {request}")
     return "\n".join(lines)
+
+
+def _one_line(s: str) -> str:
+    """Go's intent.oneLine: drop control and formatting runes and U+2028/2029."""
+    return "".join(c for c in s if not (unicodedata.category(c) in ("Cc", "Cf") or c in "\u2028\u2029"))
+
+
+_LAST_FIELDS = {
+    "use_profile": ("name",), "drop_profile": ("name",), "include_profile": ("name",), "open_door": ("name",),
+    "name_profile": ("name",), "grant_path": ("path", "access"), "drop_path": ("path",), "read_file": ("path",),
+    "stage_binary": ("host",), "set_env": ("name", "verb"), "list_identities": ("kind",),
+    "select_identity": ("kind", "account"), "refuse": ("code",),
+}
+
+
+def last_items(actions: list) -> list:
+    """Go's intent.LastItems: one item per action of the previous turn, notes
+    left out, the op followed by what it touched (an empty account omitted)."""
+    out = []
+    for a in actions:
+        if a["op"] == "note":
+            continue
+        f = [a[k] for k in _LAST_FIELDS.get(a["op"], ()) if not (k == "account" and a[k] == "")]
+        out.append(" ".join([a["op"]] + [_one_line(x) for x in f]))
+    return out
 
 
 def messages(ctx: dict, request: str, actions: list | None = None) -> list[dict]:

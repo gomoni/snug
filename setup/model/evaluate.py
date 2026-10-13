@@ -10,12 +10,25 @@ Metrics per case:
          Go-printed commentary, the core is what changes the profile or the
          conversation
 `ask.question` text is never compared, only that an `ask` was emitted.
+
+--margin also asks llama-server for logprobs and records, per case, the
+smallest gap between the chosen token and the best other token over the
+DECISION tokens: the values of op/name/code/topic/kind/access/verb and the
+token after each action's closing brace (another action, or the end). It is a
+measurement for a confidence threshold (setup-ux-diagnosis §4), not one: the
+summary reports coverage and core accuracy above and below a few cut-offs.
+The top_logprobs llama-server reports are the model's own distribution before
+the grammar, so a margin is the model's confidence, not the grammar's.
+
+    uv run python evaluate.py out/qwen1.5b-v4/snug-setup-q4_k_m.gguf --gold gold/gold-v4.jsonl --margin
 """
 
 import argparse
 import collections
 import json
+import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -66,19 +79,49 @@ def start(gguf, threads):
     sys.exit("llama-server did not become healthy")
 
 
-def ask(url, ctx, request):
+def ask(url, ctx, request, logprobs=False):
     body = {
         "messages": prompt.messages(ctx, request),
         "temperature": 0,
         "max_tokens": 320,
         "response_format": {"type": "json_schema", "json_schema": {"name": "actions", "schema": SCHEMA}},
     }
+    if logprobs:
+        body.update(logprobs=True, top_logprobs=3)
     req = urllib.request.Request(url + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t = time.time()
     with urllib.request.urlopen(req, timeout=300) as r:
         out = json.load(r)
-    return out["choices"][0]["message"]["content"], time.time() - t
+    ch = out["choices"][0]
+    return ch["message"]["content"], time.time() - t, (ch.get("logprobs") or {}).get("content")
+
+
+DECISION = re.compile(r'"(?:op|name|code|topic|kind|access|verb)"\s*:\s*"([^"]*)"|\}\s*([,\]])')
+
+
+def margins(content, toks):
+    """(min margin over decision tokens, min over all tokens). A token's margin
+    is its logprob minus the best OTHER candidate's; negative when the grammar
+    forced a token the model did not rank first."""
+    if not toks:
+        return None, None
+    spans = []
+    for m in DECISION.finditer(content):
+        g = 1 if m.group(1) is not None else 2
+        spans.append((m.start(g), max(m.end(g), m.start(g) + 1)))
+    pos, dec, every = 0, [], []
+    for t in toks:
+        text = t.get("token", "")
+        lo, hi = pos, pos + max(len(text), 1)
+        pos += len(text)
+        others = [x["logprob"] for x in t.get("top_logprobs", []) if x.get("token") != text]
+        mg = t["logprob"] - max(others) if others else math.inf
+        every.append(mg)
+        if any(lo < b and a < hi for a, b in spans):
+            dec.append(mg)
+    r = lambda xs: round(min(xs), 3) if xs and min(xs) != math.inf else None
+    return r(dec), r(every)
 
 
 def canon(a):
@@ -95,6 +138,7 @@ def main():
     ap.add_argument("--threads", type=int, default=max(1, min(len(os.sched_getaffinity(0)), os.cpu_count() - 2)))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--report", default="")
+    ap.add_argument("--margin", action="store_true", help="record the logprob margin of each case")
     a = ap.parse_args()
     os.nice(19)
 
@@ -105,7 +149,7 @@ def main():
     rows = []
     try:
         for c in cases:
-            raw, dt = ask(url, c["context"], c["request"])
+            raw, dt, toks = ask(url, c["context"], c["request"], a.margin)
             try:
                 got = json.loads(raw)["actions"]
                 valid = True
@@ -120,6 +164,8 @@ def main():
                  "exact": g == w, "set": collections.Counter(g) == collections.Counter(w),
                  "core": collections.Counter(gc) == collections.Counter(wc),
                  "seconds": round(dt, 2), "request": c["request"], "want": want, "got": got if valid else raw}
+            if a.margin:
+                r["margin"], r["margin_all"] = margins(raw, toks)
             rows.append(r)
             mark = "ok " if r["core"] else "BAD"
             print(f"{mark} {r['id']:>5} {dt:5.1f}s {c['request'][:70]}", flush=True)
@@ -136,6 +182,18 @@ def main():
         for t in r["tags"]:
             by[t].append(r["core"])
     summary["core_by_tag"] = {t: f"{sum(v)}/{len(v)}" for t, v in sorted(by.items())}
+    if a.margin:
+        m = [r for r in rows if r.get("margin") is not None]
+        cut = {}
+        for th in (0.5, 1, 2, 3, 4, 6):
+            lo = [r["core"] for r in m if r["margin"] < th]
+            hi = [r["core"] for r in m if r["margin"] >= th]
+            cut[str(th)] = {"below": len(lo), "below_core": f"{sum(lo)}/{len(lo)}", "above_core": f"{sum(hi)}/{len(hi)}"}
+        summary["margin_cutoffs"] = cut
+        ok = sorted(r["margin"] for r in m if r["core"])
+        bad = sorted(r["margin"] for r in m if not r["core"])
+        summary["margin_median_ok"] = ok[len(ok) // 2] if ok else None
+        summary["margin_median_bad"] = bad[len(bad) // 2] if bad else None
     print(json.dumps(summary, indent=1))
     if a.report:
         Path(a.report).write_text(json.dumps({"summary": summary, "rows": rows}, indent=1, ensure_ascii=False))

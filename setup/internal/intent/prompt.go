@@ -19,6 +19,9 @@ type Context struct {
 	// Profiles are the names of the human's own snug profiles.
 	Profiles []string `json:"profiles"`
 	File     *File    `json:"file"`
+	// Last is what the previous turn did, as LastItems renders it, so a
+	// follow-up ("undo that", "actually remove it") can name its target.
+	Last []string `json:"last"`
 }
 
 // Draft summarises the profile being built.
@@ -53,7 +56,7 @@ type File struct {
 }
 
 // headers are the prefixes FormatPrompt starts its own lines with.
-var headers = []string{"target:", "draft:", "host ", "file ", "request:"}
+var headers = []string{"target:", "draft:", "host ", "file ", "last:", "request:"}
 
 // fileBody returns a file's text for the prompt. The file comes from the
 // target, the least trusted input there is, so it cannot add a line of the
@@ -89,8 +92,8 @@ func list(xs []string) string {
 
 // FormatPrompt returns the system and user messages for ctx and request. The
 // user message is byte-exact with setup/model/prompt.py: lines in the order
-// target, draft, host ssh, host github, host git, host profiles, file, request; the host and
-// file lines are omitted when empty; lines are joined with "\n" and there is no
+// target, draft, host ssh, host github, host git, host profiles, file, last,
+// request; the host, file and last lines are omitted when empty; lines are joined with "\n" and there is no
 // trailing newline; a file body has its trailing newlines stripped and goes
 // through fileBody.
 func FormatPrompt(c Context, request string) (system, user string) {
@@ -146,6 +149,61 @@ func FormatPrompt(c Context, request string) (system, user string) {
 	if c.File != nil {
 		lines = append(lines, "file "+c.File.Name+":", fileBody(c.File.Body))
 	}
+	if len(c.Last) > 0 {
+		lines = append(lines, "last: "+strings.Join(c.Last, "; "))
+	}
 	lines = append(lines, "request: "+request)
 	return System, strings.Join(lines, "\n")
+}
+
+// oneLine drops every rune that could end or reformat a prompt line: a
+// select_identity account or an ask question is model output of up to 128 or
+// 200 runes of anything, and LastItems feeds it back into the next prompt.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// LastItems renders the actions of one turn for Context.Last: one item per
+// action, notes left out (they change nothing), each "op" followed by the
+// fields that say what it touched. prompt.py's last_items is the same rule,
+// and testdata/last.jsonl holds the two equal.
+func LastItems(acts []Action) []string {
+	var out []string
+	for _, a := range acts {
+		var f []string
+		switch a.Op {
+		case OpNote:
+			continue
+		case OpUseProfile, OpDropProfile, OpIncludeProfile, OpOpenDoor, OpNameProfile:
+			f = []string{a.Name}
+		case OpGrantPath:
+			f = []string{a.Path, a.Access}
+		case OpDropPath, OpReadFile:
+			f = []string{a.Path}
+		case OpStageBinary:
+			f = []string{a.Host}
+		case OpSetEnv:
+			f = []string{a.Name, a.Verb}
+		case OpListIdentities:
+			f = []string{a.Kind}
+		case OpSelectIdentity:
+			f = []string{a.Kind}
+			if a.Account != "" {
+				f = append(f, a.Account)
+			}
+		case OpRefuse:
+			f = []string{a.Code}
+		}
+		item := a.Op
+		for _, x := range f {
+			item += " " + oneLine(x)
+		}
+		out = append(out, item)
+	}
+	return out
 }
