@@ -140,7 +140,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		msg := serverMessage(raw)
 		err := fmt.Errorf("model server answered %s: %s", resp.Status, msg)
 		if strings.Contains(strings.ToLower(msg), "not found") {
-			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --openai-model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
+			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
 		}
 		return "", err
 	}

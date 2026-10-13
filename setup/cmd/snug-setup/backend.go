@@ -10,26 +10,22 @@ import (
 	"github.com/gomoni/snug/setup/internal/llm"
 )
 
-// backendFlags is what the command line says about the model. Exactly one of
-// Model and URL is set.
+// backendFlags is what the command line says about the model. Without URL,
+// Model is a GGUF run by a llama-server child of ours; with URL, it is the
+// name of a model on that server, and may be empty.
 type backendFlags struct {
-	Model     string // GGUF run by a llama-server child of ours
+	Model     string
 	URL       string // a server that is already running, with its own model
 	ServerBin string
-	// RemoteModel names the model on the --openai-url server.
-	RemoteModel string
 }
 
-// check refuses anything but exactly one of the two ways to reach a model.
+// check refuses a command line that names no way to reach a model.
 func (f backendFlags) check() error {
-	if (f.Model == "") == (f.URL == "") {
-		return errors.New("give exactly one of --model and --openai-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
+	if f.Model == "" && f.URL == "" {
+		return errors.New("give --model FILE.gguf, or --openai-url URL of a server that is already running: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
 	}
-	if f.ServerBin != "" && f.Model == "" {
-		return errors.New("--llama-server names the binary --model starts, and is meaningless with --openai-url")
-	}
-	if f.RemoteModel != "" && f.URL == "" {
-		return errors.New("--openai-model names a model on the --openai-url server, and is meaningless with --model")
+	if f.ServerBin != "" && f.URL != "" {
+		return errors.New("--llama-server names the binary snug-setup starts for a GGUF, and is meaningless with --openai-url")
 	}
 	return nil
 }
@@ -39,7 +35,7 @@ func (f backendFlags) check() error {
 // llm.Backend, and the sentence about what it cannot promise is printed from
 // Caps rather than decided by a branch in the caller.
 func newBackend(ctx context.Context, f backendFlags, home string) (llm.Backend, error) {
-	if f.Model != "" {
+	if f.URL == "" {
 		bin, err := llm.FindServer(f.ServerBin, home)
 		if err != nil {
 			return nil, err
@@ -47,7 +43,7 @@ func newBackend(ctx context.Context, f backendFlags, home string) (llm.Backend, 
 		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin, f.Model)
 		return llm.StartServer(ctx, bin, f.Model, 5*time.Minute)
 	}
-	r := &llm.Remote{URL: f.URL, ModelName: f.RemoteModel}
+	r := &llm.Remote{URL: f.URL, ModelName: f.Model}
 	if _, err := r.Endpoint(); err != nil {
 		return nil, err
 	}
