@@ -25,3 +25,20 @@ the row and the case together.
 | g109, g110 | `ask` question text is free-form | evaluate.py never compares it |
 | g054 | "pin jkralova on github.example.com" → account `jkralova` (host not encoded) | the account is "the user's token verbatim"; the host is Go's to match |
 | g072 | "use the key bob@laptop" → `select_identity ssh "bob@laptop"` | the word the user typed, even when it is the key comment rather than the stem |
+
+## gold-v4.jsonl
+
+A separate file so v3 and later models stay comparable on the 160 cases above.
+gen_dataset.py keeps every `gold*.jsonl` request out of training.
+
+| cases | reading used | why |
+|---|---|---|
+| v001, v002, v014–v016, v018 | a question about snug with no topic that answers it ("is seccomp on by default?") or a request for a recommendation → `ask` | no schema topic covers seccomp; a refusal reads "you asked for something snug refuses", which is false; `ask` is where Go puts its own proposal |
+| v003–v008, v011 | a question a note answers → that `note` alone (`git`, `claude`, `net`, `defaults`, `secrets_file`, `podman_offline`, `identity_one`) | asking what @git does is not asking for @git |
+| v009, v010 | "which key signs commits?" → `list_identities signing` | the listing is the answer; nothing is pinned |
+| v012, v013 | greeting or thanks → `note help` | v3 refused them `out_of_scope` |
+| v025–v031 | `last:` names the previous turn; "undo that" / "remove it" inverts its reversible items: `use_profile`↔`drop_profile`, `grant_path` → `drop_path`, one per item, in order | the draft may or may not hold the item yet (Go may still be asking), so the label keys on `last:`, not on the draft |
+| v026 | `use_profile @net` in `last:` but not in the draft, "remove it" → `drop_profile @net` | same rule; Go answers "not in the draft" or declines its open question |
+| v032, v033 | a self-contained request with a `last:` line ignores it | `last:` is context for follow-ups only |
+| v034 | `last: name_profile web`, "revert the rename" → `ask` | no op takes a name (or env var, or identity pick) back; guessing one would change something the human did not name |
+| v046 | "with @git there's also a need for ssh access and a signig key, right?" → `@git`, ssh `""`, signing `""` | the dogfood request this is written after wanted all three; the question form does not make it a question about snug |

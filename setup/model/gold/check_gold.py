@@ -89,7 +89,7 @@ def check_context(ctx, where):
             if not inc.startswith("@"):
                 errs.append(f"{where}: draft.include entry {inc!r} lacks @")
         for ident in d.get("identity", []):
-            if not re.fullmatch(r"(ssh|github|git):.+", ident):
+            if not re.fullmatch(r"(ssh|github|git|signing):.+", ident):
                 errs.append(f"{where}: draft.identity entry {ident!r} is not kind:name")
     for k in ctx.get("ssh", []):
         if set(k) != {"stem", "comment", "agent"}:
@@ -97,6 +97,10 @@ def check_context(ctx, where):
     for a in ctx.get("github", []):
         if set(a) != {"host", "user", "active"}:
             errs.append(f"{where}: github entry keys {sorted(a)}")
+    for k in ("profiles", "last"):
+        v = ctx.get(k, [])
+        if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
+            errs.append(f"{where}: {k} must be a list of non-empty strings")
     f = ctx.get("file")
     if f is not None:
         if set(f) != {"name", "body"}:
