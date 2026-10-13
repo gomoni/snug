@@ -285,6 +285,24 @@ Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 - Path variables: `{target}`, `{target_parent}`, `{home}`, `~` — the three
   `resolve.go` actually builds, plus the tilde.
 
+### Asking for one — `snug-setup` (experimental)
+
+Chat writes the profile. Local model (fine-tuned Qwen2.5-1.5B, GGUF, run by
+`llama-server` on 127.0.0.1) turns a request into a closed set of actions; Go
+gates every one. Model output is untrusted: anything that widens the sandbox
+or puts a value into it lands on a card and waits for `/accept`; `~/.ssh`,
+token files, a writable `~/.bashrc` and the like are refused, whatever the
+model says. `/save` runs `snug --dry-run --json` and refuses to write a file
+that resolves to anything you did not ask for.
+
+```bash
+cd setup && go build ./cmd/snug-setup
+./snug-setup --model model/out/qwen1.5b-v3/snug-setup-q4_k_m.gguf ~/src/proj
+```
+
+No model ships: build one with `setup/model` (`gen_dataset.py`, `train.py`,
+`export_gguf.sh`). Own module (`setup/go.mod`); `snug` needs none of it.
+
 ## Identity — one account per sandbox
 
 > **Alpha state
