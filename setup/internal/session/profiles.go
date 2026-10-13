@@ -224,14 +224,59 @@ func firstClause(msg string) string {
 	return msg
 }
 
-// profileLines tells the human which profiles of theirs exist, marking the ones
-// that pin an identity and that snug refuses today. What a profile pins is on
-// its card and in the suggestion for the project, not repeated here.
-func (s *Session) profileLines(ctx context.Context) []Line {
+// profileWarnings are what reading the human's profiles could not do.
+func (s *Session) profileWarnings() []Line {
 	var out []Line
 	for _, w := range s.facts.Warnings {
 		out = append(out, warn("%s", w))
 	}
+	return out
+}
+
+// profileSummary is the opening's words about the human's profiles: the ones
+// snug refuses today, grouped by reason and file, since a profile that pins an
+// identity and cannot be used is what the human must fix before relying on it.
+// The profiles snug accepts are counted; /why lists them.
+func (s *Session) profileSummary(ctx context.Context) []Line {
+	type group struct {
+		reason, where string
+		names         []string
+	}
+	var groups []*group
+	refused := map[string]bool{}
+	for _, n := range s.profileNames() {
+		p, _ := s.userProfile(n)
+		if !p.Identity.Pins() {
+			continue
+		}
+		msg, checked := s.refusalOf(ctx, n)
+		if !checked || msg == "" {
+			continue
+		}
+		refused[n] = true
+		r, w := firstClause(msg), s.where(p)
+		i := slices.IndexFunc(groups, func(g *group) bool { return g.reason == r && g.where == w })
+		if i < 0 {
+			groups = append(groups, &group{reason: r, where: w})
+			i = len(groups) - 1
+		}
+		groups[i].names = append(groups[i].names, n)
+	}
+	var out []Line
+	for _, g := range groups {
+		out = append(out, info("snug refuses your profile %s today: %s (in %s). snug-setup does not edit your profiles; fix the file as snug says.", strings.Join(g.names, ", "), g.reason, g.where))
+	}
+	if s.pick != nil && refused[s.pick.Profile.Value] {
+		out = append(out, info("%s already pins this project's identity: fix it, then /include %s.", s.pick.Profile.Value, s.pick.Profile.Value))
+	}
+	return out
+}
+
+// profileLines tells the human which profiles of theirs exist, marking the ones
+// that pin an identity and that snug refuses today. What a profile pins is on
+// its card and in the suggestion for the project, not repeated here.
+func (s *Session) profileLines(ctx context.Context) []Line {
+	out := s.profileWarnings()
 	var shown []string
 	refused := false
 	for _, n := range s.profileNames() {

@@ -39,6 +39,8 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
   /pick signing STEM|none   answer the open signing key question
   /include NAME             include one of your own snug profiles (the same as "use my NAME profile")
   /analyze                  describe the project and propose what its files make plain
+  /why                      the reasons behind the opening: profiles, commits, what was not proposed
+  /keys                     list every ssh public key on this host
   /save [NAME]              check with snug and write; NAME names an unnamed draft`
 
 // Run reads lines from cfg.In until /quit or end of input and returns the
@@ -46,7 +48,7 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
 func Run(ctx context.Context, cfg Config) *session.Session {
 	p := &printer{w: cfg.Out}
 	s, lines := session.New(ctx, cfg.Session)
-	p.say("snug-setup --plain: one request per line; questions are answered with /accept, /decline and /pick (see /help). Target: " + cfg.Session.Host.Target)
+	p.say("snug-setup --plain: one request per line; questions are answered with /accept, /decline and /pick (see /help).")
 	p.print(lines)
 	in := bufio.NewReader(cfg.In)
 	for {
@@ -140,6 +142,10 @@ func handle(ctx context.Context, s *session.Session, p *printer, line string) bo
 			break
 		}
 		p.print(s.IncludeProfile(ctx, f[1]))
+	case "/why", "/details":
+		p.print(s.Details(ctx))
+	case "/keys":
+		p.print(s.ListIdentities("ssh"))
 	case "/analyze":
 		p.print(s.Analyze(ctx))
 	case "/undo":

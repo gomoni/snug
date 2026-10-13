@@ -108,8 +108,12 @@ func (s *Session) open(p Pending) Pending {
 				p.Question += " (you said \"" + safe.Inline(p.hint) + "\")"
 			}
 		}
-		for _, c := range cands {
+		shown, more := s.shortlist(p.kind, p.hint, cands)
+		for _, c := range shown {
 			p.Options = append(p.Options, c.Label)
+		}
+		if more > 0 {
+			p.Options = append(p.Options, fmt.Sprintf("... and %d more: /keys lists all %d", more, len(cands)))
 		}
 		p.Answer = fmt.Sprintf("/pick %s %s, or /pick %s none", p.kind, keyWord[p.kind], p.kind)
 		if len(cands) > 0 && cands[0].Why != "" {

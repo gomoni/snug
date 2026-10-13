@@ -71,7 +71,11 @@ func TestOpeningSuggestsTheIdentityTheRepositoryAndHostPointAt(t *testing.T) {
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
 	os.WriteFile(filepath.Join(w.Home, ".ssh", "config"), []byte("Host github.com\n  IdentityFile ~/.ssh/id_account2\n"), 0o600)
 	_, out := start(w)
-	contains(t, out, "Remote origin git@github.com:account2/project.git (ssh).",
+	contains(t, out, "Remote origin git@github.com:account2/project.git (ssh).", "nothing is pinned until you answer",
+		"GitHub login account2; ssh key id_account2; signing key id_other; git author Account Two <two@example.com>")
+	lacks(t, out, "Last 10 commits", "Found on this host", "Each request stands alone")
+	s, _ := start(w)
+	contains(t, text(s.Details(ctx)),
 		"Last 10 commits: 10 by Account Two <two@example.com>.", "5 carry an ssh signature made with your key id_other (signatures are read, not verified)",
 		"ssh key id_account2  (~/.ssh/config: Host github.com)", "signing key id_other  (5 of the last 10 commits carry an ssh signature made with it)",
 		"git author Account Two <two@example.com>", "GitHub login account2  (the owner in the remote url)", "nothing is pinned until you answer")
@@ -144,8 +148,8 @@ func TestHostileRepositoryConfigRunsNothing(t *testing.T) {
 	os.MkdirAll(filepath.Join(w.Target, ".git", "hooks"), 0o755)
 	os.WriteFile(filepath.Join(w.Target, ".git", "hooks", "post-checkout"), []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755)
 
-	_, out := start(w)
-	contains(t, out, "Last 4 commits")
+	s, _ := start(w)
+	contains(t, text(s.Details(ctx)), "Last 4 commits")
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a program named by the repository's config ran")
 	}

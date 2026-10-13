@@ -92,31 +92,39 @@ func (s *Session) proposalTurn(ctx context.Context, p ingest.Proposal) *Turn {
 }
 
 // notProposed lists what the analysis saw a use for and did not put on the
-// card, with the words that add it.
-func notProposed(p ingest.Proposal, d *draft.Draft) string {
+// card, with the words that add it. short leaves out what each was seen for.
+func notProposed(p ingest.Proposal, d *draft.Draft, short bool) string {
 	var out []string
 	for _, pk := range p.Include {
 		if pk.Sure || slices.Contains(d.Include, pk.Name) {
 			continue
 		}
+		var say string
 		switch pk.Name {
 		case "@net":
-			out = append(out, "@net (for "+safe.Inline(pk.Why)+"; say \"I need internet\")")
+			say = "I need internet"
 		case "@podman-build":
-			out = append(out, "@podman-build (for "+safe.Inline(pk.Why)+"; say \"I need to build images\")")
+			say = "I need to build images"
 		case "@podman-socket":
-			out = append(out, "@podman-socket (for "+safe.Inline(pk.Why)+"; say \"I need podman\")")
+			say = "I need podman"
+		default:
+			continue
+		}
+		if short {
+			out = append(out, pk.Name+" (say \""+say+"\")")
+		} else {
+			out = append(out, pk.Name+" (for "+safe.Inline(pk.Why)+"; say \""+say+"\")")
 		}
 	}
 	return strings.Join(out, "; ")
 }
 
-// Analyze describes the project and opens a card for what it makes plain, the
-// same text and card the session starts with. It is /analyze.
-func (s *Session) Analyze(ctx context.Context) []Line {
+// projectWarnings are the things about the project itself that the human must
+// not miss: a shipped profile that is not read, secrets the target holds, and
+// what the analysis could not read.
+func (s *Session) projectWarnings() []Line {
 	t := s.facts.Target
-	out := s.profileLines(ctx)
-	out = append(out, info("%s", describeTarget(s.cfg.Host.Target, t)))
+	var out []Line
 	if t.RepoProfile {
 		out = append(out, warn("the project ships .snug or snug.toml. snug-setup does not read it: profiles come from your own config, never from the project."))
 	}
@@ -130,31 +138,89 @@ func (s *Session) Analyze(ctx context.Context) []Line {
 	for _, w := range t.Warnings {
 		out = append(out, warn("%s", w))
 	}
-	out = append(out, s.repoLines(ctx)...)
-	prop := ingest.Propose(t)
+	return out
+}
+
+// Analyze is the opening, and /analyze or a request to analyze afterwards: a
+// few lines about the project, the identity it points at and the profiles snug
+// refuses, then the card for what the project's files make plain. Asked again
+// it says what is still open and what the draft pins instead of printing the
+// opening a second time; Details prints everything.
+func (s *Session) Analyze(ctx context.Context) []Line {
+	prop := ingest.Propose(s.facts.Target)
+	if s.analyzed {
+		return s.analyzeAgain(ctx, prop)
+	}
+	s.analyzed = true
+	out := s.profileWarnings()
+	out = append(out, info("%s", describeTarget(s.cfg.Host.Target, s.facts.Target)))
+	out = append(out, s.projectWarnings()...)
+	if s.pick != nil {
+		out = append(out, info("Remote %s %s (%s).", safe.Inline(s.pick.Remote.Name), safe.Inline(s.pick.Remote.URL), safe.Inline(s.pick.Remote.Scheme)))
+	}
+	if l := s.suggestionLine(ctx); l != "" {
+		out = append(out, info("%s", l))
+	}
+	out = append(out, s.profileSummary(ctx)...)
+	out = append(out, s.proposalLines(ctx, prop)...)
+	if n := notProposed(prop, s.d, true); n != "" {
+		out = append(out, info("Not proposed: %s.", n))
+	}
+	out = append(out, info("/why has the reasons, your profiles and the full text of the above."))
+	return out
+}
+
+// proposalLines opens the card for the proposal unless one is already open or
+// the draft has all of it.
+func (s *Session) proposalLines(ctx context.Context, prop ingest.Proposal) []Line {
 	for _, p := range s.pending {
 		if p.Kind == Card && p.turn.Ingest {
-			out = append(out, info("The proposal is already open as #%d: /accept %d applies it.", p.N, p.N))
-			if n := notProposed(prop, s.d); n != "" {
-				out = append(out, info("Not proposed: %s.", n))
-			}
-			return out
+			return []Line{info("The proposal is open as #%d: /accept %d applies it, /decline %d drops it.", p.N, p.N, p.N)}
 		}
 	}
 	turn := s.proposalTurn(ctx, prop)
 	if turn == nil {
-		out = append(out, info("Nothing to propose that the draft does not already have."))
-	} else {
-		before := s.snapshot()
-		card := s.open(Pending{Kind: Card, turn: turn, held: heldAll(turn), said: turn.Said, at: turn.N})
-		s.commit(before, "the analysis")
-		out = append(out, card.Line())
-		if len(prop.Env) > 0 {
-			out = append(out, info("The caches go under %s/.cache: add .cache/ to the project's .gitignore.", safe.Inline(s.cfg.Host.Target)))
-		}
+		return []Line{info("Nothing to propose that the draft does not already have.")}
 	}
-	if n := notProposed(prop, s.d); n != "" {
+	before := s.snapshot()
+	card := s.open(Pending{Kind: Card, turn: turn, held: heldAll(turn), said: turn.Said, at: turn.N})
+	s.commit(before, "the analysis")
+	return []Line{card.Line()}
+}
+
+// analyzeAgain answers a repeated request to analyze: the project has not
+// changed under the session, so what is new is the state of the proposal, the
+// identity and the questions.
+func (s *Session) analyzeAgain(ctx context.Context, prop ingest.Proposal) []Line {
+	out := s.proposalLines(ctx, prop)
+	if st := s.identityStatus(); st != "" {
+		out = append(out, info("%s", st))
+	}
+	return append(out, info("The project is as at the start; /why prints the full analysis."))
+}
+
+// Details is /why: everything the opening leaves out. Nothing in it opens a
+// question or changes the draft.
+func (s *Session) Details(ctx context.Context) []Line {
+	out := []Line{info("Found on this host: %d ssh public key(s), %d GitHub login(s), %d git author(s). Each request stands alone: the model remembers nothing but the draft.", len(s.keys), len(s.gh), len(s.authors))}
+	if s.cfg.Offline {
+		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
+	}
+	out = append(out, s.profileLines(ctx)...)
+	out = append(out, info("%s", describeTarget(s.cfg.Host.Target, s.facts.Target)))
+	out = append(out, s.projectWarnings()...)
+	out = append(out, s.repoLines(ctx)...)
+	prop := ingest.Propose(s.facts.Target)
+	if len(prop.Env) > 0 {
+		out = append(out, info("The caches go under %s/.cache: add .cache/ to the project's .gitignore.", safe.Inline(s.cfg.Host.Target)))
+	}
+	if n := notProposed(prop, s.d, false); n != "" {
 		out = append(out, info("Not proposed: %s.", n))
+	}
+	for _, p := range s.pending {
+		if p.Kind == Card && p.turn.Ingest {
+			out = append(out, info("The proposal is open as #%d: /accept %d applies it.", p.N, p.N))
+		}
 	}
 	return out
 }
@@ -168,13 +234,85 @@ func heldAll(t *Turn) []int {
 }
 
 // Advice answers a request for a recommendation about identities from the
-// facts the session has, without the model.
+// facts the session has, without the model. It is the same short answer every
+// time it is asked, with what the draft pins by now; /why has the reasons.
 func (s *Session) Advice(ctx context.Context) []Line {
-	out := s.repoLines(ctx)
-	if len(out) == 0 {
-		return []Line{info("I have nothing to base a suggestion on: the project has no git remote I could read, so I cannot tell which of your accounts or keys it belongs to. Say \"use my github account\" and I list what is on this host.")}
+	l := s.suggestionLine(ctx)
+	if l == "" {
+		out := s.repoLines(ctx)
+		if len(out) == 0 {
+			return []Line{info("I have nothing to base a suggestion on: the project has no git remote I could read, so I cannot tell which of your accounts or keys it belongs to. Say \"use my github account\" and I list what is on this host.")}
+		}
+		return out
 	}
-	return out
+	out := []Line{info("%s", l)}
+	if st := s.identityStatus(); st != "" {
+		out = append(out, info("%s", st))
+	}
+	return append(out, info("/why has the reasons for each."))
+}
+
+// suggestionLine is the identity the host's facts point at for this project on
+// one line, "" when they point at none. Nothing is pinned by it.
+func (s *Session) suggestionLine(ctx context.Context) string {
+	p := s.pick
+	if p == nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range []struct {
+		what string
+		r    ingest.Reason
+	}{{"GitHub login", p.GH}, {"ssh key", p.SSH}, {"signing key", p.Signing}} {
+		if c.r.Value != "" {
+			parts = append(parts, c.what+" "+safe.Inline(c.r.Value))
+		}
+	}
+	if p.Author.Value != "" {
+		parts = append(parts, fmt.Sprintf("git author %s <%s>", safe.Inline(p.AuthorName), safe.Inline(p.Author.Value)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	l := "Suggested identity for this project (nothing is pinned until you answer): " + strings.Join(parts, "; ") + "."
+	if p.Profile.Value != "" {
+		if msg, checked := s.refusalOf(ctx, p.Profile.Value); !(checked && msg != "") {
+			l += fmt.Sprintf(" Your profile %q already pins it: \"use my %s profile\" or /include %s.", p.Profile.Value, p.Profile.Value, p.Profile.Value)
+		}
+	} else if len(p.Conflict) > 1 {
+		l += fmt.Sprintf(" Several of your profiles pin %s with this author: %s. Name one.", safe.Inline(p.Remote.Host), strings.Join(p.Conflict, ", "))
+	}
+	return l + " Say \"use my ssh key\" (or github account, git author, \"sign commits with my key\") to be asked."
+}
+
+// identityStatus says what the draft pins and which questions are open, ""
+// when neither.
+func (s *Session) identityStatus() string {
+	var pinned []string
+	if g := s.d.GH; g != nil {
+		pinned = append(pinned, "GitHub login "+safe.Inline(g.User))
+	}
+	if k := s.d.SSH; k != nil {
+		pinned = append(pinned, "ssh key "+safe.Inline(k.Stem))
+	}
+	if g := s.d.Git; g != nil {
+		if g.SigningStem != "" {
+			pinned = append(pinned, "signing key "+safe.Inline(g.SigningStem))
+		}
+		pinned = append(pinned, "git author "+safe.Inline(g.Email))
+	}
+	var open []string
+	for _, p := range s.pending {
+		open = append(open, fmt.Sprintf("#%d", p.N))
+	}
+	var out []string
+	if len(pinned) > 0 {
+		out = append(out, "The draft pins "+strings.Join(pinned, "; ")+".")
+	}
+	if len(open) > 0 {
+		out = append(out, "Open: "+strings.Join(open, ", ")+" (/pending).")
+	}
+	return strings.Join(out, " ")
 }
 
 // repoLines say what the repository's own files show about who works on it and

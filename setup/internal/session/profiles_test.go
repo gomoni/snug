@@ -29,8 +29,8 @@ func TestIncludeProfileIsACardNamingWhatItPins(t *testing.T) {
 	w.Profile("accounts.toml", acctToml)
 	w.Reply("bring in acct please", includeAcct)
 	s, opening := start(w)
-	contains(t, opening, "Your snug profiles: acct.")
-	lacks(t, opening, "refuses it")
+	contains(t, text(s.Details(ctx)), "Your snug profiles: acct.")
+	lacks(t, opening, "refuses")
 	out := say(s, "bring in acct please")
 	contains(t, out, "include your profile acct (GitHub account A", "cost: your profile acct includes @sys, @home, @cwd-rw, @net; pins GitHub login")
 	if !s.Draft().Empty() {
@@ -55,7 +55,7 @@ func TestIncludeProfileThatSnugRefusesNamesTheFix(t *testing.T) {
 	w.Refuse = map[string]string{"acct": `profile "acct" includes "@cwd-rw", which is now "@target-rw"`}
 	w.Reply("reuse acct", includeAcct)
 	s, opening := start(w)
-	contains(t, opening, `snug refuses it today: profile "acct" includes "@cwd-rw", which is now "@target-rw"`, "does not edit your profiles")
+	contains(t, opening, `snug refuses your profile acct today: profile "acct" includes "@cwd-rw", which is now "@target-rw"`, "does not edit your profiles")
 	out := say(s, "reuse acct")
 	contains(t, out, "is there, but snug refuses it today", `which is now "@target-rw"`, "snug-setup does not edit your profiles", "accounts.toml")
 	lacks(t, out, "? #")
