@@ -472,6 +472,16 @@ func openLinkedWorktree(root *os.Root, target string) (head, git *os.Root, why s
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(p, common)
 	}
+	// The back-link binds only the admin directory, and commondir sits beside
+	// it, written by whoever wrote the admin directory. A hostile project
+	// places that directory inside itself, writes a valid back-link, and aims
+	// commondir at any repository on the host. Git keeps an admin directory at
+	// COMMON/worktrees/NAME and writes commondir as "../..", so anything else
+	// is not a worktree of the repository whose admin directory this is.
+	if filepath.Clean(common) != filepath.Dir(filepath.Dir(p)) {
+		admin.Close()
+		return refused("its commondir does not name the repository that holds it")
+	}
 	git, err = os.OpenRoot(filepath.Clean(common))
 	if err != nil {
 		admin.Close()

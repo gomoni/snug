@@ -253,6 +253,32 @@ func TestAnalyzeRepoReadsALinkedWorktree(t *testing.T) {
 // TestAnalyzeRepoRefusesAGitFilePointingElsewhere: a project whose .git file
 // names another repository's directory, with or without a worktrees/ name, is
 // not read, because that directory does not point back at the project.
+// TestAnalyzeRepoRefusesAWorktreeCommondirPointingElsewhere: the project
+// writes its own admin directory with a valid back-link and aims commondir at
+// another repository on the host; that repository is not read.
+func TestAnalyzeRepoRefusesAWorktreeCommondirPointingElsewhere(t *testing.T) {
+	victim := filepath.Join(t.TempDir(), "victim")
+	os.MkdirAll(victim, 0o755)
+	git(t, victim, "", "init", "-q", "-b", "main")
+	git(t, victim, "", "remote", "add", "origin", "git@github.com:secret/repo.git")
+	signedCommit(t, victim, "", "", "x")
+	target := filepath.Join(victim, "sub")
+	os.MkdirAll(target, 0o755)
+	rel, _ := filepath.Rel(filepath.Join(target, "foo", "worktrees", "x"), filepath.Join(victim, ".git"))
+	for _, common := range []string{filepath.Join(victim, ".git"), rel} {
+		admin := filepath.Join(target, "foo", "worktrees", "x")
+		os.MkdirAll(admin, 0o755)
+		os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: "+admin+"\n"), 0o644)
+		os.WriteFile(filepath.Join(admin, "gitdir"), []byte(filepath.Join(target, ".git")+"\n"), 0o644)
+		os.WriteFile(filepath.Join(admin, "commondir"), []byte(common+"\n"), 0o644)
+		os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+		f, warns := AnalyzeRepo(target)
+		if f != nil || len(warns) != 1 || !strings.Contains(warns[0], "repository was not read") {
+			t.Errorf("commondir %s: %+v %v", common, f, warns)
+		}
+	}
+}
+
 func TestAnalyzeRepoRefusesAGitFilePointingElsewhere(t *testing.T) {
 	victim := t.TempDir()
 	git(t, victim, "", "init", "-q", "-b", "main")
