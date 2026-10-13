@@ -190,3 +190,38 @@ func TestCommitAuthorTextIsCleaned(t *testing.T) {
 		t.Errorf("control characters reached the output: %q", out)
 	}
 }
+
+// TestAdviceRequestIsAnsweredFromTheFacts: "should not AI recommend
+// identities?" once reached the model and came back as a seccomp refusal.
+func TestAdviceRequestIsAnsweredFromTheFacts(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 6)
+	s, _ := start(w)
+	for _, q := range []string{"should not AI reccomend identities?", "what identities do you suggest for this repo?", "which ssh key do you recommend"} {
+		out := say(s, q)
+		contains(t, out, "Suggested identity for this project", "nothing is pinned until you answer")
+	}
+	if len(w.Model.Prompts) != 0 {
+		t.Errorf("the model was asked: %v", w.Model.Prompts)
+	}
+}
+
+func TestShowSaysWhatIsPendingWhenTheDraftIsEmpty(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 2)
+	s, _ := start(w)
+	contains(t, text(s.Show()), "[profile.NAME]", "Nothing is in the draft yet; 1 question(s) are open")
+}
+
+// TestIdentityOneNoteWithNothingPinnedAdvises: the model answers "an ssh key
+// and a signing key too?" with the two-accounts note; with no identity pinned
+// that note answers nothing, so the facts are shown instead.
+func TestIdentityOneNoteWithNothingPinnedAdvises(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 4)
+	w.Reply("it needs an ssh key and a signing key", `{"op":"note","topic":"identity_one"}`)
+	s, _ := start(w)
+	out := say(s, "it needs an ssh key and a signing key")
+	contains(t, out, "Suggested identity for this project")
+	lacks(t, out, "A profile pins one account")
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -88,12 +89,23 @@ func AnalyzeRepo(target string) (*RepoFacts, []string) {
 	if err != nil {
 		return nil, nil
 	}
-	if !li.IsDir() {
-		return nil, []string{"the target's .git is not a directory (a linked worktree or submodule?); the repository was not read."}
-	}
-	git, err := root.OpenRoot(".git")
-	if err != nil {
-		return nil, []string{"cannot open .git: " + safe.Inline(err.Error())}
+	var git, headDir *os.Root
+	switch {
+	case li.IsDir():
+		git, err = root.OpenRoot(".git")
+		if err != nil {
+			return nil, []string{"cannot open .git: " + safe.Inline(err.Error())}
+		}
+		headDir = git
+	case li.Mode().IsRegular():
+		var why string
+		headDir, git, why = openLinkedWorktree(root, target)
+		if headDir == nil {
+			return nil, []string{why}
+		}
+		defer headDir.Close()
+	default:
+		return nil, []string{"the target's .git is neither a directory nor a worktree link; the repository was not read."}
 	}
 	defer git.Close()
 	var warns []string
@@ -101,17 +113,17 @@ func AnalyzeRepo(target string) (*RepoFacts, []string) {
 	if cfg, err := readSmallIn(git, "config", maxConfig); err == nil {
 		f.Remotes = parseRemotes(string(cfg))
 	}
-	head, err := resolveHead(git)
+	headID, err := resolveHead(headDir, git)
 	if err != nil {
 		return f, append(warns, "HEAD could not be resolved ("+safe.Inline(err.Error())+"); no commits were read.")
 	}
-	f.Head = head
+	f.Head = headID
 	st := openStore(git)
 	defer st.close()
 	if _, err := git.Lstat("objects/info/alternates"); err == nil {
 		warns = append(warns, "the repository borrows objects from another (objects/info/alternates), which is not followed.")
 	}
-	sha, _ := parseSHA(head)
+	sha, _ := parseSHA(headID)
 	authors := map[Person]int{}
 	signers := map[Signature]int{}
 	seen := map[[20]byte]bool{}
@@ -189,10 +201,12 @@ func readSmallIn(r *os.Root, name string, limit int64) ([]byte, error) {
 	return b, err
 }
 
-// resolveHead returns the commit id HEAD names: a detached id, or the id of
-// the branch it points at, looked up as a loose ref and then in packed-refs.
-func resolveHead(git *os.Root) (string, error) {
-	b, err := readSmallIn(git, "HEAD", 4096)
+// resolveHead returns the commit id HEAD names, read from headDir: a detached
+// id, or the id of the branch it points at, looked up as a loose ref and then
+// in packed-refs of git, the repository proper (the same directory unless the
+// target is a linked worktree).
+func resolveHead(headDir, git *os.Root) (string, error) {
+	b, err := readSmallIn(headDir, "HEAD", 4096)
 	if err != nil {
 		return "", err
 	}
@@ -407,4 +421,70 @@ func ParseRemoteURL(u string) Remote {
 	r.Owner = cut(owner)
 	r.Repo = cut(strings.TrimSuffix(repo, ".git"))
 	return r
+}
+
+// openLinkedWorktree follows the `gitdir: PATH` file a linked worktree has in
+// place of a .git directory, and returns the worktree's own admin directory
+// (HEAD) and the repository's (objects, refs, config).
+//
+// Abuse: that file is written by the project, so a hostile one names any
+// directory on the host, and following it would show the human another
+// repository's remotes, authors and key fingerprints as if they were this
+// project's. The pointer is therefore followed only when the directory it
+// names points back: `git worktree add` writes PATH/gitdir holding the
+// worktree's .git path, and a project cannot write into a repository it does
+// not own. A pointer without that back-link, a submodule's, one not under a
+// "worktrees" directory, is reported and not read.
+func openLinkedWorktree(root *os.Root, target string) (head, git *os.Root, why string) {
+	refused := func(why string) (*os.Root, *os.Root, string) {
+		return nil, nil, "the target's .git is a file that does not name one of its own worktrees (" + why + "); the repository was not read."
+	}
+	b, err := readSmallIn(root, ".git", 4096)
+	if err != nil {
+		return refused("unreadable")
+	}
+	p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir: ")
+	if !ok || p == "" {
+		return refused("no gitdir line")
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(target, p)
+	}
+	p = filepath.Clean(p)
+	if filepath.Base(filepath.Dir(p)) != "worktrees" {
+		return refused("not under a worktrees directory")
+	}
+	admin, err := os.OpenRoot(p)
+	if err != nil {
+		return refused("cannot open it")
+	}
+	back, err := readSmallIn(admin, "gitdir", 4096)
+	if err != nil || !samePath(strings.TrimSpace(string(back)), filepath.Join(target, ".git")) {
+		admin.Close()
+		return refused("it does not point back at this directory")
+	}
+	rel, err := readSmallIn(admin, "commondir", 4096)
+	if err != nil {
+		admin.Close()
+		return refused("no commondir")
+	}
+	common := strings.TrimSpace(string(rel))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(p, common)
+	}
+	git, err = os.OpenRoot(filepath.Clean(common))
+	if err != nil {
+		admin.Close()
+		return refused("cannot open the repository it belongs to")
+	}
+	return admin, git, ""
+}
+
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
 }

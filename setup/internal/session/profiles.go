@@ -84,7 +84,7 @@ func (s *Session) askSnug(ctx context.Context, name string) resolveResult {
 	if doc.Refusal != nil {
 		msg = doc.Refusal.Message
 	}
-	msg = safe.Inline(msg)
+	msg = strings.Join(strings.Fields(safe.Inline(msg)), " ")
 	if r := []rune(msg); len(r) > 240 {
 		msg = string(r[:237]) + "..."
 	}
@@ -187,6 +187,17 @@ func (s *Session) includedPin(kind string) (ingest.Profile, bool) {
 	return ingest.Profile{}, false
 }
 
+// includesPin reports whether the draft includes a profile of the human's
+// that pins any identity.
+func (s *Session) includesPin() bool {
+	for _, k := range []string{"ssh", "github", "git"} {
+		if _, ok := s.includedPin(k); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // checkFiles are the human's profile files the save check must have beside
 // the draft: none unless the draft includes one of their profiles, and never
 // a file that defines the profile being saved.
@@ -204,29 +215,42 @@ func (s *Session) checkFiles() []verify.File {
 	return out
 }
 
-// profileLines tells the human which profiles of theirs exist and, for the
-// ones that pin an identity, whether snug accepts them today.
+// firstClause is the part of snug's message before the explanation, which
+// names the thing to change.
+func firstClause(msg string) string {
+	if i := strings.Index(msg, ": "); i > 0 {
+		return msg[:i]
+	}
+	return msg
+}
+
+// profileLines tells the human which profiles of theirs exist, marking the ones
+// that pin an identity and that snug refuses today. What a profile pins is on
+// its card and in the suggestion for the project, not repeated here.
 func (s *Session) profileLines(ctx context.Context) []Line {
 	var out []Line
 	for _, w := range s.facts.Warnings {
 		out = append(out, warn("%s", w))
 	}
-	names := s.profileNames()
-	if len(names) == 0 {
+	var shown []string
+	refused := false
+	for _, n := range s.profileNames() {
+		p, _ := s.userProfile(n)
+		if p.Identity.Pins() {
+			if msg, checked := s.refusalOf(ctx, n); checked && msg != "" {
+				shown = append(shown, fmt.Sprintf("%s (snug refuses it today: %s; in %s)", n, firstClause(msg), s.where(p)))
+				refused = true
+				continue
+			}
+		}
+		shown = append(shown, n)
+	}
+	if len(shown) == 0 {
 		return out
 	}
-	out = append(out, info("Your snug profiles: %s. \"use my NAME profile\" or /include NAME adds one.", strings.Join(names, ", ")))
-	for _, p := range s.facts.Profiles {
-		if !p.Identity.Pins() || !intent.ValidProfileName(p.Name) {
-			continue
-		}
-		line := fmt.Sprintf("Your profile %q (%s) pins %s", p.Name, s.where(p), pins(p.Identity))
-		if msg, checked := s.refusalOf(ctx, p.Name); checked && msg != "" {
-			line += fmt.Sprintf(", but snug refuses it today: %s\nsnug-setup does not edit your profiles; fix that file as snug's message says.", msg)
-		} else {
-			line += "."
-		}
-		out = append(out, info("%s", line))
+	out = append(out, info("Your snug profiles: %s. \"use my NAME profile\" or /include NAME adds one.", strings.Join(shown, ", ")))
+	if refused {
+		out = append(out, info("snug-setup does not edit your profiles. Fix a refused one as snug's message says (`snug -p NAME DIR` prints it in full)."))
 	}
 	return out
 }
