@@ -31,3 +31,17 @@ func GitAuthors(ctx context.Context, run Runner) []GitAuthor {
 	}
 	return []GitAuthor{{Name: name, Email: email}}
 }
+
+// GitSigning returns the global git config's user.signingkey and
+// gpg.ssh.allowedSignersFile, "" for each that is not set. Only --global is
+// asked: the repository's own config is the target's, and is never consulted.
+func GitSigning(ctx context.Context, run Runner) (signingKey, allowedSigners string) {
+	get := func(key string) string {
+		res, err := run(ctx, nil, "git", "config", "--global", "--get", key)
+		if err != nil {
+			return ""
+		}
+		return cleanText(strings.TrimSpace(string(res.Stdout)))
+	}
+	return get("user.signingkey"), get("gpg.ssh.allowedSignersFile")
+}

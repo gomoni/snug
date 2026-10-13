@@ -12,15 +12,18 @@ package ingest
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/safe"
 )
 
@@ -369,13 +372,31 @@ type Facts struct {
 	Target   TargetFacts
 	Profiles []Profile
 	Files    []ProfileFile
-	Warnings []string
+	Repo     *RepoFacts
+	SSH      SSHFacts
+	// GitSigningKey is the global git config's user.signingkey.
+	GitSigningKey string
+	Warnings      []string
 }
 
 // Gather runs every analysis. profileDirs are the directories snug reads
-// profiles from (ProfileDirs); nil reads none.
-func Gather(target string, profileDirs []string) Facts {
+// profiles from (ProfileDirs); nil reads none. The only command it runs is
+// `git config --global`, through run: the target's own git config is read as
+// text by AnalyzeRepo, and git is never run in the target.
+func Gather(ctx context.Context, target, home string, profileDirs []string, run hostfacts.Runner) Facts {
 	f := Facts{Target: AnalyzeTarget(target)}
 	f.Profiles, f.Files, f.Warnings = LoadProfiles(profileDirs)
+	if f.Target.Git {
+		var w []string
+		f.Repo, w = AnalyzeRepo(target)
+		f.Warnings = append(f.Warnings, w...)
+	}
+	key, signers := hostfacts.GitSigning(ctx, run)
+	f.GitSigningKey = key
+	if signers == "" {
+		signers = filepath.Join(home, ".config", "git", "allowed_signers")
+	}
+	f.SSH = LoadSSH(home, signers)
+	f.Warnings = append(f.Warnings, f.SSH.Warnings...)
 	return f
 }

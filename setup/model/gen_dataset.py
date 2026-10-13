@@ -230,6 +230,8 @@ def label(intent, s, ctx, net_requested=False):
         "select_ssh_any": [A("select_identity", kind="ssh", account="")],
         "select_git": lambda: [A("select_identity", kind="git", account=s["gitid"])],
         "git_default": [A("use_profile", name="@git")],
+        "select_signing": [A("select_identity", kind="signing", account="")],
+        "select_signing_key": lambda: [A("select_identity", kind="signing", account=s["key"])],
         "include_profile": lambda: [A("include_profile", name=s["myprofile"])],
         "two_accounts": [A("note", topic="identity_one")],
         "two_accounts_named": [A("note", topic="identity_one")],
@@ -269,13 +271,13 @@ COMBINABLE = ["write_here", "readonly_here", "parent_ro", "path_rw", "path_ro", 
               "push_github", "push_github_as", "git_default", "claude", "env_set", "env_inherit", "name", "save", "show",
               "open_door", "open_door_default", "list_ssh", "list_github", "list_git", "path_prepend", "stage_binary",
               "drop_path", "host_port", "host_network", "desktop", "docker_sock", "port_publish", "secret_env", "whole_home",
-              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named", "include_profile"]
+              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named", "include_profile", "select_signing", "select_signing_key"]
 # At most one intent of each group per request: they contradict or duplicate each other.
 EXCLUSIVE = [{"select_github", "select_github_any", "push_github", "push_github_as", "two_accounts_named"},
              {"select_ssh", "select_ssh_any", "push_github", "push_github_as", "sensitive_ssh", "list_ssh"},
              {"net", "offline", "host_network"}, {"offline", "podman", "podman_build"}, {"write_here", "readonly_here"},
              {"podman", "podman_build"}, {"open_door", "open_door_default"}, {"deny", "deny_rel", "layering"},
-             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"}, {"include_profile", "select_github", "select_github_any", "push_github", "push_github_as", "select_ssh", "select_ssh_any", "select_git", "two_accounts_named"},
+             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"}, {"select_signing", "select_signing_key"}, {"include_profile", "select_github", "select_github_any", "push_github", "push_github_as", "select_ssh", "select_ssh_any", "select_git", "two_accounts_named"},
              {"path_rw", "path_ro", "path_tmpfs", "drop_path", "layering"}, {"env_set", "env_inherit"}]
 JOIN = [" and ", ", also ", ". ", " + ", ", and ", " plus ", "; ", " — and ", ". Also ", " & ", ", then ", " and then "]
 

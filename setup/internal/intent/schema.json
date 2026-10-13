@@ -56,7 +56,7 @@
   "$defs": {
     "builtin": {"enum": ["@target-rw", "@parent-ro", "@git", "@net", "@claude", "@podman-socket", "@podman-build"]},
     "path": {"type": "string", "pattern": "^(/|~/|\\{home\\}|\\{target\\}|\\{target_parent\\})", "maxLength": 256},
-    "idkind": {"enum": ["ssh", "github", "git"]},
+    "idkind": {"enum": ["ssh", "github", "git", "signing"]},
     "refusal": {"enum": ["host_network", "host_port", "desktop_socket", "deny_rule", "sensitive_home", "whole_home",
                          "secret_in_env", "docker_sock", "port_publish", "repo_profile", "no_seccomp", "out_of_scope"]},
     "topic": {"enum": ["help", "profiles", "defaults", "net", "parent_ro", "podman_offline", "podman_build", "port_publish",

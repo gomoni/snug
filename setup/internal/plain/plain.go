@@ -36,6 +36,7 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
   /pick ssh STEM|none       answer the open ssh question
   /pick github LOGIN|none   answer the open GitHub question (HOST/LOGIN when two hosts share a login)
   /pick git EMAIL|none      answer the open git author question
+  /pick signing STEM|none   answer the open signing key question
   /include NAME             include one of your own snug profiles (the same as "use my NAME profile")
   /analyze                  describe the project and propose what its files make plain
   /save [NAME]              check with snug and write; NAME names an unnamed draft`
@@ -115,8 +116,8 @@ func handle(ctx context.Context, s *session.Session, p *printer, line string) bo
 			p.print(s.Decline(n))
 		}
 	case "/pick":
-		if len(f) != 3 || (f[1] != "ssh" && f[1] != "github" && f[1] != "git") {
-			p.say("usage: /pick ssh STEM, /pick github LOGIN or /pick git EMAIL, or none in place of the value.")
+		if len(f) != 3 || (f[1] != "ssh" && f[1] != "github" && f[1] != "git" && f[1] != "signing") {
+			p.say("usage: /pick ssh STEM, /pick signing STEM, /pick github LOGIN or /pick git EMAIL, or none in place of the value.")
 			break
 		}
 		p.print(s.Pick(ctx, f[1], f[2]))

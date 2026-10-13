@@ -27,6 +27,23 @@ func (d *Draft) SetGH(host, user string) {
 // SetGit pins the git author.
 func (d *Draft) SetGit(name, email string) { d.Git = &GitIdentity{Name: name, Email: email} }
 
+// SetSigningKey pins the public key at pubPath for commit signing. snug needs
+// the author it signs as and the ssh key whose agent proxy holds the private
+// half, so it reports false, changing nothing, until both are pinned.
+func (d *Draft) SetSigningKey(pubPath string) bool {
+	if d.Git == nil || d.SSH == nil {
+		return false
+	}
+	home := filepath.Clean(d.Host.Home)
+	key := pubPath
+	if under(pubPath, home) && pubPath != home {
+		key = "{home}/" + strings.TrimPrefix(pubPath, home+"/")
+	}
+	d.Git.SigningKey = key
+	d.Git.SigningStem = strings.TrimSuffix(filepath.Base(pubPath), ".pub")
+	return true
+}
+
 // ClearIdentity removes every identity block.
 func (d *Draft) ClearIdentity() { d.SSH, d.GH, d.Git = nil, nil, nil }
 

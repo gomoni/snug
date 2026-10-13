@@ -168,6 +168,9 @@ func (d *Draft) Render() string {
 	}
 	if d.Git != nil {
 		fmt.Fprintf(&b, "[profile.%s.identity.git]\nname = %s\nemail = %s\n", n, q(d.Git.Name), q(d.Git.Email))
+		if d.Git.SigningKey != "" {
+			fmt.Fprintf(&b, "signing_key = %s # the PUBLIC half; commits are signed through the agent proxy\n", q(d.Git.SigningKey))
+		}
 	}
 	if d.GH != nil {
 		fmt.Fprintf(&b, "[profile.%s.identity.gh]\n", n)

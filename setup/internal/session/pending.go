@@ -97,6 +97,9 @@ func (s *Session) open(p Pending) Pending {
 		p.Answer = fmt.Sprintf("/accept %d takes it, /decline %d keeps what you said", p.N, p.N)
 	case Identity:
 		p.Question = "which " + kindName(p.kind) + " should the sandbox act as?"
+		if p.kind == "signing" {
+			p.Question = "which ssh key should sign commits inside the sandbox?"
+		}
 		cands := s.Candidates(p.kind)
 		if p.hint != "" {
 			if bestMatch(p.hint, cands) < 0 {
@@ -109,6 +112,9 @@ func (s *Session) open(p Pending) Pending {
 			p.Options = append(p.Options, c.Label)
 		}
 		p.Answer = fmt.Sprintf("/pick %s %s, or /pick %s none", p.kind, keyWord[p.kind], p.kind)
+		if len(cands) > 0 && cands[0].Why != "" {
+			p.Answer = fmt.Sprintf("/pick %s %s takes the suggestion, /pick %s %s another, /pick %s none", p.kind, safe.Inline(cands[0].Key), p.kind, keyWord[p.kind], p.kind)
+		}
 	case SecondProfile:
 		cur, _ := s.slotFull(p.kind)
 		p.Question = fmt.Sprintf("the draft already pins the %s %q, and a profile pins one: \"%s\" needs a second profile. Save this one and start a second?",
@@ -122,7 +128,7 @@ func (s *Session) open(p Pending) Pending {
 	return p
 }
 
-var keyWord = map[string]string{"ssh": "STEM", "github": "LOGIN", "git": "EMAIL"}
+var keyWord = map[string]string{"ssh": "STEM", "signing": "STEM", "github": "LOGIN", "git": "EMAIL"}
 
 func kindName(kind string) string {
 	switch kind {
@@ -130,6 +136,8 @@ func kindName(kind string) string {
 		return "ssh key"
 	case "github":
 		return "GitHub login"
+	case "signing":
+		return "signing key"
 	}
 	return "git author"
 }
