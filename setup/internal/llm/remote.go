@@ -37,7 +37,18 @@ const DefaultModelName = "snug-setup"
 // response_format, but a server of unknown make may ignore it, and the
 // absence of a grammar is not something snug-setup can observe.
 func (c *Remote) Caps() Caps {
-	return Caps{Where: c.URL + " (remote)", Local: c.IsLoopback()}
+	return Caps{Where: c.Display() + " (remote)", Local: c.IsLoopback()}
+}
+
+// Display is c.URL with any password in its userinfo replaced by xxxxx, for
+// every line snug-setup prints. A URL that does not parse is shown as
+// "(unparsable URL)": quoting it back could print what it was meant to hide.
+func (c *Remote) Display() string {
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return "(unparsable URL)"
+	}
+	return u.Redacted()
 }
 
 // Close does nothing: the server is not ours.
@@ -48,7 +59,7 @@ func (c *Remote) Close() error { return nil }
 func (c *Remote) Endpoint() (string, error) {
 	u, err := url.Parse(strings.TrimRight(c.URL, "/"))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("--openai-url %q is not an http(s) URL such as http://127.0.0.1:8080", c.URL)
+		return "", fmt.Errorf("--openai-url %q is not an http(s) URL such as http://127.0.0.1:8080", c.Display())
 	}
 	switch {
 	case strings.HasSuffix(u.Path, "/chat/completions"):
@@ -129,7 +140,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to have snug-setup start llama-server): %w", c.URL, err)
+		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to have snug-setup start llama-server): %w", c.Display(), err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -150,7 +161,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
-		return "", fmt.Errorf("model server at %s sent a reply that is not a chat completion", c.URL)
+		return "", fmt.Errorf("model server at %s sent a reply that is not a chat completion", c.Display())
 	}
 	return out.Choices[0].Message.Content, nil
 }

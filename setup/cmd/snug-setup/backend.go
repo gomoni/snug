@@ -40,7 +40,7 @@ func newBackend(ctx context.Context, f backendFlags, home string) (llm.Backend, 
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin, f.Model)
+		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin.Path, f.Model)
 		return llm.StartServer(ctx, bin, f.Model, 5*time.Minute)
 	}
 	r := &llm.Remote{URL: f.URL, ModelName: f.Model}
