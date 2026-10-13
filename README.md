@@ -300,14 +300,14 @@ Two ways to reach a model, exactly one per run:
 make setup                                              # bin/snug-setup
 scripts/fetch-llama-server.sh                           # once: the tested llama.cpp release, sha256-checked
 bin/snug-setup --model F.gguf ~/src/proj                # llama-server child on a private unix socket
-bin/snug-setup --llm-url http://127.0.0.1:8080 ~/src/proj  # a server you run, with its own model
+bin/snug-setup --openai-url http://127.0.0.1:8080 ~/src/proj  # a server you run, with its own model
 ```
 
 snug-setup never downloads anything: `--model` finds `llama-server` on `PATH`,
 then under `~/.cache/snug-setup/llama.cpp/`, or takes `--llama-server PATH`.
-`--llm-url` with ollama needs `--remote-model NAME` (an installed model; the
+`--openai-url` with ollama needs `--openai-model NAME` (an installed model; the
 GGUF imported with a Modelfile that carries the Qwen chat template), llama-server
-ignores it. `--llm-url` output is not known to be schema-constrained: snug-setup says so,
+ignores it. `--openai-url` output is not known to be schema-constrained: snug-setup says so,
 and a reply that is not an action list is refused, never guessed.
 
 Before the first request it reads the project (marker file names, `go.mod` /

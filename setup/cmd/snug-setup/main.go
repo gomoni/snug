@@ -22,11 +22,11 @@ import (
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
-const usage = `usage: snug-setup (--model FILE.gguf | --llm-url URL) [--llama-server PATH] [--remote-model NAME] [--offline] [--profile-dir DIR] [DIR]
+const usage = `usage: snug-setup (--model FILE.gguf | --openai-url URL) [--llama-server PATH] [--openai-model NAME] [--offline] [--profile-dir DIR] [DIR]
 
   --model FILE.gguf    run llama-server on this model, on a private unix socket, for the session
-  --llm-url URL        use a server that is already running (OpenAI-compatible), with its own model
-  --remote-model NAME  the model to ask for on the --llm-url server (ollama needs an installed model's name;
+  --openai-url URL     use a server that is already running (OpenAI-compatible), with its own model
+  --openai-model NAME  the model to ask for on the --openai-url server (ollama needs an installed model's name;
                        llama-server ignores it). To use our GGUF in ollama, import it with a Modelfile that
                        carries the Qwen chat template.
   --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
@@ -50,9 +50,9 @@ func run() error {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var bf backendFlags
 	fs.StringVar(&bf.Model, "model", "", "")
-	fs.StringVar(&bf.URL, "llm-url", "", "")
+	fs.StringVar(&bf.URL, "openai-url", "", "")
 	fs.StringVar(&bf.ServerBin, "llama-server", "", "")
-	fs.StringVar(&bf.RemoteModel, "remote-model", "", "")
+	fs.StringVar(&bf.RemoteModel, "openai-model", "", "")
 	offline := fs.Bool("offline", false, "")
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")

@@ -16,20 +16,20 @@ type backendFlags struct {
 	Model     string // GGUF run by a llama-server child of ours
 	URL       string // a server that is already running, with its own model
 	ServerBin string
-	// RemoteModel names the model on the --llm-url server.
+	// RemoteModel names the model on the --openai-url server.
 	RemoteModel string
 }
 
 // check refuses anything but exactly one of the two ways to reach a model.
 func (f backendFlags) check() error {
 	if (f.Model == "") == (f.URL == "") {
-		return errors.New("give exactly one of --model and --llm-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
+		return errors.New("give exactly one of --model and --openai-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
 	}
 	if f.ServerBin != "" && f.Model == "" {
-		return errors.New("--llama-server names the binary --model starts, and is meaningless with --llm-url")
+		return errors.New("--llama-server names the binary --model starts, and is meaningless with --openai-url")
 	}
 	if f.RemoteModel != "" && f.URL == "" {
-		return errors.New("--remote-model names a model on the --llm-url server, and is meaningless with --model")
+		return errors.New("--openai-model names a model on the --openai-url server, and is meaningless with --model")
 	}
 	return nil
 }

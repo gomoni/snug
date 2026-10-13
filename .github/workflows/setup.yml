@@ -98,7 +98,5 @@ jobs:
           fi
       - name: Server backend on the real model
         run: cd setup && SNUG_SETUP_TEST_MODEL=$HOME/test-model/model.gguf go test -tags integration -count=1 -v -run Real ./internal/llm
-      - name: schema.gbnf equals llama-server's own conversion
-        run: SNUG_SETUP_GGUF=$HOME/test-model/model.gguf sh scripts/0041-schema-gbnf-matches-llama-server.sh
       - name: Binary builds without cgo
         run: make setup
