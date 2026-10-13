@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,15 +41,18 @@ func (c *Remote) Caps() Caps {
 	return Caps{Where: c.Display() + " (remote)", Local: c.IsLoopback()}
 }
 
-// Display is c.URL with any password in its userinfo replaced by xxxxx, for
-// every line snug-setup prints. A URL that does not parse is shown as
-// "(unparsable URL)": quoting it back could print what it was meant to hide.
+// Display is c.URL without its userinfo, for every line snug-setup prints.
+// The whole userinfo goes, not only the password url.Redacted blanks: a token
+// typed as the user name (http://TOKEN@host) is sent as Basic auth just the
+// same. A URL that does not parse is shown as "(unparsable URL)": quoting it
+// back could print what it was meant to hide.
 func (c *Remote) Display() string {
 	u, err := url.Parse(c.URL)
 	if err != nil {
 		return "(unparsable URL)"
 	}
-	return u.Redacted()
+	u.User = nil
+	return u.String()
 }
 
 // Close does nothing: the server is not ours.
@@ -140,6 +144,12 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
+		// *url.Error quotes the request URL with its user name in clear;
+		// Display already says where.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to have snug-setup start llama-server): %w", c.Display(), err)
 	}
 	defer resp.Body.Close()

@@ -381,7 +381,9 @@ func parseRemotes(cfg string) []Remote {
 
 // ParseRemoteURL splits a git remote url: scp-like (user@host:owner/repo),
 // ssh://, https://, git://. Fields are cleaned and cut; a url it does not
-// understand yields Scheme "other" and no host.
+// understand yields Scheme "other" and no host. URL drops the userinfo of a
+// scheme:// url, which is where a token lives (https://TOKEN@github.com/o/r)
+// and URL is printed; the scp-like user (git@) is kept.
 func ParseRemoteURL(u string) Remote {
 	r := Remote{URL: cut(u), Scheme: "other"}
 	var host, path string
@@ -391,6 +393,7 @@ func ParseRemoteURL(u string) Remote {
 		hp, p, _ := strings.Cut(rest, "/")
 		if at := strings.LastIndexByte(hp, '@'); at >= 0 {
 			hp = hp[at+1:]
+			r.URL = cut(u[:i+3] + rest[at+1:])
 		}
 		host, path = hp, p
 		switch {
