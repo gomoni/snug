@@ -17,6 +17,7 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
+	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/intent"
 	"github.com/gomoni/snug/setup/internal/safe"
 	"github.com/gomoni/snug/setup/internal/texts"
@@ -77,6 +78,7 @@ type Session struct {
 	gh          []hostfacts.GHAccount
 	ghInstalled bool
 	authors     []hostfacts.GitAuthor
+	facts       ingest.Facts
 
 	turn      int
 	lastSaved string
@@ -110,7 +112,8 @@ func New(ctx context.Context, cfg Config) (*Session, []Line) {
 		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
 	}
 	out = append(out, info("Each request stands alone: the model remembers nothing but the draft."))
-	return s, out
+	s.facts = ingest.Gather(cfg.Host.Target)
+	return s, append(out, s.Analyze()...)
 }
 
 // Draft returns the profile built so far. The caller must not change it.

@@ -77,9 +77,15 @@ func (s *Session) open(p Pending) Pending {
 	switch p.Kind {
 	case Card:
 		p.Question = "your request " + quote(p.turn.Said) + " widens the sandbox; nothing from it is applied yet:"
+		if p.turn.Ingest {
+			p.Question = "what I found in the project would widen the sandbox like this; nothing from it is applied yet:"
+		}
 		for _, i := range p.held {
 			it := p.turn.Items[i]
 			o := it.Sentence
+			if it.Why != "" {
+				o += "  (from " + safe.Inline(it.Why) + ")"
+			}
 			if it.Abuse != "" {
 				o += "\n      cost: " + it.Abuse
 			}
@@ -164,7 +170,7 @@ func (s *Session) Accept(ctx context.Context, n int) []Line {
 		s.close(n)
 		acts := p.turn.actions()
 		for _, i := range p.held {
-			out = append(out, s.proposeUser(p.turn, acts, p.turn.Items[i].Action)...)
+			out = append(out, s.proposeUser(p.turn, acts, p.turn.Items[i])...)
 		}
 	case Conflict:
 		s.close(n)
@@ -191,6 +197,10 @@ func (s *Session) Decline(n int) []Line {
 	var out []Line
 	switch p.Kind {
 	case Card:
+		if p.turn.Ingest {
+			out = append(out, info("not applied: what I found in the project. Nothing from it is in the draft; /analyze offers it again."))
+			break
+		}
 		out = append(out, info("not applied: your request %s. Nothing from it is in the draft.", quote(p.turn.Said)))
 	case Conflict:
 		out = append(out, outcome(s.d.Decide(p.conf, false))...)
