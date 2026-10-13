@@ -338,6 +338,22 @@ func TestRemoteWhereRedactsUserinfo(t *testing.T) {
 	}
 }
 
+// TestRemoteDisplayRedactsUsernameNotJustPassword is redteam setup r6 R6-1:
+// url.Redacted blanks only the password, so a token in the user name position
+// was printed in clear.
+func TestRemoteDisplayRedactsUsernameNotJustPassword(t *testing.T) {
+	for _, in := range []string{"http://sk_live_X@127.0.0.1:1/v1", "http://sk_live_X:@127.0.0.1:1/v1", "http://u:sk_live_X@127.0.0.1:1/v1"} {
+		c := &Remote{URL: in}
+		if d := c.Display(); strings.Contains(d, "sk_live_X") || d != "http://127.0.0.1:1/v1" {
+			t.Errorf("%s: Display %q", in, d)
+		}
+		_, err := c.Complete(context.Background(), Request{})
+		if err == nil || strings.Contains(err.Error(), "sk_live_X") {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+}
+
 // TestServerLogInErrorIsSanitized is redteam setup r5 R5-5: llama-server's
 // output echoes the untrusted model file, and none of it may reach the error
 // as an escape sequence or as a line of its own.

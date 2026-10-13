@@ -209,6 +209,21 @@ func TestParseRemoteURL(t *testing.T) {
 	}
 }
 
+// TestRemoteURLDropsUserinfo is redteam setup r6 R6-1: a remote url carrying
+// a token in its userinfo is printed by /analyze, so URL must not hold it.
+func TestRemoteURLDropsUserinfo(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://ghp_TOKEN@github.com/o/r.git":   "https://github.com/o/r.git",
+		"https://x:ghp_TOKEN@github.com/o/r.git": "https://github.com/o/r.git",
+		"https://ghp_TOKEN@github.com":           "https://github.com",
+		"git@github.com:o/r.git":                 "git@github.com:o/r.git",
+	} {
+		if got := ParseRemoteURL(in).URL; got != want {
+			t.Errorf("%s: URL %q want %q", in, got, want)
+		}
+	}
+}
+
 // TestAnalyzeRepoSurvivesCorruptStorage: a truncated pack index, a loose
 // object that is not zlib and a ref that is garbage give warnings or nothing,
 // never a panic or a hang.
