@@ -243,7 +243,7 @@ func TestRemoteOllamaShape(t *testing.T) {
 	req := Request{System: "s", User: "u", MaxTokens: MaxTokens, Schema: intent.Schema}
 
 	_, err := (&Remote{URL: srv.URL}).Complete(context.Background(), req)
-	if err == nil || !strings.Contains(err.Error(), `model "snug-setup" not found, try pulling it first`) || !strings.Contains(err.Error(), "--remote-model") {
+	if err == nil || !strings.Contains(err.Error(), `model "snug-setup" not found, try pulling it first`) || !strings.Contains(err.Error(), "--openai-model") {
 		t.Errorf("a missing model should name the flag: %v", err)
 	}
 	if path != "/v1/chat/completions" || seen["response_format"] == nil {

@@ -48,7 +48,7 @@ func (c *Remote) Close() error { return nil }
 func (c *Remote) Endpoint() (string, error) {
 	u, err := url.Parse(strings.TrimRight(c.URL, "/"))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("--llm-url %q is not an http(s) URL such as http://127.0.0.1:8080", c.URL)
+		return "", fmt.Errorf("--openai-url %q is not an http(s) URL such as http://127.0.0.1:8080", c.URL)
 	}
 	switch {
 	case strings.HasSuffix(u.Path, "/chat/completions"):
@@ -140,7 +140,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		msg := serverMessage(raw)
 		err := fmt.Errorf("model server answered %s: %s", resp.Status, msg)
 		if strings.Contains(strings.ToLower(msg), "not found") {
-			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --remote-model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
+			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --openai-model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
 		}
 		return "", err
 	}
