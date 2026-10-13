@@ -167,6 +167,16 @@ func heldAll(t *Turn) []int {
 	return out
 }
 
+// Advice answers a request for a recommendation about identities from the
+// facts the session has, without the model.
+func (s *Session) Advice() []Line {
+	out := s.repoLines()
+	if len(out) == 0 {
+		return []Line{info("I have nothing to base a suggestion on: the project has no git remote I could read, so I cannot tell which of your accounts or keys it belongs to. Say \"use my github account\" and I list what is on this host.")}
+	}
+	return out
+}
+
 // repoLines say what the repository's own files show about who works on it and
 // how, and the identity the host's facts point at for it. The suggestion is
 // text and a default for the identity questions; nothing is pinned by it.

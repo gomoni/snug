@@ -236,3 +236,35 @@ func TestAnalyzeRepoSurvivesCorruptStorage(t *testing.T) {
 		t.Errorf("odd ref: %v %v", f, warns)
 	}
 }
+
+func TestAnalyzeRepoReadsALinkedWorktree(t *testing.T) {
+	main := t.TempDir()
+	git(t, main, "", "init", "-q", "-b", "main")
+	git(t, main, "", "remote", "add", "origin", "git@github.com:acme/app.git")
+	id := signedCommit(t, main, "", "", "first")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "", "worktree", "add", "-q", "-b", "side", wt)
+	f, warns := AnalyzeRepo(wt)
+	if f == nil || len(warns) != 0 || f.Sampled != 1 || f.Head != id || len(f.Remotes) != 1 {
+		t.Fatalf("%+v %v", f, warns)
+	}
+}
+
+// TestAnalyzeRepoRefusesAGitFilePointingElsewhere: a project whose .git file
+// names another repository's directory, with or without a worktrees/ name, is
+// not read, because that directory does not point back at the project.
+func TestAnalyzeRepoRefusesAGitFilePointingElsewhere(t *testing.T) {
+	victim := t.TempDir()
+	git(t, victim, "", "init", "-q", "-b", "main")
+	git(t, victim, "", "remote", "add", "origin", "git@github.com:secret/repo.git")
+	signedCommit(t, victim, "", "", "x")
+	os.MkdirAll(filepath.Join(victim, ".git", "worktrees", "w"), 0o755)
+	for _, target := range []string{filepath.Join(victim, ".git"), filepath.Join(victim, ".git", "worktrees", "w")} {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, ".git"), []byte("gitdir: "+target+"\n"), 0o644)
+		f, warns := AnalyzeRepo(d)
+		if f != nil || len(warns) != 1 || !strings.Contains(warns[0], "repository was not read") {
+			t.Errorf("%s: %+v %v", target, f, warns)
+		}
+	}
+}

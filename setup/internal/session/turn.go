@@ -99,12 +99,56 @@ func widening(a intent.Action) bool {
 // model, which has no action that means it and answers with the nearest one.
 var analyzeRE = regexp.MustCompile(`(?i)\banaly[sz]`)
 
+// adviceRE routes "what identities do you suggest" to Advice, for the same
+// reason: the model has no action that means it. Matching is on the word for
+// recommending near a word for an identity, typos of "recommend" included;
+// what the route does is print text, so a request it takes by mistake costs
+// one irrelevant paragraph and grants nothing.
+var adviceRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*\b.*\b(identit|account|ssh|key|signing)|\b(identit|account|ssh|key|signing)\w*\b.*\b(rec+o?m+e?nd|suggest)`)
+
+// recommendRE routes a bare "what do you recommend" to the analysis, the one
+// thing snug-setup recommends from.
+var recommendRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*`)
+
+// includeVerbRE and the profile word together with the exact name of one of
+// the human's profiles make "reuse my vyskocilm profile" a request to include
+// it. The model has no action for that until it is retrained on include_profile.
+var includeVerbRE = regexp.MustCompile(`(?i)\b(use|reuse|include|add|apply|take|load|base)\b`)
+
+// profileNamed returns the name of the human's profile text asks to include,
+// "" when it asks for none: the verb, the word profile and the exact name as a
+// word of its own must all be there. What it returns is looked up in the
+// human's profiles, so text cannot name anything else.
+func (s *Session) profileNamed(text string) string {
+	if !includeVerbRE.MatchString(text) || !strings.Contains(strings.ToLower(text), "profile") {
+		return ""
+	}
+	words := strings.FieldsFunc(text, func(r rune) bool {
+		return !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+	})
+	for _, n := range s.profileNames() {
+		if slices.Contains(words, n) {
+			return n
+		}
+	}
+	return ""
+}
+
 // Submit sends text to the model and returns the understood turn, applying
 // nothing. It returns a nil Turn, with lines saying why, when the model could
 // not be reached or its reply was not a valid action list twice.
 func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	text = strings.TrimSpace(text)
 	if analyzeRE.MatchString(text) {
+		return nil, s.Analyze(ctx)
+	}
+	if adviceRE.MatchString(text) {
+		return nil, s.Advice()
+	}
+	if name := s.profileNamed(text); name != "" {
+		return nil, s.IncludeProfile(ctx, name)
+	}
+	if recommendRE.MatchString(text) {
 		return nil, s.Analyze(ctx)
 	}
 	acts, lines := s.ask(ctx, text)
@@ -216,7 +260,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 				continue
 			}
 			if it.Already > 0 {
-				out = append(out, info("%s is already proposed as #%d: /accept %d applies it.", it.Sentence, it.Already, it.Already))
+				out = append(out, info("That is already on the open card #%d (%s): /accept %d applies it.", it.Already, it.Sentence, it.Already))
 				continue
 			}
 			if a.Op == intent.OpSave {
@@ -262,6 +306,12 @@ func (s *Session) infoAction(t *Turn, acts []intent.Action, a intent.Action) []L
 		return modelRefusal(a.Code)
 	case intent.OpNote:
 		var out []Line
+		if a.Topic == "identity_one" && s.d.SSH == nil && s.d.GH == nil && s.d.Git == nil && !s.includesPin() {
+			// "two accounts are two profiles" answers a second pin; with nothing
+			// pinned it answers a question nobody asked, and the human was
+			// asking which identity to use.
+			return s.Advice()
+		}
 		if e, ok := texts.Note(a.Topic); ok {
 			out = append(out, info("%s", e))
 		}
@@ -332,8 +382,9 @@ func (s *Session) proposeUser(t *Turn, acts []intent.Action, it Item) []Line {
 func (s *Session) readFile(name string) []Line {
 	shown := safe.Inline(name)
 	if !compose.IsComposeName(path.Base(name)) {
-		return []Line{info("snug-setup does not suggest grants from %s. A file in the project says what the project wants, not what you want, "+
-			"and the model reads free text wrongly far more often than rightly. Read it yourself and say what you need, for example \"I need internet\".", shown)}
+		return []Line{info("%s", describeTarget(s.cfg.Host.Target, s.facts.Target)),
+			info("snug-setup does not read %s for grants: a file in the project says what the project wants, not what you want. "+
+				"Say what you need, for example \"I need internet\".", shown)}
 	}
 	digest, err := compose.ReadTarget(s.cfg.Host.Target, name)
 	if err != nil {

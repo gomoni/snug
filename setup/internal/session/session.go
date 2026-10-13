@@ -160,6 +160,9 @@ func (s *Session) Undo() []Line {
 // Show returns the draft as it would be saved.
 func (s *Session) Show() []Line {
 	out := []Line{{Shown, strings.TrimRight(s.d.Render(), "\n")}}
+	if s.d.Empty() && len(s.pending) > 0 {
+		out = append(out, info("Nothing is in the draft yet; %d question(s) are open and nothing from them is applied until you answer (/pending lists them).", len(s.pending)))
+	}
 	if s.d.ReadOnlyTarget {
 		out = append(out, info("# run with: %s", s.d.RunLine(s.cfg.Host.Target)))
 	}

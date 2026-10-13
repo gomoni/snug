@@ -578,7 +578,7 @@ func TestOnlyComposeIsRead(t *testing.T) {
 	w.Reply("read the compose file", `{"op":"read_file","path":"docker-compose.yml"}`)
 	w.Reply("read ../secret", `{"op":"read_file","path":"../docker-compose.yml"}`)
 	s := open(w, true)
-	contains(t, say(s, "read the readme"), "snug-setup does not suggest grants from README.md", "Read it yourself and say what you need")
+	contains(t, say(s, "read the readme"), "snug-setup does not read README.md for grants", "container files: docker-compose.yml", "Say what you need")
 	contains(t, say(s, "read the compose file"), "read docker-compose.yml: 2 service(s).")
 	contains(t, say(s, "read ../secret"), "not read:")
 	if n := len(w.Model.Prompts); n != 3 {
@@ -786,7 +786,7 @@ func TestSecondCardForAPendingGrantPointsAtTheFirst(t *testing.T) {
 	s := open(w, true)
 	say(s, "set up for go")
 	out := say(s, "run go test and download modules")
-	contains(t, out, "already proposed as #1", "/accept 1")
+	contains(t, out, "already on the open card #1", "/accept 1")
 	lacks(t, out, "? #2")
 	if n := numbers(s); !slices.Equal(n, []int{1}) {
 		t.Errorf("pending %v", n)

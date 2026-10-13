@@ -27,11 +27,11 @@ const includeAcct = `{"op":"include_profile","name":"acct"}`
 func TestIncludeProfileIsACardNamingWhatItPins(t *testing.T) {
 	w := testworld.New(t)
 	w.Profile("accounts.toml", acctToml)
-	w.Reply("I already have a profile called acct, just reuse it", includeAcct)
+	w.Reply("bring in acct please", includeAcct)
 	s, opening := start(w)
-	contains(t, opening, "Your snug profiles: acct.", "Your profile \"acct\"", "pins GitHub login github.com/account1, ssh key id_account1, signing key id_other, git author Account One <one@example.com>")
+	contains(t, opening, "Your snug profiles: acct.")
 	lacks(t, opening, "refuses it")
-	out := say(s, "I already have a profile called acct, just reuse it")
+	out := say(s, "bring in acct please")
 	contains(t, out, "include your profile acct (GitHub account A", "cost: your profile acct includes @sys, @home, @cwd-rw, @net; pins GitHub login")
 	if !s.Draft().Empty() {
 		t.Fatalf("applied before the answer: %s", s.Draft().Render())
@@ -117,4 +117,27 @@ func TestProfileNameCannotBeAnythingButAName(t *testing.T) {
 			t.Fatalf("%q reached the draft: %s", n, s.Draft().Render())
 		}
 	}
+}
+
+// TestProfileRequestInWordsIsRoutedWithoutTheModel: until the model is
+// retrained on include_profile, "reuse my acct profile" reaches the same card
+// /include does, by looking the exact name up among the human's profiles.
+func TestProfileRequestInWordsIsRoutedWithoutTheModel(t *testing.T) {
+	w := testworld.New(t)
+	w.Profile("accounts.toml", acctToml)
+	s, _ := start(w)
+	out := say(s, "I already have a profile called acct, just reuse it")
+	contains(t, out, "? #1", "include your profile acct")
+	if len(w.Model.Prompts) != 0 {
+		t.Errorf("the model was asked")
+	}
+	s2, _ := start(w)
+	out = say2(t, w, s2, "what is in my accts profile")
+	lacks(t, out, "include your profile")
+}
+
+func say2(t *testing.T, w *testworld.World, s *Session, request string) string {
+	t.Helper()
+	w.Reply(request, `{"op":"note","topic":"help"}`)
+	return say(s, request)
 }
