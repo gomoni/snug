@@ -85,8 +85,8 @@ jobs:
           path: |
             ~/.cache/snug-setup
             ~/test-model
-          key: setup-llama-b11541-qwen05-${{ env.MODEL_SHA256 }}-${{ hashFiles('scripts/fetch-llama-server.sh') }}
-      - name: llama-server (pinned release, sha256 checked by the script)
+          key: setup-llama-b11541-qwen05-${{ env.MODEL_SHA256 }}-${{ hashFiles('scripts/fetch-llama-server.sh', 'setup/internal/llm/llama-server.manifest') }}
+      - name: llama-server (every file hashed against the manifest, cache hit or not)
         run: sh scripts/fetch-llama-server.sh
       - name: Test model (sha256 checked)
         run: |

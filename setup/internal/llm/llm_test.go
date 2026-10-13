@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,7 +15,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -131,7 +135,7 @@ func TestStartServerAndClose(t *testing.T) {
 	model := filepath.Join(t.TempDir(), "m.gguf")
 	os.WriteFile(model, []byte("x"), 0o644)
 	exe, _ := os.Executable()
-	s, err := StartServer(context.Background(), exe, model, 20*time.Second)
+	s, err := StartServer(context.Background(), ServerBin{Path: exe}, model, 20*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,28 +167,202 @@ func TestStartServerAndClose(t *testing.T) {
 func TestStartServerReportsEarlyExit(t *testing.T) {
 	model := filepath.Join(t.TempDir(), "m.gguf")
 	os.WriteFile(model, []byte("x"), 0o644)
-	if _, err := StartServer(context.Background(), "/bin/false", model, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited") {
+	if _, err := StartServer(context.Background(), ServerBin{Path: "/bin/false"}, model, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Errorf("%v", err)
 	}
-	if _, err := StartServer(context.Background(), "/bin/false", "/nonexistent.gguf", time.Second); err == nil {
+	if _, err := StartServer(context.Background(), ServerBin{Path: "/bin/false"}, "/nonexistent.gguf", time.Second); err == nil {
 		t.Error("missing model accepted")
 	}
 }
 
 func TestFindServer(t *testing.T) {
 	home := t.TempDir()
-	if p, err := FindServer("/x/llama-server", home); err != nil || p != "/x/llama-server" {
+	if p, err := FindServer("/x/llama-server", home); err != nil || p != (ServerBin{Path: "/x/llama-server"}) {
 		t.Error(p, err)
 	}
 	t.Setenv("PATH", t.TempDir())
 	if _, err := FindServer("", home); err == nil || !strings.Contains(err.Error(), "--llama-server") {
 		t.Errorf("%v", err)
 	}
-	d := filepath.Join(home, ".cache/snug-setup/llama.cpp/b1/llama-b1")
+	d := filepath.Join(home, ".cache/snug-setup/llama.cpp", PinnedTag, "llama-"+PinnedTag)
 	os.MkdirAll(d, 0o755)
 	os.WriteFile(filepath.Join(d, "llama-server"), nil, 0o755)
-	if p, err := FindServer("", home); err != nil || !strings.HasSuffix(p, "llama-b1/llama-server") {
+	if p, err := FindServer("", home); err != nil || !p.Cached || !strings.HasSuffix(p.Path, "llama-"+PinnedTag+"/llama-server") {
 		t.Error(p, err)
+	}
+}
+
+// TestFindServerPrefersThePinnedTagNotALaterSortingDir is redteam setup r5
+// R5-1: a directory planted beside the pinned one, whose name sorts later,
+// must not be the llama-server snug-setup runs outside any sandbox.
+func TestFindServerPrefersThePinnedTagNotALaterSortingDir(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	home := t.TempDir()
+	base := filepath.Join(home, ".cache/snug-setup/llama.cpp")
+	for _, d := range []string{PinnedTag + "/llama-" + PinnedTag, "zzz/zzz", PinnedTag + "z/llama-" + PinnedTag + "z"} {
+		os.MkdirAll(filepath.Join(base, d), 0o755)
+		os.WriteFile(filepath.Join(base, d, "llama-server"), nil, 0o755)
+	}
+	p, err := FindServer("", home)
+	if err != nil || !p.Cached || p.Path != filepath.Join(base, PinnedTag, "llama-"+PinnedTag, "llama-server") {
+		t.Errorf("%+v %v", p, err)
+	}
+	os.RemoveAll(filepath.Join(base, PinnedTag))
+	if p, err := FindServer("", home); err == nil {
+		t.Errorf("only planted directories are left and %+v was chosen", p)
+	}
+}
+
+// plantCache lays out a cache holding the pinned names with content that is
+// not llama.cpp's, and a llama-server that records that it ran.
+func plantCache(t *testing.T) (home, marker string) {
+	t.Helper()
+	home = t.TempDir()
+	marker = filepath.Join(t.TempDir(), "ran")
+	d := filepath.Join(home, ".cache/snug-setup/llama.cpp", PinnedTag, "llama-"+PinnedTag)
+	os.MkdirAll(d, 0o755)
+	m, err := parseManifest(pinnedManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range m.files {
+		os.WriteFile(filepath.Join(d, f.name), []byte("not llama.cpp"), 0o755)
+	}
+	os.WriteFile(filepath.Join(d, "llama-server"), []byte("#!/bin/sh\n: > "+marker+"\n"), 0o755)
+	return home, marker
+}
+
+// TestTamperedCacheIsRefusedBeforeExec is redteam setup r5 R5-1: a cache whose
+// binary or whose shared library is not the pinned release's is not run, and
+// the planted llama-server never starts.
+func TestTamperedCacheIsRefusedBeforeExec(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	model := filepath.Join(t.TempDir(), "m.gguf")
+	os.WriteFile(model, []byte("x"), 0o644)
+	home, marker := plantCache(t)
+	sb, err := FindServer("", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = StartServer(context.Background(), sb, model, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "sha256") || !strings.Contains(err.Error(), "fetch-llama-server.sh") {
+		t.Errorf("tampered binary and libraries: %v", err)
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Error("the planted llama-server ran")
+	}
+}
+
+// TestStageChecksEveryFile pins stage with a manifest small enough to build:
+// success copies and links, and each of a changed library, a missing file, a
+// link in place of a file and an extra ggml backend is refused.
+func TestStageChecksEveryFile(t *testing.T) {
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	man := "tag t\nsha256 " + sum("bin") + " llama-server\nsha256 " + sum("lib") + " libllama.so.0\nlink libllama.so libllama.so.0\n"
+	m, err := parseManifest(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func() string {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "llama-server"), []byte("bin"), 0o755)
+		os.WriteFile(filepath.Join(d, "libllama.so.0"), []byte("lib"), 0o755)
+		return d
+	}
+	src := mk()
+	dst := t.TempDir()
+	if err := m.stage(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "libllama.so")); string(b) != "lib" {
+		t.Errorf("link not staged: %q", b)
+	}
+	cases := map[string]func(d string){
+		"changed library": func(d string) { os.WriteFile(filepath.Join(d, "libllama.so.0"), []byte("evil"), 0o755) },
+		"missing file":    func(d string) { os.Remove(filepath.Join(d, "libllama.so.0")) },
+		"link for a file": func(d string) {
+			os.Remove(filepath.Join(d, "llama-server"))
+			os.WriteFile(filepath.Join(d, "other"), []byte("bin"), 0o755)
+			os.Symlink("other", filepath.Join(d, "llama-server"))
+		},
+		"fifo for a file": func(d string) {
+			os.Remove(filepath.Join(d, "llama-server"))
+			syscall.Mkfifo(filepath.Join(d, "llama-server"), 0o755)
+		},
+		"extra backend": func(d string) { os.WriteFile(filepath.Join(d, "libggml-evil.so"), []byte("x"), 0o755) },
+	}
+	for name, mutate := range cases {
+		d := mk()
+		mutate(d)
+		if err := m.stage(d, t.TempDir()); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// TestPinnedTagMatchesTheFetchScript: the Go constant, the manifest and the
+// script that unpacks the release name the same tag.
+func TestPinnedTagMatchesTheFetchScript(t *testing.T) {
+	b, err := os.ReadFile("../../../scripts/fetch-llama-server.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^tag=(\S+)$`).FindSubmatch(b)
+	if m == nil || string(m[1]) != PinnedTag {
+		t.Errorf("scripts/fetch-llama-server.sh pins %q, llm.PinnedTag is %q", m, PinnedTag)
+	}
+	man, err := parseManifest(pinnedManifest)
+	if err != nil || man.tag != PinnedTag {
+		t.Errorf("llama-server.manifest: %q %v", man.tag, err)
+	}
+	if !man.has("llama-server") {
+		t.Error("the manifest does not cover llama-server")
+	}
+}
+
+// TestRemoteWhereRedactsUserinfo is redteam setup r5 R5-4: a password in
+// --openai-url is not printed by Caps, by the unreachable-server error or by
+// the URL error.
+func TestRemoteWhereRedactsUserinfo(t *testing.T) {
+	c := &Remote{URL: "http://tok:S3CRET@127.0.0.1:1/"}
+	if w := c.Caps().Where; strings.Contains(w, "S3CRET") || !strings.Contains(w, "127.0.0.1:1") {
+		t.Errorf("Where: %q", w)
+	}
+	_, err := c.Complete(context.Background(), Request{})
+	if err == nil || strings.Contains(err.Error(), "S3CRET") {
+		t.Errorf("unreachable: %v", err)
+	}
+	_, err = (&Remote{URL: "ftp://tok:S3CRET@host"}).Endpoint()
+	if err == nil || strings.Contains(err.Error(), "S3CRET") {
+		t.Errorf("endpoint: %v", err)
+	}
+}
+
+// TestServerLogInErrorIsSanitized is redteam setup r5 R5-5: llama-server's
+// output echoes the untrusted model file, and none of it may reach the error
+// as an escape sequence or as a line of its own.
+func TestServerLogInErrorIsSanitized(t *testing.T) {
+	dir := t.TempDir()
+	sh := filepath.Join(dir, "llama-server")
+	os.WriteFile(sh, []byte("#!/bin/sh\nprintf 'a\\033]0;pwned\\007b\\033[2J\\342\\200\\256c\\nsnug-setup: saved everything\\r\\n'\nexit 1\n"), 0o755)
+	model := filepath.Join(dir, "m.gguf")
+	os.WriteFile(model, []byte("x"), 0o644)
+	_, err := StartServer(context.Background(), ServerBin{Path: sh}, model, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exited") {
+		t.Fatalf("%v", err)
+	}
+	for _, bad := range []string{"\x1b", "\x07", "\r", "\u202e"} {
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("error holds %q: %q", bad, err)
+		}
+	}
+	for _, l := range strings.Split(err.Error(), "\n")[1:] {
+		if !strings.HasPrefix(l, "    | ") {
+			t.Errorf("log text starts a line of its own: %q", l)
+		}
+	}
+	if !strings.Contains(err.Error(), "saved everything") {
+		t.Errorf("log lost: %q", err)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-func realServer(t *testing.T) (bin, model string) {
+func realServer(t *testing.T) (bin ServerBin, model string) {
 	t.Helper()
 	model = os.Getenv("SNUG_SETUP_TEST_MODEL")
 	if model == "" {
