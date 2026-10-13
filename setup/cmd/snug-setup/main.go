@@ -25,7 +25,7 @@ import (
 
 const usage = `usage: snug-setup (--model FILE.gguf | --llm-url URL) [--llama-server PATH] [--offline] [--plain] [--profile-dir DIR] [DIR]
 
-  --model FILE.gguf   run llama-server on this model, on 127.0.0.1, for the session
+  --model FILE.gguf   run llama-server on this model, on a private unix socket, for the session
   --llm-url URL       use a server that is already running (OpenAI-compatible)
   --llama-server PATH llama-server binary (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/)
   --offline           never ask GitHub whether an ssh key belongs to an account
@@ -111,7 +111,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		client.URL = srv.URL
+		client.URL, client.HTTP = srv.URL, srv.HTTP
 	} else if !client.IsLoopback() {
 		fmt.Fprintf(os.Stderr, "warning: %s is not on this machine. Every request sends it your ssh key comments, GitHub logins, git author and the digest of any file you ask it to read.\n", *llmURL)
 	}

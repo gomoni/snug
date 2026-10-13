@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -59,31 +58,31 @@ func (t *tail) String() string {
 	return string(bytes.TrimSpace(t.buf))
 }
 
-// Server is a llama-server child bound to 127.0.0.1.
+// Server is a llama-server child listening on a unix socket.
 type Server struct {
-	URL string
+	// URL is the base the client speaks HTTP to; HTTP dials the socket for
+	// it, whatever host URL names.
+	URL  string
+	HTTP *http.Client
 
+	dir  string
 	cmd  *exec.Cmd
 	done chan struct{}
 	logs *tail
 	err  error
 }
 
-// FreePort returns a TCP port on 127.0.0.1 that was free a moment ago. The
-// server binds it later, so another process can in principle take it first;
-// the health wait then fails with the server's own output rather than hanging.
-func FreePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("cannot find a free local port: %w", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
+// sunPathMax is the room for a socket path in sockaddr_un on Linux, less its
+// terminating NUL.
+const sunPathMax = 107
 
-// StartServer runs bin on model, listening on 127.0.0.1 at a random free port,
-// and returns once /health answers 200 or timeout passes. The child gets
-// SIGKILL if snug-setup dies (Pdeathsig) and is killed by Close.
+// StartServer runs bin on model, listening on a unix socket in a fresh 0700
+// directory, and returns once /health answers 200 or timeout passes. Not a
+// 127.0.0.1 port: a port found free and bound later can be taken first by
+// another local user, who then receives the prompts, and any local user can
+// query a loopback server. The directory's mode keeps both out. The child
+// gets SIGKILL if snug-setup dies (Pdeathsig) and is killed by Close, which
+// removes the directory.
 //
 // Pdeathsig is tied to the OS THREAD that forked the child, not to the process,
 // so the goroutine that starts it locks its thread and keeps it until the
@@ -93,16 +92,28 @@ func StartServer(ctx context.Context, bin, model string, timeout time.Duration) 
 	if _, err := os.Stat(model); err != nil {
 		return nil, fmt.Errorf("model file %s: %w", model, err)
 	}
-	port, err := FreePort()
+	dir, err := os.MkdirTemp("", "snug-setup-")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot make a directory for the model server's socket: %w", err)
+	}
+	sock := filepath.Join(dir, "llama.sock")
+	if len(sock) > sunPathMax {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("socket path %s is longer than the %d bytes a unix socket address holds; set TMPDIR to a shorter directory", sock, sunPathMax)
 	}
 	s := &Server{
-		URL:  "http://127.0.0.1:" + strconv.Itoa(port),
+		URL: "http://llama-server",
+		HTTP: &http.Client{Timeout: 120 * time.Second, Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+			},
+		}},
+		dir:  dir,
 		done: make(chan struct{}),
 		logs: &tail{},
 	}
-	s.cmd = exec.Command(bin, "--model", model, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "-c", "4096", "-np", "1")
+	// --host takes a unix socket path when it ends in .sock.
+	s.cmd = exec.Command(bin, "--model", model, "--host", sock, "-c", "4096", "-np", "1")
 	s.cmd.Stdout, s.cmd.Stderr = s.logs, s.logs
 	s.cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 
@@ -119,6 +130,7 @@ func StartServer(ctx context.Context, bin, model string, timeout time.Duration) 
 		s.err = s.cmd.Wait()
 	}()
 	if err := <-started; err != nil {
+		os.RemoveAll(dir)
 		return nil, fmt.Errorf("cannot start %s: %w", bin, err)
 	}
 	if err := s.waitHealthy(ctx, timeout); err != nil {
@@ -130,7 +142,7 @@ func StartServer(ctx context.Context, bin, model string, timeout time.Duration) 
 
 func (s *Server) waitHealthy(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	hc := &http.Client{Timeout: 2 * time.Second}
+	hc := &http.Client{Timeout: 2 * time.Second, Transport: s.HTTP.Transport}
 	for {
 		select {
 		case <-s.done:
@@ -160,4 +172,5 @@ func (s *Server) Close() {
 	// pid, so the signal cannot reach a stranger.
 	_ = s.cmd.Process.Kill()
 	<-s.done
+	os.RemoveAll(s.dir)
 }
