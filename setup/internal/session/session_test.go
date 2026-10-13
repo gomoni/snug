@@ -142,6 +142,34 @@ func TestTurnWithoutAGrantAppliesAtOnce(t *testing.T) {
 	}
 }
 
+// TestModelValueWaitsForTheCard is redteam setup r1 S1: the human asks only
+// for a name, the model adds an environment value and a tmpfs. Neither widens
+// what the sandbox sees, but both would persist in every later run, so they
+// wait on a card and a declined card saves neither.
+func TestModelValueWaitsForTheCard(t *testing.T) {
+	for _, extra := range []string{
+		`{"op":"set_env","name":"PYTHONSTARTUP","verb":"set","value":"/tmp/x.py"}`,
+		`{"op":"grant_path","path":"{target}/.git","access":"tmpfs"}`,
+	} {
+		w := testworld.New(t)
+		w.Reply("call it work", nameWork, extra)
+		s := open(w, true)
+		say(s, "call it work")
+		if ps := s.Pending(); len(ps) != 1 || ps[0].Kind != Card {
+			t.Fatalf("%s: applied without a card: %v\n%s", extra, ps, s.Draft().Render())
+		}
+		if s.Draft().Name != "" || len(s.Draft().Ledger()) != 0 {
+			t.Errorf("%s: applied before the answer: %s", extra, s.Draft().Render())
+		}
+		s.Decline(1)
+		_, l := s.Save(ctx, "")
+		out := text(l)
+		if r := s.Draft().Render(); strings.Contains(r, "/tmp/") || strings.Contains(r, "tmpfs") {
+			t.Errorf("%s: a declined value reached the profile:\n%s\n%s", extra, r, out)
+		}
+	}
+}
+
 func TestAlreadyTheDefaultIsNotACard(t *testing.T) {
 	w := testworld.New(t)
 	w.Reply("give me write access here", `{"op":"use_profile","name":"@target-rw"}`, `{"op":"note","topic":"defaults"}`)

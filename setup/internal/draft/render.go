@@ -4,10 +4,28 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 )
 
+// q writes s as a TOML basic string. A control or formatting rune is written
+// as a \uXXXX escape, so the file shows what the screen showed rather than
+// carrying a bidi override or a zero-width rune a reader cannot see.
 func q(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == '"':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func qlist(xs []string) string {
