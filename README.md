@@ -288,7 +288,7 @@ Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 ### Asking for one — `snug-setup` (experimental)
 
 Chat writes the profile. Local model (fine-tuned Qwen2.5-1.5B, GGUF, run by
-`llama-server` on 127.0.0.1) turns a request into a closed set of actions; Go
+`llama-server` on a private unix socket) turns a request into a closed set of actions; Go
 gates every one. Model output is untrusted: anything that widens the sandbox
 or puts a value into it lands on a card and waits for `/accept`; `~/.ssh`,
 token files, a writable `~/.bashrc` and the like are refused, whatever the

@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,15 +20,17 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("SNUG_FAKE_LLAMA") == "1" {
 		fs := flag.NewFlagSet("fake", flag.ExitOnError)
-		port := fs.String("port", "", "")
+		fs.String("port", "", "")
 		fs.String("model", "", "")
-		fs.String("host", "", "")
+		host := fs.String("host", "", "")
 		fs.String("c", "", "")
 		fs.String("np", "", "")
 		_ = fs.Parse(os.Args[1:])
 		mux := http.NewServeMux()
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
-		http.ListenAndServe("127.0.0.1:"+*port, mux)
+		if l, err := net.Listen("unix", *host); err == nil {
+			http.Serve(l, mux)
+		}
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
@@ -114,6 +118,11 @@ func TestCompleteErrors(t *testing.T) {
 	}
 }
 
+// TestStartServerAndClose: the server listens on a unix socket in a 0700
+// directory of its own, not on a 127.0.0.1 port. Redteam setup r1 S6: a port
+// picked free and bound later could be taken first by another local user, and
+// any local user could query a loopback server for the prompts it served,
+// which carry key comments, logins and the git author.
 func TestStartServerAndClose(t *testing.T) {
 	t.Setenv("SNUG_FAKE_LLAMA", "1")
 	model := filepath.Join(t.TempDir(), "m.gguf")
@@ -123,14 +132,25 @@ func TestStartServerAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(s.URL, "http://127.0.0.1:") {
-		t.Errorf("server must bind loopback: %s", s.URL)
+	if strings.Contains(s.URL, "127.0.0.1") || s.HTTP == nil {
+		t.Errorf("server must not be reached over TCP: %s", s.URL)
+	}
+	fi, err := os.Stat(s.dir)
+	if err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("socket directory %s: %v %v", s.dir, fi.Mode(), err)
+	}
+	if fi, err := os.Stat(filepath.Join(s.dir, "llama.sock")); err != nil || fi.Mode()&fs.ModeSocket == 0 {
+		t.Errorf("no socket: %v", err)
+	}
+	if resp, err := s.HTTP.Get(s.URL + "/health"); err != nil || resp.StatusCode != 200 {
+		t.Errorf("health over the socket: %v", err)
+	} else {
+		resp.Body.Close()
 	}
 	s.Close()
 	s.Close()
-	if resp, err := http.Get(s.URL + "/health"); err == nil {
-		resp.Body.Close()
-		t.Error("server still answering after Close")
+	if _, err := os.Stat(s.dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("socket directory left behind: %v", err)
 	}
 }
 
