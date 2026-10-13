@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 func TestMain(m *testing.M) {
@@ -43,13 +45,13 @@ func TestEndpoint(t *testing.T) {
 		"http://h/v1":                  "http://h/v1/chat/completions",
 		"http://h/v1/chat/completions": "http://h/v1/chat/completions",
 	} {
-		got, err := (&Client{URL: in}).Endpoint()
+		got, err := (&Remote{URL: in}).Endpoint()
 		if err != nil || got != want {
 			t.Errorf("%s -> %s, %v; want %s", in, got, err, want)
 		}
 	}
 	for _, bad := range []string{"", "127.0.0.1:8080", "ftp://x", "http://"} {
-		if _, err := (&Client{URL: bad}).Endpoint(); err == nil {
+		if _, err := (&Remote{URL: bad}).Endpoint(); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
@@ -60,7 +62,7 @@ func TestIsLoopback(t *testing.T) {
 		"http://127.0.0.1:1": true, "http://localhost:1": true, "http://[::1]:1": true,
 		"http://10.0.0.5:1": false, "https://api.example.com": false,
 	} {
-		if got := (&Client{URL: u}).IsLoopback(); got != want {
+		if got := (&Remote{URL: u}).IsLoopback(); got != want {
 			t.Errorf("%s: %v", u, got)
 		}
 	}
@@ -78,8 +80,8 @@ func TestComplete(t *testing.T) {
 		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"actions\":[{\"op\":\"show\"}]}"}}]}`))
 	}))
 	defer srv.Close()
-	c := &Client{URL: srv.URL}
-	got, err := c.Complete(context.Background(), "SYS", "USER", 0)
+	c := &Remote{URL: srv.URL}
+	got, err := c.Complete(context.Background(), Request{System: "SYS", User: "USER", MaxTokens: MaxTokens, Schema: intent.Schema})
 	if err != nil || got != `{"actions":[{"op":"show"}]}` {
 		t.Fatalf("%q %v", got, err)
 	}
@@ -102,18 +104,18 @@ func TestCompleteErrors(t *testing.T) {
 		http.Error(w, `{"error":"model not loaded"}`, http.StatusServiceUnavailable)
 	}))
 	defer bad.Close()
-	if _, err := (&Client{URL: bad.URL}).Complete(context.Background(), "s", "u", 0); err == nil || !strings.Contains(err.Error(), "model not loaded") {
+	if _, err := (&Remote{URL: bad.URL}).Complete(context.Background(), Request{System: "s", User: "u", Schema: intent.Schema}); err == nil || !strings.Contains(err.Error(), "model not loaded") {
 		t.Errorf("%v", err)
 	}
 	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) }))
 	defer empty.Close()
-	if _, err := (&Client{URL: empty.URL}).Complete(context.Background(), "s", "u", 0); err == nil {
+	if _, err := (&Remote{URL: empty.URL}).Complete(context.Background(), Request{System: "s", User: "u", Schema: intent.Schema}); err == nil {
 		t.Error("empty reply accepted")
 	}
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	url := "http://" + l.Addr().String()
 	l.Close()
-	if _, err := (&Client{URL: url}).Complete(context.Background(), "s", "u", 0); err == nil || !strings.Contains(err.Error(), "--model") {
+	if _, err := (&Remote{URL: url}).Complete(context.Background(), Request{System: "s", User: "u", Schema: intent.Schema}); err == nil || !strings.Contains(err.Error(), "--model") {
 		t.Errorf("unreachable server error should say what to do: %v", err)
 	}
 }
@@ -146,6 +148,9 @@ func TestStartServerAndClose(t *testing.T) {
 		t.Errorf("health over the socket: %v", err)
 	} else {
 		resp.Body.Close()
+	}
+	if c := s.Caps(); !c.Constrained || !c.Local || !strings.Contains(c.Where, "llama.sock") {
+		t.Errorf("a spawned llama-server is local and constrained: %+v", c)
 	}
 	s.Close()
 	s.Close()
@@ -180,4 +185,38 @@ func TestFindServer(t *testing.T) {
 	if p, err := FindServer("", home); err != nil || !strings.HasSuffix(p, "llama-b1/llama-server") {
 		t.Error(p, err)
 	}
+}
+
+type recorder struct{ got Request }
+
+func (r *recorder) Complete(_ context.Context, q Request) (string, error) {
+	r.got = q
+	return "ok", nil
+}
+func (r *recorder) Caps() Caps   { return Caps{} }
+func (r *recorder) Close() error { return nil }
+
+// TestModelAdapterOwnsSchemaAndBudget: callers pass text and a temperature;
+// the contract and the reply bound come from one place.
+func TestModelAdapterOwnsSchemaAndBudget(t *testing.T) {
+	r := &recorder{}
+	out, err := Model{B: r}.Complete(context.Background(), "S", "U", 0.3)
+	if err != nil || out != "ok" {
+		t.Fatal(out, err)
+	}
+	if r.got.System != "S" || r.got.User != "U" || r.got.Temperature != 0.3 || r.got.MaxTokens != MaxTokens || string(r.got.Schema) != string(intent.Schema) {
+		t.Errorf("%+v", r.got)
+	}
+}
+
+func TestRemoteCapsAreUnconstrained(t *testing.T) {
+	c := (&Remote{URL: "http://127.0.0.1:1"}).Caps()
+	if c.Constrained || !c.Local {
+		t.Errorf("%+v", c)
+	}
+	if c := (&Remote{URL: "https://api.example.com"}).Caps(); c.Local || !strings.Contains(c.Where, "api.example.com") {
+		t.Errorf("%+v", c)
+	}
+	var _ Backend = (*Remote)(nil)
+	var _ Backend = (*Server)(nil)
 }

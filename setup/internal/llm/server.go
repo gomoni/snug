@@ -31,18 +31,19 @@ func FindServer(explicit, home string) (string, error) {
 		sort.Strings(matches)
 		return matches[len(matches)-1], nil
 	}
-	return "", errors.New("no llama-server found: it is not on PATH and not under ~/.cache/snug-setup/llama.cpp/; pass --llama-server PATH, or --llm-url of a server that is already running")
+	return "", errors.New("no llama-server found: it is not on PATH and not under ~/.cache/snug-setup/llama.cpp/; pass --llama-server PATH, give --llm-url of a server that is already running, or use --model FILE.gguf to run the model in-process")
 }
 
-// tail keeps the last bytes written, for error messages.
-type tail struct {
+// Tail keeps the last bytes written, for error messages. The zero value is
+// ready to use.
+type Tail struct {
 	mu  sync.Mutex
 	buf []byte
 }
 
 const tailMax = 4096
 
-func (t *tail) Write(p []byte) (int, error) {
+func (t *Tail) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.buf = append(t.buf, p...)
@@ -52,23 +53,23 @@ func (t *tail) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (t *tail) String() string {
+func (t *Tail) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return string(bytes.TrimSpace(t.buf))
 }
 
-// Server is a llama-server child listening on a unix socket.
+// Server is a llama-server child listening on a unix socket. It is a Remote
+// whose URL is a placeholder and whose HTTP dials the socket for it, whatever
+// host URL names; llama-server turns the request's schema into a grammar, so
+// its Caps say constrained.
 type Server struct {
-	// URL is the base the client speaks HTTP to; HTTP dials the socket for
-	// it, whatever host URL names.
-	URL  string
-	HTTP *http.Client
+	Remote
 
 	dir  string
 	cmd  *exec.Cmd
 	done chan struct{}
-	logs *tail
+	logs *Tail
 	err  error
 }
 
@@ -102,15 +103,17 @@ func StartServer(ctx context.Context, bin, model string, timeout time.Duration) 
 		return nil, fmt.Errorf("socket path %s is longer than the %d bytes a unix socket address holds; set TMPDIR to a shorter directory", sock, sunPathMax)
 	}
 	s := &Server{
-		URL: "http://llama-server",
-		HTTP: &http.Client{Timeout: 120 * time.Second, Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-			},
-		}},
+		Remote: Remote{
+			URL: "http://llama-server",
+			HTTP: &http.Client{Timeout: 120 * time.Second, Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+				},
+			}},
+		},
 		dir:  dir,
 		done: make(chan struct{}),
-		logs: &tail{},
+		logs: &Tail{},
 	}
 	// --host takes a unix socket path when it ends in .sock.
 	s.cmd = exec.Command(bin, "--model", model, "--host", sock, "-c", "4096", "-np", "1")
@@ -164,13 +167,19 @@ func (s *Server) waitHealthy(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
+// Caps reports a local, constrained backend.
+func (s *Server) Caps() Caps {
+	return Caps{Constrained: true, Local: true, Where: "llama-server on " + filepath.Join(s.dir, "llama.sock")}
+}
+
 // Close kills the server and waits for it to be reaped. It is safe to call
-// twice.
-func (s *Server) Close() {
+// twice, and never fails: the error is there for Backend.
+func (s *Server) Close() error {
 	// Process.Kill on our own child is safe even though Wait runs in another
 	// goroutine: until Wait returns the child is a zombie that still holds its
 	// pid, so the signal cannot reach a stranger.
 	_ = s.cmd.Process.Kill()
 	<-s.done
 	os.RemoveAll(s.dir)
+	return nil
 }

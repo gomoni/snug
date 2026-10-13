@@ -311,7 +311,7 @@ func (w *World) dryRun(env, args []string) (hostfacts.Result, error) {
 }
 
 // LLMServer serves the world's Model as an OpenAI-compatible
-// /v1/chat/completions endpoint, for tests that go through llm.Client.
+// /v1/chat/completions endpoint, for tests that go through llm.Remote.
 func (w *World) LLMServer() *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		var req struct {
