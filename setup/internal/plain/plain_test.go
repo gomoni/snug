@@ -144,3 +144,13 @@ func TestPlainSlashCommandsBypassTheModel(t *testing.T) {
 		t.Errorf("%d model calls: slash commands must bypass the model", n)
 	}
 }
+
+func TestPlainAnalyzeCommandBypassesTheModel(t *testing.T) {
+	w := testworld.New(t)
+	os.WriteFile(filepath.Join(w.Target, "go.mod"), []byte("module example.org/m\n"), 0o644)
+	_, out := run(t, w, "/analyze\n/pending\n")
+	contains(t, out, "Go module example.org/m (go.mod)", "? #1 what I found in the project", "/accept 1 applies all of it")
+	if n := len(w.Model.Prompts); n != 0 {
+		t.Errorf("%d model calls", n)
+	}
+}

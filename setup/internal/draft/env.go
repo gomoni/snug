@@ -98,6 +98,9 @@ func (d *Draft) setEnv(a intent.Action) Outcome {
 	case "set":
 		for i, p := range d.EnvSet {
 			if p.K == name {
+				if p.V == a.Value {
+					return Outcome{Msg: fmt.Sprintf("%s is already %q.", name, a.Value)}
+				}
 				d.EnvSet[i].V = a.Value
 				return changed(fmt.Sprintf("%s is now %q.", name, a.Value))
 			}

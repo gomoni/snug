@@ -21,6 +21,11 @@ const (
 	SourceUser Source = iota
 	SourceFile
 	SourceDefault
+	// SourceIngest is a proposal snug-setup computed from what it found on the
+	// host or in the project, applied because the human accepted its card.
+	// Origin is what it was computed from (".git", "go.mod"); the entry is
+	// Confirmed, because the human answered for it.
+	SourceIngest
 )
 
 // Entry is one action in the intent ledger.
@@ -91,15 +96,16 @@ func (d *Draft) Ledger() []Entry { return slices.Clone(d.ledger) }
 func (d *Draft) HostPath(p string) string { return d.expand(p) }
 
 // Propose applies a, unless it comes from a file or a default and contradicts
-// what the human asked for: then nothing is applied and the returned Pending
+// what the human asked for (a SourceIngest action is applied without that
+// check: the human accepted its card, which outranks an earlier request): then nothing is applied and the returned Pending
 // is the question to put to them. An accepted action is recorded in the
 // ledger; a refused one, name_profile, or one that is not the draft's
 // (NotMine) is not. select_identity is not applied either: Propose only
 // checks it for a conflict, and the caller records the human's pick with
 // RecordIdentity.
 func (d *Draft) Propose(a intent.Action, src Source, origin string, turn int) (Outcome, *Pending) {
-	e := Entry{Turn: turn, Source: src, Origin: origin, Action: a}
-	if src != SourceUser {
+	e := Entry{Turn: turn, Source: src, Origin: origin, Action: a, Confirmed: src == SourceIngest}
+	if src != SourceUser && src != SourceIngest {
 		if with, ok := d.conflict(e); ok {
 			return Outcome{}, &Pending{Entry: e, With: with, Question: d.question(e, with)}
 		}
@@ -368,6 +374,11 @@ func (d *Draft) IntentLines() []string {
 		var acts []string
 		for _, x := range d.ledger[i:j] {
 			acts = append(acts, phrase(d, x))
+		}
+		if e.Source == SourceIngest {
+			out = append(out, fmt.Sprintf("# proposed from %s, accepted: %s", Comment(e.Origin), strings.Join(acts, ", ")))
+			i = j
+			continue
 		}
 		label := sourceLabel(e)
 		switch {

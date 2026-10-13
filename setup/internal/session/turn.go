@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -49,6 +50,10 @@ type Item struct {
 	// when none does. Such an item is ClassInfo: a second card for it would
 	// leave Save two blockers for one decision.
 	Already int
+	// Why is what an ingest proposal was computed from (".git", "go.mod"),
+	// "" for an action the human asked for. A non-empty Why records the
+	// action as SourceIngest.
+	Why string
 }
 
 // Turn is one request the model understood, classified and not yet applied.
@@ -56,6 +61,9 @@ type Turn struct {
 	N     int
 	Said  string
 	Items []Item
+	// Ingest is true for the proposal snug-setup computed itself: its card
+	// speaks for the project, not for a request.
+	Ingest bool
 }
 
 // HasCard reports whether the turn widens the sandbox and so needs a card.
@@ -85,11 +93,18 @@ func widening(a intent.Action) bool {
 	return false
 }
 
+// analyzeRE routes a request to look at the project to Analyze without the
+// model, which has no action that means it and answers with the nearest one.
+var analyzeRE = regexp.MustCompile(`(?i)\banaly[sz]`)
+
 // Submit sends text to the model and returns the understood turn, applying
 // nothing. It returns a nil Turn, with lines saying why, when the model could
 // not be reached or its reply was not a valid action list twice.
 func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	text = strings.TrimSpace(text)
+	if analyzeRE.MatchString(text) {
+		return nil, s.Analyze()
+	}
 	acts, lines := s.ask(ctx, text)
 	if acts == nil {
 		return nil, lines
@@ -197,7 +212,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 			if card {
 				held = append(held, i)
 			} else if slices.Contains(ticked, i) {
-				out = append(out, s.proposeUser(t, acts, a)...)
+				out = append(out, s.proposeUser(t, acts, it)...)
 			} else {
 				out = append(out, info("not applied (unticked): %s.", it.Sentence))
 			}
@@ -205,7 +220,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 			if card {
 				held = append(held, i)
 			} else {
-				out = append(out, s.proposeUser(t, acts, a)...)
+				out = append(out, s.proposeUser(t, acts, it)...)
 			}
 		}
 	}
@@ -268,8 +283,13 @@ func offlineWish(said string, acts []intent.Action) bool {
 // proposeUser applies one of the human's own actions and says what happened.
 // The defaults note is said once per turn: by the model's note when it gave
 // one, otherwise here.
-func (s *Session) proposeUser(t *Turn, acts []intent.Action, a intent.Action) []Line {
-	o, _ := s.d.Propose(a, draft.SourceUser, t.Said, t.N)
+func (s *Session) proposeUser(t *Turn, acts []intent.Action, it Item) []Line {
+	a := it.Action
+	src, origin := draft.SourceUser, t.Said
+	if it.Why != "" {
+		src, origin = draft.SourceIngest, it.Why
+	}
+	o, _ := s.d.Propose(a, src, origin, t.N)
 	switch {
 	case o.Refused != "":
 		return refusal(o.Refused, o.Msg)

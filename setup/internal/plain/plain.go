@@ -36,6 +36,7 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
   /pick ssh STEM|none       answer the open ssh question
   /pick github LOGIN|none   answer the open GitHub question (HOST/LOGIN when two hosts share a login)
   /pick git EMAIL|none      answer the open git author question
+  /analyze                  describe the project and propose what its files make plain
   /save [NAME]              check with snug and write; NAME names an unnamed draft`
 
 // Run reads lines from cfg.In until /quit or end of input and returns the
@@ -131,6 +132,8 @@ func handle(ctx context.Context, s *session.Session, p *printer, line string) bo
 		p.print(lines)
 	case "/show":
 		p.print(s.Show())
+	case "/analyze":
+		p.print(s.Analyze())
 	case "/undo":
 		p.print(s.Undo())
 	case "/help":

@@ -220,4 +220,4 @@ const helpText = `snug-setup builds a snug profile from what you say. Examples:
   I need internet / podman / git       which ssh keys are loaded?
   assign github account2               read this docker-compose
   call it work                         show / save
-Commands that skip the model: /show /save /undo /help /quit`
+Commands that skip the model: /analyze /show /save /undo /help /quit`
