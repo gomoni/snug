@@ -2862,5 +2862,23 @@
     "reuse the profile {myprofile}",
     "použij můj profil {myprofile}",
     "přidej profil {myprofile}"
+  ],
+  "select_signing": [
+    "sign my commits with my signing key",
+    "I want commits signed inside the sandbox",
+    "use my signing key",
+    "sign commits with my ssh key",
+    "the agent should sign its commits",
+    "which key signs the commits? use that",
+    "add commit signing",
+    "enable signed commits",
+    "podepisuj commity mým klíčem",
+    "sign commits as me"
+  ],
+  "select_signing_key": [
+    "sign commits with {key}",
+    "use {key} as the signing key",
+    "my signing key is {key}",
+    "commit signing with {key}"
   ]
 }

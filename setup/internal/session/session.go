@@ -82,6 +82,7 @@ type Session struct {
 	ghInstalled bool
 	authors     []hostfacts.GitAuthor
 	facts       ingest.Facts
+	pick        *ingest.IdentityPick
 	resolves    map[string]resolveResult
 
 	turn      int
@@ -116,7 +117,9 @@ func New(ctx context.Context, cfg Config) (*Session, []Line) {
 		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
 	}
 	out = append(out, info("Each request stands alone: the model remembers nothing but the draft."))
-	s.facts = ingest.Gather(cfg.Host.Target, cfg.ProfileDirs)
+	s.facts = ingest.Gather(ctx, cfg.Host.Target, cfg.Host.Home, cfg.ProfileDirs, cfg.Run)
+	s.pick = ingest.Suggest(ingest.SuggestInput{Repo: s.facts.Repo, SSH: s.facts.SSH, Keys: s.keys, Profiles: s.facts.Profiles,
+		Authors: s.authors, GH: s.gh, GitSigningKey: s.facts.GitSigningKey})
 	return s, append(out, s.Analyze(ctx)...)
 }
 
@@ -232,7 +235,7 @@ func (s *Session) ListIdentities(kind string) []Line {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
 	switch kind {
-	case "ssh":
+	case "ssh", "signing":
 		if len(s.keys) == 0 {
 			return []Line{info("no ssh public keys (~/.ssh/*.pub) on this host.")}
 		}

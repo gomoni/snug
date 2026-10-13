@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -129,6 +130,7 @@ func (s *Session) Analyze(ctx context.Context) []Line {
 	for _, w := range t.Warnings {
 		out = append(out, warn("%s", w))
 	}
+	out = append(out, s.repoLines()...)
 	prop := ingest.Propose(t)
 	for _, p := range s.pending {
 		if p.Kind == Card && p.turn.Ingest {
@@ -163,4 +165,91 @@ func heldAll(t *Turn) []int {
 		out[i] = i
 	}
 	return out
+}
+
+// repoLines say what the repository's own files show about who works on it and
+// how, and the identity the host's facts point at for it. The suggestion is
+// text and a default for the identity questions; nothing is pinned by it.
+func (s *Session) repoLines() []Line {
+	r := s.facts.Repo
+	if r == nil || r.Sampled == 0 && len(r.Remotes) == 0 {
+		return nil
+	}
+	var out []Line
+	if p := s.pick; p != nil {
+		out = append(out, info("Remote %s %s (%s).", safe.Inline(p.Remote.Name), safe.Inline(p.Remote.URL), safe.Inline(p.Remote.Scheme)))
+	}
+	if r.Sampled > 0 {
+		var who []string
+		for i, a := range r.Authors {
+			if i == 2 {
+				break
+			}
+			who = append(who, fmt.Sprintf("%d by %s <%s>", a.Commits, safe.Inline(a.Name), safe.Inline(a.Email)))
+		}
+		line := fmt.Sprintf("Last %d commits: %s.", r.Sampled, strings.Join(who, ", "))
+		type key struct{ format, fp string }
+		var order []key
+		count := map[key]int{}
+		for _, sg := range r.Signers {
+			k := key{sg.Format, sg.Fingerprint}
+			if _, ok := count[k]; !ok {
+				order = append(order, k)
+			}
+			count[k] += sg.Commits
+		}
+		var sigs []string
+		for _, k := range order {
+			switch {
+			case k.format == "ssh" && s.stemByFingerprint(k.fp) != "":
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature made with your key %s", count[k], safe.Inline(s.stemByFingerprint(k.fp))))
+			case k.format == "ssh":
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature made with a key you do not have", count[k]))
+			default:
+				sigs = append(sigs, fmt.Sprintf("%d carry a gpg signature", count[k]))
+			}
+		}
+		if len(sigs) > 0 {
+			line += " " + strings.Join(sigs, "; ") + " (signatures are read, not verified)."
+		}
+		out = append(out, info("%s", line))
+	}
+	p := s.pick
+	if p == nil {
+		return out
+	}
+	if p.Profile.Value != "" {
+		out = append(out, info("Your profile %q already pins this identity (%s): \"use my %s profile\" or /include %s.", p.Profile.Value, p.Profile.Why, p.Profile.Value, p.Profile.Value))
+	} else if len(p.Conflict) > 1 {
+		out = append(out, info("Several of your profiles pin %s with this author: %s. Name one.", safe.Inline(p.Remote.Host), strings.Join(p.Conflict, ", ")))
+	}
+	var sug []string
+	add := func(what string, r ingest.Reason, extra string) {
+		if r.Value != "" {
+			sug = append(sug, fmt.Sprintf("  %s %s  (%s%s)", what, safe.Inline(r.Value), safe.Inline(r.Why), extra))
+		}
+	}
+	known := ""
+	if s.facts.SSH.Known[p.Remote.Host] {
+		known = "; " + safe.Inline(p.Remote.Host) + " is in your known_hosts"
+	}
+	add("GitHub login", p.GH, "")
+	add("ssh key", p.SSH, known)
+	add("signing key", p.Signing, "")
+	if p.Author.Value != "" {
+		sug = append(sug, fmt.Sprintf("  git author %s <%s>  (%s)", safe.Inline(p.AuthorName), safe.Inline(p.Author.Value), safe.Inline(p.Author.Why)))
+	}
+	if len(sug) > 0 {
+		out = append(out, info("Suggested identity for this project (nothing is pinned until you answer):\n%s\nSay \"use my github account\", \"use my ssh key\", \"use my git author\" or \"sign commits with my key\" and the question puts these first.", strings.Join(sug, "\n")))
+	}
+	return out
+}
+
+func (s *Session) stemByFingerprint(fp string) string {
+	for _, k := range s.keys {
+		if k.Fingerprint == fp {
+			return k.Stem
+		}
+	}
+	return ""
 }

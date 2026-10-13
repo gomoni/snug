@@ -38,7 +38,7 @@ var (
 		"secret_in_env", "docker_sock", "port_publish", "repo_profile", "no_seccomp", "out_of_scope"}
 	Topics = []string{"help", "profiles", "defaults", "net", "parent_ro", "podman_offline", "podman_build", "port_publish",
 		"compose_subdir_volume", "secrets_file", "identity_one", "git", "claude", "layering", "readonly_target"}
-	IdentityKinds = []string{"ssh", "github", "git"}
+	IdentityKinds = []string{"ssh", "github", "git", "signing"}
 )
 
 // Op names. They are the schema's `op` constants.
@@ -277,12 +277,12 @@ func buildAction(m map[string]string) (Action, error) {
 		a.Name = m["name"]
 	case OpListIdentities:
 		if !inEnum(m["kind"], IdentityKinds) {
-			return bad("kind", "want ssh, github or git")
+			return bad("kind", "want ssh, github, git or signing")
 		}
 		a.Kind = m["kind"]
 	case OpSelectIdentity:
 		if !inEnum(m["kind"], IdentityKinds) {
-			return bad("kind", "want ssh, github or git")
+			return bad("kind", "want ssh, github, git or signing")
 		}
 		if !maxLen(m["account"], 128) {
 			return bad("account", "longer than 128 characters")

@@ -83,8 +83,10 @@ type SSHIdentity struct {
 // GHIdentity pins one gh login.
 type GHIdentity struct{ Host, User string }
 
-// GitIdentity pins one git author.
-type GitIdentity struct{ Name, Email string }
+// GitIdentity pins one git author, and optionally the key commits are signed
+// with. SigningKey is spelled for the profile ({home}/.ssh/NAME.pub) and
+// SigningStem is the file name without .pub.
+type GitIdentity struct{ Name, Email, SigningKey, SigningStem string }
 
 // Draft is the profile under construction. The zero value is not usable; call New.
 type Draft struct {

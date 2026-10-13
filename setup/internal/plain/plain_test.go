@@ -102,7 +102,7 @@ func TestPlainAnswerLinesAreStrict(t *testing.T) {
 		"usage: /accept N, with N the number /pending shows.",
 		"usage: /decline N",
 		"there is no open question #9",
-		"usage: /pick ssh STEM, /pick github LOGIN or /pick git EMAIL",
+		"usage: /pick ssh STEM, /pick signing STEM, /pick github LOGIN or /pick git EMAIL",
 		"there is no open github question",
 		"usage: /save [NAME]",
 		`unknown command "/frobnicate"`,

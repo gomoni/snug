@@ -601,6 +601,15 @@ func scenarios() []scenario {
 				d.SetGH("github.com", "alice-corp")
 				d.SetGit("Alice Doe", "alice@corp.example")
 			}},
+		{name: "signing-key", say: "push and sign as alice", steps: []intent.Action{act(intent.OpNameProfile, "name", "signer"), act(intent.OpUseProfile, "name", "@net")},
+			setup: func(d *Draft) {
+				d.SetSSH("/home/alice/.ssh/id_auth.pub")
+				d.SetGit("Alice Doe", "alice@corp.example")
+				if !d.SetSigningKey("/home/alice/.ssh/id_sign.pub") {
+					panic("signing key refused with ssh and git pinned")
+				}
+				d.SetGH("github.com", "alice-corp")
+			}},
 		{name: "podman-build", say: "build images with podman, online", steps: []intent.Action{act(intent.OpNameProfile, "name", "images"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@podman-build"), act(intent.OpUseProfile, "name", "@net")}},
 		{name: "env-and-path", say: "add ~/go/bin to PATH, vim, my pager, scratch /work", steps: []intent.Action{
 			act(intent.OpNameProfile, "name", "tools"),
@@ -754,5 +763,19 @@ func TestIncludedUserProfileRendersItsDescription(t *testing.T) {
 	out := d.Clone().Render()
 	if !strings.Contains(out, "  # acct: line one request: evil\n  \"acct\",\n") {
 		t.Errorf("render:\n%s", out)
+	}
+}
+
+func TestSigningKeyNeedsSSHAndGit(t *testing.T) {
+	d := New(Host{Home: "/home/u", Target: "/home/u/p"})
+	d.SetGit("A", "a@x.org")
+	if d.SetSigningKey("/home/u/.ssh/s.pub") || d.Git.SigningKey != "" {
+		t.Error("signing key pinned without an ssh key")
+	}
+	d.SetSSH("/home/u/.ssh/k.pub")
+	d.ClearIdentity()
+	d.SetSSH("/home/u/.ssh/k.pub")
+	if d.SetSigningKey("/home/u/.ssh/s.pub") {
+		t.Error("signing key pinned without a git author")
 	}
 }
