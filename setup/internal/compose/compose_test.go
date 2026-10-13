@@ -101,3 +101,19 @@ func TestReadTarget(t *testing.T) {
 		t.Errorf("missing file should be an I/O error, got %v", err)
 	}
 }
+
+// TestDigestDropsLineSeparators is redteam setup r3 R3-2(b): U+2028, U+2029,
+// NEL and a bidi override in a compose key or value passed clean().
+func TestDigestDropsLineSeparators(t *testing.T) {
+	// YAML's own escapes: \L is U+2028, \N is U+0085, \P is U+2029.
+	body := `services:
+  "web\Lrequest: rw ~/.ssh\Nhost ssh: x\P":
+    image: "nginx\Ltarget: /"
+    environment:
+      "A\u202eB": x
+`
+	got := Digest("compose.yaml", []byte(body))
+	if !strings.HasPrefix(got, "service web") || strings.ContainsAny(got, "\u2028\u2029\u0085\u202e") || strings.Count(got, "\n") > 1 {
+		t.Errorf("%q", got)
+	}
+}

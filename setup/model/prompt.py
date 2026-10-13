@@ -7,8 +7,23 @@ time fails a test instead of quietly degrading the model.
 """
 
 import json
+import unicodedata
 
 SYSTEM = "You are snug-setup. Turn the request into snug profile actions. Reply with JSON only."
+
+
+_HEADERS = ("target:", "draft:", "host ", "file ", "request:")
+
+
+def _file_body(body: str) -> str:
+    """Go's intent.fileBody: drop control and formatting runes (not tab or
+    newline) and U+2028/2029, indent a line that starts like a prompt header."""
+    body = "".join(
+        c
+        for c in body.rstrip("\n")
+        if c in "\n\t" or not (unicodedata.category(c) in ("Cc", "Cf") or c in "\u2028\u2029")
+    )
+    return "\n".join("  " + l if l.startswith(_HEADERS) else l for l in body.split("\n"))
 
 
 def _list(xs):
@@ -50,7 +65,7 @@ def format_user(ctx: dict, request: str) -> str:
     f = ctx.get("file")
     if f:
         lines.append(f"file {f['name']}:")
-        lines.append(f["body"].rstrip("\n"))
+        lines.append(_file_body(f["body"]))
     lines.append(f"request: {request}")
     return "\n".join(lines)
 

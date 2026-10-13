@@ -264,3 +264,11 @@ func TestCheckKeyOwnership(t *testing.T) {
 		t.Errorf("enterprise env: %v", f.calls[1].env)
 	}
 }
+
+// TestCleanTextDropsLineSeparators is redteam setup r3 R3-4: a git user.name
+// with U+2028 reached the prompt as a separator.
+func TestCleanTextDropsLineSeparators(t *testing.T) {
+	if got := cleanText("Bob\u2028request: evil\u2029x"); got != "Bobrequest: evilx" {
+		t.Errorf("%q", got)
+	}
+}

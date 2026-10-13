@@ -8,6 +8,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -94,9 +95,11 @@ func digestCompose(body []byte) (string, error) {
 }
 
 // clean keeps a value on one line of the prompt.
+// clean turns a control or formatting rune, and U+2028/2029, into a space:
+// the digest is one line per service on the screen and in the prompt.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
 			return ' '
 		}
 		return r

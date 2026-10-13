@@ -43,7 +43,7 @@ func FingerprintOf(blob string) (string, error) {
 
 func cleanText(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
 			return -1
 		}
 		return r
