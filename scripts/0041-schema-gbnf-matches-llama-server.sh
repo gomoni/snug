@@ -2,15 +2,15 @@
 # 0041 — setup/internal/gbnf/schema.gbnf is exactly the grammar llama-server
 # derives from setup/internal/intent/schema.json.
 #
-# The in-process engine of snug-setup takes GBNF, not JSON schema, and the
+# A GBNF client of llama.cpp takes a grammar, not a JSON schema, and the
 # schema-to-GBNF converter lives in llama.cpp's C++ common library, so the
 # grammar is a checked-in copy of what llama-server returns in
-# generation_settings.grammar. A schema edit without a regeneration would make
-# the in-process backend enforce an older contract than the server backend and
-# than the Go gate; TestGBNFMentionsEveryOp catches a missing op in CI, this
-# catches every other difference. Regenerate with: WRITE=1 sh THIS_SCRIPT.
+# generation_settings.grammar. A schema edit without a regeneration would leave
+# it enforcing an older contract than the server backend and than the Go gate;
+# TestGBNFMentionsEveryOp catches a missing op in CI, this catches every other
+# difference. Regenerate with: WRITE=1 sh THIS_SCRIPT.
 #
-# SKIP: no llama-server (PATH or ~/.cache/snug-setup/llama.cpp), no GGUF to
+# SKIP: no llama-server (PATH, or scripts/fetch-llama-server.sh), no GGUF to
 # load (the grammar does not depend on which one), no curl or python3.
 set -eu
 

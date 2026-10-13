@@ -11,28 +11,25 @@ import (
 )
 
 // backendFlags is what the command line says about the model. Exactly one of
-// Model, ServerModel and URL is set.
+// Model and URL is set.
 type backendFlags struct {
-	Model       string // GGUF run inside this process
-	ServerModel string // GGUF run by a llama-server child
-	URL         string // a server that is already running
-	ServerBin   string
-	Threads     int
+	Model     string // GGUF run by a llama-server child of ours
+	URL       string // a server that is already running, with its own model
+	ServerBin string
+	// RemoteModel names the model on the --llm-url server.
+	RemoteModel string
 }
 
-// check refuses anything but exactly one of the three ways to reach a model.
+// check refuses anything but exactly one of the two ways to reach a model.
 func (f backendFlags) check() error {
-	n := 0
-	for _, s := range []string{f.Model, f.ServerModel, f.URL} {
-		if s != "" {
-			n++
-		}
+	if (f.Model == "") == (f.URL == "") {
+		return errors.New("give exactly one of --model and --llm-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
 	}
-	if n != 1 {
-		return errors.New("give exactly one of --model, --llama-server-model and --llm-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
+	if f.ServerBin != "" && f.Model == "" {
+		return errors.New("--llama-server names the binary --model starts, and is meaningless with --llm-url")
 	}
-	if f.ServerBin != "" && f.ServerModel == "" {
-		return errors.New("--llama-server names the binary --llama-server-model starts, and is meaningless without it")
+	if f.RemoteModel != "" && f.URL == "" {
+		return errors.New("--remote-model names a model on the --llm-url server, and is meaningless with --model")
 	}
 	return nil
 }
@@ -42,24 +39,19 @@ func (f backendFlags) check() error {
 // llm.Backend, and the sentence about what it cannot promise is printed from
 // Caps rather than decided by a branch in the caller.
 func newBackend(ctx context.Context, f backendFlags, home string) (llm.Backend, error) {
-	switch {
-	case f.Model != "":
-		fmt.Fprintf(os.Stderr, "loading %s in-process (a few seconds)\n", f.Model)
-		return openInproc(f.Model, f.Threads)
-	case f.ServerModel != "":
+	if f.Model != "" {
 		bin, err := llm.FindServer(f.ServerBin, home)
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin, f.ServerModel)
-		return llm.StartServer(ctx, bin, f.ServerModel, 5*time.Minute)
-	default:
-		r := &llm.Remote{URL: f.URL}
-		if _, err := r.Endpoint(); err != nil {
-			return nil, err
-		}
-		return r, nil
+		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin, f.Model)
+		return llm.StartServer(ctx, bin, f.Model, 5*time.Minute)
 	}
+	r := &llm.Remote{URL: f.URL, ModelName: f.RemoteModel}
+	if _, err := r.Endpoint(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // describe prints, from Caps, what the user is told about the backend.

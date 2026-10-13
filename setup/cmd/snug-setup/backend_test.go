@@ -9,19 +9,18 @@ import (
 
 func TestBackendFlagsNeedExactlyOne(t *testing.T) {
 	for name, f := range map[string]backendFlags{
-		"none":         {},
-		"two":          {Model: "a.gguf", URL: "http://127.0.0.1:1"},
-		"three":        {Model: "a", ServerModel: "b", URL: "c"},
-		"binary alone": {URL: "http://x", ServerBin: "/bin/llama-server"},
+		"none":                      {},
+		"both":                      {Model: "a.gguf", URL: "http://127.0.0.1:1"},
+		"binary alone":              {URL: "http://x", ServerBin: "/bin/llama-server"},
+		"remote model with --model": {Model: "a.gguf", RemoteModel: "m"},
 	} {
 		if err := f.check(); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
 	for name, f := range map[string]backendFlags{
-		"inproc": {Model: "a.gguf"},
-		"server": {ServerModel: "a.gguf", ServerBin: "/x"},
-		"url":    {URL: "http://127.0.0.1:1"},
+		"server": {Model: "a.gguf", ServerBin: "/x"},
+		"url":    {URL: "http://127.0.0.1:1", RemoteModel: "snug-setup:latest"},
 	} {
 		if err := f.check(); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -31,7 +30,7 @@ func TestBackendFlagsNeedExactlyOne(t *testing.T) {
 
 func TestDescribeSaysWhatIsNotPromised(t *testing.T) {
 	var b strings.Builder
-	describe(llm.Caps{Constrained: true, Local: true, Where: "in-process"}, &b)
+	describe(llm.Caps{Constrained: true, Local: true, Where: "llama-server on a socket"}, &b)
 	if b.Len() != 0 {
 		t.Errorf("a local constrained backend needs no warning: %q", b.String())
 	}

@@ -294,21 +294,21 @@ token files, a writable `~/.bashrc` and the like are refused, whatever the
 model says. `/save` runs `snug --dry-run --json` and refuses to write a file
 that resolves to anything you did not ask for.
 
-Three ways to reach a model, exactly one per run:
+Two ways to reach a model, exactly one per run:
 
 ```bash
-make setup                                   # bin/snug-setup, GOAMD64=v3, no cgo
-bin/snug-setup --model F.gguf ~/src/proj                # inside the process
-bin/snug-setup --llama-server-model F.gguf ~/src/proj   # llama-server child, private unix socket
-bin/snug-setup --llm-url http://127.0.0.1:8080 ~/src/proj  # a server you run, its model
+make setup                                              # bin/snug-setup
+scripts/fetch-llama-server.sh                           # once: the tested llama.cpp release, sha256-checked
+bin/snug-setup --model F.gguf ~/src/proj                # llama-server child on a private unix socket
+bin/snug-setup --llm-url http://127.0.0.1:8080 ~/src/proj  # a server you run, with its own model
 ```
 
-`--model` runs llama.cpp as Go (goccy/go-llama, wasm translated to Go): no second
-process, KV prefix reused across turns, about 2.6 GB RSS for the 1.5B. It needs
-a `GOAMD64>=v2` build (a v1 build refuses to run rather than take minutes per
-prompt); `-tags snug_setup_noinproc` leaves it out. `--llm-url` output is not
-known to be schema-constrained: snug-setup says so, and a reply that is not an
-action list is refused, never guessed.
+snug-setup never downloads anything: `--model` finds `llama-server` on `PATH`,
+then under `~/.cache/snug-setup/llama.cpp/`, or takes `--llama-server PATH`.
+`--llm-url` with ollama needs `--remote-model NAME` (an installed model; the
+GGUF imported with a Modelfile that carries the Qwen chat template), llama-server
+ignores it. `--llm-url` output is not known to be schema-constrained: snug-setup says so,
+and a reply that is not an action list is refused, never guessed.
 
 Before the first request it reads the project (marker file names, `go.mod` /
 `package.json` project name, `.git`) and your own host (`profiles.d`, `~/.ssh/config`
