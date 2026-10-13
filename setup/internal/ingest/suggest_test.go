@@ -84,6 +84,16 @@ func TestSuggestNeverReturnsAValueFromTheRepo(t *testing.T) {
 	}
 }
 
+// TestSuggestAuthorNameIsTheHosts: commits that use the human's email under
+// another name do not get that name suggested; the host's spelling is shown.
+func TestSuggestAuthorNameIsTheHosts(t *testing.T) {
+	in := snugLike()
+	in.Repo.Authors = []Person{{"Mallory\x1b[2J", "m@example.org", 200}}
+	if p := Suggest(in); p.Author.Value != "m@example.org" || p.AuthorName != "Michal V" {
+		t.Errorf("author %+v name %q", p.Author, p.AuthorName)
+	}
+}
+
 func TestSuggestSigningFromGitConfigAndAllowedSigners(t *testing.T) {
 	in := snugLike()
 	in.Repo.Signers = nil

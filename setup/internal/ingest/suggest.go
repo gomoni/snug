@@ -144,27 +144,28 @@ func Suggest(in SuggestInput) *IdentityPick {
 		}
 	}
 
-	// The author: the commits' own, when it is also someone the human's host
-	// knows by that exact email.
-	known := func(email string) string {
+	// The author: the commits' own email, when it is also someone the human's
+	// host knows by that exact email. The name shown beside it is the host's
+	// spelling, never the commits': a project writes its own author names.
+	known := func(email string) (why, name string) {
 		for _, a := range in.Authors {
 			if a.Email == email {
-				return "your global git author"
+				return "your global git author", a.Name
 			}
-		}
-		if _, ok := in.SSH.Signers[email]; ok {
-			return "an allowed_signers principal"
 		}
 		for _, pr := range in.Profiles {
 			if pr.Identity.Email == email {
-				return "your profile " + pr.Name
+				return "your profile " + pr.Name, pr.Identity.GitName
 			}
 		}
-		return ""
+		if _, ok := in.SSH.Signers[email]; ok {
+			return "an allowed_signers principal", ""
+		}
+		return "", ""
 	}
-	if why := known(dom.Email); dom.Email != "" && why != "" {
+	if why, name := known(dom.Email); dom.Email != "" && why != "" {
 		p.Author = Reason{dom.Email, fmt.Sprintf("%d of the last %d commits, and %s", dom.Commits, total, why)}
-		p.AuthorName = dom.Name
+		p.AuthorName = name
 	} else if len(in.Authors) > 0 {
 		p.Author = Reason{in.Authors[0].Email, "your global git author"}
 		p.AuthorName = in.Authors[0].Name
