@@ -50,6 +50,8 @@ type Item struct {
 	// when none does. Such an item is ClassInfo: a second card for it would
 	// leave Save two blockers for one decision.
 	Already int
+	// Msg is what an item that cannot be applied says instead of doing it.
+	Msg string
 	// Why is what an ingest proposal was computed from (".git", "go.mod"),
 	// "" for an action the human asked for. A non-empty Why records the
 	// action as SourceIngest.
@@ -85,7 +87,7 @@ func (t *Turn) actions() []intent.Action {
 // a name narrows or labels, so it applies at once.
 func widening(a intent.Action) bool {
 	switch a.Op {
-	case intent.OpUseProfile, intent.OpStageBinary, intent.OpOpenDoor, intent.OpSetEnv:
+	case intent.OpUseProfile, intent.OpIncludeProfile, intent.OpStageBinary, intent.OpOpenDoor, intent.OpSetEnv:
 		return true
 	case intent.OpGrantPath:
 		return a.Access == "ro" || a.Access == "rw" || a.Access == "tmpfs"
@@ -103,24 +105,34 @@ var analyzeRE = regexp.MustCompile(`(?i)\banaly[sz]`)
 func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	text = strings.TrimSpace(text)
 	if analyzeRE.MatchString(text) {
-		return nil, s.Analyze()
+		return nil, s.Analyze(ctx)
 	}
 	acts, lines := s.ask(ctx, text)
 	if acts == nil {
 		return nil, lines
 	}
 	s.turn++
-	return s.classify(s.turn, text, acts), lines
+	return s.classify(ctx, s.turn, text, acts), lines
 }
 
 // classify decides each action's class against a clone of the draft with the
 // turn's earlier actions applied, so "already in the draft" is judged where
 // the action would land.
-func (s *Session) classify(n int, said string, acts []intent.Action) *Turn {
+func (s *Session) classify(ctx context.Context, n int, said string, acts []intent.Action) *Turn {
 	t := &Turn{N: n, Said: said}
 	trial := s.d.Clone()
 	for _, a := range acts {
 		it := Item{Action: a, Sentence: Sentence(trial, a)}
+		if a.Op == intent.OpIncludeProfile {
+			if msg := s.includeRefusal(ctx, a.Name); msg != "" {
+				it.Class, it.Msg = ClassInfo, msg
+				t.Items = append(t.Items, it)
+				continue
+			}
+			if p, ok := s.userProfile(a.Name); ok && p.Description != "" {
+				it.Sentence += " (" + p.Description + ")"
+			}
+		}
 		switch a.Op {
 		case intent.OpNote, intent.OpAsk, intent.OpRefuse, intent.OpShow, intent.OpSave, intent.OpListIdentities:
 			it.Class = ClassInfo
@@ -132,7 +144,7 @@ func (s *Session) classify(n int, said string, acts []intent.Action) *Turn {
 			o := trial.Apply(a)
 			it.Class = ClassEdit
 			if widening(a) && o.Changed {
-				it.Class, it.Ticked, it.Abuse = ClassGrant, true, abuseOf(a)
+				it.Class, it.Ticked, it.Abuse = ClassGrant, true, s.abuseOf(a)
 				if n := s.heldBy(a); n > 0 {
 					it.Class, it.Ticked, it.Abuse, it.Already = ClassInfo, false, "", n
 				}
@@ -159,8 +171,12 @@ func (s *Session) heldBy(a intent.Action) int {
 	return 0
 }
 
-func abuseOf(a intent.Action) string {
+func (s *Session) abuseOf(a intent.Action) string {
 	switch a.Op {
+	case intent.OpIncludeProfile:
+		if p, ok := s.userProfile(a.Name); ok {
+			return profileCost(p)
+		}
 	case intent.OpUseProfile:
 		return draft.Abuse[a.Name]
 	case intent.OpOpenDoor:
@@ -195,6 +211,10 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 		a := it.Action
 		switch it.Class {
 		case ClassInfo:
+			if it.Msg != "" {
+				out = append(out, info("%s", it.Msg))
+				continue
+			}
 			if it.Already > 0 {
 				out = append(out, info("%s is already proposed as #%d: /accept %d applies it.", it.Sentence, it.Already, it.Already))
 				continue
@@ -290,6 +310,11 @@ func (s *Session) proposeUser(t *Turn, acts []intent.Action, it Item) []Line {
 		src, origin = draft.SourceIngest, it.Why
 	}
 	o, _ := s.d.Propose(a, src, origin, t.N)
+	if a.Op == intent.OpIncludeProfile && o.Changed {
+		if p, ok := s.userProfile(a.Name); ok {
+			s.d.NoteProfile(a.Name, p.Description)
+		}
+	}
 	switch {
 	case o.Refused != "":
 		return refusal(o.Refused, o.Msg)

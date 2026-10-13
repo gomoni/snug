@@ -76,7 +76,9 @@ var BuiltinIncludes = map[string][]string{
 	"@podman-build":  {"@podman-socket"},
 }
 
-// Closure returns name and every built-in it includes, transitively.
+// Closure returns name and every built-in it includes, transitively. A user
+// profile is opaque here: what it includes is in a file this package does not
+// read, so Closure(name) is just name.
 func Closure(name string) []string {
 	out := []string{name}
 	for i := 0; i < len(out); i++ {
@@ -267,6 +269,8 @@ func rawPhrase(d *Draft, e Entry) string {
 		return a.Name
 	case intent.OpDropProfile:
 		return "drop " + a.Name
+	case intent.OpIncludeProfile:
+		return "your profile " + a.Name
 	case intent.OpGrantPath:
 		return a.Access + " " + d.spell(a.Path)
 	case intent.OpDropPath:
@@ -289,7 +293,7 @@ func rawPhrase(d *Draft, e Entry) string {
 func (d *Draft) question(e, with Entry) string {
 	verb := "apply it?"
 	switch e.Action.Op {
-	case intent.OpUseProfile:
+	case intent.OpUseProfile, intent.OpIncludeProfile:
 		verb = "add it?"
 	case intent.OpDropProfile, intent.OpDropPath:
 		verb = "drop it?"

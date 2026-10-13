@@ -9,6 +9,7 @@ package draft
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -107,6 +108,10 @@ type Draft struct {
 	GH  *GHIdentity
 	Git *GitIdentity
 
+	// Notes are the descriptions of the user profiles in Include, by name,
+	// for the comment above each in the rendered file.
+	Notes map[string]string
+
 	ledger []Entry
 }
 
@@ -126,6 +131,7 @@ func (d *Draft) Clone() *Draft {
 	c.EnvPrepend = slices.Clone(d.EnvPrepend)
 	c.Doors = slices.Clone(d.Doors)
 	c.ledger = slices.Clone(d.ledger)
+	c.Notes = maps.Clone(d.Notes)
 	if d.SSH != nil {
 		v := *d.SSH
 		c.SSH = &v
@@ -205,6 +211,8 @@ func (d *Draft) Apply(a intent.Action) Outcome {
 		return d.use(a.Name)
 	case intent.OpDropProfile:
 		return d.drop(a.Name)
+	case intent.OpIncludeProfile:
+		return d.includeUser(a.Name)
 	case intent.OpGrantPath:
 		return d.grant(a.Path, a.Access)
 	case intent.OpDropPath:
@@ -256,6 +264,28 @@ func (d *Draft) use(name string) Outcome {
 	}
 	d.Include = append(d.Include, name)
 	return changed("added " + name + ".")
+}
+
+// includeUser adds one of the human's own profiles by name. Whether snug has a
+// profile of that name, and whether it resolves, is the caller's check and
+// snug's: the draft only refuses a name that cannot be a user profile.
+func (d *Draft) includeUser(name string) Outcome {
+	if !intent.ValidProfileName(name) {
+		return refuse(CodeBadValue, "profile names are [a-zA-Z0-9][a-zA-Z0-9-]*: no underscore, no dot, no leading @")
+	}
+	if slices.Contains(d.Include, name) {
+		return Outcome{Msg: "your profile " + name + " is already in the draft."}
+	}
+	d.Include = append(d.Include, name)
+	return changed("included your profile " + name + ".")
+}
+
+// NoteProfile records the description rendered above an included user profile.
+func (d *Draft) NoteProfile(name, description string) {
+	if d.Notes == nil {
+		d.Notes = map[string]string{}
+	}
+	d.Notes[name] = description
 }
 
 func (d *Draft) drop(name string) Outcome {

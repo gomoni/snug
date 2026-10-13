@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"slices"
 	"strings"
 
@@ -58,7 +59,7 @@ func describeTarget(target string, t ingest.TargetFacts) string {
 // these fixed proposals appear. None of them carries text or a path from the
 // project, every one goes through the draft's own checks, and none applies
 // before the human accepts the card.
-func (s *Session) proposalTurn(p ingest.Proposal) *Turn {
+func (s *Session) proposalTurn(ctx context.Context, p ingest.Proposal) *Turn {
 	var acts []intent.Action
 	var why []string
 	for _, pk := range p.Include {
@@ -72,7 +73,7 @@ func (s *Session) proposalTurn(p ingest.Proposal) *Turn {
 		why = append(why, e.Why)
 	}
 	s.turn++
-	t := s.classify(s.turn, "the analysis of the project", acts)
+	t := s.classify(ctx, s.turn, "the analysis of the project", acts)
 	t.Ingest = true
 	var items []Item
 	for i, it := range t.Items {
@@ -99,11 +100,11 @@ func notProposed(p ingest.Proposal, d *draft.Draft) string {
 		}
 		switch pk.Name {
 		case "@net":
-			out = append(out, "@net ("+safe.Inline(pk.Why)+" needs the internet: say \"I need internet\")")
+			out = append(out, "@net (for "+safe.Inline(pk.Why)+"; say \"I need internet\")")
 		case "@podman-build":
-			out = append(out, "@podman-build ("+safe.Inline(pk.Why)+": say \"I need to build images\")")
+			out = append(out, "@podman-build (for "+safe.Inline(pk.Why)+"; say \"I need to build images\")")
 		case "@podman-socket":
-			out = append(out, "@podman-socket ("+safe.Inline(pk.Why)+": say \"I need podman\")")
+			out = append(out, "@podman-socket (for "+safe.Inline(pk.Why)+"; say \"I need podman\")")
 		}
 	}
 	return strings.Join(out, "; ")
@@ -111,9 +112,10 @@ func notProposed(p ingest.Proposal, d *draft.Draft) string {
 
 // Analyze describes the project and opens a card for what it makes plain, the
 // same text and card the session starts with. It is /analyze.
-func (s *Session) Analyze() []Line {
+func (s *Session) Analyze(ctx context.Context) []Line {
 	t := s.facts.Target
-	out := []Line{info("%s", describeTarget(s.cfg.Host.Target, t))}
+	out := s.profileLines(ctx)
+	out = append(out, info("%s", describeTarget(s.cfg.Host.Target, t)))
 	if t.RepoProfile {
 		out = append(out, warn("the project ships .snug or snug.toml. snug-setup does not read it: profiles come from your own config, never from the project."))
 	}
@@ -137,7 +139,7 @@ func (s *Session) Analyze() []Line {
 			return out
 		}
 	}
-	turn := s.proposalTurn(prop)
+	turn := s.proposalTurn(ctx, prop)
 	if turn == nil {
 		out = append(out, info("Nothing to propose that the draft does not already have."))
 	} else {

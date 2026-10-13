@@ -67,6 +67,7 @@ func TestParseValid(t *testing.T) {
 		"inherit": `{"actions":[{"op":"set_env","name":"PAGER","verb":"inherit"}]}`,
 		"select":  `{"actions":[{"op":"select_identity","kind":"github","account":""}]}`,
 		"show":    `{"actions":[{"op":"show"}]}`,
+		"include": `{"actions":[{"op":"include_profile","name":"vyskocilm"}]}`,
 		"eight":   `{"actions":[` + strings.Repeat(`{"op":"save"},`, 7) + `{"op":"save"}]}`,
 	}
 	for name, in := range cases {
@@ -88,6 +89,9 @@ func TestParseRefuses(t *testing.T) {
 		"missing":          `{"actions":[{"op":"grant_path","path":"/x"}]}`,
 		"bad enum":         `{"actions":[{"op":"grant_path","path":"/x","access":"rwx"}]}`,
 		"invented builtin": `{"actions":[{"op":"use_profile","name":"@root"}]}`,
+		"include builtin":  `{"actions":[{"op":"include_profile","name":"@net"}]}`,
+		"include path":     `{"actions":[{"op":"include_profile","name":"../x"}]}`,
+		"include no name":  `{"actions":[{"op":"include_profile"}]}`,
 		"bare builtin":     `{"actions":[{"op":"use_profile","name":"net"}]}`,
 		"relative path":    `{"actions":[{"op":"grant_path","path":"data","access":"rw"}]}`,
 		"dotdot path":      `{"actions":[{"op":"grant_path","path":"../x","access":"rw"}]}`,

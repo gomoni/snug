@@ -40,6 +40,9 @@ type Config struct {
 
 	// ProfileDir is where Save writes NAME.toml.
 	ProfileDir string
+	// ProfileDirs are the directories snug reads profiles from, which
+	// snug-setup reads to offer the human's own profiles (ingest.ProfileDirs).
+	ProfileDirs []string
 }
 
 // LineKind says what a line is, for a front end that styles them.
@@ -79,6 +82,7 @@ type Session struct {
 	ghInstalled bool
 	authors     []hostfacts.GitAuthor
 	facts       ingest.Facts
+	resolves    map[string]resolveResult
 
 	turn      int
 	lastSaved string
@@ -112,8 +116,8 @@ func New(ctx context.Context, cfg Config) (*Session, []Line) {
 		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
 	}
 	out = append(out, info("Each request stands alone: the model remembers nothing but the draft."))
-	s.facts = ingest.Gather(cfg.Host.Target)
-	return s, append(out, s.Analyze()...)
+	s.facts = ingest.Gather(cfg.Host.Target, cfg.ProfileDirs)
+	return s, append(out, s.Analyze(ctx)...)
 }
 
 // Draft returns the profile built so far. The caller must not change it.
@@ -170,6 +174,7 @@ func (s *Session) context() intent.Context {
 	for _, a := range s.authors {
 		c.Git = append(c.Git, a.String())
 	}
+	c.Profiles = s.profileNames()
 	return c
 }
 

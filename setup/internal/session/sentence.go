@@ -24,6 +24,11 @@ func Sentence(d *draft.Draft, a intent.Action) string {
 		return "add " + a.Name
 	case intent.OpDropProfile:
 		return "drop " + a.Name
+	case intent.OpIncludeProfile:
+		if slices.Contains(d.Include, a.Name) {
+			return "your profile " + safe.Inline(a.Name) + " is already in the draft"
+		}
+		return "include your profile " + safe.Inline(a.Name)
 	case intent.OpGrantPath:
 		switch {
 		case a.Access == "ro" && d.HostPath(a.Path) == d.HostPath("{target}"):

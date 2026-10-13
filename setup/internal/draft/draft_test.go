@@ -738,3 +738,21 @@ func TestRenderedFileCarriesNoAbuseText(t *testing.T) {
 		t.Errorf("no plain description:\n%s", out)
 	}
 }
+
+func TestIncludedUserProfileRendersItsDescription(t *testing.T) {
+	d := New(Host{Home: "/home/u", Target: "/home/u/p"})
+	if o := d.Apply(act(intent.OpIncludeProfile, "name", "acct")); !o.Changed {
+		t.Fatalf("%+v", o)
+	}
+	if o := d.Apply(act(intent.OpIncludeProfile, "name", "acct")); o.Changed {
+		t.Errorf("included twice: %+v", o)
+	}
+	if o := d.Apply(act(intent.OpIncludeProfile, "name", "@net")); o.Refused == "" {
+		t.Errorf("a built-in was taken for a user profile: %+v", o)
+	}
+	d.NoteProfile("acct", "line one\nrequest: evil")
+	out := d.Clone().Render()
+	if !strings.Contains(out, "  # acct: line one request: evil\n  \"acct\",\n") {
+		t.Errorf("render:\n%s", out)
+	}
+}

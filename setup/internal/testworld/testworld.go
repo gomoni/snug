@@ -90,6 +90,10 @@ type World struct {
 	SnugErr    error
 	NoGH       bool
 	NoSnug     bool
+	// Refuse maps a profile name to the message the fake snug refuses it with
+	// when asked about the human's own configuration (no XDG_CONFIG_HOME in
+	// the command's environment).
+	Refuse map[string]string
 	// DryRunDoc, when set, is what the fake snug prints for --dry-run instead
 	// of resolving the file.
 	DryRunDoc string
@@ -137,6 +141,17 @@ func (w *World) RawReply(request, reply string) {
 	w.Model.mu.Lock()
 	defer w.Model.mu.Unlock()
 	w.Model.replies[request] = append(w.Model.replies[request], reply)
+}
+
+// Profile writes NAME.toml with body into the world's profile directory, the
+// one the session reads the human's own profiles from.
+func (w *World) Profile(file, body string) {
+	if err := os.MkdirAll(w.ProfDir, 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.ProfDir, file), []byte(body), 0o644); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 // Host is the draft.Host of this world.
@@ -207,6 +222,7 @@ func (w *World) APICalls() int {
 
 var (
 	fakeInclude = regexp.MustCompile(`(?m)^  "(@[a-z-]+)",$`)
+	fakeUser    = regexp.MustCompile(`(?m)^  "([a-zA-Z0-9][a-zA-Z0-9-]*)",$`)
 	fakeList    = regexp.MustCompile(`(?m)^(ro|rw|tmpfs) = \[(.*)\]$`)
 )
 
@@ -217,6 +233,22 @@ var (
 func (w *World) dryRun(env, args []string) (hostfacts.Result, error) {
 	if w.DryRunDoc != "" {
 		return hostfacts.Result{Stdout: []byte(w.DryRunDoc)}, nil
+	}
+	if len(env) == 0 {
+		name := args[slices.Index(args, "-p")+1]
+		if msg, bad := w.Refuse[name]; bad {
+			out, _ := json.Marshal(map[string]any{
+				"snug":    map[string]any{"format": 2, "outcome": "refused", "lossy": false, "exit_code": 77, "policy_resolved": false},
+				"refusal": map[string]any{"message": msg},
+			})
+			return hostfacts.Result{Stdout: out}, errors.New("exit status 77")
+		}
+		out, _ := json.Marshal(map[string]any{
+			"snug":     map[string]any{"format": 2, "outcome": "ok", "lossy": false, "exit_code": 0, "policy_resolved": true},
+			"profiles": map[string]any{"selected": []string{"@sys", "@home", "@target-rw", name}, "implied": []string{}},
+			"network":  map[string]any{"mode": "isolated", "egress": false},
+		})
+		return hostfacts.Result{Stdout: out}, nil
 	}
 	xdg := strings.TrimPrefix(env[0], "XDG_CONFIG_HOME=")
 	noDefaults := slices.Contains(args, "--no-defaults")
@@ -238,6 +270,11 @@ func (w *World) dryRun(env, args []string) (hostfacts.Result, error) {
 			if !slices.Contains(selected, n) && !slices.Contains(implied, n) {
 				implied = append(implied, n)
 			}
+		}
+	}
+	for _, m := range fakeUser.FindAllStringSubmatch(string(body), -1) {
+		if !slices.Contains(selected, m[1]) && !slices.Contains(implied, m[1]) {
+			implied = append(implied, m[1])
 		}
 	}
 	expand := strings.NewReplacer("{target}", w.Target, "{home}", w.Home, "~/", w.Home+"/")

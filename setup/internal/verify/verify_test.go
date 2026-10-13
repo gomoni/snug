@@ -171,7 +171,7 @@ func TestRunWithoutDocument(t *testing.T) {
 	run := func(context.Context, []string, string, ...string) (hostfacts.Result, error) {
 		return hostfacts.Result{Stderr: []byte("boom")}, exec.ErrNotFound
 	}
-	if _, err := Run(context.Background(), run, "/nowhere/snug", d); err == nil || !strings.Contains(err.Error(), "cannot be run") {
+	if _, err := Run(context.Background(), run, "/nowhere/snug", d, nil); err == nil || !strings.Contains(err.Error(), "cannot be run") {
 		t.Errorf("%v", err)
 	}
 }
@@ -229,7 +229,7 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 		{pathed, nil},
 		{dropped, []string{"asked to drop @target-rw; snug still selects it"}},
 	} {
-		doc, err := Run(ctx, hostfacts.ExecRunner, bin, c.d)
+		doc, err := Run(ctx, hostfacts.ExecRunner, bin, c.d, nil)
 		if err != nil {
 			t.Fatalf("%s: %v\n%s", c.d.Name, err, c.d.Render())
 		}
@@ -239,7 +239,7 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 	missing := draft.New(h)
 	missing.Name = "missing"
 	say(missing, "read /nonexistent", grant(filepath.Join(data, "not-there"), "ro"))
-	doc, err := Run(ctx, hostfacts.ExecRunner, bin, missing)
+	doc, err := Run(ctx, hostfacts.ExecRunner, bin, missing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

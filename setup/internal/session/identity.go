@@ -123,6 +123,9 @@ func (s *Session) pinnedNames(kind string) []string {
 // the human's to name. A kind the draft already pins gets the second-profile
 // question instead, unless the request names the pinned identity itself.
 func (s *Session) askIdentity(kind, hint, said string, at int) []Line {
+	if p, ok := s.includedPin(kind); ok {
+		return []Line{info("your profile %q, which the draft includes, already pins %s. A profile pins one %s; another account needs a second profile. Nothing changed.", p.Name, pins(p.Identity), kindName(kind))}
+	}
 	cands := s.Candidates(kind)
 	if len(cands) == 0 {
 		switch kind {

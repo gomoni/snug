@@ -18,7 +18,7 @@ func goProject(t *testing.T, w *testworld.World) {
 }
 
 func start(w *testworld.World) (*Session, string) {
-	s, lines := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir})
+	s, lines := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
 	return s, text(lines)
 }
 
@@ -28,7 +28,7 @@ func TestOpeningProposalIsACardTheHumanAccepts(t *testing.T) {
 	s, out := start(w)
 	contains(t, out, "Go module github.com/acme/app (go.mod)", "a git work tree", "no Dockerfile, Containerfile or compose file",
 		"? #1 what I found in the project", "add @git  (from .git)", "set GOMODCACHE={target}/.cache/go-mod  (from go.mod)",
-		"Not proposed: @net (go mod download needs the internet", ".gitignore")
+		"Not proposed: @net (for go mod download", ".gitignore")
 	if !s.Draft().Empty() {
 		t.Fatalf("applied before the answer: %s", s.Draft().Render())
 	}
@@ -44,11 +44,11 @@ func TestAnalyzeReprintsAndDoesNotOpenASecondCard(t *testing.T) {
 	w := testworld.New(t)
 	goProject(t, w)
 	s, _ := start(w)
-	out := text(s.Analyze())
+	out := text(s.Analyze(ctx))
 	contains(t, out, "The proposal is already open as #1", "Go module github.com/acme/app")
 	lacks(t, out, "? #2")
 	text(s.Accept(ctx, 1))
-	contains(t, text(s.Analyze()), "Nothing to propose that the draft does not already have")
+	contains(t, text(s.Analyze(ctx)), "Nothing to propose that the draft does not already have")
 }
 
 func TestAnalyzeAfterDeclineOffersItAgain(t *testing.T) {
@@ -59,7 +59,7 @@ func TestAnalyzeAfterDeclineOffersItAgain(t *testing.T) {
 	if !s.Draft().Empty() {
 		t.Fatal("declined proposal changed the draft")
 	}
-	contains(t, text(s.Analyze()), "? #2 what I found in the project")
+	contains(t, text(s.Analyze(ctx)), "? #2 what I found in the project")
 }
 
 // TestAnalyzeRequestSkipsTheModel: "can you analyze the target dir" is
@@ -97,7 +97,7 @@ func TestEveryProposedVariableIsAcceptedByTheDraft(t *testing.T) {
 		{Name: "go", Marker: "go.mod"}, {Name: "node", Marker: "package.json"},
 		{Name: "python", Marker: "uv.lock"}, {Name: "rust", Marker: "Cargo.toml"}}})
 	s := open(w, true)
-	turn := s.proposalTurn(p)
+	turn := s.proposalTurn(ctx, p)
 	if turn == nil || len(turn.Items) != len(p.Env) {
 		t.Fatalf("%d of %d variables reach the card", len(turn.Items), len(p.Env))
 	}

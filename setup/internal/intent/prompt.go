@@ -16,7 +16,9 @@ type Context struct {
 	SSH    []SSHKey    `json:"ssh"`
 	GitHub []GHAccount `json:"github"`
 	Git    []string    `json:"git"`
-	File   *File       `json:"file"`
+	// Profiles are the names of the human's own snug profiles.
+	Profiles []string `json:"profiles"`
+	File     *File    `json:"file"`
 }
 
 // Draft summarises the profile being built.
@@ -87,7 +89,7 @@ func list(xs []string) string {
 
 // FormatPrompt returns the system and user messages for ctx and request. The
 // user message is byte-exact with setup/model/prompt.py: lines in the order
-// target, draft, host ssh, host github, host git, file, request; the host and
+// target, draft, host ssh, host github, host git, host profiles, file, request; the host and
 // file lines are omitted when empty; lines are joined with "\n" and there is no
 // trailing newline; a file body has its trailing newlines stripped and goes
 // through fileBody.
@@ -137,6 +139,9 @@ func FormatPrompt(c Context, request string) (system, user string) {
 	}
 	if len(c.Git) > 0 {
 		lines = append(lines, "host git: "+strings.Join(c.Git, "; "))
+	}
+	if len(c.Profiles) > 0 {
+		lines = append(lines, "host profiles: "+strings.Join(c.Profiles, "; "))
 	}
 	if c.File != nil {
 		lines = append(lines, "file "+c.File.Name+":", fileBody(c.File.Body))

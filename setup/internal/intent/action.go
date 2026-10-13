@@ -45,6 +45,7 @@ var (
 const (
 	OpUseProfile     = "use_profile"
 	OpDropProfile    = "drop_profile"
+	OpIncludeProfile = "include_profile"
 	OpGrantPath      = "grant_path"
 	OpDropPath       = "drop_path"
 	OpStageBinary    = "stage_binary"
@@ -66,7 +67,7 @@ const (
 // for that op (plus `value` for set_env when given) are present.
 type Action struct {
 	Op       string
-	Name     string // use_profile, drop_profile, stage_binary, set_env, open_door, name_profile
+	Name     string // use_profile, drop_profile, include_profile, stage_binary, set_env, open_door, name_profile
 	Path     string // grant_path, drop_path, read_file
 	Access   string // grant_path: ro, rw or tmpfs
 	Host     string // stage_binary: host path
@@ -177,7 +178,7 @@ func buildAction(m map[string]string) (Action, error) {
 	}
 	var required, optional []string
 	switch op {
-	case OpUseProfile, OpDropProfile, OpOpenDoor, OpNameProfile:
+	case OpUseProfile, OpDropProfile, OpIncludeProfile, OpOpenDoor, OpNameProfile:
 		required = []string{"name"}
 	case OpGrantPath:
 		required = []string{"path", "access"}
@@ -223,6 +224,11 @@ func buildAction(m map[string]string) (Action, error) {
 	case OpUseProfile, OpDropProfile:
 		if !inEnum(m["name"], Builtins) {
 			return bad("name", "not a built-in snug-setup can name")
+		}
+		a.Name = m["name"]
+	case OpIncludeProfile:
+		if !profRE.MatchString(m["name"]) {
+			return bad("name", "want a profile name: [a-zA-Z0-9][a-zA-Z0-9-]{0,63}, no leading @")
 		}
 		a.Name = m["name"]
 	case OpGrantPath:

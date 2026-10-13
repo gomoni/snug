@@ -19,7 +19,7 @@ import (
 var ctx = context.Background()
 
 func open(w *testworld.World, offline bool) *Session {
-	s, _ := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: offline, ProfileDir: w.ProfDir})
+	s, _ := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: offline, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
 	return s
 }
 

@@ -98,6 +98,12 @@ func (d *Draft) Render() string {
 		for _, name := range inc {
 			if s, ok := Describe[name]; ok {
 				fmt.Fprintf(&b, "  # %s: %s\n", name, s)
+			} else if !strings.HasPrefix(name, "@") {
+				desc := Comment(d.Notes[name])
+				if desc == "" {
+					desc = "one of your own profiles"
+				}
+				fmt.Fprintf(&b, "  # %s: %s\n", clean(name), desc)
 			}
 			fmt.Fprintf(&b, "  %s,\n", q(name))
 		}
