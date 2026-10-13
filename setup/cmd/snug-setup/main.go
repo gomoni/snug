@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
@@ -23,16 +22,18 @@ import (
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
-const usage = `usage: snug-setup (--model FILE.gguf | --llm-url URL) [--llama-server PATH] [--offline] [--plain] [--profile-dir DIR] [DIR]
+const usage = `usage: snug-setup (--model FILE.gguf | --llama-server-model FILE.gguf | --llm-url URL) [--llama-server PATH] [--threads N] [--offline] [--profile-dir DIR] [DIR]
 
-  --model FILE.gguf   run llama-server on this model, on a private unix socket, for the session
-  --llm-url URL       use a server that is already running (OpenAI-compatible)
-  --llama-server PATH llama-server binary (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/)
-  --offline           never ask GitHub whether an ssh key belongs to an account
-  --plain             accepted and ignored: snug-setup always asks nothing. Open questions are
-                      answered with /accept, /decline and /pick lines (/help lists them).
-  --profile-dir DIR   where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
-  DIR                 the project directory the profile is for (default: the current directory)
+  --model FILE.gguf              run the model inside this process (no server, no second process)
+  --llama-server-model FILE.gguf run llama-server on this model, on a private unix socket, for the session
+  --llm-url URL                  use a server that is already running (OpenAI-compatible), with its own model
+  --llama-server PATH            llama-server binary for --llama-server-model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/)
+  --threads N                    threads for --model (default: CPUs minus 2)
+  --offline                      never ask GitHub whether an ssh key belongs to an account
+  --plain                        accepted and ignored: snug-setup always asks nothing. Open questions are
+                                 answered with /accept, /decline and /pick lines (/help lists them).
+  --profile-dir DIR              where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
+  DIR                            the project directory the profile is for (default: the current directory)
 `
 
 func main() {
@@ -45,18 +46,21 @@ func main() {
 func run() error {
 	fs := flag.NewFlagSet("snug-setup", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	model := fs.String("model", "", "")
-	llmURL := fs.String("llm-url", "", "")
-	llama := fs.String("llama-server", "", "")
+	var bf backendFlags
+	fs.StringVar(&bf.Model, "model", "", "")
+	fs.StringVar(&bf.ServerModel, "llama-server-model", "", "")
+	fs.StringVar(&bf.URL, "llm-url", "", "")
+	fs.StringVar(&bf.ServerBin, "llama-server", "", "")
+	fs.IntVar(&bf.Threads, "threads", 0, "")
 	offline := fs.Bool("offline", false, "")
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
-	if (*model == "") == (*llmURL == "") {
+	if err := bf.check(); err != nil {
 		fs.Usage()
-		return fmt.Errorf("give exactly one of --model and --llm-url: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
+		return err
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -98,37 +102,22 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := &llm.Client{URL: *llmURL}
-	var srv *llm.Server
-	if *model != "" {
-		bin, err := llm.FindServer(*llama, home)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "starting %s on %s (this can take a while)\n", bin, *model)
-		srv, err = llm.StartServer(ctx, bin, *model, 5*time.Minute)
-		if err != nil {
-			return err
-		}
-		client.URL, client.HTTP = srv.URL, srv.HTTP
-	} else if !client.IsLoopback() {
-		fmt.Fprintf(os.Stderr, "warning: %s is not on this machine. Every request sends it your ssh key comments, GitHub logins, git author and the digest of any file you ask it to read.\n", *llmURL)
-	}
-	if _, err := client.Endpoint(); err != nil {
+	backend, err := newBackend(ctx, bf, home)
+	if err != nil {
 		return err
 	}
+	defer backend.Close()
+	describe(backend.Caps(), os.Stderr)
 
 	// The loop blocks reading stdin, so a signal has to end the process from
-	// here; the server is killed first because os.Exit skips deferred calls.
+	// here; the backend is closed first because os.Exit skips deferred calls.
 	var finished atomic.Bool
 	go func() {
 		<-ctx.Done()
 		if finished.Load() {
 			return
 		}
-		if srv != nil {
-			srv.Close()
-		}
+		backend.Close()
 		os.Exit(130)
 	}()
 
@@ -142,7 +131,7 @@ func run() error {
 	// session's rules.
 	plain.Run(ctx, plain.Config{
 		Session: session.Config{
-			Model:       client,
+			Model:       llm.Model{B: backend},
 			Run:         hostfacts.ExecRunner,
 			Host:        host,
 			Offline:     *offline,
@@ -154,8 +143,5 @@ func run() error {
 		Echo: !isTerminal(os.Stdin),
 	})
 	finished.Store(true)
-	if srv != nil {
-		srv.Close()
-	}
 	return nil
 }

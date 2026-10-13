@@ -5,12 +5,27 @@ FIXTURE := bin/snug-fixture
 FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
 
 
-.PHONY: all build fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
+.PHONY: all build setup setup-integration fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
 
 all: build
 
 build:
 	go build -o $(BIN) ./cmd/snug
+
+# snug-setup. GOAMD64=v3 is not an optimisation: the in-process engine's SIMD
+# kernels need v2 or better, and a v1 build takes minutes per prompt (it
+# refuses to run, see setup/internal/llm/inproc). A machine without v3 builds
+# with `make setup GOAMD64=v1 SETUP_TAGS=snug_setup_noinproc` and uses
+# --llama-server-model or --llm-url.
+GOAMD64 ?= v3
+SETUP_TAGS ?=
+setup:
+	cd setup && CGO_ENABLED=0 GOAMD64=$(GOAMD64) go build -trimpath -ldflags '-s -w' -tags '$(SETUP_TAGS)' -o ../bin/snug-setup ./cmd/snug-setup
+
+# The in-process engine against a real GGUF; CI's setup workflow runs the same
+# line on a small Apache-2.0 model. SNUG_SETUP_TEST_MODEL=FILE.gguf.
+setup-integration:
+	cd setup && CGO_ENABLED=0 GOAMD64=v3 go test -tags integration -count=1 -run Inproc ./internal/llm/inproc
 
 # The integration suite's snug: the same program plus internal/cli's
 # accountfixture.go, which lets a test name the directory it reports as the
@@ -140,7 +155,10 @@ gate:
 	# never vets or tests snug-setup. gofmt and the forging-rune check walk
 	# files, not modules, and already cover it. Run from inside setup/ so the
 	# root module never requires it.
-	cd setup && go vet ./... && go test ./...
+	# The build without the in-process engine must keep compiling; the engine's
+	# own model-free tests skip themselves unless GOAMD64>=v2 (see setup/ in
+	# .github/workflows/setup.yml for the v3 run).
+	cd setup && go vet ./... && go vet -tags snug_setup_noinproc ./... && go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
 # is the automated half of the checklist; the by-hand half that survives in

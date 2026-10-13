@@ -287,18 +287,28 @@ Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 
 ### Asking for one — `snug-setup` (experimental)
 
-Chat writes the profile. Local model (fine-tuned Qwen2.5-1.5B, GGUF, run by
-`llama-server` on a private unix socket) turns a request into a closed set of actions; Go
+Chat writes the profile. Local model (fine-tuned Qwen2.5-1.5B, GGUF) turns a request into a closed set of actions; Go
 gates every one. Model output is untrusted: anything that widens the sandbox
 or puts a value into it lands on a card and waits for `/accept`; `~/.ssh`,
 token files, a writable `~/.bashrc` and the like are refused, whatever the
 model says. `/save` runs `snug --dry-run --json` and refuses to write a file
 that resolves to anything you did not ask for.
 
+Three ways to reach a model, exactly one per run:
+
 ```bash
-cd setup && go build ./cmd/snug-setup
-./snug-setup --model model/out/qwen1.5b-v3/snug-setup-q4_k_m.gguf ~/src/proj
+make setup                                   # bin/snug-setup, GOAMD64=v3, no cgo
+bin/snug-setup --model F.gguf ~/src/proj                # inside the process
+bin/snug-setup --llama-server-model F.gguf ~/src/proj   # llama-server child, private unix socket
+bin/snug-setup --llm-url http://127.0.0.1:8080 ~/src/proj  # a server you run, its model
 ```
+
+`--model` runs llama.cpp as Go (goccy/go-llama, wasm translated to Go): no second
+process, KV prefix reused across turns, about 2.6 GB RSS for the 1.5B. It needs
+a `GOAMD64>=v2` build (a v1 build refuses to run rather than take minutes per
+prompt); `-tags snug_setup_noinproc` leaves it out. `--llm-url` output is not
+known to be schema-constrained: snug-setup says so, and a reply that is not an
+action list is refused, never guessed.
 
 Before the first request it reads the project (marker file names, `go.mod` /
 `package.json` project name, `.git`) and your own host (`profiles.d`, `~/.ssh/config`

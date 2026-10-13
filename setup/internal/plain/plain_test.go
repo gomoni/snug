@@ -15,13 +15,13 @@ import (
 )
 
 // run drives plain.Run end to end: the model is reached over HTTP through
-// llm.Client, gh, ssh-add, git and snug are the fake world's.
+// llm.Remote, gh, ssh-add, git and snug are the fake world's.
 func run(t *testing.T, w *testworld.World, script string) (*session.Session, string) {
 	t.Helper()
 	var out bytes.Buffer
 	s := Run(context.Background(), Config{
 		Session: session.Config{
-			Model:      &llm.Client{URL: w.LLMServer().URL},
+			Model:      llm.Model{B: &llm.Remote{URL: w.LLMServer().URL}},
 			Run:        w.Run,
 			Host:       w.Host(),
 			LookPath:   w.LookPath,
