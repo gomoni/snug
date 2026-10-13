@@ -19,7 +19,6 @@ import (
 	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/llm"
 	"github.com/gomoni/snug/setup/internal/plain"
-	"github.com/gomoni/snug/setup/internal/repl"
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
@@ -29,9 +28,8 @@ const usage = `usage: snug-setup (--model FILE.gguf | --llm-url URL) [--llama-se
   --llm-url URL       use a server that is already running (OpenAI-compatible)
   --llama-server PATH llama-server binary (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/)
   --offline           never ask GitHub whether an ssh key belongs to an account
-  --plain             ask nothing: open questions are answered with /accept, /decline and
-                      /pick lines (/help lists them). The default when stdin or stdout is
-                      not a terminal.
+  --plain             accepted and ignored: snug-setup always asks nothing. Open questions are
+                      answered with /accept, /decline and /pick lines (/help lists them).
   --profile-dir DIR   where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
   DIR                 the project directory the profile is for (default: the current directory)
 `
@@ -50,7 +48,7 @@ func run() error {
 	llmURL := fs.String("llm-url", "", "")
 	llama := fs.String("llama-server", "", "")
 	offline := fs.Bool("offline", false, "")
-	plainMode := fs.Bool("plain", false, "")
+	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -138,32 +136,21 @@ func run() error {
 		Target:     target,
 		RuntimeDir: os.Getenv("XDG_RUNTIME_DIR"),
 	}
-	// The prompting repl stays the terminal path until the TUI can save; it
-	// must never see piped input, which its prompts would eat.
-	if *plainMode || !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
-		plain.Run(ctx, plain.Config{
-			Session: session.Config{
-				Model:      client,
-				Run:        hostfacts.ExecRunner,
-				Host:       host,
-				Offline:    *offline,
-				ProfileDir: *profileDir,
-			},
-			In:   os.Stdin,
-			Out:  os.Stdout,
-			Echo: !isTerminal(os.Stdin),
-		})
-	} else {
-		repl.New(ctx, repl.Config{
+	// One front end serves the terminal too: it asks nothing, so piped input
+	// is never taken for an answer, and it is the only one that follows the
+	// session's rules.
+	plain.Run(ctx, plain.Config{
+		Session: session.Config{
 			Model:      client,
-			In:         os.Stdin,
-			Out:        os.Stdout,
 			Run:        hostfacts.ExecRunner,
 			Host:       host,
 			Offline:    *offline,
 			ProfileDir: *profileDir,
-		}).Run(ctx)
-	}
+		},
+		In:   os.Stdin,
+		Out:  os.Stdout,
+		Echo: !isTerminal(os.Stdin),
+	})
 	finished.Store(true)
 	if srv != nil {
 		srv.Close()

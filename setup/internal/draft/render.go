@@ -155,8 +155,10 @@ func (d *Draft) Render() string {
 		}
 	}
 	sshHost, ghHost := d.hosts()
-	if d.SSH != nil || d.GH != nil {
+	if d.SSH != nil {
 		fmt.Fprintf(&b, "\n# ABUSE: %s.\n", Abuse["identity"])
+	}
+	if d.SSH != nil || d.GH != nil || d.Git != nil {
 		b.WriteString("# One identity per profile; two accounts are two profiles.\n")
 	}
 	if d.SSH != nil {

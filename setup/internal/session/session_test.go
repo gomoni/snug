@@ -752,3 +752,54 @@ func TestSaveRefusesAFifoAtTheProfileName(t *testing.T) {
 		t.Fatal("Save blocked on a FIFO")
 	}
 }
+
+// TestInternetRequestIsNotAnOfflineWish: "with internet" answered by `note net`
+// alone must leave no `drop @net` in the ledger (the opposite of the request).
+func TestInternetRequestIsNotAnOfflineWish(t *testing.T) {
+	w := testworld.New(t)
+	w.Reply("I want to run claude code in here with internet and my github", `{"op":"note","topic":"net"}`, `{"op":"use_profile","name":"@claude"}`)
+	s := open(w, true)
+	say(s, "I want to run claude code in here with internet and my github")
+	for _, e := range s.Draft().Ledger() {
+		if e.Action.Op == intent.OpDropProfile {
+			t.Errorf("ledger records %+v for a request for internet", e.Action)
+		}
+	}
+}
+
+// TestOfflineWishIsStillRecorded: the request says offline and the model has no
+// op for it, so `note net` stands for the wish.
+func TestOfflineWishIsStillRecorded(t *testing.T) {
+	w := testworld.New(t)
+	w.Reply("after install it should be offline", `{"op":"note","topic":"net"}`)
+	s := open(w, true)
+	say(s, "after install it should be offline")
+	contains(t, s.Draft().Render(), "drop @net")
+}
+
+// TestSecondCardForAPendingGrantPointsAtTheFirst: asking for @net twice opens
+// one card, so Save has one blocker.
+func TestSecondCardForAPendingGrantPointsAtTheFirst(t *testing.T) {
+	w := testworld.New(t)
+	w.Reply("set up for go", useNet)
+	w.Reply("run go test and download modules", useNet)
+	s := open(w, true)
+	say(s, "set up for go")
+	out := say(s, "run go test and download modules")
+	contains(t, out, "already proposed as #1", "/accept 1")
+	lacks(t, out, "? #2")
+	if n := numbers(s); !slices.Equal(n, []int{1}) {
+		t.Errorf("pending %v", n)
+	}
+}
+
+// TestAskIsAQuestionNotADeadEnd: the model's question is shown as a question
+// with a way to answer it.
+func TestAskIsAQuestionNotADeadEnd(t *testing.T) {
+	w := testworld.New(t)
+	w.Reply("make it safe", `{"op":"ask","question":"What should the sandbox be able to do?"}`)
+	s := open(w, true)
+	out := say(s, "make it safe")
+	contains(t, out, "What should the sandbox be able to do?", "Answer with a request of its own")
+	lacks(t, out, "say it differently")
+}

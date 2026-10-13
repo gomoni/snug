@@ -45,6 +45,10 @@ type Item struct {
 	// Ticked is whether a card starts with the item ticked: true only for a
 	// ClassGrant the human's own request produced.
 	Ticked bool
+	// Already is the number of the open card that holds this same action, 0
+	// when none does. Such an item is ClassInfo: a second card for it would
+	// leave Save two blockers for one decision.
+	Already int
 }
 
 // Turn is one request the model understood, classified and not yet applied.
@@ -114,11 +118,30 @@ func (s *Session) classify(n int, said string, acts []intent.Action) *Turn {
 			it.Class = ClassEdit
 			if widening(a) && o.Changed {
 				it.Class, it.Ticked, it.Abuse = ClassGrant, true, abuseOf(a)
+				if n := s.heldBy(a); n > 0 {
+					it.Class, it.Ticked, it.Abuse, it.Already = ClassInfo, false, "", n
+				}
 			}
 		}
 		t.Items = append(t.Items, it)
 	}
 	return t
+}
+
+// heldBy returns the number of the open card that lists a among the actions it
+// will apply, 0 when no card does.
+func (s *Session) heldBy(a intent.Action) int {
+	for _, p := range s.pending {
+		if p.Kind != Card {
+			continue
+		}
+		for _, i := range p.held {
+			if p.turn.Items[i].Action == a {
+				return p.N
+			}
+		}
+	}
+	return 0
 }
 
 func abuseOf(a intent.Action) string {
@@ -157,6 +180,10 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 		a := it.Action
 		switch it.Class {
 		case ClassInfo:
+			if it.Already > 0 {
+				out = append(out, info("%s is already proposed as #%d: /accept %d applies it.", it.Sentence, it.Already, it.Already))
+				continue
+			}
 			if a.Op == intent.OpSave {
 				save = true
 				continue
@@ -203,12 +230,12 @@ func (s *Session) infoAction(t *Turn, acts []intent.Action, a intent.Action) []L
 		if e, ok := texts.Note(a.Topic); ok {
 			out = append(out, info("%s", e))
 		}
-		if a.Topic == "net" && offlineWish(acts) && !slices.Contains(s.d.Include, "@net") {
+		if a.Topic == "net" && offlineWish(t.Said, acts) && !slices.Contains(s.d.Include, "@net") {
 			s.d.Propose(intent.Action{Op: intent.OpDropProfile, Name: "@net"}, draft.SourceUser, t.Said, t.N)
 		}
 		return out
 	case intent.OpAsk:
-		return []Line{{Question, "the model asks: \"" + safe.Inline(a.Question) + "\" — nothing changed; say it differently."}}
+		return []Line{{Question, "the model asks: \"" + safe.Inline(a.Question) + "\"\n  Nothing changed. Answer with a request of its own, for example \"I need internet\" or \"use my github\"; each request stands alone."}}
 	case intent.OpShow:
 		return s.Show()
 	case intent.OpListIdentities:
@@ -217,14 +244,25 @@ func (s *Session) infoAction(t *Turn, acts []intent.Action, a intent.Action) []L
 	return nil
 }
 
-// offlineWish reports whether a reply to the human is the labeling guide's
-// answer to "no network / offline" on a draft without @net: `note net` and no
-// profile action on @net. The model has no op for "keep it as it is", so
-// without this the wish leaves no ledger entry for a file to contradict.
-func offlineWish(acts []intent.Action) bool {
-	return !slices.ContainsFunc(acts, func(a intent.Action) bool {
+// offlineWish reports whether the human asked for the sandbox to be offline,
+// on a turn the model answered with `note net` and no profile action on @net.
+// The model has no op for "keep it as it is", so without this the wish leaves
+// no ledger entry for a file to contradict. The request has to say it:
+// `note net` is also the model's answer to "with internet", and reading that
+// as a wish to be offline records the opposite of what was asked.
+func offlineWish(said string, acts []intent.Action) bool {
+	if slices.ContainsFunc(acts, func(a intent.Action) bool {
 		return (a.Op == intent.OpUseProfile || a.Op == intent.OpDropProfile) && a.Name == "@net"
-	})
+	}) {
+		return false
+	}
+	w := " " + strings.ToLower(said) + " "
+	for _, no := range []string{" offline ", " off-line ", " no net ", " no network ", " no internet ", " without net ", " without network ", " without internet ", " without the internet ", " without the network ", " no outside access ", " air-gapped ", " airgapped ", " bez internetu ", " bez sítě ", " bez site "} {
+		if strings.Contains(w, no) {
+			return true
+		}
+	}
+	return false
 }
 
 // proposeUser applies one of the human's own actions and says what happened.
