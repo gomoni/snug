@@ -162,6 +162,28 @@ func TestHostRunFilesNotWritable(t *testing.T) {
 	}
 }
 
+// TestDraftRefusesWritableGrantOnSnugSetupCache is redteam setup r5 R5-2:
+// snug-setup runs a llama-server from ~/.cache/snug-setup on the host, so a
+// profile it drafts must not give a sandbox write access to that directory or
+// to ~/.cache above it. ro and tmpfs stay allowed.
+func TestDraftRefusesWritableGrantOnSnugSetupCache(t *testing.T) {
+	for _, p := range []string{"~/.cache/snug-setup", "~/.cache/snug-setup/llama.cpp", "~/.cache"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
+		}
+		if !d.Empty() {
+			t.Errorf("grant rw %s changed the draft", p)
+		}
+	}
+	for _, access := range []string{"ro", "tmpfs"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", "~/.cache/snug-setup", "access", access)); o.Refused != "" {
+			t.Errorf("grant %s refused: %+v", access, o)
+		}
+	}
+}
+
 // TestCredentialFilesRefused is redteam setup r1 S2's read half: files that
 // hold a token are refused at any access, like ~/.ssh.
 func TestCredentialFilesRefused(t *testing.T) {
