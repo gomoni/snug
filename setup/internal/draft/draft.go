@@ -385,11 +385,14 @@ var sensitiveHome = []string{
 // and core.fsmonitor name programs. A hostile process with rw on one plants a
 // command the host runs outside the sandbox, so rw on one, or on a directory
 // above it inside $HOME, is refused. ro and tmpfs write nothing to the host.
+// ~/.cache/snug-setup is where snug-setup unpacks the llama-server it runs on
+// the host; rw there, or on ~/.cache, plants the binary it checks and runs.
 var hostRunHome = []string{
 	".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
 	".zshrc", ".zshenv", ".zprofile", ".zlogin", ".config/fish",
 	".config/systemd/user", ".config/autostart", ".config/environment.d", ".local/share/applications",
 	".local/bin", ".gitconfig", ".config/git",
+	".cache/snug-setup",
 }
 
 var kernelPaths = []string{"/proc", "/dev", "/sys", "/snug"}
