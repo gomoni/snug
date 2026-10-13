@@ -300,6 +300,16 @@ cd setup && go build ./cmd/snug-setup
 ./snug-setup --model model/out/qwen1.5b-v3/snug-setup-q4_k_m.gguf ~/src/proj
 ```
 
+Before the first request it reads the project (marker file names, `go.mod` /
+`package.json` project name, `.git`) and your own host (`profiles.d`, `~/.ssh/config`
+Host/IdentityFile, `known_hosts` host names, `allowed_signers`, public keys) and
+opens a card with what the project's files make plain: `@git`, cache variables
+under `{target}/.cache`. `/analyze` repeats it; `/include NAME` adds one of your
+own profiles. The project's git history is read as bytes (no `git` runs in it: a
+hostile `.git/config` names programs git would execute) to suggest which of your
+keys signs there; signatures are read, never verified. Suggestions only put a
+default first in an identity question; nothing is pinned unanswered.
+
 No model ships: build one with `setup/model` (`gen_dataset.py`, `train.py`,
 `export_gguf.sh`). Own module (`setup/go.mod`); `snug` needs none of it.
 

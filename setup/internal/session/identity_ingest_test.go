@@ -104,15 +104,17 @@ func TestSigningKeyIsPinnedAfterSSHAndGit(t *testing.T) {
 
 	say(s, "sign my commits")
 	out := text(s.Pick(ctx, "signing", "id_other"))
-	contains(t, out, "a signing key goes with an ssh key and a git author, and the draft pins neither", "stays open", "Nothing written")
+	contains(t, out, "a signing key goes with an ssh key and a git author, and the draft pins neither", "stays open", "Nothing written", "which ssh key should the sandbox act as?", "which git author should the sandbox act as?")
 	if s.Draft().Git != nil {
 		t.Fatal("a refused signing pick wrote an identity")
 	}
 
-	out = say(s, "use my ssh key")
-	contains(t, out, "id_account2  account2@laptop", "<- suggested: ~/.ssh/config: Host github.com", "/pick ssh id_account2 takes the suggestion")
+	var pend strings.Builder
+	for _, q := range s.Pending() {
+		pend.WriteString(q.Line().Text + "\n")
+	}
+	contains(t, pend.String(), "id_account2  account2@laptop", "<- suggested: ~/.ssh/config: Host github.com", "/pick ssh id_account2 takes the suggestion")
 	contains(t, text(s.Pick(ctx, "ssh", "id_account2")), "pinned ssh key id_account2")
-	say(s, "use my git author")
 	contains(t, text(s.Pick(ctx, "git", "two@example.com")), "pinned git author")
 	out = text(s.Pick(ctx, "signing", "id_other"))
 	contains(t, out, "pinned signing key id_other")
@@ -219,9 +221,23 @@ func TestShowSaysWhatIsPendingWhenTheDraftIsEmpty(t *testing.T) {
 func TestIdentityOneNoteWithNothingPinnedAdvises(t *testing.T) {
 	w := testworld.New(t)
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 4)
-	w.Reply("it needs an ssh key and a signing key", `{"op":"note","topic":"identity_one"}`)
+	w.Reply("can I have two accounts in here", `{"op":"note","topic":"identity_one"}`)
 	s, _ := start(w)
-	out := say(s, "it needs an ssh key and a signing key")
+	out := say(s, "can I have two accounts in here")
 	contains(t, out, "Suggested identity for this project")
 	lacks(t, out, "A profile pins one account")
+}
+
+// TestSigningRequestOpensTheQuestionWithoutTheModel: "a ssh access and a signig
+// key" (sic) once came back as the two-accounts note.
+func TestSigningRequestOpensTheQuestionWithoutTheModel(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
+	s, _ := start(w)
+	out := say(s, "with @git add there's a need for a ssh access and a signig key, dont?")
+	contains(t, out, "which ssh key should the sandbox act as?", "which ssh key should sign commits inside the sandbox?")
+	if len(w.Model.Prompts) != 0 || !s.Draft().Empty() {
+		t.Errorf("model asked or draft changed")
+	}
+	lacks(t, say(s, "design a key"), "should sign")
 }

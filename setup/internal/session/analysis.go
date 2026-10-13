@@ -130,7 +130,7 @@ func (s *Session) Analyze(ctx context.Context) []Line {
 	for _, w := range t.Warnings {
 		out = append(out, warn("%s", w))
 	}
-	out = append(out, s.repoLines()...)
+	out = append(out, s.repoLines(ctx)...)
 	prop := ingest.Propose(t)
 	for _, p := range s.pending {
 		if p.Kind == Card && p.turn.Ingest {
@@ -169,8 +169,8 @@ func heldAll(t *Turn) []int {
 
 // Advice answers a request for a recommendation about identities from the
 // facts the session has, without the model.
-func (s *Session) Advice() []Line {
-	out := s.repoLines()
+func (s *Session) Advice(ctx context.Context) []Line {
+	out := s.repoLines(ctx)
 	if len(out) == 0 {
 		return []Line{info("I have nothing to base a suggestion on: the project has no git remote I could read, so I cannot tell which of your accounts or keys it belongs to. Say \"use my github account\" and I list what is on this host.")}
 	}
@@ -180,7 +180,7 @@ func (s *Session) Advice() []Line {
 // repoLines say what the repository's own files show about who works on it and
 // how, and the identity the host's facts point at for it. The suggestion is
 // text and a default for the identity questions; nothing is pinned by it.
-func (s *Session) repoLines() []Line {
+func (s *Session) repoLines(ctx context.Context) []Line {
 	r := s.facts.Repo
 	if r == nil || r.Sampled == 0 && len(r.Remotes) == 0 {
 		return nil
@@ -229,7 +229,11 @@ func (s *Session) repoLines() []Line {
 		return out
 	}
 	if p.Profile.Value != "" {
-		out = append(out, info("Your profile %q already pins this identity (%s): \"use my %s profile\" or /include %s.", p.Profile.Value, p.Profile.Why, p.Profile.Value, p.Profile.Value))
+		if msg, checked := s.refusalOf(ctx, p.Profile.Value); checked && msg != "" {
+			out = append(out, info("Your profile %q already pins this identity (%s), but snug refuses it today: %s. Fix that file and /include %s, or pin the identity below one piece at a time.", p.Profile.Value, p.Profile.Why, firstClause(msg), p.Profile.Value))
+		} else {
+			out = append(out, info("Your profile %q already pins this identity (%s): \"use my %s profile\" or /include %s.", p.Profile.Value, p.Profile.Why, p.Profile.Value, p.Profile.Value))
+		}
 	} else if len(p.Conflict) > 1 {
 		out = append(out, info("Several of your profiles pin %s with this author: %s. Name one.", safe.Inline(p.Remote.Host), strings.Join(p.Conflict, ", ")))
 	}
