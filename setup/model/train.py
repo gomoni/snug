@@ -1,4 +1,4 @@
-"""LoRA fine-tune of the intent model on CPU, then merge.
+"""LoRA fine-tune of the intent model on CPU or an NVIDIA GPU, then merge.
 
 Unsloth was the first choice and does not run here: past its import gate
 (UNSLOTH_ALLOW_CPU=1) its RMSNorm, RoPE and cross-entropy are Triton kernels,
@@ -12,6 +12,25 @@ SFTTrainer is not used — from 1.x it always installs a Triton fused LM-head
 loss, which is the same missing CPU driver again.
 
     uv run python train.py --base Qwen/Qwen2.5-1.5B-Instruct --out out/qwen1.5b
+
+On a GPU (--device cuda) the base loads in bf16 with gradient checkpointing,
+which is what fits a 1.5B LoRA in 8 GB of VRAM; float32, the CPU path, is
+6.2 GB of weights alone. The only GPU host tested against is Windows with
+WSL2 (Ubuntu), where the Windows NVIDIA driver is all the GPU needs: no Linux
+driver and no CUDA toolkit inside WSL, the torch wheel carries its runtime.
+pyproject.toml pins torch to the CPU index, so the CUDA wheel replaces it
+after the sync, and from then on the venv's python runs things: `uv run`
+would sync the CPU wheel back.
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh     # WSL's Ubuntu has git and python3, not uv
+    git clone -b feat/30-snug-setup https://github.com/gomoni/snug && cd snug/setup/model
+    uv sync
+    .venv/bin/python gen_dataset.py --n 3200 --seed 404 --single 0.47 --combo 0.27 --out data/train-v4.jsonl
+    uv pip install --reinstall 'torch>=2.9' --index-url https://download.pytorch.org/whl/cu128
+    .venv/bin/python -c 'import torch; print(torch.cuda.get_device_name())'
+    .venv/bin/python train.py --device cuda --train data/train-v4.jsonl --epochs 1.5 --out out/qwen1.5b-v4
+
+Copy out/qwen1.5b-v4/merged back and run export_gguf.sh there as on CPU.
 """
 
 import argparse
@@ -74,13 +93,26 @@ def main():
     # threads oversubscribed onto a taskset-narrowed mask spin against each other.
     ap.add_argument("--threads", type=int, default=max(1, min(len(os.sched_getaffinity(0)), os.cpu_count() - 2)))
     ap.add_argument("--limit", type=int, default=0, help="train on the first N rows only (smoke runs)")
+    ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     a = ap.parse_args()
+    gpu = a.device == "cuda"
+    if gpu and not torch.cuda.is_available():
+        raise SystemExit(f"--device cuda: torch {torch.__version__} sees no CUDA device. A +cpu build is the "
+                         "pyproject default; install the CUDA wheel (see the top of train.py), and on WSL2 check "
+                         "that nvidia-smi lists the GPU.")
+    if gpu and not torch.cuda.is_bf16_supported():
+        raise SystemExit(f"--device cuda: {torch.cuda.get_device_name()} has no bf16, which this run assumes.")
 
     os.nice(19)
     torch.set_num_threads(a.threads)
     torch.manual_seed(30)
     tok = AutoTokenizer.from_pretrained(a.base)
-    model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16 if gpu else torch.float32)
+    if gpu:
+        # Checkpointing recomputes activations instead of keeping them; with a
+        # frozen base, peft needs the embedding output to require grad or the
+        # recomputed graph has nothing to backpropagate into.
+        model.enable_input_require_grads()
 
     train = load(a.train, tok, a.max_len)
     if a.limit:
@@ -108,8 +140,9 @@ def main():
         # score that matters is evaluate.py on the gold set afterwards.
         eval_strategy="no",
         train_sampling_strategy="group_by_length",
-        use_cpu=True,
-        bf16=False,
+        use_cpu=not gpu,
+        bf16=gpu,
+        gradient_checkpointing=gpu,
         fp16=False,
         dataloader_num_workers=0,
         report_to=[],
