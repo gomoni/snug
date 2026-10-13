@@ -10,11 +10,21 @@ import (
 	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-var secretName = regexp.MustCompile(`(?i)TOKEN|SECRET|PASSWORD|API_?KEY|CREDENTIAL`)
+// secretName and secretWord name the variables refused as credentials. The
+// substrings match anywhere; the words match one _-separated segment, so
+// PRIVATE_KEY and SSH_AUTH_SOCK are refused while KEYBOARD_LAYOUT and
+// AUTHOR_NAME are not. A connection URL for a database or queue routinely
+// carries user:password, so it is refused by name.
+var (
+	secretName = regexp.MustCompile(`(?i)TOKEN|SECRET|PASSWORD|API_?KEY|CREDENTIAL`)
+	secretWord = regexp.MustCompile(`(?i)(^|_)(KEYS?|PASS|PASSWD|PWD|AUTH|DSN|PRIVATE)(_|$)`)
+	secretURL  = regexp.MustCompile(`(?i)(^|_)(DATABASE|DB|REDIS|MONGO|MONGODB|POSTGRES|POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|BROKER)_UR[LI]$`)
+)
 
-// writtenBySnug are the names snug writes itself; set and inherit are refused.
-// PATH still takes prepend.
-var writtenBySnug = []string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "PS1"}
+// writtenBySnug are the names snug (or bwrap, for PWD) writes itself: snug's
+// SnugOwnedEnv and bwrapOwnedEnv without the SNUG prefix, which setEnv refuses
+// on its own. set and inherit are refused; PATH still takes prepend.
+var writtenBySnug = []string{"HOME", "LANG", "LOGNAME", "PATH", "PS1", "PWD", "SHELL", "TERM", "TMPDIR", "TZ", "USER"}
 
 // noVerbs have no environ verb at all in snug's roster.
 var noVerbs = []string{"CDPATH", "GOFLAGS", "LD_LIBRARY_PATH", "LD_PRELOAD"}
@@ -29,9 +39,6 @@ var knownVar = regexp.MustCompile(`\{([^{}]*)\}`)
 
 func (d *Draft) setEnv(a intent.Action) Outcome {
 	name := a.Name
-	if secretName.MatchString(name) {
-		return refuse("secret_in_env", fmt.Sprintf("%s looks like a credential", name))
-	}
 	if strings.HasPrefix(name, "SNUG") {
 		return refuse(CodeReservedEnv, name+" is a snug variable, written by snug")
 	}
@@ -50,6 +57,9 @@ func (d *Draft) setEnv(a intent.Action) Outcome {
 		if !slices.Contains(listVars, name) {
 			return refuse(CodeUnknownList, name+" is not a path-list variable snug knows; prepend works for "+strings.Join(listVars, " "))
 		}
+	}
+	if secretName.MatchString(name) || secretWord.MatchString(name) || secretURL.MatchString(name) {
+		return refuse("secret_in_env", fmt.Sprintf("%s looks like a credential", name))
 	}
 	if a.Verb != "inherit" {
 		if hidden(a.Value) {

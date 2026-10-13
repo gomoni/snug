@@ -82,6 +82,9 @@ func run() error {
 	if t, err := filepath.EvalSymlinks(target); err == nil {
 		target = t
 	}
+	if err := draft.CheckTarget(target); err != nil {
+		return err
+	}
 	if fi, err := os.Stat(target); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", target)
 	}

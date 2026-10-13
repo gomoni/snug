@@ -135,7 +135,7 @@ var refusals = map[string]Entry{
 	},
 
 	"kernel_path":      {Say: "Refused. /proc, /dev, /sys and /snug are snug's own inside the sandbox and cannot be granted."},
-	"reserved_env":     {Say: "Refused. snug writes this variable itself (HOME, PATH, SHELL, USER, LOGNAME, TMPDIR, PS1 and SNUG*); a profile cannot set or inherit it."},
+	"reserved_env":     {Say: "Refused. snug writes this variable itself (HOME, PATH, SHELL, USER, LOGNAME, TMPDIR, PS1, TERM, LANG, TZ, PWD and SNUG*); a profile cannot set or inherit it."},
 	"bad_value":        {Say: "Refused. That value cannot be written into a profile."},
 	"not_granted":      {Say: "Refused. A path variable may only name paths the profile grants."},
 	"unknown_list_var": {Say: "Refused. snug does not know that variable as a path list."},
