@@ -7,20 +7,19 @@ import (
 	"github.com/gomoni/snug/setup/internal/llm"
 )
 
-func TestBackendFlagsNeedExactlyOne(t *testing.T) {
+func TestBackendFlagsNameAWayToTheModel(t *testing.T) {
 	for name, f := range map[string]backendFlags{
-		"none":                      {},
-		"both":                      {Model: "a.gguf", URL: "http://127.0.0.1:1"},
-		"binary alone":              {URL: "http://x", ServerBin: "/bin/llama-server"},
-		"remote model with --model": {Model: "a.gguf", RemoteModel: "m"},
+		"none":              {},
+		"binary with a url": {URL: "http://x", ServerBin: "/bin/llama-server"},
 	} {
 		if err := f.check(); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
 	for name, f := range map[string]backendFlags{
-		"server": {Model: "a.gguf", ServerBin: "/x"},
-		"url":    {URL: "http://127.0.0.1:1", RemoteModel: "snug-setup:latest"},
+		"server":         {Model: "a.gguf", ServerBin: "/x"},
+		"url":            {URL: "http://127.0.0.1:1"},
+		"url with model": {URL: "http://127.0.0.1:1", Model: "snug-setup:latest"},
 	} {
 		if err := f.check(); err != nil {
 			t.Errorf("%s: %v", name, err)

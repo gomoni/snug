@@ -305,7 +305,7 @@ bin/snug-setup --openai-url http://127.0.0.1:8080 ~/src/proj  # a server you run
 
 snug-setup never downloads anything: `--model` finds `llama-server` on `PATH`,
 then under `~/.cache/snug-setup/llama.cpp/`, or takes `--llama-server PATH`.
-`--openai-url` with ollama needs `--openai-model NAME` (an installed model; the
+`--openai-url` with ollama needs `--model NAME` (an installed model; the
 GGUF imported with a Modelfile that carries the Qwen chat template), llama-server
 ignores it. `--openai-url` output is not known to be schema-constrained: snug-setup says so,
 and a reply that is not an action list is refused, never guessed.
