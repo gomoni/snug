@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -230,4 +232,24 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantDiffs(t, Compare(missing, doc), "snug refused the draft")
+}
+
+// TestDefaultsMatchSnug holds Defaults equal to profile.BuiltinDefaults in
+// snug's source, the list it copies.
+func TestDefaultsMatchSnug(t *testing.T) {
+	raw, err := os.ReadFile("../../../internal/profile/defaults.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)func BuiltinDefaults\(\) \[\]policy\.ProfileName \{\s*return \[\]policy\.ProfileName\{([^}]*)\}`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("no BuiltinDefaults in internal/profile/defaults.go")
+	}
+	var want []string
+	for _, q := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(m[1], -1) {
+		want = append(want, string(q[1]))
+	}
+	if !slices.Equal(Defaults, want) {
+		t.Errorf("Defaults = %v, snug's BuiltinDefaults = %v", Defaults, want)
+	}
 }
