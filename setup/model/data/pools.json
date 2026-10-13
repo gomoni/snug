@@ -2844,5 +2844,23 @@
     "plus {account}, so two accounts",
     "Přidej i {account}, chci oba účty.",
     "Zusätzlich {account}, beide Konten."
+  ],
+  "include_profile": [
+    "use my {myprofile} profile",
+    "include my profile {myprofile}",
+    "I already have a profile called {myprofile}, just reuse it",
+    "reuse {myprofile}",
+    "add my {myprofile} profile",
+    "base it on my {myprofile} profile",
+    "can you include {myprofile}?",
+    "use the existing {myprofile} setup",
+    "take my saved profile {myprofile}",
+    "apply the {myprofile} profile I made before",
+    "pull in {myprofile}",
+    "I want {myprofile} in here",
+    "include {myprofile} from my profiles",
+    "reuse the profile {myprofile}",
+    "použij můj profil {myprofile}",
+    "přidej profil {myprofile}"
   ]
 }

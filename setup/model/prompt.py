@@ -62,6 +62,9 @@ def format_user(ctx: dict, request: str) -> str:
     git = ctx.get("git") or []
     if git:
         lines.append("host git: " + "; ".join(git))
+    profiles = ctx.get("profiles") or []
+    if profiles:
+        lines.append("host profiles: " + "; ".join(profiles))
     f = ctx.get("file")
     if f:
         lines.append(f"file {f['name']}:")

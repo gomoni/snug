@@ -81,7 +81,7 @@ func (r *REPL) check(ctx context.Context) bool {
 			"Build it in a snug checkout (go build -o ~/.local/bin/snug ./cmd/snug) and put that directory on PATH, then /save again.")
 		return false
 	}
-	doc, err := verify.Run(ctx, r.cfg.Run, snug, r.draft)
+	doc, err := verify.Run(ctx, r.cfg.Run, snug, r.draft, nil)
 	if err != nil {
 		r.say("not saved: the check against snug failed: %v", err)
 		return false

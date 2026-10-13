@@ -366,8 +366,16 @@ func mergePicks(in []Pick) []Pick {
 
 // Facts is everything ingest found.
 type Facts struct {
-	Target TargetFacts
+	Target   TargetFacts
+	Profiles []Profile
+	Files    []ProfileFile
+	Warnings []string
 }
 
-// Gather runs every analysis.
-func Gather(target string) Facts { return Facts{Target: AnalyzeTarget(target)} }
+// Gather runs every analysis. profileDirs are the directories snug reads
+// profiles from (ProfileDirs); nil reads none.
+func Gather(target string, profileDirs []string) Facts {
+	f := Facts{Target: AnalyzeTarget(target)}
+	f.Profiles, f.Files, f.Warnings = LoadProfiles(profileDirs)
+	return f
+}

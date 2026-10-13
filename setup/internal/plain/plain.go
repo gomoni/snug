@@ -36,6 +36,7 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
   /pick ssh STEM|none       answer the open ssh question
   /pick github LOGIN|none   answer the open GitHub question (HOST/LOGIN when two hosts share a login)
   /pick git EMAIL|none      answer the open git author question
+  /include NAME             include one of your own snug profiles (the same as "use my NAME profile")
   /analyze                  describe the project and propose what its files make plain
   /save [NAME]              check with snug and write; NAME names an unnamed draft`
 
@@ -132,8 +133,14 @@ func handle(ctx context.Context, s *session.Session, p *printer, line string) bo
 		p.print(lines)
 	case "/show":
 		p.print(s.Show())
+	case "/include":
+		if len(f) != 2 {
+			p.say("usage: /include NAME, with NAME one of your snug profiles.")
+			break
+		}
+		p.print(s.IncludeProfile(ctx, f[1]))
 	case "/analyze":
-		p.print(s.Analyze())
+		p.print(s.Analyze(ctx))
 	case "/undo":
 		p.print(s.Undo())
 	case "/help":

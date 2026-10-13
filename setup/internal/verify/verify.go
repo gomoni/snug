@@ -129,6 +129,10 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 	var order []string
 	drops := map[string]string{}
 	stages := map[string]string{}
+	// userIncludes: a profile of the human's own brings in whatever it
+	// includes, in a file this check does not read, so what it implies is
+	// theirs by having included it.
+	userIncludes := false
 	for _, e := range eff {
 		a := e.Action
 		why := origin(e)
@@ -139,6 +143,12 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 			}
 			if !resolved[a.Name] {
 				add("%s asked for %s; snug's resolved selection does not have it", "ask for it again; if it persists, the draft lost it (a snug-setup bug)", why, a.Name)
+			}
+		case intent.OpIncludeProfile:
+			userIncludes = true
+			allowed[a.Name] = true
+			if !resolved[a.Name] {
+				add("%s asked for your profile %s; snug's resolved selection does not have it", "check that the profile still exists in your profiles.d, then ask for it again", why, a.Name)
 			}
 		case intent.OpDropProfile:
 			if resolved[a.Name] {
@@ -182,7 +192,7 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 
 	var extra []string
 	for n := range resolved {
-		if !allowed[n] {
+		if !allowed[n] && !(userIncludes && slices.Contains(doc.Profiles.Implied, n)) {
 			extra = append(extra, n)
 		}
 	}
@@ -254,11 +264,21 @@ func origin(e draft.Entry) string {
 	return draft.Comment(e.Origin)
 }
 
-// Run writes d as the only profile of a fresh XDG_CONFIG_HOME, runs
-// `snug --dry-run --json` on it the way the run line will, and returns the
-// parsed document. A refusal (exit 77) still yields a document; an error is
-// returned only when there is none to read.
-func Run(ctx context.Context, run hostfacts.Runner, snug string, d *draft.Draft) (Doc, error) {
+// File is a profile file of the human's, copied into the check's scratch
+// configuration so a draft that includes one of their profiles can resolve.
+type File struct {
+	Name string
+	Body []byte
+}
+
+// Run writes d as a profile of a fresh XDG_CONFIG_HOME, with the files in
+// others beside it, runs `snug --dry-run --json` on it the way the run line
+// will, and returns the parsed document. A refusal (exit 77) still yields a
+// document; an error is returned only when there is none to read. others is
+// empty unless the draft includes one of the human's own profiles: the check
+// is otherwise hermetic, and a stray profile of theirs cannot change its
+// verdict.
+func Run(ctx context.Context, run hostfacts.Runner, snug string, d *draft.Draft, others []File) (Doc, error) {
 	xdg, err := os.MkdirTemp("", "snug-setup-check-")
 	if err != nil {
 		return Doc{}, fmt.Errorf("making a scratch config directory for the check: %w (set TMPDIR to a writable directory)", err)
@@ -267,6 +287,11 @@ func Run(ctx context.Context, run hostfacts.Runner, snug string, d *draft.Draft)
 	dir := filepath.Join(xdg, "snug", "profiles.d")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Doc{}, fmt.Errorf("making %s for the check: %w", dir, err)
+	}
+	for _, f := range others {
+		if err := os.WriteFile(filepath.Join(dir, f.Name), f.Body, 0o600); err != nil {
+			return Doc{}, fmt.Errorf("copying %s for the check: %w", f.Name, err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, d.Name+".toml"), []byte(d.Render()), 0o600); err != nil {
 		return Doc{}, fmt.Errorf("writing the draft for the check: %w", err)

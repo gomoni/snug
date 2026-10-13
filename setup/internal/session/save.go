@@ -92,7 +92,7 @@ func (s *Session) check(ctx context.Context) (bool, []Line) {
 		return false, []Line{info("not saved: snug is not on PATH, and snug-setup saves only a draft snug has resolved to what you asked for.\n" +
 			"Build it in a snug checkout (go build -o ~/.local/bin/snug ./cmd/snug) and put that directory on PATH, then save again.")}
 	}
-	doc, err := verify.Run(ctx, s.cfg.Run, snug, s.d)
+	doc, err := verify.Run(ctx, s.cfg.Run, snug, s.d, s.checkFiles())
 	if err != nil {
 		return false, []Line{info("not saved: the check against snug failed: %s", safe.Inline(err.Error()))}
 	}

@@ -14,6 +14,8 @@
            "properties": {"op": {"const": "use_profile"}, "name": {"$ref": "#/$defs/builtin"}}},
           {"type": "object", "additionalProperties": false, "required": ["op", "name"],
            "properties": {"op": {"const": "drop_profile"}, "name": {"$ref": "#/$defs/builtin"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "name"],
+           "properties": {"op": {"const": "include_profile"}, "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$"}}},
           {"type": "object", "additionalProperties": false, "required": ["op", "path", "access"],
            "properties": {"op": {"const": "grant_path"}, "path": {"$ref": "#/$defs/path"},
                           "access": {"enum": ["ro", "rw", "tmpfs"]}}},

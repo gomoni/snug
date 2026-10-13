@@ -17,6 +17,7 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
+	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/llm"
 	"github.com/gomoni/snug/setup/internal/plain"
 	"github.com/gomoni/snug/setup/internal/session"
@@ -141,11 +142,12 @@ func run() error {
 	// session's rules.
 	plain.Run(ctx, plain.Config{
 		Session: session.Config{
-			Model:      client,
-			Run:        hostfacts.ExecRunner,
-			Host:       host,
-			Offline:    *offline,
-			ProfileDir: *profileDir,
+			Model:       client,
+			Run:         hostfacts.ExecRunner,
+			Host:        host,
+			Offline:     *offline,
+			ProfileDir:  *profileDir,
+			ProfileDirs: ingest.ProfileDirs(os.Getenv("XDG_CONFIG_HOME"), home),
 		},
 		In:   os.Stdin,
 		Out:  os.Stdout,

@@ -104,7 +104,9 @@ def rand_context(rng: random.Random) -> dict:
             draft["rw"] = [rng.choice(["/srv/data", f"/home/{user}/datasets", "/opt/cache"])]
         if rng.random() < 0.2 and gh:
             draft["identity"] = [f"github:{gh[0]['user']}"]
-    return {"target": target, "draft": draft, "ssh": ssh, "github": gh, "git": git, "file": None,
+    profiles = [] if rng.random() < 0.6 else rng.sample(
+        [user, f"{user}-{company}", company, "work", "oss", f"{proj}-dev", "gh-cli", "personal", "ci", "marp"], k=rng.choice([1, 1, 2, 3]))
+    return {"target": target, "draft": draft, "ssh": ssh, "github": gh, "git": git, "profiles": profiles, "file": None,
             "_user": user, "_company": company, "_proj": proj}
 
 
@@ -156,6 +158,7 @@ def fill_slots(rng, ctx, text):
         "secretname": lambda: rng.choice(["GITHUB_TOKEN", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "DB_PASSWORD",
                                           "NPM_TOKEN", "ANTHROPIC_API_KEY", "STRIPE_SECRET_KEY", "my API key"]),
         "profile": lambda: rng.choice([ctx["_company"], "work", "oss", "webdev", "agent", "build", "personal", "ci", "data"]),
+        "myprofile": lambda: rng.choice(ctx["profiles"]) if ctx["profiles"] else "work",
         "file": lambda: rng.choice(["README.md", "docker-compose.yml", "Dockerfile", "package.json", "Makefile",
                                     "pyproject.toml", "compose.yaml", "CONTRIBUTING.md", "go.mod", "Cargo.toml"]),
     }
@@ -227,6 +230,7 @@ def label(intent, s, ctx, net_requested=False):
         "select_ssh_any": [A("select_identity", kind="ssh", account="")],
         "select_git": lambda: [A("select_identity", kind="git", account=s["gitid"])],
         "git_default": [A("use_profile", name="@git")],
+        "include_profile": lambda: [A("include_profile", name=s["myprofile"])],
         "two_accounts": [A("note", topic="identity_one")],
         "two_accounts_named": [A("note", topic="identity_one")],
         "push_github": [A("select_identity", kind="github", account=""), A("select_identity", kind="ssh", account="")],
@@ -265,13 +269,13 @@ COMBINABLE = ["write_here", "readonly_here", "parent_ro", "path_rw", "path_ro", 
               "push_github", "push_github_as", "git_default", "claude", "env_set", "env_inherit", "name", "save", "show",
               "open_door", "open_door_default", "list_ssh", "list_github", "list_git", "path_prepend", "stage_binary",
               "drop_path", "host_port", "host_network", "desktop", "docker_sock", "port_publish", "secret_env", "whole_home",
-              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named"]
+              "deny", "deny_rel", "sensitive", "sensitive_ssh", "two_accounts_named", "include_profile"]
 # At most one intent of each group per request: they contradict or duplicate each other.
 EXCLUSIVE = [{"select_github", "select_github_any", "push_github", "push_github_as", "two_accounts_named"},
              {"select_ssh", "select_ssh_any", "push_github", "push_github_as", "sensitive_ssh", "list_ssh"},
              {"net", "offline", "host_network"}, {"offline", "podman", "podman_build"}, {"write_here", "readonly_here"},
              {"podman", "podman_build"}, {"open_door", "open_door_default"}, {"deny", "deny_rel", "layering"},
-             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"},
+             {"sensitive", "sensitive_ssh"}, {"save", "show"}, {"git_default", "select_git"}, {"include_profile", "select_github", "select_github_any", "push_github", "push_github_as", "select_ssh", "select_ssh_any", "select_git", "two_accounts_named"},
              {"path_rw", "path_ro", "path_tmpfs", "drop_path", "layering"}, {"env_set", "env_inherit"}]
 JOIN = [" and ", ", also ", ". ", " + ", ", and ", " plus ", "; ", " — and ", ". Also ", " & ", ", then ", " and then "]
 
@@ -294,6 +298,8 @@ def bias_context(rng, ctx, intents):
     half the time (drop_profile vs note net), naming a key needs long key lists."""
     if "offline" in intents and rng.random() < 0.55 and "@net" not in ctx["draft"]["include"]:
         ctx["draft"]["include"] = ctx["draft"]["include"] + ["@net"]
+    if "include_profile" in intents and not ctx["profiles"]:
+        ctx["profiles"] = rng.sample([ctx["_user"], "work", ctx["_company"], "oss"], k=rng.choice([1, 2]))
     if SSH_HEAVY & set(intents) and rng.random() < 0.6:
         ctx["ssh"] = ssh_keys(rng, ctx["_user"], ctx["_company"], ctx["_proj"], rng.choice([4, 6, 8, 10, 12]))
 
