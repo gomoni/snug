@@ -695,3 +695,17 @@ func TestProfileTextCannotHideWhatItSays(t *testing.T) {
 		}
 	}
 }
+
+// TestGHOnlyIdentityHasNoSigningOracleSentence: the ssh sentence is written
+// only when an ssh key is pinned.
+func TestGHOnlyIdentityHasNoSigningOracleSentence(t *testing.T) {
+	d := New(Host{Home: "/home/u", Target: "/home/u/p"})
+	d.SetGH("github.com", "me")
+	if out := d.Render(); strings.Contains(out, "SIGNING ORACLE") {
+		t.Errorf("gh-only identity carries the ssh sentence:\n%s", out)
+	}
+	d.SetSSH("/home/u/.ssh/k.pub")
+	if out := d.Render(); !strings.Contains(out, "SIGNING ORACLE") {
+		t.Errorf("ssh identity lacks its sentence:\n%s", out)
+	}
+}
