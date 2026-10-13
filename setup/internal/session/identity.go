@@ -227,7 +227,14 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
 	}
 	if kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
-		return []Line{info("a signing key goes with an ssh key and a git author, and the draft pins %s. Pin those first (\"use my git author\", \"use my ssh key\"), then /pick signing %s again; #%d stays open. Nothing written.", missingForSigning(s.d), safe.Inline(value), p.N)}
+		out := []Line{info("a signing key goes with an ssh key and a git author, and the draft pins %s. I opened the question for what is missing; answer it, then /pick signing %s again (#%d stays open). Nothing written.", missingForSigning(s.d), safe.Inline(value), p.N)}
+		if s.d.SSH == nil {
+			out = append(out, s.askIdentity("ssh", "", p.said, p.at)...)
+		}
+		if s.d.Git == nil {
+			out = append(out, s.askIdentity("git", "", p.said, p.at)...)
+		}
+		return out
 	}
 	before := s.snapshot()
 	s.close(p.N)

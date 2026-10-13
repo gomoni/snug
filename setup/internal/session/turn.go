@@ -106,6 +106,25 @@ var analyzeRE = regexp.MustCompile(`(?i)\banaly[sz]`)
 // one irrelevant paragraph and grants nothing.
 var adviceRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*\b.*\b(identit|account|ssh|key|signing)|\b(identit|account|ssh|key|signing)\w*\b.*\b(rec+o?m+e?nd|suggest)`)
 
+// signingRE routes talk of a signing key to the identity questions: the model
+// has no kind for it until it is retrained on select_identity signing. The
+// route only opens questions; nothing is pinned without an answer.
+var signingRE = regexp.MustCompile(`(?i)\bsig\w*\b.*\b(key|commit)|\b(key|commit)\w*\b.*\bsig\w*\b`)
+
+// signingQuestions opens the signing key question, and the ssh key question
+// beside it when the request also asks for ssh access and none is pinned: a
+// signing key goes with an ssh key and an author.
+func (s *Session) signingQuestions(text string) []Line {
+	before := s.snapshot()
+	var out []Line
+	if _, ok := s.slotFull("ssh"); !ok && regexp.MustCompile(`(?i)\bssh\b`).MatchString(text) {
+		out = append(out, s.askIdentity("ssh", "", text, s.turn)...)
+	}
+	out = append(out, s.askIdentity("signing", "", text, s.turn)...)
+	s.commit(before, "your request "+quote(text))
+	return out
+}
+
 // recommendRE routes a bare "what do you recommend" to the analysis, the one
 // thing snug-setup recommends from.
 var recommendRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*`)
@@ -143,7 +162,10 @@ func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 		return nil, s.Analyze(ctx)
 	}
 	if adviceRE.MatchString(text) {
-		return nil, s.Advice()
+		return nil, s.Advice(ctx)
+	}
+	if signingRE.MatchString(text) {
+		return nil, s.signingQuestions(text)
 	}
 	if name := s.profileNamed(text); name != "" {
 		return nil, s.IncludeProfile(ctx, name)
@@ -267,7 +289,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 				save = true
 				continue
 			}
-			out = append(out, s.infoAction(t, acts, a)...)
+			out = append(out, s.infoAction(ctx, t, acts, a)...)
 		case ClassIdentity:
 			out = append(out, s.askIdentity(a.Kind, a.Account, t.Said, t.N)...)
 		case ClassFile:
@@ -300,7 +322,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 	return out
 }
 
-func (s *Session) infoAction(t *Turn, acts []intent.Action, a intent.Action) []Line {
+func (s *Session) infoAction(ctx context.Context, t *Turn, acts []intent.Action, a intent.Action) []Line {
 	switch a.Op {
 	case intent.OpRefuse:
 		return modelRefusal(a.Code)
@@ -310,7 +332,7 @@ func (s *Session) infoAction(t *Turn, acts []intent.Action, a intent.Action) []L
 			// "two accounts are two profiles" answers a second pin; with nothing
 			// pinned it answers a question nobody asked, and the human was
 			// asking which identity to use.
-			return s.Advice()
+			return s.Advice(ctx)
 		}
 		if e, ok := texts.Note(a.Topic); ok {
 			out = append(out, info("%s", e))
