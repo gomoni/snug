@@ -86,6 +86,7 @@ type Session struct {
 	resolves    map[string]resolveResult
 
 	turn      int
+	analyzed  bool
 	lastSaved string
 }
 
@@ -112,11 +113,6 @@ func New(ctx context.Context, cfg Config) (*Session, []Line) {
 	}
 	s.gh, s.ghInstalled = hostfacts.GitHubAccounts(ctx, cfg.Run)
 	s.authors = hostfacts.GitAuthors(ctx, cfg.Run)
-	out = append(out, info("Found on this host: %d ssh public key(s), %d GitHub login(s), %d git author(s).", len(s.keys), len(s.gh), len(s.authors)))
-	if cfg.Offline {
-		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
-	}
-	out = append(out, info("Each request stands alone: the model remembers nothing but the draft."))
 	s.facts = ingest.Gather(ctx, cfg.Host.Target, cfg.Host.Home, cfg.ProfileDirs, cfg.Run)
 	s.pick = ingest.Suggest(ingest.SuggestInput{Repo: s.facts.Repo, SSH: s.facts.SSH, Keys: s.keys, Profiles: s.facts.Profiles,
 		Authors: s.authors, GH: s.gh, GitSigningKey: s.facts.GitSigningKey})

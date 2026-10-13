@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/setup/internal/draft"
@@ -28,7 +29,9 @@ func TestOpeningProposalIsACardTheHumanAccepts(t *testing.T) {
 	s, out := start(w)
 	contains(t, out, "Go module github.com/acme/app (go.mod)", "a git work tree", "no Dockerfile, Containerfile or compose file",
 		"? #1 what I found in the project", "add @git  (from .git)", "set GOMODCACHE={target}/.cache/go-mod  (from go.mod)",
-		"Not proposed: @net (for go mod download", ".gitignore")
+		`Not proposed: @net (say "I need internet")`, "/why has the reasons")
+	lacks(t, out, ".gitignore", "for go mod download")
+	contains(t, text(s.Details(ctx)), "Not proposed: @net (for go mod download", ".gitignore")
 	if !s.Draft().Empty() {
 		t.Fatalf("applied before the answer: %s", s.Draft().Render())
 	}
@@ -40,15 +43,24 @@ func TestOpeningProposalIsACardTheHumanAccepts(t *testing.T) {
 		`GOMODCACHE = "{target}/.cache/go-mod"`)
 }
 
-func TestAnalyzeReprintsAndDoesNotOpenASecondCard(t *testing.T) {
+// TestAnalyzeAgainIsShortAndDoesNotOpenASecondCard: the second ask says where
+// the proposal is and what the draft pins, not the opening again, and /why
+// still has the whole text.
+func TestAnalyzeAgainIsShortAndDoesNotOpenASecondCard(t *testing.T) {
 	w := testworld.New(t)
 	goProject(t, w)
-	s, _ := start(w)
+	s, opening := start(w)
 	out := text(s.Analyze(ctx))
-	contains(t, out, "The proposal is already open as #1", "Go module github.com/acme/app")
-	lacks(t, out, "? #2")
+	contains(t, out, "The proposal is open as #1", "Open: #1", "/why prints the full analysis")
+	lacks(t, out, "? #", "Go module github.com/acme/app", "Not proposed")
+	if got, was := strings.Count(out, "\n"), strings.Count(opening, "\n"); got >= was/2 {
+		t.Errorf("a repeat is %d lines, the opening %d", got, was)
+	}
 	text(s.Accept(ctx, 1))
-	contains(t, text(s.Analyze(ctx)), "Nothing to propose that the draft does not already have")
+	out = text(s.Analyze(ctx))
+	contains(t, out, "Nothing to propose that the draft does not already have")
+	lacks(t, out, "Open:")
+	contains(t, text(s.Details(ctx)), "Go module github.com/acme/app", "Found on this host", "Each request stands alone", "Offline: GitHub is not asked")
 }
 
 func TestAnalyzeAfterDeclineOffersItAgain(t *testing.T) {
@@ -69,7 +81,7 @@ func TestAnalyzeRequestSkipsTheModel(t *testing.T) {
 	goProject(t, w)
 	s, _ := start(w)
 	out := say(s, "can you analyze the target dir and suggest a setup?")
-	contains(t, out, "Go module github.com/acme/app", "already open as #1")
+	contains(t, out, "The proposal is open as #1")
 	if len(w.Model.Prompts) != 0 {
 		t.Errorf("the model was asked: %v", w.Model.Prompts)
 	}

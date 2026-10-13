@@ -34,10 +34,11 @@ func (s *Session) Candidates(kind string) []Candidate {
 	var out []Candidate
 	switch kind {
 	case "ssh", "signing":
+		anyHeld := slices.ContainsFunc(s.keys, func(k hostfacts.SSHKey) bool { return k.InAgent })
 		for i, k := range s.keys {
 			label := safe.Inline(k.Stem) + "  " + dash(safe.Inline(k.Comment))
-			if k.InAgent {
-				label += "  [held by the agent]"
+			if anyHeld && !k.InAgent {
+				label += "  [not in the agent]"
 			}
 			out = append(out, Candidate{Key: k.Stem, Label: label + "  " + k.Fingerprint, names: []string{k.Stem, k.Stem + ".pub", k.Comment}, idx: i})
 		}
@@ -389,4 +390,82 @@ func (s *Session) acceptSecond(ctx context.Context, p Pending) []Line {
 	s.lastSaved = ""
 	out = append(out, info("started a new, empty profile."))
 	return append(out, s.askIdentity(p.kind, p.hint, p.said, p.at)...)
+}
+
+// maxShown is how many ssh keys an identity question lists before it points at
+// /keys. A host with a dozen keys makes the question a wall in which the
+// suggestion is lost.
+const maxShown = 3
+
+// shortlist picks the candidates an identity question lists and how many it
+// leaves out. Only ssh and signing keys are cut: a host has a handful of
+// logins and authors. The suggestion comes first, then the one the request
+// named, then the keys whose names share a word with the suggestion, then the ones
+// the agent holds; Pick
+// still takes any candidate.
+func (s *Session) shortlist(kind, hint string, cands []Candidate) ([]Candidate, int) {
+	if (kind != "ssh" && kind != "signing") || len(cands) <= maxShown+1 {
+		return cands, 0
+	}
+	var picked []int
+	add := func(i int) {
+		if i >= 0 && len(picked) < maxShown && !slices.Contains(picked, i) {
+			picked = append(picked, i)
+		}
+	}
+	if cands[0].Why != "" {
+		add(0)
+	}
+	add(bestMatch(hint, cands))
+	if cands[0].Why != "" {
+		want := nameWords(cands[0].names)
+		type scored struct{ i, n int }
+		var rest []scored
+		for i := 1; i < len(cands); i++ {
+			n := 0
+			for w := range nameWords(cands[i].names) {
+				if want[w] {
+					n++
+				}
+			}
+			if n > 0 {
+				rest = append(rest, scored{i, n})
+			}
+		}
+		slices.SortStableFunc(rest, func(a, b scored) int { return b.n - a.n })
+		for _, r := range rest {
+			add(r.i)
+		}
+	}
+	for _, held := range []bool{true, false} {
+		for i := range cands {
+			if s.keys[cands[i].idx].InAgent == held {
+				add(i)
+			}
+		}
+	}
+	slices.Sort(picked)
+	out := make([]Candidate, len(picked))
+	for j, i := range picked {
+		out[j] = cands[i]
+	}
+	return out, len(cands) - len(out)
+}
+
+// nameWords are the words of a key's names that say something about it: its
+// file name and comment without the algorithm and the boilerplate.
+func nameWords(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		for _, w := range strings.FieldsFunc(strings.ToLower(n), func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) {
+			switch w {
+			case "id", "ed25519", "rsa", "key", "pub", "com", "org", "ecdsa", "sk":
+			default:
+				if len(w) > 2 {
+					out[w] = true
+				}
+			}
+		}
+	}
+	return out
 }

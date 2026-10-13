@@ -154,3 +154,14 @@ func TestPlainAnalyzeCommandBypassesTheModel(t *testing.T) {
 		t.Errorf("%d model calls", n)
 	}
 }
+
+// TestWhyAndKeysSkipTheModel: /why prints what the opening leaves out and
+// /keys lists every key, neither asking the model.
+func TestWhyAndKeysSkipTheModel(t *testing.T) {
+	w := testworld.New(t)
+	_, out := run(t, w, "/why\n/keys\n")
+	contains(t, out, "Found on this host: 3 ssh public key(s)", "Each request stands alone", "id_account1", "id_other", "FINGERPRINT")
+	if len(w.Model.Requests()) != 0 {
+		t.Errorf("the model was asked: %v", w.Model.Requests())
+	}
+}
