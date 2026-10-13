@@ -4,10 +4,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/gomoni/snug/setup/internal/safe"
 )
@@ -103,7 +104,11 @@ func LoadProfiles(dirs []string) ([]Profile, []ProfileFile, []string) {
 				continue
 			}
 			f := ProfileFile{Dir: dir, Name: n, Body: data}
-			for _, p := range ParseProfiles(string(data)) {
+			ps, err := ParseProfiles(string(data))
+			if err != nil {
+				warns = append(warns, "not valid TOML, so no profile read from it: "+safe.Inline(filepath.Join(dir, n))+": "+safe.Inline(err.Error()))
+			}
+			for _, p := range ps {
 				p.File, p.Dir = n, dir
 				out = append(out, p)
 				f.Defines = append(f.Defines, p.Name)
@@ -137,220 +142,52 @@ func readSmall(path string) ([]byte, error) {
 }
 
 // ParseProfiles extracts, from the text of one profiles.d file, each
-// [profile.NAME] table's description, include list and [..identity.ssh|git|gh]
-// keys. It is a line reader for the shapes snug-setup itself writes and the
-// examples in the README, not a TOML parser: a value it cannot read is left
-// empty, which shows less on the screen and never grants anything, because the
-// only thing done with a profile is to have snug read the same file.
-func ParseProfiles(text string) []Profile {
-	var out []Profile
-	var cur *Profile
-	table := "" // "", "profile", "ssh", "git", "gh"
-	lines := strings.Split(text, "\n")
-	for i := 0; i < len(lines); i++ {
-		l := strings.TrimSpace(stripComment(lines[i]))
-		if l == "" {
-			continue
-		}
-		if strings.HasPrefix(l, "[") && !strings.HasPrefix(l, "[[") {
-			name, kind := tableOf(strings.Trim(l, "[] \t"))
-			table = ""
-			cur = nil
-			if name == "" {
-				continue
-			}
-			idx := slices.IndexFunc(out, func(p Profile) bool { return p.Name == name })
-			if idx < 0 {
-				out = append(out, Profile{Name: name})
-				idx = len(out) - 1
-			}
-			cur, table = &out[idx], kind
-			continue
-		}
-		key, val, ok := strings.Cut(l, "=")
-		if !ok || cur == nil {
-			continue
-		}
-		key, val = strings.TrimSpace(key), strings.TrimSpace(val)
-		for strings.HasPrefix(val, "[") && !balanced(val) && i+1 < len(lines) {
-			i++
-			val += " " + strings.TrimSpace(stripComment(lines[i]))
-		}
-		tbl := table
-		if parts := strings.SplitN(key, ".", 3); table == "profile" && len(parts) == 3 && parts[0] == "identity" {
-			tbl, key = parts[1], parts[2]
-		}
-		switch tbl {
-		case "profile":
-			switch key {
-			case "description":
-				cur.Description = str(val)
-			case "include":
-				cur.Include = strs(val)
-			}
-		case "ssh":
-			switch key {
-			case "key":
-				cur.Identity.SSHKey = str(val)
-			case "host":
-				cur.Identity.SSHHost = str(val)
-			}
-		case "git":
-			switch key {
-			case "name":
-				cur.Identity.GitName = str(val)
-			case "email":
-				cur.Identity.Email = str(val)
-			case "signing_key":
-				cur.Identity.SigningKey = str(val)
-			}
-		case "gh":
-			switch key {
-			case "user":
-				cur.Identity.GHUser = str(val)
-			case "host":
-				cur.Identity.GHHost = str(val)
-			}
-		}
+// [profile.NAME] table's description, include list and identity.ssh|git|gh
+// keys, in name order. The text is parsed as TOML, so quoting, multi-line
+// arrays, dotted keys and inline tables mean what they mean to snug. A value
+// of the wrong type is left empty, which shows less on the screen and never
+// grants anything, because the only thing done with a profile is to have snug
+// read the same file. An error is returned when text is not valid TOML; snug
+// refuses such a file too, and nothing is guessed from a file that does not
+// parse.
+func ParseProfiles(text string) ([]Profile, error) {
+	var doc struct {
+		Profile map[string]map[string]any `toml:"profile"`
 	}
-	for i := range out {
-		out[i].Name = safe.Inline(out[i].Name)
-		out[i].Description = safe.Inline(out[i].Description)
+	if err := toml.Unmarshal([]byte(text), &doc); err != nil {
+		return nil, err
 	}
-	return out
-}
-
-// tableOf maps a table header (without brackets) to the profile it belongs to
-// and which part: "profile.NAME" or "profile.NAME.identity.ssh|git|gh".
-func tableOf(h string) (name, kind string) {
-	rest, ok := strings.CutPrefix(h, "profile.")
-	if !ok {
-		return "", ""
+	names := make([]string, 0, len(doc.Profile))
+	for n := range doc.Profile {
+		names = append(names, n)
 	}
-	if strings.HasPrefix(rest, `"`) {
-		end := strings.Index(rest[1:], `"`)
-		if end < 0 {
-			return "", ""
-		}
-		name, rest = rest[1:1+end], rest[2+end:]
-		rest = strings.TrimPrefix(rest, ".")
-	} else {
-		name, rest, _ = strings.Cut(rest, ".")
-	}
-	switch rest {
-	case "":
-		return name, "profile"
-	case "identity.ssh":
-		return name, "ssh"
-	case "identity.git":
-		return name, "git"
-	case "identity.gh":
-		return name, "gh"
-	}
-	return "", ""
-}
-
-// stripComment removes a trailing # comment that is not inside a string.
-func stripComment(s string) string {
-	q := byte(0)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case q != 0:
-			if c == '\\' && q == '"' {
-				i++
-			} else if c == q {
-				q = 0
-			}
-		case c == '"' || c == '\'':
-			q = c
-		case c == '#':
-			return s[:i]
-		}
-	}
-	return s
-}
-
-// balanced reports whether every [ in v outside a string is closed.
-func balanced(v string) bool {
-	depth, q := 0, byte(0)
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case q != 0:
-			if c == '\\' && q == '"' {
-				i++
-			} else if c == q {
-				q = 0
-			}
-		case c == '"' || c == '\'':
-			q = c
-		case c == '[':
-			depth++
-		case c == ']':
-			depth--
-		}
-	}
-	return depth <= 0
-}
-
-// str reads one TOML basic or literal string, "" for anything else.
-func str(v string) string {
-	if len(v) < 2 {
-		return ""
-	}
-	q := v[0]
-	if q != '"' && q != '\'' {
-		return ""
-	}
-	var b strings.Builder
-	for i := 1; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case c == q:
-			return b.String()
-		case c == '\\' && q == '"' && i+1 < len(v):
-			i++
-			switch v[i] {
-			case 'n':
-				b.WriteByte(' ')
-			case 't':
-				b.WriteByte(' ')
-			default:
-				b.WriteByte(v[i])
-			}
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return ""
-}
-
-// strs reads an array of strings, skipping what is not a string.
-func strs(v string) []string {
-	v = strings.TrimSpace(v)
-	if !strings.HasPrefix(v, "[") {
-		return nil
-	}
-	var out []string
-	for i := 1; i < len(v); i++ {
-		if v[i] == '"' || v[i] == '\'' {
-			q := v[i]
-			j := i + 1
-			for j < len(v) && v[j] != q {
-				if v[j] == '\\' && q == '"' {
-					j++
+	sort.Strings(names)
+	out := make([]Profile, 0, len(names))
+	for _, n := range names {
+		t := doc.Profile[n]
+		p := Profile{Name: safe.Inline(n), Description: safe.Inline(tomlStr(t["description"]))}
+		if arr, ok := t["include"].([]any); ok {
+			for _, v := range arr {
+				if s := tomlStr(v); s != "" {
+					p.Include = append(p.Include, safe.Inline(s))
 				}
-				j++
 			}
-			if j >= len(v) {
-				break
-			}
-			if s := str(v[i : j+1]); s != "" {
-				out = append(out, safe.Inline(s))
-			}
-			i = j
 		}
+		id, _ := t["identity"].(map[string]any)
+		ssh, _ := id["ssh"].(map[string]any)
+		git, _ := id["git"].(map[string]any)
+		gh, _ := id["gh"].(map[string]any)
+		p.Identity = ProfileIdentity{
+			SSHKey: tomlStr(ssh["key"]), SSHHost: tomlStr(ssh["host"]),
+			SigningKey: tomlStr(git["signing_key"]), GitName: tomlStr(git["name"]), Email: tomlStr(git["email"]),
+			GHUser: tomlStr(gh["user"]), GHHost: tomlStr(gh["host"]),
+		}
+		out = append(out, p)
 	}
-	return out
+	return out, nil
+}
+
+func tomlStr(v any) string {
+	s, _ := v.(string)
+	return s
 }

@@ -43,14 +43,17 @@ identity.git.email = "d@example.org"
 `
 
 func TestParseProfiles(t *testing.T) {
-	ps := ParseProfiles(accounts)
+	ps, err := ParseProfiles(accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	byName := map[string]Profile{}
 	var names []string
 	for _, p := range ps {
 		byName[p.Name] = p
 		names = append(names, p.Name)
 	}
-	if !slices.Equal(names, []string{"vyskocilm", "cv-dev", "quoted-one", "dotted"}) {
+	if !slices.Equal(names, []string{"cv-dev", "dotted", "quoted-one", "vyskocilm"}) {
 		t.Fatalf("names %v", names)
 	}
 	v := byName["vyskocilm"]
@@ -73,6 +76,43 @@ func TestParseProfiles(t *testing.T) {
 	}
 	if byName["dotted"].Identity.Email != "d@example.org" {
 		t.Errorf("dotted key: %+v", byName["dotted"].Identity)
+	}
+}
+
+// TestParseProfilesIsTOML: shapes the old line reader misread. A header-looking
+// line inside a multi-line string invented a profile; an inline-table identity
+// was dropped; a unicode escape was copied literally.
+func TestParseProfilesIsTOML(t *testing.T) {
+	ps, err := ParseProfiles("[profile.real]\ndescription = \"\"\"\nfirst\n[profile.fake]\n\"\"\"\n" +
+		"[profile.inline]\nidentity = { git = { email = \"i@example.org\" }, gh = { user = \"u\" } }\n" +
+		"[profile.esc]\ndescription = \"caf\\u00e9\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Profile{}
+	for _, p := range ps {
+		by[p.Name] = p
+	}
+	if _, ok := by["fake"]; ok || len(ps) != 3 {
+		t.Errorf("a header inside a string made a profile: %+v", ps)
+	}
+	if by["inline"].Identity.Email != "i@example.org" || by["inline"].Identity.GHUser != "u" {
+		t.Errorf("inline table: %+v", by["inline"].Identity)
+	}
+	if by["esc"].Description != "caf\u00e9" {
+		t.Errorf("escape: %q", by["esc"].Description)
+	}
+	if _, err := ParseProfiles("[profile.a\n"); err == nil {
+		t.Error("invalid TOML accepted")
+	}
+}
+
+func TestLoadProfilesReportsInvalidTOML(t *testing.T) {
+	d := t.TempDir()
+	os.WriteFile(filepath.Join(d, "bad.toml"), []byte("[profile.a\n"), 0o644)
+	ps, files, warns := LoadProfiles([]string{d})
+	if len(ps) != 0 || len(files) != 1 || len(warns) != 1 || !strings.Contains(warns[0], "bad.toml") {
+		t.Errorf("%v %v %v", ps, files, warns)
 	}
 }
 
