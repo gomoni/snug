@@ -208,14 +208,14 @@ func refusal(code, detail string) []Line {
 }
 
 // modelRefusal is the model's reading of a request as one snug refuses. The
-// code is shown as the model's reading, not as snug's verdict: it is wrong
-// often enough that the human must be able to tell the two apart.
+// code is shown as a reading, not as snug's verdict: it is wrong often enough
+// that the human must be able to tell the two apart.
 func modelRefusal(code string) []Line {
-	text := "the model read this as a request snug refuses (" + code + ")."
+	text := "I read that as a request snug refuses (" + code + ")."
 	if e, ok := texts.Refusal(code); ok {
-		text += " snug's rule:\n" + e.String()
+		text += "\n" + e.String()
 	}
-	text += "\nIf that is not what you asked, say it differently — nothing changed."
+	text += "\nIf I misread you, say it differently — nothing changed."
 	return []Line{{Refused, text}}
 }
 
