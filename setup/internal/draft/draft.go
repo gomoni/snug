@@ -333,6 +333,21 @@ var sensitiveHome = []string{
 	".ssh", ".aws", ".gnupg", ".config/gh", ".netrc", ".docker", ".kube",
 	".claude", ".claude.json",
 	".local/share/keyrings", ".gnome2/keyrings", ".local/share/kwalletd",
+	".git-credentials", ".npmrc", ".pypirc", ".cargo/credentials", ".cargo/credentials.toml",
+	".config/containers/auth.json",
+}
+
+// hostRunHome lists paths, relative to $HOME, that the host executes or reads
+// as configuration for programs it runs: shell startup files, user units,
+// autostart entries, ~/.local/bin on PATH, and git config, whose core.hooksPath
+// and core.fsmonitor name programs. A hostile process with rw on one plants a
+// command the host runs outside the sandbox, so rw on one, or on a directory
+// above it inside $HOME, is refused. ro and tmpfs write nothing to the host.
+var hostRunHome = []string{
+	".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
+	".zshrc", ".zshenv", ".zprofile", ".zlogin", ".config/fish",
+	".config/systemd/user", ".config/autostart", ".config/environment.d", ".local/share/applications",
+	".local/bin", ".gitconfig", ".config/git",
 }
 
 var kernelPaths = []string{"/proc", "/dev", "/sys", "/snug"}
@@ -341,9 +356,9 @@ var socketTrees = []string{"/tmp/.X11-unix", "/tmp/.ICE-unix", "/run/user", "/va
 
 var engineSocketTrees = []string{"/run/docker", "/var/run/docker", "/run/podman", "/var/run/podman", "/run/containerd", "/var/run/containerd"}
 
-// checkHostPath returns a refusal for a host path that must never be granted,
-// looking at both the spelling and where it resolves to.
-func (d *Draft) checkHostPath(p string) *Outcome {
+// checkHostPath returns a refusal for a host path that must never be granted at
+// access, looking at both the spelling and where it resolves to.
+func (d *Draft) checkHostPath(p, access string) *Outcome {
 	if badPathChars.MatchString(p) || hidden(p) {
 		o := refuse(CodeBadValue, fmt.Sprintf("%q contains a control or invisible formatting character, quote, backslash or colon, which a profile path cannot carry", p))
 		return &o
@@ -368,6 +383,15 @@ func (d *Draft) checkHostPath(p string) *Outcome {
 			if under(q, full) || (under(full, q) && under(q, home)) {
 				o := refuse("sensitive_home", fmt.Sprintf("%s%s is, or contains, ~/%s", q, via, s))
 				return &o
+			}
+		}
+		if access == "rw" {
+			for _, s := range hostRunHome {
+				full := filepath.Join(home, s)
+				if under(q, full) || (under(full, q) && under(q, home)) {
+					o := refuse("sensitive_home", fmt.Sprintf("%s%s is, or contains, ~/%s, which your host runs outside the sandbox; grant it ro", q, via, s))
+					return &o
+				}
 			}
 		}
 		for _, k := range kernelPaths {
@@ -407,7 +431,7 @@ func (d *Draft) checkHostPath(p string) *Outcome {
 }
 
 func (d *Draft) grant(path, access string) Outcome {
-	if o := d.checkHostPath(path); o != nil {
+	if o := d.checkHostPath(path, access); o != nil {
 		return *o
 	}
 	exp := d.expand(path)
@@ -487,7 +511,7 @@ func (d *Draft) stage(host, name string) Outcome {
 	if binNameBad[name] {
 		return refuse(CodeBadValue, fmt.Sprintf("%q is not a command name", name))
 	}
-	if o := d.checkHostPath(host); o != nil {
+	if o := d.checkHostPath(host, "ro"); o != nil {
 		return *o
 	}
 	exp := d.expand(host)

@@ -102,7 +102,8 @@ var refusals = map[string]Entry{
 	},
 	"sensitive_home": {
 		Quotes: []Quote{{Src: readme, Text: "no `~/.ssh`, no `~/.aws`, no browser or desktop keyring, no tokens"}},
-		Say: "Refused: snug-setup does not write a grant under ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh, ~/.netrc, ~/.docker, ~/.kube, ~/.claude or a keyring.\n" +
+		Say: "Refused: snug-setup does not write a grant under ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh, ~/.netrc, ~/.docker, ~/.kube, ~/.claude, a keyring or a token file (~/.git-credentials, ~/.npmrc, ~/.pypirc, cargo or container credentials),\n" +
+			"  and no writable grant on a file your host runs (shell startup files, ~/.config/systemd/user, ~/.config/autostart, ~/.local/bin, git config).\n" +
 			"  The narrow versions: ssh -> an identity (\"use my work ssh key\": one pinned key through a filtering agent proxy), GitHub -> an identity (\"assign github NAME\"), Claude Code -> @claude.",
 	},
 	"whole_home": {

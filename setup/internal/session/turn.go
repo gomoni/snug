@@ -20,11 +20,13 @@ const (
 	// ClassInfo changes nothing: note, ask, refuse, show, list_identities,
 	// save. save runs after the rest of the turn.
 	ClassInfo Class = iota
-	// ClassEdit cannot widen the sandbox, so it applies without a question.
+	// ClassEdit cannot widen the sandbox or add a value, so it applies without
+	// a question.
 	// It includes a widening op that would change nothing or that the draft
 	// refuses.
 	ClassEdit
-	// ClassGrant widens the sandbox. It goes on the turn's card.
+	// ClassGrant widens the sandbox or adds a value the model chose. It goes on
+	// the turn's card.
 	ClassGrant
 	// ClassIdentity is select_identity: an identity question, never a card.
 	ClassIdentity
@@ -65,16 +67,16 @@ func (t *Turn) actions() []intent.Action {
 	return out
 }
 
-// widening are the ops that make the sandbox see or do more when they change
-// the draft.
+// widening are the ops that go on a card when they change the draft: the ones
+// that make the sandbox see or do more, and the ones that put a value the
+// model chose into every later run (set_env of any verb, a tmpfs). A drop or
+// a name narrows or labels, so it applies at once.
 func widening(a intent.Action) bool {
 	switch a.Op {
-	case intent.OpUseProfile, intent.OpStageBinary, intent.OpOpenDoor:
+	case intent.OpUseProfile, intent.OpStageBinary, intent.OpOpenDoor, intent.OpSetEnv:
 		return true
 	case intent.OpGrantPath:
-		return a.Access == "ro" || a.Access == "rw"
-	case intent.OpSetEnv:
-		return a.Verb == "inherit"
+		return a.Access == "ro" || a.Access == "rw" || a.Access == "tmpfs"
 	}
 	return false
 }

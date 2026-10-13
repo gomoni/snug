@@ -27,7 +27,7 @@ func (f fakeInfo) IsDir() bool       { return f.mode.IsDir() }
 func (fakeInfo) Sys() any            { return nil }
 
 func testHost() Host {
-	links := map[string]string{"/home/alice/link-to-ssh": "/home/alice/.ssh"}
+	links := map[string]string{"/home/alice/link-to-ssh": "/home/alice/.ssh", "/home/alice/link-to-bin": "/home/alice/.local/bin"}
 	return Host{
 		Home: "/home/alice", Target: "/home/alice/src/webapp", RuntimeDir: "/run/user/1000",
 		EvalSymlinks: func(p string) (string, error) {
@@ -129,6 +129,65 @@ func TestSafetyRulesRefuse(t *testing.T) {
 			if !d.Empty() {
 				t.Errorf("grant %s %s changed the draft", access, c.path)
 			}
+		}
+	}
+}
+
+// TestHostRunFilesNotWritable is redteam setup r1 S2: a rw grant on a file the
+// host later executes or reads as configuration lets sandboxed code plant
+// something that runs outside the sandbox. Reading one stays allowed.
+func TestHostRunFilesNotWritable(t *testing.T) {
+	for _, p := range []string{"~/.bashrc", "~/.profile", "~/.bash_profile", "~/.zshrc", "~/.zshenv",
+		"~/.config/systemd/user", "~/.config/systemd/user/evil.service", "~/.config/autostart",
+		"~/.local/bin", "~/.local/bin/git", "~/.gitconfig", "~/.config/git/config", "~/.config/environment.d",
+		"~/.local/share/applications"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
+		}
+		for _, access := range []string{"ro", "tmpfs"} {
+			d := New(testHost())
+			if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", access)); o.Refused != "" {
+				t.Errorf("grant %s %s refused: %+v", access, p, o)
+			}
+		}
+	}
+	// A directory above one of them is just as writable.
+	for _, p := range []string{"~/.local", "~/.config/systemd", "~/link-to-bin"} {
+		d := New(testHost())
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
+		}
+	}
+}
+
+// TestCredentialFilesRefused is redteam setup r1 S2's read half: files that
+// hold a token are refused at any access, like ~/.ssh.
+func TestCredentialFilesRefused(t *testing.T) {
+	for _, p := range []string{"~/.git-credentials", "~/.npmrc", "~/.pypirc", "~/.cargo/credentials.toml",
+		"~/.cargo/credentials", "~/.config/containers/auth.json", "~/.config/containers"} {
+		for _, access := range []string{"ro", "rw", "tmpfs"} {
+			d := New(testHost())
+			if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", access)); o.Refused != "sensitive_home" {
+				t.Errorf("grant %s %s: refused=%q (%s), want sensitive_home", access, p, o.Refused, o.Msg)
+			}
+		}
+	}
+}
+
+// TestQuoteEscapesInvisibles is redteam setup r1 S5's second half: whatever
+// string reaches the TOML, a control or formatting rune is written as an
+// escape, so the file a human reads shows the same text the screen did.
+func TestQuoteEscapesInvisibles(t *testing.T) {
+	for in, want := range map[string]string{
+		"ali\u202ece": `"ali\u202Ece"`,
+		"a\u200bb":    `"a\u200Bb"`,
+		"x\ty":        `"x\u0009y"`,
+		`a"b\c`:       `"a\"b\\c"`,
+		"Žluťoučký":   `"Žluťoučký"`,
+	} {
+		if got := q(in); got != want {
+			t.Errorf("q(%q) = %s, want %s", in, got, want)
 		}
 	}
 }

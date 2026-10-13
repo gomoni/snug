@@ -22,21 +22,33 @@ var (
 	ghLoggedIn = regexp.MustCompile(`Logged in to (\S+) account (\S+)`)
 	ghLegacy   = regexp.MustCompile(`Logged in to (\S+) as (\S+)`)
 	ghActive   = regexp.MustCompile(`Active account:\s*(true|false)`)
+	// ghHost and ghUser are the shapes a GitHub host and login take. The
+	// whole \S+ token must match: matching a prefix would turn
+	// "ali<U+202E>ce" into a real, different account "ali".
+	ghHost = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$`)
+	ghUser = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 )
+
+func plainGH(host, user string) bool { return ghHost.MatchString(host) && ghUser.MatchString(user) }
 
 // ParseGHStatus extracts the logged-in accounts from `gh auth status` output
 // (stdout and stderr together: older gh versions print to stderr). Accounts
 // whose token gh reports as failing are not listed. The older single-account
-// format ("Logged in to H as U") is read as active.
+// format ("Logged in to H as U") is read as active. A host or login outside
+// GitHub's name shapes is not listed: it would reach the TOML.
 func ParseGHStatus(out string) []GHAccount {
 	var accts []GHAccount
 	for _, line := range strings.Split(out, "\n") {
 		if m := ghLoggedIn.FindStringSubmatch(line); m != nil {
-			accts = append(accts, GHAccount{Host: m[1], User: m[2]})
+			if plainGH(m[1], m[2]) {
+				accts = append(accts, GHAccount{Host: m[1], User: m[2]})
+			}
 			continue
 		}
 		if m := ghLegacy.FindStringSubmatch(line); m != nil {
-			accts = append(accts, GHAccount{Host: m[1], User: m[2], Active: true})
+			if plainGH(m[1], m[2]) {
+				accts = append(accts, GHAccount{Host: m[1], User: m[2], Active: true})
+			}
 			continue
 		}
 		if m := ghActive.FindStringSubmatch(line); m != nil && len(accts) > 0 {

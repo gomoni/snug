@@ -154,6 +154,24 @@ func TestParseGHStatus(t *testing.T) {
 	}
 }
 
+// TestParseGHStatusSkipsOddNames is redteam setup r1 S5: a login or host that
+// is not a plain GitHub name (here a bidi override, which the screen strips
+// but the TOML would keep) is not listed, so it never reaches the profile.
+func TestParseGHStatusSkipsOddNames(t *testing.T) {
+	for _, out := range []string{
+		"  ✓ Logged in to github.com account ali\u202ece (keyring)\n",
+		"  ✓ Logged in to git\u200bhub.com account alice (keyring)\n",
+		"  ✓ Logged in to github.com as bob\"x (oauth_token)\n",
+	} {
+		if got := ParseGHStatus(out); len(got) != 0 {
+			t.Errorf("%q listed %+v", out, got)
+		}
+	}
+	if got := ParseGHStatus("  ✓ Logged in to ghe.corp.example:8443 account a-b-9 (keyring)\n"); len(got) != 1 {
+		t.Errorf("an enterprise host with a port was skipped: %+v", got)
+	}
+}
+
 func TestGitHubAccountsToleratesMissingGh(t *testing.T) {
 	f := &fake{reply: func(argv, _ []string) (Result, error) { return Result{}, exec.ErrNotFound }}
 	a, inst := GitHubAccounts(context.Background(), f.run)
