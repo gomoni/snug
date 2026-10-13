@@ -323,6 +323,16 @@ func hidden(s string) bool {
 	}) >= 0
 }
 
+// CheckTarget refuses a target directory whose path carries a control or
+// invisible formatting character. The path is shown on the screen and written
+// into the model's prompt, where a newline would add a line of its own.
+func CheckTarget(p string) error {
+	if hidden(p) {
+		return fmt.Errorf("the target path %q contains a control or invisible formatting character; rename the directory", p)
+	}
+	return nil
+}
+
 func under(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
