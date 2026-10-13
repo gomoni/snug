@@ -4,7 +4,10 @@
 // Where snug has already said it, the sentence is snug's own, quoted from the
 // file named in Quote.Src (relative to the repository root).
 // TestQuotesAreStillInSnugSources fails when a source drifts, so a quote here
-// cannot outlive the text it claims to repeat.
+// cannot outlive the text it claims to repeat. Only a quote with a Label, a
+// profile's one-line description, is shown to the human; the rest is snug's
+// design prose, kept so the drift test can tell when the rule it justifies
+// has changed.
 package texts
 
 import "strings"
@@ -33,8 +36,6 @@ func (e Entry) String() string {
 	for _, q := range e.Quotes {
 		if q.Label != "" {
 			b.WriteString("  " + q.Label + ": " + q.Text + "\n")
-		} else {
-			b.WriteString("  snug: \"" + q.Text + "\"\n")
 		}
 	}
 	b.WriteString(e.Say)
@@ -80,7 +81,7 @@ func All() []Entry {
 var refusals = map[string]Entry{
 	"host_network": {
 		Quotes: []Quote{{Src: base, Text: "THERE IS NO `network = \"host\"`, and its absence is the grant this file does not make. Sharing the host's network namespace means every service on the host's loopback, every abstract AF_UNIX socket including X11 — keylogging and screenshots of the whole desktop — and the LAN with the host's identity: not a sandbox with networking, but a process with a different filesystem view."}},
-		Say:    "Refused. What exists is @net: the internet through a private network namespace.",
+		Say:    "Refused: the host's network is never shared (its loopback, X11 and D-Bus sockets, your LAN). What exists is @net: the internet through a private network namespace.",
 	},
 	"host_port": {
 		Quotes: []Quote{
@@ -196,7 +197,7 @@ var notes = map[string]Entry{
 			{Src: base, Text: "TWO ACCOUNTS ARE TWO PROFILES, and that needs no mechanism snug does not have."},
 			{Src: base, Text: "Selecting both at once is a hard error naming them, because an identity is a pin and two pins are a contradiction rather than a union."},
 		},
-		Say: "Save this profile, then start a second one for the other account.",
+		Say: "A profile pins one account. Save this one, then start a second profile for the other account.",
 	},
 	"git": {
 		Quotes: []Quote{{Src: base, Text: "the sandbox learns the name and email you commit under, and nothing else from your git config."}},

@@ -502,7 +502,7 @@ func TestSecondIdentityOfTheSameKind(t *testing.T) {
 	w.reply("assign github account2", `{"op":"select_identity","kind":"github","account":"account2"}`)
 	w.reply("now account1", `{"op":"select_identity","kind":"github","account":"account1"}`)
 	r := w.session(true, "assign github account2\n\n\nnone\nnow account1\nn\n")
-	contains(t, w.out.String(), "TWO ACCOUNTS ARE TWO PROFILES", "the draft already pins the github identity")
+	contains(t, w.out.String(), "A profile pins one account", "the draft already pins the github identity")
 	if r.Draft().GH.User != "account2" {
 		t.Errorf("declining must keep the first identity, have %s", r.Draft().GH.User)
 	}
@@ -525,7 +525,7 @@ func TestFlowPodman(t *testing.T) {
 	w := newWorld(t)
 	w.reply("I need podman to run there", `{"op":"use_profile","name":"@podman-socket"}`, `{"op":"note","topic":"podman_offline"}`)
 	r := w.session(true, "I need podman to run there\n")
-	contains(t, w.out.String(), "genuinely offline, containers included", "@podman-socket")
+	contains(t, w.out.String(), "Add @net if the containers must pull images", "@podman-socket")
 	if len(r.Draft().Include) != 1 || r.Draft().Include[0] != "@podman-socket" {
 		t.Errorf("%v", r.Draft().Include)
 	}
@@ -562,7 +562,7 @@ func TestFlowComposeFile(t *testing.T) {
 	contains(t, second, "file docker-compose.yml:\n", "service web: build=. ports=8080:80 volumes=./sub:/app,/var/run/docker.sock:/var/run/docker.sock env=NODE_ENV,DB_PASSWORD\nservice db: image=postgres:16\nrequest: "+ask)
 	lacks(t, second, "hunter2", "production")
 	out := w.out.String()
-	contains(t, out, "filtering proxy rather than the engine itself", "stays refused", "put the secret in a file")
+	contains(t, out, "A volume of a subdirectory", "Put them in a file and grant the file")
 	if got := strings.Join(r.Draft().Include, ","); got != "@podman-build,@net" {
 		t.Errorf("includes %s", got)
 	}
@@ -575,7 +575,7 @@ func TestHostileFileCannotGrantAnything(t *testing.T) {
 	w.reply("read the readme", `{"op":"read_file","path":"README.md"}`)
 	w.reply("read the readme|file", `{"op":"grant_path","path":"~/.ssh","access":"rw"}`, `{"op":"refuse","code":"repo_profile"}`)
 	r := w.session(true, "read the readme\n")
-	contains(t, w.out.String(), "refused (sensitive_home)", "hostile repository that ships its own profile")
+	contains(t, w.out.String(), "refused (sensitive_home)", "Profiles come from your own")
 	if !r.Draft().Empty() {
 		t.Errorf("draft: %s", r.Draft().Render())
 	}

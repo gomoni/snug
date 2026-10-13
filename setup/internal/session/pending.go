@@ -81,7 +81,7 @@ func (s *Session) open(p Pending) Pending {
 			it := p.turn.Items[i]
 			o := it.Sentence
 			if it.Abuse != "" {
-				o += "\n      ABUSE: " + it.Abuse
+				o += "\n      cost: " + it.Abuse
 			}
 			p.Options = append(p.Options, o)
 		}

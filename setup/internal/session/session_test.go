@@ -81,8 +81,8 @@ func TestCardIsPendingUntilAccepted(t *testing.T) {
 	s := open(w, true)
 	out := say(s, "I need podman")
 	contains(t, out, "? #1 your request \"I need podman\" widens the sandbox", "add @podman-socket",
-		"ABUSE: the sandbox can run arbitrary code in a container", "/accept 1 applies all of it, /decline 1",
-		"genuinely offline, containers included")
+		"cost: the sandbox can run arbitrary code in a container", "/accept 1 applies all of it, /decline 1",
+		"Add @net if the containers must pull images")
 	if !s.Draft().Empty() || len(s.Draft().Ledger()) != 0 {
 		t.Fatalf("applied before the answer: %s", s.Draft().Render())
 	}
@@ -358,7 +358,7 @@ func TestSecondIdentityIsASessionQuestion(t *testing.T) {
 
 	contains(t, say(s, "account2 again"), "already pins the GitHub login \"account2\"; nothing changed")
 	out := say(s, "now account1")
-	contains(t, out, "TWO ACCOUNTS ARE TWO PROFILES", "#2 the draft already pins the GitHub login \"account2\"", "/accept 2 saves this profile")
+	contains(t, out, "A profile pins one account", "#2 the draft already pins the GitHub login \"account2\"", "/accept 2 saves this profile")
 	if p := s.Pending(); len(p) != 1 || p[0].Kind != SecondProfile {
 		t.Fatalf("%+v", p)
 	}
@@ -563,7 +563,7 @@ func TestRefusalIsTheModelsReading(t *testing.T) {
 	w.Reply("hide ~/src/other", `{"op":"refuse","code":"host_port"}`)
 	s := open(w, true)
 	out := say(s, "hide ~/src/other")
-	contains(t, out, "the model read this as a request snug refuses (host_port). snug's rule:", "say it differently — nothing changed")
+	contains(t, out, "I read that as a request snug refuses (host_port).", "say it differently — nothing changed")
 }
 
 // TestOnlyComposeIsRead: every other file is the project's words, and is
