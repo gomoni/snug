@@ -142,6 +142,7 @@ var refusals = map[string]Entry{
 	"unknown_list_var": {Say: "Refused. snug does not know that variable as a path list."},
 	"no_verb":          {Say: "Refused. snug accepts no profile setting for that variable."},
 	"no_such_entry":    {Say: "Nothing to remove."},
+	"host_pointer":     {Say: "Refused. The variable points at something on the host — a program, a keyring, an agent, a display or a bus — that the sandbox does not get by copying a name; the line above says what to use instead."},
 }
 
 var notes = map[string]Entry{

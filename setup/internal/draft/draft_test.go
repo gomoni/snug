@@ -292,7 +292,7 @@ func TestStageBinaryChecksHostPath(t *testing.T) {
 // the letters stay allowed.
 func TestSetEnvRefusesCredentialNames(t *testing.T) {
 	for _, name := range []string{"DATABASE_URL", "PRIVATE_KEY", "ACCESS_KEY", "AWS_ACCESS_KEY_ID", "DEPLOY_KEY",
-		"SIGNING_KEY", "SSH_AUTH_SOCK", "DB_PASS", "MYSQL_PWD", "REDIS_URL", "MONGODB_URI", "SENTRY_DSN", "NPM_AUTH",
+		"SIGNING_KEY", "DB_PASS", "MYSQL_PWD", "REDIS_URL", "MONGODB_URI", "SENTRY_DSN", "NPM_AUTH",
 		"GPG_KEYS", "DB_PASSWD", "AUTH_HEADER",
 		// redteam setup r3 R3-1: still passed after the R2-1 fix.
 		"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "HTTP_PROXY", "BORG_PASSPHRASE", "GPG_PASSPHRASE",
@@ -312,10 +312,30 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 	}
 	for _, name := range []string{"EDITOR", "PAGER", "KEYBOARD_LAYOUT", "XKB_DEFAULT_LAYOUT", "LC_ALL",
 		"PASSTHROUGH", "AUTHOR_NAME", "BASE_URL", "TOKENIZERS_PARALLELISM", "MAX_TOKENS", "NO_PROXY", "GOPROXY",
-		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "GNUPGHOME", "DOCKER_CONFIG", "KEYFILE", "PATTERN", "SPATIAL_DIR"} {
+		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "DOCKER_CONFIG", "KEYFILE", "PATTERN", "SPATIAL_DIR"} {
 		d := New(testHost())
 		if o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", "inherit")); o.Refused != "" {
 			t.Errorf("inherit %s refused: %+v", name, o)
+		}
+	}
+}
+
+// TestHostPointerEnvRefused: a variable naming a host program, keyring,
+// agent, display or bus is refused at every verb with what to use instead;
+// none of them is a name snug writes in every run (writtenBySnug).
+func TestHostPointerEnvRefused(t *testing.T) {
+	for name, alt := range map[string]string{"GIT_ASKPASS": "pin an identity", "SSH_ASKPASS": "pin an identity",
+		"SSH_AUTH_SOCK": "pins an identity", "GNUPGHOME": "ssh signing key", "XDG_RUNTIME_DIR": "0700",
+		"DBUS_SESSION_BUS_ADDRESS": "no desktop bus", "DISPLAY": "no X11", "WAYLAND_DISPLAY": "no Wayland"} {
+		if slices.Contains(writtenBySnug, name) {
+			t.Errorf("%s is snug's own; its refusal is reserved_env", name)
+		}
+		for _, verb := range []string{"inherit", "set"} {
+			d := New(testHost())
+			o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", verb, "value", "/x"))
+			if o.Refused != CodeHostPointer || !strings.Contains(o.Msg, alt) || !d.Empty() {
+				t.Errorf("%s %s: %+v", verb, name, o)
+			}
 		}
 	}
 }

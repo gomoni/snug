@@ -30,6 +30,7 @@ const (
 	CodeUnknownList = "unknown_list_var"
 	CodeNoVerb      = "no_verb"
 	CodeNoSuchEntry = "no_such_entry"
+	CodeHostPointer = "host_pointer"
 )
 
 // Host is what path decisions need to know about the machine. FS functions
