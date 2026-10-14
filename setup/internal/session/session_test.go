@@ -13,13 +13,14 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/intent"
+	"github.com/gomoni/snug/setup/internal/llm"
 	"github.com/gomoni/snug/setup/internal/testworld"
 )
 
 var ctx = context.Background()
 
 func open(w *testworld.World, offline bool) *Session {
-	s, _ := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: offline, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	s, _ := New(ctx, Config{Interpreter: llm.Interpreter{M: w.Model}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: offline, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
 	return s
 }
 

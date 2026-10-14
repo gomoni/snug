@@ -21,12 +21,12 @@ func run(t *testing.T, w *testworld.World, script string) (*session.Session, str
 	var out bytes.Buffer
 	s := Run(context.Background(), Config{
 		Session: session.Config{
-			Model:      llm.Model{B: &llm.Remote{URL: w.LLMServer().URL}},
-			Run:        w.Run,
-			Host:       w.Host(),
-			LookPath:   w.LookPath,
-			Offline:    true,
-			ProfileDir: w.ProfDir,
+			Interpreter: llm.Interpreter{M: llm.Model{B: &llm.Remote{URL: w.LLMServer().URL}}},
+			Run:         w.Run,
+			Host:        w.Host(),
+			LookPath:    w.LookPath,
+			Offline:     true,
+			ProfileDir:  w.ProfDir,
 		},
 		In:   strings.NewReader(script),
 		Out:  &out,

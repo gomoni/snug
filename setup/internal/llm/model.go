@@ -42,8 +42,8 @@ type Backend interface {
 	Close() error
 }
 
-// Model adapts a Backend to the Complete(ctx, system, user, temperature) that
-// session calls. It is the one place that knows intent.Schema and MaxTokens.
+// Model adapts a Backend to the Completer that Interpreter calls. It is the
+// one place that knows intent.Schema and MaxTokens.
 type Model struct{ B Backend }
 
 // Complete sends system and user to the backend under intent.Schema.

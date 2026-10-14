@@ -23,20 +23,22 @@ import (
 	"github.com/gomoni/snug/setup/internal/texts"
 )
 
-// Model answers one prompt. temperature is 0 for the first attempt and higher
-// for the single retry, because the same prompt at temperature 0 would return
-// the same bytes.
-type Model interface {
-	Complete(ctx context.Context, system, user string, temperature float64) (string, error)
+// Interpreter reads one request into actions. c is what the session knows
+// (the draft, the host's identities, the human's profile names); nothing is
+// applied by interpreting. An *intent.Unclear error means the request was not
+// understood and its Choices may be offered; any other error is the
+// interpreter's own failure. Neither changes anything.
+type Interpreter interface {
+	Interpret(ctx context.Context, c intent.Context, request string) ([]intent.Action, error)
 }
 
 // Config is everything the session needs from outside.
 type Config struct {
-	Model    Model
-	Run      hostfacts.Runner
-	Host     draft.Host
-	Offline  bool
-	LookPath func(string) (string, error)
+	Interpreter Interpreter
+	Run         hostfacts.Runner
+	Host        draft.Host
+	Offline     bool
+	LookPath    func(string) (string, error)
 
 	// ProfileDir is where Save writes NAME.toml.
 	ProfileDir string
@@ -178,30 +180,6 @@ func (s *Session) context() intent.Context {
 	}
 	c.Profiles = s.profileNames()
 	return c
-}
-
-// ask sends the prompt and returns validated actions. A reply that fails
-// intent.Parse is retried once at a higher temperature; after that nothing is
-// guessed.
-func (s *Session) ask(ctx context.Context, request string) ([]intent.Action, []Line) {
-	system, user := intent.FormatPrompt(s.context(), request)
-	var last error
-	for attempt := 0; attempt < 2; attempt++ {
-		temp := 0.0
-		if attempt > 0 {
-			temp = 0.3
-		}
-		reply, err := s.cfg.Model.Complete(ctx, system, user, temp)
-		if err != nil {
-			return nil, []Line{warn("error: %s", safe.Inline(err.Error()))}
-		}
-		acts, err := intent.Parse([]byte(strings.TrimSpace(reply)))
-		if err == nil {
-			return acts, nil
-		}
-		last = err
-	}
-	return nil, []Line{warn("I did not understand that, and nothing changed (the model's reply was not a valid action list: %s). Try saying it differently.", safe.Inline(last.Error()))}
 }
 
 // refusal is Go's verdict on an action the draft refused.
