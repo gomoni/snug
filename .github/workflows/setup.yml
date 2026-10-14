@@ -1,12 +1,15 @@
 name: setup
 
 # snug-setup is its own Go module (setup/go.mod), so ci.yml's `make gate` runs
-# its vet and tests only through the last line of the gate target and never
-# runs anything that needs a model. That split is deliberate and lives here:
+# its vet and tests only through the last line of the gate target. Its default
+# path, the rules interpreter, needs no model, and every test of it is in the
+# unit job. The model is optional (--model, --openai-url) and so is the server
+# job: it is the secondary check of that path. The split lives here:
 #
 #   ci.yml   `make gate` -> gofmt, vet and the model-free tests of setup/ too
-#   setup.yml (this file) -> the same, in the module's own terms with CGO off,
-#            plus the tests that start a real llama-server on a real GGUF
+#   setup.yml (this file) -> unit: the same, in the module's own terms with CGO
+#            off, gold scores of the rules included; server: the optional model
+#            path against a real llama-server on a real GGUF
 #
 # Not path-filtered. A workflow that does not run posts no check at all, and a
 # pull request requiring it would wait forever on "Expected" (see the draft

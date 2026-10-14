@@ -4,30 +4,50 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"github.com/gomoni/snug/setup/internal/llm"
+	"github.com/gomoni/snug/setup/internal/rules"
+	"github.com/gomoni/snug/setup/internal/session"
 )
 
-// backendFlags is what the command line says about the model. Without URL,
-// Model is a GGUF run by a llama-server child of ours; with URL, it is the
-// name of a model on that server, and may be empty.
+// backendFlags is what the command line says about the model. With neither
+// Model nor URL there is none. Without URL, Model is a GGUF run by a
+// llama-server child of ours; with URL, it is the name of a model on that
+// server, and may be empty.
 type backendFlags struct {
 	Model     string
 	URL       string // a server that is already running, with its own model
 	ServerBin string
 }
 
-// check refuses a command line that names no way to reach a model.
+// check refuses a command line that names the llama-server binary without a
+// GGUF for it to run.
 func (f backendFlags) check() error {
-	if f.Model == "" && f.URL == "" {
-		return errors.New("give --model FILE.gguf, or --openai-url URL of a server that is already running: there is no built-in model, and guessing a server would send your host's key comments and logins somewhere you did not choose")
-	}
 	if f.ServerBin != "" && f.URL != "" {
 		return errors.New("--llama-server names the binary snug-setup starts for a GGUF, and is meaningless with --openai-url")
 	}
+	if f.ServerBin != "" && f.Model == "" {
+		return errors.New("--llama-server names the binary snug-setup starts for --model FILE.gguf; give the GGUF too, or neither")
+	}
 	return nil
+}
+
+// newInterpreter builds the one interpreter the session will use: the rules,
+// unless the command line names a model. This is the only place that knows
+// which; the closer stops what it started.
+func newInterpreter(ctx context.Context, f backendFlags, home string) (session.Interpreter, io.Closer, error) {
+	if f.Model == "" && f.URL == "" {
+		return rules.Interpreter{}, io.NopCloser(nil), nil
+	}
+	b, err := newBackend(ctx, f, home)
+	if err != nil {
+		return nil, nil, err
+	}
+	describe(b.Caps(), os.Stderr)
+	return llm.Interpreter{M: llm.Model{B: b}}, b, nil
 }
 
 // newBackend builds the one Backend the session will use. This is the only

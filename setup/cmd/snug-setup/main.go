@@ -1,7 +1,9 @@
-// Command snug-setup builds a snug profile from a conversation. A small local
-// model turns what you say into a list of actions; everything exact, and every
-// question about identities, is Go's. It is a convenience: snug never needs it,
-// and a profile it writes is read by snug like any other file.
+// Command snug-setup builds a snug profile from a conversation. It reads the
+// project and the host, proposes what they make plain, and reads what you say
+// with fixed rules into a list of actions; everything exact, and every
+// question about identities, is Go's. A model can read requests instead
+// (--model, --openai-url). It is a convenience: snug never needs it, and a
+// profile it writes is read by snug like any other file.
 package main
 
 import (
@@ -17,14 +19,16 @@ import (
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
-	"github.com/gomoni/snug/setup/internal/llm"
 	"github.com/gomoni/snug/setup/internal/plain"
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
-const usage = `usage: snug-setup (--model FILE.gguf | --openai-url URL [--model NAME]) [--llama-server PATH] [--offline] [--profile-dir DIR] [DIR]
+const usage = `usage: snug-setup [--model FILE.gguf | --openai-url URL [--model NAME]] [--llama-server PATH] [--offline] [--profile-dir DIR] [DIR]
 
-  --model FILE.gguf    run llama-server on this model, on a private unix socket, for the session
+  Without --model or --openai-url, requests are read by fixed rules: no model, no server, nothing
+  leaves this machine but what --offline turns off.
+
+  --model FILE.gguf    read requests with a model: run llama-server on it, on a private unix socket
   --openai-url URL     use a server that is already running and speaks the OpenAI chat-completions API
                        (llama-server, ollama); --model NAME then names the model on it (ollama needs an
                        installed model's name; llama-server ignores it). To use our GGUF in ollama, import
@@ -32,8 +36,9 @@ const usage = `usage: snug-setup (--model FILE.gguf | --openai-url URL [--model 
   --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
                        scripts/fetch-llama-server.sh puts the tested release there)
   --offline            never ask GitHub whether an ssh key belongs to an account
-  --plain              accepted and ignored: snug-setup always asks nothing. Open questions are
-                       answered with /accept, /decline and /pick lines (/help lists them).
+  --plain              accepted and ignored: snug-setup always asks nothing. The newest question is
+                       answered with a line of yes, no or its numbers; any with /accept, /decline
+                       and /pick (/help lists them).
   --profile-dir DIR    where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
   DIR                  the project directory the profile is for (default: the current directory)
 `
@@ -102,12 +107,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backend, err := newBackend(ctx, bf, home)
+	interp, closer, err := newInterpreter(ctx, bf, home)
 	if err != nil {
 		return err
 	}
-	defer backend.Close()
-	describe(backend.Caps(), os.Stderr)
+	defer closer.Close()
 
 	// The loop blocks reading stdin, so a signal has to end the process from
 	// here; the backend is closed first because os.Exit skips deferred calls.
@@ -117,7 +121,7 @@ func run() error {
 		if finished.Load() {
 			return
 		}
-		backend.Close()
+		closer.Close()
 		os.Exit(130)
 	}()
 
@@ -126,12 +130,12 @@ func run() error {
 		Target:     target,
 		RuntimeDir: os.Getenv("XDG_RUNTIME_DIR"),
 	}
-	// One front end serves the terminal too: it asks nothing, so piped input
-	// is never taken for an answer, and it is the only one that follows the
-	// session's rules.
+	// One front end serves the terminal too: it asks nothing, so only a line
+	// that is nothing but an answer is taken for one, and it is the only one
+	// that follows the session's rules.
 	plain.Run(ctx, plain.Config{
 		Session: session.Config{
-			Interpreter: llm.Interpreter{M: llm.Model{B: backend}},
+			Interpreter: interp,
 			Run:         hostfacts.ExecRunner,
 			Host:        host,
 			Offline:     *offline,
