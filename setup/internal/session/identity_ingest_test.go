@@ -265,3 +265,38 @@ func TestOpeningCardNamesTheSuggestedIdentity(t *testing.T) {
 	}
 	contains(t, out, "pinned git author Account Two <two@example.com>.", "not applied: pin GitHub login")
 }
+
+// TestOpeningCardOffersGitOrAPinnedAuthor: with a git author to pin (name
+// and email) the card does not also offer @git, which would add next to
+// nothing beside it; with none to pin it offers @git. Each identical cost is
+// printed once.
+func TestOpeningCardOffersGitOrAPinnedAuthor(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
+	_, out := startRules(w)
+	contains(t, out, "pin git author Account Two <two@example.com>")
+	lacks(t, out, "add @git")
+	w2 := testworld.New(t)
+	goProject(t, w2)
+	_, out = startRules(w2)
+	contains(t, out, "1. add @git")
+}
+
+// TestSensitiveRefusalListsAFewKeys: the narrow version of ~/.ssh is a
+// pinned key, and the refusal lists three of them with the way to see all;
+// "which keys do I have" lists every one.
+func TestSensitiveRefusalListsAFewKeys(t *testing.T) {
+	w := testworld.New(t)
+	for i := 0; i < 9; i++ {
+		w.Key(fmt.Sprintf("spare_%d", i), "spare@host", byte(20+i))
+	}
+	s, _ := startRules(w)
+	out := say(s, "give it my ~/.ssh")
+	contains(t, out, "refuses (sensitive_home)", "... and 9 more: /keys lists all 12")
+	if n := strings.Count(out, "SHA256:"); n != 3 {
+		t.Errorf("%d keys listed beside the refusal:\n%s", n, out)
+	}
+	if n := strings.Count(say(s, "which keys do I have?"), "SHA256:"); n != 12 {
+		t.Errorf("%d keys listed for the question", n)
+	}
+}

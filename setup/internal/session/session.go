@@ -208,7 +208,12 @@ func readRefusal(code string) []Line {
 }
 
 // ListIdentities lists the host's identities of kind.
-func (s *Session) ListIdentities(kind string) []Line {
+func (s *Session) ListIdentities(kind string) []Line { return s.listIdentities(kind, false) }
+
+// listIdentities lists the host's identities of kind; short lists at most
+// maxShown ssh keys, the suggested one first, and says how to see the rest.
+func (s *Session) listIdentities(kind string, short bool) []Line {
+	footer := ""
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
 	switch kind {
@@ -217,7 +222,18 @@ func (s *Session) ListIdentities(kind string) []Line {
 			return []Line{info("no ssh public keys (~/.ssh/*.pub) on this host.")}
 		}
 		fmt.Fprintln(tw, "KEY\tCOMMENT\tAGENT\tFINGERPRINT")
-		for _, k := range s.keys {
+		keys := s.keys
+		if short {
+			keys = nil
+			shown, more := s.shortlist(kind, "", s.Candidates(kind))
+			for _, c := range shown {
+				keys = append(keys, s.keys[c.idx])
+			}
+			if more > 0 {
+				footer = fmt.Sprintf("... and %d more: /keys lists all %d", more, len(s.keys))
+			}
+		}
+		for _, k := range keys {
 			held := "-"
 			if k.InAgent {
 				held = "held"
@@ -246,6 +262,9 @@ func (s *Session) ListIdentities(kind string) []Line {
 		}
 	}
 	tw.Flush()
+	if footer != "" {
+		b.WriteString(footer + "\n")
+	}
 	return []Line{{Shown, strings.TrimRight(b.String(), "\n")}}
 }
 

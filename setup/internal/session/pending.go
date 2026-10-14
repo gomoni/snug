@@ -89,13 +89,19 @@ func (s *Session) open(p Pending) Pending {
 		if p.turn.Ingest {
 			p.Question = "what I found in the project would widen the sandbox like this; nothing from it is applied yet:"
 		}
+		said := map[string]int{}
 		for j, i := range p.held {
 			it := p.turn.Items[i]
 			o := fmt.Sprintf("%d. %s", j+1, it.Sentence)
 			if it.Why != "" {
 				o += "  (from " + safe.Inline(it.Why) + ")"
 			}
-			if it.Abuse != "" {
+			switch k, dup := said[it.Abuse]; {
+			case it.Abuse == "":
+			case dup:
+				o += fmt.Sprintf("\n      cost: as %d.", k)
+			default:
+				said[it.Abuse] = j + 1
 				o += "\n      cost: " + it.Abuse
 			}
 			p.Options = append(p.Options, o)

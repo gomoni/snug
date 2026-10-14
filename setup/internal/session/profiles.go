@@ -86,7 +86,11 @@ func (s *Session) askSnug(ctx context.Context, name string) resolveResult {
 	}
 	msg = strings.Join(strings.Fields(safe.Inline(msg)), " ")
 	if r := []rune(msg); len(r) > 240 {
-		msg = string(r[:237]) + "..."
+		// Cut after the last sentence that fits; a message with no sentence
+		// end in reach is shown whole rather than cut mid-sentence.
+		if i := strings.LastIndex(string(r[:240]), ". "); i > 0 {
+			msg = string(r[:240])[:i+1] + " (`snug -p " + name + " DIR` prints the rest)"
+		}
 	}
 	return resolveResult{msg: msg, checked: true}
 }
