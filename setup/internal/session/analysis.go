@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/intent"
 	"github.com/gomoni/snug/setup/internal/safe"
@@ -83,13 +84,27 @@ func (s *Session) proposalTurn(ctx context.Context, p ingest.Proposal) *Turn {
 			items = append(items, it)
 		}
 	}
-	items = append(items, s.identityItems(ctx)...)
+	ids := s.identityItems(ctx)
+	// @git writes the host's author into the sandbox's git config; a pinned
+	// author with a name and an email overrides both, so @git would add
+	// next to nothing beside it. Accepting the two from separate cards is
+	// still allowed.
+	if slices.ContainsFunc(ids, func(it Item) bool { return it.Pin && it.Action.Kind == "git" && s.fullAuthor(it.Action.Account) }) {
+		items = slices.DeleteFunc(items, func(it Item) bool { return it.Action == intent.Action{Op: intent.OpUseProfile, Name: "@git"} })
+	}
+	items = append(items, ids...)
 	if len(items) == 0 {
 		s.turn--
 		return nil
 	}
 	t.Items = items
 	return t
+}
+
+// fullAuthor reports whether the host's git author with this email has a
+// name too.
+func (s *Session) fullAuthor(email string) bool {
+	return slices.ContainsFunc(s.authors, func(a hostfacts.GitAuthor) bool { return a.Email == email && a.Name != "" })
 }
 
 // pinLabel names a candidate on a card line: the key and its comment, the

@@ -355,7 +355,10 @@ func (s *Session) infoAction(ctx context.Context, t *Turn, acts []intent.Action,
 	case intent.OpShow:
 		return s.Show()
 	case intent.OpListIdentities:
-		return s.ListIdentities(a.Kind)
+		// Beside a refusal the list says what to use instead; the full
+		// table is /keys.
+		short := slices.ContainsFunc(acts, func(x intent.Action) bool { return x.Op == intent.OpRefuse })
+		return s.listIdentities(a.Kind, short)
 	}
 	return nil
 }

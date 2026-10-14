@@ -137,3 +137,30 @@ func say2(t *testing.T, w *testworld.World, s *Session, request string) string {
 	t.Helper()
 	return say(s, request)
 }
+
+// TestLongSnugMessageIsCutAtASentence: snug's refusal is shortened after a
+// whole sentence, never in the middle of one.
+func TestLongSnugMessageIsCutAtASentence(t *testing.T) {
+	w := testworld.New(t)
+	w.Profile("accounts.toml", acctToml)
+	first := "profile includes \"@cwd-rw\": renamed to @target-rw. " + strings.Repeat("The grant was always the target directory. ", 4)
+	w.Refuse = map[string]string{"acct": first + "Rewrite the selection as the new name and run again please"}
+	s, _ := startRules(w)
+	out := text(s.IncludeProfile(ctx, "acct"))
+	lacks(t, out, "Rewrite the selection")
+	contains(t, out, "directory. (`snug -p acct DIR` prints the rest)")
+}
+
+// TestIdenticalCostIsSaidOnce: two items with the same cost on one card
+// print it once; the second points at the first.
+func TestIdenticalCostIsSaidOnce(t *testing.T) {
+	w := testworld.New(t)
+	s := open(w, true)
+	t1 := s.classify(ctx, 1, "x", nil)
+	t1.Items = []Item{{Sentence: "a", Abuse: "same cost", Class: ClassGrant}, {Sentence: "b", Abuse: "same cost", Class: ClassGrant}}
+	p := s.open(Pending{Kind: Card, turn: t1, held: []int{0, 1}, said: "x"})
+	got := p.Line().Text
+	if strings.Count(got, "same cost") != 1 || !strings.Contains(got, "cost: as 1.") {
+		t.Errorf("%s", got)
+	}
+}
