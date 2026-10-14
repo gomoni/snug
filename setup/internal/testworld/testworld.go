@@ -44,7 +44,7 @@ type Model struct {
 	Prompts []string
 }
 
-// Complete implements session.Model.
+// Complete implements llm.Completer.
 func (m *Model) Complete(_ context.Context, _, user string, _ float64) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

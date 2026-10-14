@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"path"
 	"regexp"
 	"slices"
@@ -153,9 +154,9 @@ func (s *Session) profileNamed(text string) string {
 	return ""
 }
 
-// Submit sends text to the model and returns the understood turn, applying
-// nothing. It returns a nil Turn, with lines saying why, when the model could
-// not be reached or its reply was not a valid action list twice.
+// Submit reads text through the interpreter and returns the understood turn,
+// applying nothing. It returns a nil Turn, with lines saying why, when the
+// interpreter did not understand text or failed.
 func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	text = strings.TrimSpace(text)
 	if analyzeRE.MatchString(text) {
@@ -173,12 +174,25 @@ func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	if recommendRE.MatchString(text) {
 		return nil, s.Analyze(ctx)
 	}
-	acts, lines := s.ask(ctx, text)
-	if acts == nil {
-		return nil, lines
+	acts, err := s.cfg.Interpreter.Interpret(ctx, s.context(), text)
+	if err != nil {
+		return nil, s.notUnderstood(err)
 	}
 	s.turn++
-	return s.classify(ctx, s.turn, text, acts), lines
+	return s.classify(ctx, s.turn, text, acts), nil
+}
+
+// notUnderstood says why a request changed nothing.
+func (s *Session) notUnderstood(err error) []Line {
+	var u *intent.Unclear
+	if !errors.As(err, &u) {
+		return []Line{warn("error: %s", safe.Inline(err.Error()))}
+	}
+	why := ""
+	if u.Why != "" {
+		why = " (" + safe.Inline(u.Why) + ")"
+	}
+	return []Line{warn("I did not understand that, and nothing changed%s. Try saying it differently.", why)}
 }
 
 // classify decides each action's class against a clone of the draft with the

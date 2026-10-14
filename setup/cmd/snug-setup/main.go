@@ -131,7 +131,7 @@ func run() error {
 	// session's rules.
 	plain.Run(ctx, plain.Config{
 		Session: session.Config{
-			Model:       llm.Model{B: backend},
+			Interpreter: llm.Interpreter{M: llm.Model{B: backend}},
 			Run:         hostfacts.ExecRunner,
 			Host:        host,
 			Offline:     *offline,

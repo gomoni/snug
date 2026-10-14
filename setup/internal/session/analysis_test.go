@@ -9,6 +9,7 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/ingest"
+	"github.com/gomoni/snug/setup/internal/llm"
 	"github.com/gomoni/snug/setup/internal/testworld"
 )
 
@@ -19,7 +20,7 @@ func goProject(t *testing.T, w *testworld.World) {
 }
 
 func start(w *testworld.World) (*Session, string) {
-	s, lines := New(ctx, Config{Model: w.Model, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	s, lines := New(ctx, Config{Interpreter: llm.Interpreter{M: w.Model}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
 	return s, text(lines)
 }
 
