@@ -287,41 +287,57 @@ Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 
 ### Asking for one — `snug-setup` (experimental)
 
-Chat writes the profile. Local model (fine-tuned Qwen2.5-1.5B, GGUF) turns a request into a closed set of actions; Go
-gates every one. Model output is untrusted: anything that widens the sandbox
-or puts a value into it lands on a card and waits for `/accept`; `~/.ssh`,
-token files, a writable `~/.bashrc` and the like are refused, whatever the
-model says. `/save` runs `snug --dry-run --json` and refuses to write a file
-that resolves to anything you did not ask for.
+Chat writes the profile. No model, no server, no network by default: snug-setup
+reads the project and your host, proposes what they make plain, and reads what
+you type with fixed rules (word sets, typo tolerance, slots only from paths, env
+names and what the host knows). Go gates every action. Anything that widens the
+sandbox or puts a value into it lands on a card and waits for an answer; `~/.ssh`,
+token files, a writable `~/.bashrc` and the like are refused. `/save` runs
+`snug --dry-run --json` and refuses to write a file that resolves to anything you
+did not ask for.
 
-Two ways to reach a model, exactly one per run:
+Try it:
 
 ```bash
-make setup                                              # bin/snug-setup
-scripts/fetch-llama-server.sh                           # once: the tested llama.cpp release, sha256-checked
-bin/snug-setup --model F.gguf ~/src/proj                # llama-server child on a private unix socket
+make setup                     # bin/snug-setup
+bin/snug-setup ~/src/proj
+```
+
+Opening reads marker file names, `go.mod` / `package.json` project name, `.git`,
+and your host (`profiles.d`, `~/.ssh/config` Host/IdentityFile, `known_hosts`
+host names, `allowed_signers`, public keys), then opens card #1: `@git`, cache
+variables under `{target}/.cache`, numbered. Answer the newest question in
+words: `yes`, `no`, `only 1 and 3`; any question with `/accept N`, `/decline N`,
+`/pick KIND VALUE`. The project's git history is read as bytes (no `git` runs in
+it: a hostile `.git/config` names programs git would execute) to suggest which
+of your keys signs there; signatures are read, never verified.
+
+Requests: `needs internet and podman`, `sign commits with my key`, `use my acme
+profile`, `read-only on ~/data, but let it write ~/data/out`, `undo that`. A line
+it cannot read changes nothing and offers up to three numbered readings; it is
+never mapped to the action it merely resembles. Gold scores of the rules:
+`setup/model/reports/rules-*.json`.
+
+#### Optional model
+
+A local model can read requests instead of the rules. Exactly one way per run:
+
+```bash
+scripts/fetch-llama-server.sh                                 # once: tested llama.cpp release, sha256-checked
+bin/snug-setup --model F.gguf ~/src/proj                      # llama-server child on a private unix socket
 bin/snug-setup --openai-url http://127.0.0.1:8080 ~/src/proj  # a server you run, with its own model
 ```
 
 snug-setup never downloads anything: `--model` finds `llama-server` on `PATH`,
 then under `~/.cache/snug-setup/llama.cpp/`, or takes `--llama-server PATH`.
-`--openai-url` with ollama needs `--model NAME` (an installed model; the
-GGUF imported with a Modelfile that carries the Qwen chat template), llama-server
-ignores it. `--openai-url` output is not known to be schema-constrained: snug-setup says so,
-and a reply that is not an action list is refused, never guessed.
+`--openai-url` with ollama needs `--model NAME` (an installed model; the GGUF
+imported with a Modelfile that carries the Qwen chat template), llama-server
+ignores it. `--openai-url` output is not known to be schema-constrained:
+snug-setup says so, and a reply that is not an action list is refused, never
+guessed. No model ships: build one with `setup/model` (`gen_dataset.py`,
+`train.py`, `export_gguf.sh`).
 
-Before the first request it reads the project (marker file names, `go.mod` /
-`package.json` project name, `.git`) and your own host (`profiles.d`, `~/.ssh/config`
-Host/IdentityFile, `known_hosts` host names, `allowed_signers`, public keys) and
-opens a card with what the project's files make plain: `@git`, cache variables
-under `{target}/.cache`. `/analyze` repeats it; `/include NAME` adds one of your
-own profiles. The project's git history is read as bytes (no `git` runs in it: a
-hostile `.git/config` names programs git would execute) to suggest which of your
-keys signs there; signatures are read, never verified. Suggestions only put a
-default first in an identity question; nothing is pinned unanswered.
-
-No model ships: build one with `setup/model` (`gen_dataset.py`, `train.py`,
-`export_gguf.sh`). Own module (`setup/go.mod`); `snug` needs none of it.
+Own module (`setup/go.mod`); `snug` needs none of it.
 
 ## Identity — one account per sandbox
 

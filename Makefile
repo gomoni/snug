@@ -12,8 +12,9 @@ all: build
 build:
 	go build -o $(BIN) ./cmd/snug
 
-# snug-setup, a separate module and the only part of this repository that
-# needs a model. It is built without cgo like everything else.
+# snug-setup, a separate module; it reads requests with fixed rules and needs a
+# model only behind --model or --openai-url. Built without cgo like everything
+# else.
 setup:
 	cd setup && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o ../bin/snug-setup ./cmd/snug-setup
 
