@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/targetkey"
@@ -116,6 +118,57 @@ func dataHomeDir() (string, error) {
 	return filepath.Join(home, ".local", "share"), nil
 }
 
+// dataDirName is snug's directory under the XDG data home; the engine store
+// lives beneath it, and DataRoots names it for the resolver.
+const dataDirName = "snug"
+
+// DataRoots are every directory a run of snug could keep engine state in —
+// image stores, layers, podman's libpod database — deduplicated:
+// $XDG_DATA_HOME/snug when that is set, and always $HOME/.local/share/snug.
+// The second is included under a custom $XDG_DATA_HOME because a later run
+// started without the variable uses it: the set protects what the NEXT run
+// reads, not only what this one does. An $XDG_DATA_HOME that only some other
+// shell sets cannot be known here. String arithmetic only, like dataHomeDir.
+func DataRoots() []string {
+	var roots []string
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		roots = append(roots, filepath.Join(d, dataDirName))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if r := filepath.Join(home, ".local", "share", dataDirName); !slices.Contains(roots, r) {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
+
+// runDirPrefix and runrootPrefix are the name prefixes of the two kinds of
+// per-uid directory the engine creates directly under os.TempDir(): the run
+// directory (runDirName) and the keyed runroot's top level (RunrootBaseName).
+// The trailing dash is what separates both from the runtime-directory
+// fallback "snug-<uid>".
+func runDirPrefix(uid int) string  { return "snug-" + strconv.Itoa(uid) + "-" }
+func runrootPrefix(uid int) string { return "snug-engines-" + strconv.Itoa(uid) + "-" }
+
+// TmpDirPrefixes are the absolute name prefixes of every directory the engine
+// creates under the temp directory for this uid — os.TempDir() and /tmp, since
+// a concurrent run may see a different $TMPDIR — each the parent joined with
+// runDirPrefix or runrootPrefix. The final element of each is a NAME PREFIX,
+// not a directory: "/tmp/snug-1000-" stands for every entry of /tmp whose name
+// starts with "snug-1000-".
+func TmpDirPrefixes() []string {
+	uid := os.Getuid()
+	var out []string
+	for _, parent := range []string{os.TempDir(), "/tmp"} {
+		for _, name := range []string{runDirPrefix(uid), runrootPrefix(uid)} {
+			if p := filepath.Join(parent, name); !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
 // planPaths computes the four paths for a run whose run directory is named
 // runDir. It touches nothing: every value here is string arithmetic over the
 // environment, which is why --dry-run can call it.
@@ -127,8 +180,8 @@ func planPaths(pol *policy.Policy, runDirName string) (Paths, error) {
 	key := engineKey(pol)
 	runDir := filepath.Join(os.TempDir(), runDirName)
 	return Paths{
-		Store:   filepath.Join(dataHome, "snug", "engines", key, "storage"),
-		Runroot: filepath.Join(os.TempDir(), fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key), "rr"),
+		Store:   filepath.Join(dataHome, dataDirName, "engines", key, "storage"),
+		Runroot: filepath.Join(os.TempDir(), RunrootBaseName(key), "rr"),
 		SockDir: filepath.Join(runDir, "sock"),
 		ConfDir: filepath.Join(runDir, "conf"),
 	}, nil
@@ -144,7 +197,7 @@ func planPaths(pol *policy.Policy, runDirName string) (Paths, error) {
 // predict, and predicting it is what lets --dry-run print the same paths the
 // run would use.
 func PlannedPaths(pol *policy.Policy) (Paths, error) {
-	return planPaths(pol, fmt.Sprintf("snug-%d-%d", os.Getuid(), os.Getpid()))
+	return planPaths(pol, runDirPrefix(os.Getuid())+strconv.Itoa(os.Getpid()))
 }
 
 // GraftPathsInto records the engine's host-tree grafts — store, runroot, sock,

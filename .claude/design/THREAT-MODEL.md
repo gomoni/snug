@@ -252,13 +252,24 @@ policy did not already grant, which is why it is a non-goal rather than a
 threat. The store is keyed on the target alone, so selecting fewer profiles
 does not give you a clean one — deleting the store directory does.
 
+What a profile cannot do is reach that state itself. A grant over the store
+root (`$XDG_DATA_HOME/snug`, `~/.local/share/snug`) — read-only or writable,
+containing it or inside it — is refused, and so is any grant at or inside a
+per-run engine directory under the temp directory (`snug-<uid>-*`,
+`snug-engines-<uid>-*`): those cross from one target's store to every other
+target's, and expose the libpod records a later `start` trusts and another
+run's engine socket. A `$SNUG_PODMAN_ROOT` set in snug's environment is
+refused writable and allowed read-only.
+
 ### 3.4 User-provided holes
 
 Passing in a socket that snug does not control is outside the tool's scope. In
 general `snug` very rarely refuses a configuration because it is insecure — the
 one refusal that is a judgement rather than a conflict is a target sitting
 directly in `$HOME`, or in any directory a profile replaces with an empty
-tmpfs.
+tmpfs. The others guard snug's own state rather than judging a grant: a
+writable grant over a configuration root, and any grant over the runtime
+directory, the engine store or a per-run engine directory (§3.3).
 
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.

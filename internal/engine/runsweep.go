@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -38,7 +37,7 @@ import (
 // still matters — it is what separates "snug-<uid>" and
 // "snug-engines-<uid>-<key>" — but a dash alone was never enough.
 func isEngineRunDirName(name string) bool {
-	rest, ok := strings.CutPrefix(name, fmt.Sprintf("snug-%d-", os.Getuid()))
+	rest, ok := strings.CutPrefix(name, runDirPrefix(os.Getuid()))
 	if !ok {
 		return false
 	}

@@ -264,7 +264,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, err
 	}
 
-	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, env); err != nil {
+	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, ctx.EngineTmpPrefixes, env); err != nil {
+		return nil, err
+	}
+
+	if err := refuseEngineDataRootGrant(set, names, vars, ctx.EngineDataRoots, env); err != nil {
 		return nil, err
 	}
 

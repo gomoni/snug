@@ -553,5 +553,5 @@ func Purge(parent *os.Root, parentDesc, name string, ownedParent bool) error {
 // leaving it behind is invariant 4's "state that survives them", and a fresh
 // store beside a stale runroot of the same key is untested and unwanted.
 func RunrootBaseName(key string) string {
-	return fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key)
+	return runrootPrefix(os.Getuid()) + key
 }

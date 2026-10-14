@@ -25,9 +25,9 @@ var runSeq atomic.Int64
 func runDirName(uid, pid int) string {
 	n := runSeq.Add(1)
 	if n == 1 {
-		return fmt.Sprintf("snug-%d-%d", uid, pid)
+		return fmt.Sprintf("%s%d", runDirPrefix(uid), pid)
 	}
-	return fmt.Sprintf("snug-%d-%d-%d", uid, pid, n)
+	return fmt.Sprintf("%s%d-%d", runDirPrefix(uid), pid, n)
 }
 
 // runDirs is this engine's own run directory: the verified handle, its
