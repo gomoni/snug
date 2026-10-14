@@ -179,3 +179,15 @@ func TestToolchainWordProposesTheAnalysisCaches(t *testing.T) {
 	s2, _ := startRules(w2)
 	contains(t, say(s2, "it's a rust project"), "the target has no Cargo.toml, so there is no rust cache to propose")
 }
+
+// TestNoChangeIsNotACardItem: asking again for what the draft has says so
+// and opens no card.
+func TestNoChangeIsNotACardItem(t *testing.T) {
+	w := testworld.New(t)
+	s, _ := startRules(w)
+	say(s, "needs internet")
+	say(s, "yes")
+	out := say(s, "needs internet and podman")
+	contains(t, out, "@net is already in the draft.", "1. add @podman-socket")
+	lacks(t, out, "2. ")
+}
