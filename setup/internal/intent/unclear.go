@@ -17,9 +17,8 @@ const (
 )
 
 // Choice is one reading an interpreter offers when it did not understand a
-// request. Label is Go's words for it; Actions are what picking it submits.
+// request: the actions picking it submits.
 type Choice struct {
-	Label   string
 	Actions []Action
 }
 

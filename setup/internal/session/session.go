@@ -1,5 +1,5 @@
-// Package session is snug-setup's engine: a request goes to the model with the
-// host's facts, the reply is validated, classified and applied to the draft,
+// Package session is snug-setup's engine: a request goes to the interpreter
+// with the host's facts, its actions are classified and applied to the draft,
 // and every point where a human must decide becomes a numbered pending
 // question instead of a prompt. It never reads a terminal and never prints;
 // every call returns the lines a front end shows. --plain and the TUI are two
@@ -195,10 +195,10 @@ func refusal(code, detail string) []Line {
 	return out
 }
 
-// modelRefusal is the model's reading of a request as one snug refuses. The
-// code is shown as a reading, not as snug's verdict: it is wrong often enough
-// that the human must be able to tell the two apart.
-func modelRefusal(code string) []Line {
+// readRefusal is the interpreter's reading of a request as one snug refuses.
+// The code is shown as a reading, not as snug's verdict: a reading can be
+// wrong, and the human must be able to tell the two apart.
+func readRefusal(code string) []Line {
 	text := "I read that as a request snug refuses (" + code + ")."
 	if e, ok := texts.Refusal(code); ok {
 		text += "\n" + e.String()

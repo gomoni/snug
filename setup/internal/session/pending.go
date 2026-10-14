@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/intent"
 	"github.com/gomoni/snug/setup/internal/safe"
 )
 
@@ -30,6 +31,10 @@ const (
 	// Overwrite asks whether the checked draft replaces a different file of
 	// the same name.
 	Overwrite
+	// Choice offers the readings of a request that was not understood. A
+	// number picks one and submits it as a request of its own; nothing is
+	// applied until then.
+	Choice
 )
 
 // Pending is an open question. N is its number for the session: numbers are
@@ -54,6 +59,10 @@ type Pending struct {
 	at   int
 	// path and body are an overwrite's file and the checked draft.
 	path, body string
+	// unclear is what a Choice offers.
+	unclear *intent.Unclear
+	// shown are the keys of an identity question's numbered candidates.
+	shown []string
 }
 
 // Line renders the question with its options and the line that answers it.
@@ -80,9 +89,9 @@ func (s *Session) open(p Pending) Pending {
 		if p.turn.Ingest {
 			p.Question = "what I found in the project would widen the sandbox like this; nothing from it is applied yet:"
 		}
-		for _, i := range p.held {
+		for j, i := range p.held {
 			it := p.turn.Items[i]
-			o := it.Sentence
+			o := fmt.Sprintf("%d. %s", j+1, it.Sentence)
 			if it.Why != "" {
 				o += "  (from " + safe.Inline(it.Why) + ")"
 			}
@@ -92,6 +101,9 @@ func (s *Session) open(p Pending) Pending {
 			p.Options = append(p.Options, o)
 		}
 		p.Answer = fmt.Sprintf("/accept %d applies all of it, /decline %d none of it", p.N, p.N)
+		if len(p.held) > 1 {
+			p.Answer += "; or say which to keep (\"only 1 and 3\")"
+		}
 	case Conflict:
 		p.Question = p.conf.Question
 		p.Answer = fmt.Sprintf("/accept %d takes it, /decline %d keeps what you said", p.N, p.N)
@@ -109,8 +121,9 @@ func (s *Session) open(p Pending) Pending {
 			}
 		}
 		shown, more := s.shortlist(p.kind, p.hint, cands)
-		for _, c := range shown {
-			p.Options = append(p.Options, c.Label)
+		for j, c := range shown {
+			p.Options = append(p.Options, fmt.Sprintf("%d. %s", j+1, c.Label))
+			p.shown = append(p.shown, c.Key)
 		}
 		if more > 0 {
 			p.Options = append(p.Options, fmt.Sprintf("... and %d more: /keys lists all %d", more, len(cands)))
@@ -127,6 +140,21 @@ func (s *Session) open(p Pending) Pending {
 	case Overwrite:
 		p.Question = p.path + " exists and differs from the draft; overwrite it?"
 		p.Answer = fmt.Sprintf("/accept %d writes it, /decline %d keeps the file", p.N, p.N)
+	case Choice:
+		u := p.unclear
+		if len(u.Understood) > 0 {
+			p.Question = "I understood " + s.sentences(u.Understood) + ", but not \"" + safe.Inline(u.Unknown) + "\". Nothing changed. Did you mean:"
+		} else {
+			p.Question = "I did not understand \"" + safe.Inline(u.Unknown) + "\"; nothing changed. Did you mean:"
+		}
+		for j, c := range u.Choices {
+			o := s.sentences(c.Actions)
+			if j == 0 && len(u.Understood) > 0 {
+				o = "only " + o
+			}
+			p.Options = append(p.Options, fmt.Sprintf("%d. %s", j+1, o))
+		}
+		p.Answer = "the number of the reading you meant, or say it differently"
 	}
 	s.pending = append(s.pending, p)
 	return p
@@ -174,6 +202,8 @@ func (s *Session) Accept(ctx context.Context, n int) []Line {
 	switch p.Kind {
 	case Identity:
 		return []Line{info("#%d is answered by naming the identity: %s.", n, p.Answer)}
+	case Choice:
+		return []Line{info("#%d is answered with the number of a reading.", n)}
 	case Overwrite:
 		return s.acceptOverwrite(ctx, p)
 	case SecondProfile:
@@ -222,6 +252,8 @@ func (s *Session) Decline(n int) []Line {
 		out = append(out, info("nothing written; this profile keeps its %s.", kindName(p.kind)))
 	case Overwrite:
 		return []Line{info("not saved; %s is unchanged.", p.path)}
+	case Choice:
+		out = append(out, info("nothing changed."))
 	}
 	s.commit(before, fmt.Sprintf("the answer to #%d", n))
 	return out
@@ -238,7 +270,57 @@ func outcome(o draft.Outcome) []Line {
 }
 
 // blocking are the questions a save waits for. A second-profile question does
-// not block: it is about what happens after a save, not about the draft.
+// not block: it is about what happens after a save, not about the draft; nor
+// does a choice, which is about a request that changed nothing.
 func (s *Session) blocking() []Pending {
-	return slices.DeleteFunc(slices.Clone(s.pending), func(p Pending) bool { return p.Kind == SecondProfile })
+	return slices.DeleteFunc(slices.Clone(s.pending), func(p Pending) bool { return p.Kind == SecondProfile || p.Kind == Choice })
+}
+
+// AcceptSome answers card n with the items at the 1-based positions keep,
+// as the card numbers them; the rest are not applied. It refuses a position
+// the card does not have, changing nothing.
+func (s *Session) AcceptSome(ctx context.Context, n int, keep []int) []Line {
+	p, ok := s.find(n)
+	if !ok {
+		return notOpen(n)
+	}
+	if p.Kind != Card {
+		return []Line{info("#%d is not a list to pick from: %s.", n, p.Answer)}
+	}
+	for _, k := range keep {
+		if k < 1 || k > len(p.held) {
+			return []Line{info("#%d has items 1 to %d; nothing changed.", n, len(p.held))}
+		}
+	}
+	before := s.snapshot()
+	s.close(n)
+	acts := p.turn.actions()
+	var out []Line
+	for j, i := range p.held {
+		it := p.turn.Items[i]
+		if slices.Contains(keep, j+1) {
+			out = append(out, s.proposeUser(p.turn, acts, it)...)
+		} else {
+			out = append(out, info("not applied: %s.", it.Sentence))
+		}
+	}
+	s.commit(before, fmt.Sprintf("the answer to #%d", n))
+	return out
+}
+
+// sentences says what acts would do, notes left out.
+func (s *Session) sentences(acts []intent.Action) string {
+	var out []string
+	for _, a := range acts {
+		if a.Op != intent.OpNote {
+			out = append(out, Sentence(s.d, a))
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// dropChoices closes the open choices: they were about the request before
+// the one being read now.
+func (s *Session) dropChoices() {
+	s.pending = slices.DeleteFunc(s.pending, func(p Pending) bool { return p.Kind == Choice })
 }

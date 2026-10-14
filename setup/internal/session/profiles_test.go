@@ -119,25 +119,21 @@ func TestProfileNameCannotBeAnythingButAName(t *testing.T) {
 	}
 }
 
-// TestProfileRequestInWordsIsRoutedWithoutTheModel: until the model is
-// retrained on include_profile, "reuse my acct profile" reaches the same card
-// /include does, by looking the exact name up among the human's profiles.
-func TestProfileRequestInWordsIsRoutedWithoutTheModel(t *testing.T) {
+// TestProfileRequestInWordsReachesTheCard: "reuse my acct profile" reaches
+// the same card /include does, by looking the exact name up among the
+// human's profiles; a near name includes nothing.
+func TestProfileRequestInWordsReachesTheCard(t *testing.T) {
 	w := testworld.New(t)
 	w.Profile("accounts.toml", acctToml)
-	s, _ := start(w)
+	s, _ := startRules(w)
 	out := say(s, "I already have a profile called acct, just reuse it")
 	contains(t, out, "? #1", "include your profile acct")
-	if len(w.Model.Prompts) != 0 {
-		t.Errorf("the model was asked")
-	}
-	s2, _ := start(w)
+	s2, _ := startRules(w)
 	out = say2(t, w, s2, "what is in my accts profile")
 	lacks(t, out, "include your profile")
 }
 
 func say2(t *testing.T, w *testworld.World, s *Session, request string) string {
 	t.Helper()
-	w.Reply(request, `{"op":"note","topic":"help"}`)
 	return say(s, request)
 }

@@ -1,9 +1,9 @@
 // Package plain is snug-setup without a screen: one reader, one line at a
-// time, and a line is either a request for the model or a slash command.
-// Nothing is ever asked. Where the TUI would ask, the session opens a
-// numbered question and the human — or the script — answers it with a line
-// of its own (/accept N, /decline N, /pick KIND VALUE), so no line meant as a
-// request can be taken as an answer.
+// time, and a line is a request, an answer, or a slash command. Nothing is
+// ever asked. Where the TUI would ask, the session opens a numbered question;
+// a line that is only yes, no or numbers ("only 1 and 3") answers the newest
+// one, and /accept N, /decline N and /pick KIND VALUE answer any. Every other
+// line is a request, so a request is never taken for an answer.
 package plain
 
 import (
@@ -30,6 +30,7 @@ type Config struct {
 }
 
 const answerHelp = `Answers to open questions (--plain asks nothing; it opens numbered questions):
+  yes | no | 2 | only 1 and 3  answer the newest question: all, none, or the items to keep
   /pending                  list the open questions and the line that answers each
   /accept N                 yes to question N
   /decline N                no to question N
@@ -48,7 +49,7 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
 func Run(ctx context.Context, cfg Config) *session.Session {
 	p := &printer{w: cfg.Out}
 	s, lines := session.New(ctx, cfg.Session)
-	p.say("snug-setup --plain: one request per line; questions are answered with /accept, /decline and /pick (see /help).")
+	p.say("snug-setup: one request per line; answer the newest question with yes, no or its numbers, any question with /accept, /decline and /pick (see /help).")
 	p.print(lines)
 	in := bufio.NewReader(cfg.In)
 	for {

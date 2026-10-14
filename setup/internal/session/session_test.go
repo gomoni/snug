@@ -475,7 +475,7 @@ func TestSentencesTakeTheDraftIntoAccount(t *testing.T) {
 		{Op: intent.OpGrantPath, Path: "{target}", Access: "ro"}:          "the project is read-only (run with --no-defaults)",
 		{Op: intent.OpGrantPath, Path: "~/data", Access: "rw"}:            "writable: " + w.Home + "/data (persists)",
 		{Op: intent.OpSelectIdentity, Kind: "github", Account: "x\ny"}:    `pick a GitHub login (you said "x y")`,
-		{Op: intent.OpRefuse, Code: "host_port"}:                          "the model read this as a request snug refuses (host_port)",
+		{Op: intent.OpRefuse, Code: "host_port"}:                          "read as a request snug refuses (host_port)",
 		{Op: intent.OpSetEnv, Name: "EDITOR", Verb: "set", Value: "vim"}:  "set EDITOR=vim",
 		{Op: intent.OpStageBinary, Host: "/opt/x/bin/x", Name: "x"}:       "stage /opt/x/bin/x as /snug/bin/x",
 		{Op: intent.OpSetEnv, Name: "PAGER", Verb: "inherit"}:             "copy PAGER from your environment",

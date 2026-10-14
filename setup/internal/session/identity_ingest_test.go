@@ -202,13 +202,10 @@ func TestCommitAuthorTextIsCleaned(t *testing.T) {
 func TestAdviceRequestIsAnsweredFromTheFacts(t *testing.T) {
 	w := testworld.New(t)
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 6)
-	s, _ := start(w)
+	s, _ := startRules(w)
 	for _, q := range []string{"should not AI reccomend identities?", "what identities do you suggest for this repo?", "which ssh key do you recommend"} {
 		out := say(s, q)
 		contains(t, out, "Suggested identity for this project", "nothing is pinned until you answer")
-	}
-	if len(w.Model.Prompts) != 0 {
-		t.Errorf("the model was asked: %v", w.Model.Prompts)
 	}
 }
 
@@ -232,16 +229,16 @@ func TestIdentityOneNoteWithNothingPinnedAdvises(t *testing.T) {
 	lacks(t, out, "A profile pins one account")
 }
 
-// TestSigningRequestOpensTheQuestionWithoutTheModel: "a ssh access and a signig
-// key" (sic) once came back as the two-accounts note.
-func TestSigningRequestOpensTheQuestionWithoutTheModel(t *testing.T) {
+// TestSigningRequestOpensTheQuestions: "a ssh access and a signig key"
+// (sic) once came back from the model as the two-accounts note.
+func TestSigningRequestOpensTheQuestions(t *testing.T) {
 	w := testworld.New(t)
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
-	s, _ := start(w)
+	s, _ := startRules(w)
 	out := say(s, "with @git add there's a need for a ssh access and a signig key, dont?")
 	contains(t, out, "which ssh key should the sandbox act as?", "which ssh key should sign commits inside the sandbox?")
-	if len(w.Model.Prompts) != 0 || !s.Draft().Empty() {
-		t.Errorf("model asked or draft changed")
+	if s.Draft().SSH != nil || s.Draft().Git != nil {
+		t.Errorf("an identity was pinned unanswered: %s", s.Draft().Render())
 	}
 	lacks(t, say(s, "design a key"), "should sign")
 }

@@ -162,7 +162,7 @@ func profileCost(p ingest.Profile) string {
 }
 
 // IncludeProfile is /include NAME: the same turn "use my NAME profile" would
-// give, without the model. It returns the lines to show; the card, if any, is
+// give, without the interpreter. It returns the lines to show; the card, if any, is
 // open afterwards.
 func (s *Session) IncludeProfile(ctx context.Context, name string) []Line {
 	acts := []intent.Action{{Op: intent.OpIncludeProfile, Name: name}}
