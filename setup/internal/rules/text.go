@@ -52,8 +52,18 @@ func (c clause) text() string {
 // two anyway.
 var separators = set("and also then plus und dann but aber ale")
 
+// symbolSeparators join two requests as "and" does: "write here + internet".
+var symbolSeparators = set("+ & — – / |")
+
+// shortWords are frequent misspellings of short words, which the edit
+// distance does not correct: below four letters one edit turns most words
+// into others, so these are listed rather than guessed.
+var shortWords = map[string]string{"nd": "and", "cal": "call", "giv": "give", "th": "the", "teh": "the",
+	"plz": "please", "pls": "please", "u": "you", "ur": "your", "wth": "with", "w/": "with", "jut": "just"}
+
 // trimPunct strips what surrounds a word but cannot be part of a path, a name
-// or a value. A trailing dot goes too: "vim." ends a sentence.
+// or a value, and reports whether it ended its clause: a comma, a semicolon,
+// or the dot, question or exclamation mark that ends a sentence ("vim.").
 func trimPunct(s string) (string, bool) {
 	end := false
 	s = strings.TrimLeft(s, "\"'(`[{“‘«")
@@ -62,7 +72,7 @@ func trimPunct(s string) (string, bool) {
 		if !strings.ContainsRune(",;!?.:\"')`]}”’»", r) {
 			break
 		}
-		if r == ',' || r == ';' {
+		if r == ',' || r == ';' || r == '.' || r == '!' || r == '?' {
 			end = true
 		}
 		s = s[:len(s)-n]
@@ -97,7 +107,12 @@ func split(request string, keep func(raw string) bool) []clause {
 			continue
 		}
 		low := lower(raw)
-		if separators[low] {
+		if !keep(raw) {
+			if s, ok := shortWords[low]; ok {
+				low = s
+			}
+		}
+		if separators[low] || symbolSeparators[raw] {
 			flush()
 			continue
 		}
@@ -232,7 +247,7 @@ func (c clause) find(keys ...string) int {
 			}
 			ok := true
 			for j, p := range parts {
-				if c.toks[i+j].w != p {
+				if t := c.toks[i+j]; t.w != p && !(len(parts) == 1 && slices.Contains(t.parts, p)) {
 					ok = false
 					break
 				}

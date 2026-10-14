@@ -84,6 +84,8 @@ func Sentence(d *draft.Draft, a intent.Action) string {
 		return "suggest the identity this project points at"
 	case intent.OpUndo:
 		return "undo the last step"
+	case intent.OpToolchain:
+		return "set up the " + a.Name + " caches the analysis proposes"
 	}
 	return a.Op
 }

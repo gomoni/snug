@@ -9,6 +9,7 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/compose"
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/intent"
 	"github.com/gomoni/snug/setup/internal/safe"
 	"github.com/gomoni/snug/setup/internal/texts"
@@ -129,6 +130,10 @@ func (s *Session) understood(ctx context.Context, said string, acts []intent.Act
 			out = append(out, s.Advice(ctx)...)
 		case intent.OpUndo:
 			out = append(out, s.Undo()...)
+		case intent.OpToolchain:
+			acts, lines := s.toolchain(a.Name)
+			rest = append(rest, acts...)
+			out = append(out, lines...)
 		default:
 			rest = append(rest, a)
 		}
@@ -138,6 +143,31 @@ func (s *Session) understood(ctx context.Context, said string, acts []intent.Act
 	}
 	s.turn++
 	return s.classify(ctx, s.turn, said, rest), out
+}
+
+// markers name the file that shows each toolchain, for the line that says the
+// target has none.
+var markers = map[string]string{"go": "go.mod", "node": "package.json", "python": "pyproject.toml, requirements.txt or uv.lock", "rust": "Cargo.toml"}
+
+// toolchain answers a request that names a language: what the analysis
+// proposes for it when the target shows that language (its cache variables,
+// which then go on the turn's card), and otherwise a line saying there is
+// nothing to propose. Downloads are @net's, asked for in words of their own.
+func (s *Session) toolchain(lang string) ([]intent.Action, []Line) {
+	var langs []ingest.Lang
+	for _, l := range s.facts.Target.Languages {
+		if l.Name == lang {
+			langs = append(langs, l)
+		}
+	}
+	if len(langs) == 0 {
+		return nil, []Line{info("the target has no %s, so there is no %s cache to propose; downloading packages needs @net (say \"needs internet\").", markers[lang], lang)}
+	}
+	var acts []intent.Action
+	for _, e := range ingest.Propose(ingest.TargetFacts{Languages: langs}).Env {
+		acts = append(acts, intent.Action{Op: intent.OpSetEnv, Name: e.Name, Verb: "set", Value: e.Value, HasValue: true})
+	}
+	return acts, nil
 }
 
 // notUnderstood says why a request changed nothing. An interpreter's choices

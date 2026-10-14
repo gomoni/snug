@@ -69,7 +69,7 @@ func choices(unknown string, understood []intent.Action) []intent.Choice {
 			}
 			s += best
 		}
-		if s > 0 && !covered(o.acts, understood) {
+		if s > 0 && !covered(o.acts, understood) && !(len(understood) > 0 && control(o.acts)) {
 			ranked = append(ranked, scored{i, s})
 		}
 	}
@@ -107,6 +107,20 @@ func choices(unknown string, understood []intent.Action) []intent.Choice {
 		out = append(out, intent.Choice{Actions: append(slices.Clone(understood), options[i].acts...)})
 	}
 	return out
+}
+
+// control reports whether acts only steer the session (analysis, advice, a
+// listing, show, save, undo, help). Beside a request understood in part they
+// are noise: the human asked for a change.
+func control(acts []intent.Action) bool {
+	for _, a := range acts {
+		switch a.Op {
+		case intent.OpAnalyze, intent.OpAdvise, intent.OpListIdentities, intent.OpShow, intent.OpSave, intent.OpUndo, intent.OpNote:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // covered reports whether every action of acts is already in understood.

@@ -99,7 +99,10 @@ func (s *Session) answer(ctx context.Context, r reply) (*Turn, []Line) {
 		switch {
 		case r.no:
 			return nil, with(s.Decline(p.N))
-		case len(r.nums) == 1 && r.nums[0] >= 1 && r.nums[0] <= len(p.unclear.Choices):
+		case r.yes && len(p.unclear.Choices) == 1:
+			r.nums = []int{1}
+		}
+		if len(r.nums) == 1 && r.nums[0] >= 1 && r.nums[0] <= len(p.unclear.Choices) {
 			s.close(p.N)
 			t, out := s.understood(ctx, p.said, p.unclear.Choices[r.nums[0]-1].Actions)
 			return t, with(out)

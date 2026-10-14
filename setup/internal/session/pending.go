@@ -149,9 +149,15 @@ func (s *Session) open(p Pending) Pending {
 		if u.Why != "" {
 			why = " (" + safe.Inline(u.Why) + ")"
 		}
-		if len(u.Understood) > 0 {
+		switch {
+		case len(u.Choices) == 1 && len(u.Understood) > 0 && slices.Equal(u.Choices[0].Actions, u.Understood):
+			p.Question = "I understood " + s.sentences(u.Understood) + ", but not \"" + safe.Inline(u.Unknown) + "\"" + why + ". Nothing changed. Only " + s.sentences(u.Understood) + "?"
+			p.Answer = "yes or no, or say it differently"
+			s.pending = append(s.pending, p)
+			return p
+		case len(u.Understood) > 0:
 			p.Question = "I understood " + s.sentences(u.Understood) + ", but not \"" + safe.Inline(u.Unknown) + "\"" + why + ". Nothing changed. Did you mean:"
-		} else {
+		default:
 			p.Question = "I did not understand \"" + safe.Inline(u.Unknown) + "\"" + why + "; nothing changed. Did you mean:"
 		}
 		for j, c := range u.Choices {
