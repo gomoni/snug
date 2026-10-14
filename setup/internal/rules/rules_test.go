@@ -70,8 +70,6 @@ func unclear(t *testing.T, c intent.Context, s string) *intent.Unclear {
 func TestReadsRequests(t *testing.T) {
 	for in, want := range map[string][]intent.Action{
 		"needs internet and podman":                           {use("@net"), note("net"), use("@podman-socket")},
-		"giv it acess to the internt":                         {use("@net"), note("net")},
-		"let it wirte to this projcet":                        {use("@target-rw"), note("defaults")},
 		"reccomend identities":                                {{Op: intent.OpAdvise}},
 		"analyze the target":                                  {{Op: intent.OpAnalyze}},
 		"use my work profile":                                 nil,
@@ -141,7 +139,7 @@ func TestToolchainWordIsUnderstood(t *testing.T) {
 // TestShortWordTypos: short misspellings are listed, not guessed by edit
 // distance; a profile name is never rewritten by the list.
 func TestShortWordTypos(t *testing.T) {
-	got := read(t, host, "plz giv it netwrok nd cal it snugdev")
+	got := read(t, host, "plz giv it network nd cal it snugdev")
 	want := []intent.Action{use("@net"), note("net"), {Op: intent.OpNameProfile, Name: "snugdev"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -172,6 +170,49 @@ func TestSlotsComeFromKnownFacts(t *testing.T) {
 func TestMissingProfileOffersTheHumansOwn(t *testing.T) {
 	u := unclear(t, host, "use my work profile")
 	if !strings.Contains(u.Why, `no snug profile called "work"`) || len(u.Choices) != 2 || u.Choices[0].Actions[0].Op != intent.OpIncludeProfile {
+		t.Errorf("%+v", u)
+	}
+}
+
+// TestCorrectionNeverCreatesGrant: a typo fix or a lost negation never turns
+// into a widening action. A correction that would widen is a question whose
+// first reading is the words as typed; a negation word (typo included) or an
+// un- adjective narrows; "refuse X" includes nothing.
+func TestCorrectionNeverCreatesGrant(t *testing.T) {
+	c := host
+	c.Profiles = []string{"work"}
+	for in, want := range map[string][]intent.Action{
+		"mount ~/notes unwritable":       {{Op: intent.OpGrantPath, Path: "~/notes", Access: "ro"}},
+		"~/notes should stay unwritable": {{Op: intent.OpGrantPath, Path: "~/notes", Access: "ro"}},
+		"I do nto want internet":         {note("net")},
+		"I dont't want internet":         {note("net")},
+		"I refuse internet":              {note("net")},
+		"nothing with containers":        {drop("@podman-socket")},
+		"make ~/notes unreadable":        {refuse("deny_rule"), note("layering")},
+		"keep my BROWSER":                {{Op: intent.OpSetEnv, Name: "BROWSER", Verb: "inherit"}},
+	} {
+		got, err := Read(c, in)
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("%q\n got %v %v\nwant %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"run the test suite", "it calls an internal service", "the binary size is huge", "use inline caches",
+		"refuse my work profile", "commits are unsigned", "giv it acess to the internt", "let it wirte to this projcet", "I need internt"} {
+		got, err := Read(c, in)
+		var u *intent.Unclear
+		if !errors.As(err, &u) {
+			t.Errorf("%q: %v, want a question", in, got)
+			continue
+		}
+		if slices.ContainsFunc(u.Understood, widens) {
+			t.Errorf("%q: understood %v", in, u.Understood)
+		}
+	}
+	// The corrected reading is offered, after the reading as typed.
+	_, err := Read(c, "let it wirte to this projcet")
+	var u *intent.Unclear
+	if !errors.As(err, &u) || len(u.Choices) == 0 || !slices.Contains(u.Choices[len(u.Choices)-1].Actions, use("@target-rw")) ||
+		!strings.Contains(u.Why, `"wirte" read as "write"`) {
 		t.Errorf("%+v", u)
 	}
 }

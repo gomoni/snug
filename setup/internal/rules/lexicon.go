@@ -9,7 +9,7 @@ var (
 	netWords     = set("internet internetu internetzugang network networking net online netzwerk síť sítě site download downloads downloading stahování stahovat fetch crates pypi registry egress")
 	netTools     = set("npm pip pip3 cargo yarn pnpm uv gem bundle maven gradle composer")
 	offWords     = set("offline off-line airgapped air-gapped airgap disconnect disconnected unplug")
-	negWords     = set("nepotřebuju no not don't dont never without disable disabled off none nicht kein keine keinen ohne ne bez nechci isn't doesn't shouldn't can't cannot")
+	negWords     = set("nepotřebuju no not don't dont never without disable disabled off none nothing nicht kein keine keinen ohne ne bez nechci nic isn't doesn't shouldn't can't cannot refuse refuses reject rejects forbid forbidden disallow avoid ban unsigned")
 	dropWords    = set("remove drop forget delete unmount revoke odeber odstraň smaž entfernen")
 	desktopWords = set("x11 wayland gui clipboard dbus d-bus pulseaudio pulse xorg display desktop notifications screenshot screenshots")
 	podmanWords  = set("docker podman container containers testcontainers compose docker-compose daemon kontejner kontejnery")
@@ -17,7 +17,7 @@ var (
 	buildWords   = set("build builds building bauen sestavit")
 	writeWords   = set("read/write rewrite write writable writeable edit modify change rw read-write zapisovat zápis schreiben schreib touch touching")
 	readWords    = set("read readable ro look see view peek browse lesend lesen číst přečti přečíst podívej mount inspect")
-	onlyRead     = set("read-only readonly lesend ro")
+	onlyRead     = set("read-only readonly lesend ro unwritable unwriteable non-writable nonwritable uneditable unmodifiable")
 	tmpWords     = set("tmpfs scratch temporary temp ephemeral memory throwaway discarded survive")
 	hereWords    = set("here project repo repository code sem tady hier projekt projektu target")
 	parentWords  = set("parent sibling siblings neighbouring neighboring")
@@ -35,7 +35,7 @@ var (
 	helpWords    = set("help hi hello hey thanks thank options díky ahoj hallo danke")
 	includeVerbs = set("include reuse")
 	doorWords    = set("door serve expose listen")
-	denyWords    = set("hide exclude block deny blacklist invisible mask")
+	denyWords    = set("hide exclude block deny blacklist invisible mask unreadable")
 	modifiers    = set("configure configured accordingly decide allow permissions grant things only away thrown afterwards memory fine here email name author identity address config configuration profile setup tell figure out what whats")
 	recommend    = set("recommend recommends recommended recommending suggest suggests suggested suggesting suggestion advise advice doporuč doporučit empfehlen")
 	analyzeWords = set("analyze analyse analysis scan")
@@ -72,7 +72,8 @@ var notTypos = set(`same name names named game came come some home hope those th
 	look took book cook keep kept deep peek peak view vies shows snow slow know known
 	editor editors visual pager term anything many branches codeberg full mein sein meine nepotřebuju
 	reachable remote kill trust server servers side toml venv that's borg helm hood hook docs directly
-	pyproject world plus roll toho jako jaké mail rights hand`)
+	pyproject world plus roll toho jako jaké mail rights hand
+	suite suites size sizes sites sight inline internal`)
 
 // meaningful are the words that ask for something: every set above but the
 // fillers and the modifiers. A part of a request holding none of them is

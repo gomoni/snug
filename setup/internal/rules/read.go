@@ -80,13 +80,25 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 			unknown = append(unknown, carry.text())
 		}
 	}
-	var acts []intent.Action
+	var acts, literal, sure []intent.Action
+	var doubted, fixes []string
 	for _, p := range done {
 		acts = append(acts, p.acts...)
+		if lit, fx := r.doubt(p.cl, p.acts); fx != "" {
+			doubted = append(doubted, p.cl.text())
+			fixes = append(fixes, fx)
+			literal = append(literal, lit...)
+			continue
+		}
+		sure = append(sure, p.acts...)
+		literal = append(literal, p.acts...)
 	}
 	acts = r.finish(acts)
 	if slices.Contains(acts, refuse("out_of_scope")) {
 		return []intent.Action{refuse("out_of_scope")}, nil
+	}
+	if len(doubted) > 0 {
+		return nil, doubtful(r.finish(sure), r.finish(literal), acts, doubted, fixes, unknown)
 	}
 	if len(acts) == 0 && r.missing != "" {
 		return nil, r.noSuchProfile(request)
@@ -100,6 +112,72 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 		return nil, u
 	}
 	return acts, nil
+}
+
+// doubt reports whether reading c with its corrections adds a widening
+// action that reading the words as typed does not: "mount ~/notes unwritable"
+// corrected to "writable" asks for rw, "it calls an internal service"
+// corrected to "internet" for @net. It returns the literal reading and the
+// corrections as `"typed" read as "word"`, or "" when the corrections widen
+// nothing.
+func (r *reader) doubt(c clause, acts []intent.Action) ([]intent.Action, string) {
+	if !c.fixed() {
+		return nil, ""
+	}
+	last, missing := r.last, r.missing
+	lit := r.clause(c.literal())
+	r.last, r.missing = last, missing
+	if !slices.ContainsFunc(acts, func(a intent.Action) bool { return widens(a) && !slices.Contains(lit, a) }) {
+		return nil, ""
+	}
+	// A filler fixed ("plz" read as "please") is not worth naming unless
+	// it is all there is.
+	var fx, all []string
+	for _, t := range c.toks {
+		if t.fixed {
+			w := t.w
+			if t.w == t.typed {
+				w = strings.Join(t.parts, "-")
+			}
+			all = append(all, "\""+t.raw+"\" read as \""+w+"\"")
+			if !fillers[t.w] {
+				fx = append(fx, all[len(all)-1])
+			}
+		}
+	}
+	if len(fx) == 0 {
+		fx = all
+	}
+	return lit, strings.Join(fx, ", ")
+}
+
+// widens reports whether a makes the sandbox see or do more, or puts a value
+// into it: the ops that go on a card.
+func widens(a intent.Action) bool {
+	switch a.Op {
+	case intent.OpUseProfile, intent.OpIncludeProfile, intent.OpStageBinary, intent.OpOpenDoor, intent.OpSetEnv, intent.OpGrantPath:
+		return true
+	}
+	return false
+}
+
+// doubtful is the question for a request a correction would widen: the
+// reading of the words as typed first, then the corrected one, each beside
+// what the rest of the request was read as. Nothing is applied from either
+// until the human picks.
+func doubtful(sure, literal, corrected []intent.Action, doubted, fixes, unknown []string) *intent.Unclear {
+	u := &intent.Unclear{Unknown: strings.Join(append(doubted, unknown...), "; "), Understood: sure,
+		Why: strings.Join(fixes, ", ") + "? a typo fix that would widen the sandbox is never applied unasked"}
+	if len(sure) == 0 {
+		u.Understood = nil
+	}
+	if len(literal) > 0 && !slices.Equal(literal, sure) {
+		u.Choices = append(u.Choices, intent.Choice{Actions: literal})
+	} else if len(sure) > 0 {
+		u.Choices = append(u.Choices, intent.Choice{Actions: sure})
+	}
+	u.Choices = append(u.Choices, intent.Choice{Actions: corrected})
+	return u
 }
 
 type reader struct {
@@ -523,7 +601,12 @@ func (r *reader) clause(c clause) []intent.Action {
 		h.add(max(c.find("publish", "-p", "expose"), 0), refuse("port_publish"))
 		refused, publish = true, true
 	}
-	door := !publish && (c.hasSet(doorWords) || c.has("host browser", "my browser", "the browser", "laptop browser", "reachable from", "from outside", "from the outside")) && !(c.has("expose") && len(paths) > 0)
+	// "keep my BROWSER" names a variable, not a browser to serve a page to.
+	browser := c.find("host browser", "my browser", "the browser", "laptop browser")
+	if browser >= 0 && envName(c.toks[browser+1].raw) {
+		browser = -1
+	}
+	door := !publish && (c.hasSet(doorWords) || browser >= 0 || c.has("reachable from", "from outside", "from the outside")) && !(c.has("expose") && len(paths) > 0)
 	if !door && !publish {
 		hp := -1
 		for i, t := range c.toks {
@@ -730,7 +813,10 @@ func (r *reader) clause(c clause) []intent.Action {
 		}
 	}
 
-	if !identityRefused {
+	// "refuse my work profile", "commits are unsigned": a negated clause
+	// never asks for an identity or a profile.
+	negated := c.hasSet(negWords)
+	if !identityRefused && !negated {
 		r.identity(c, &h)
 	}
 
@@ -739,7 +825,9 @@ func (r *reader) clause(c clause) []intent.Action {
 	if name, i := profileName(c); name != "" {
 		h.add(i, intent.Action{Op: intent.OpNameProfile, Name: name})
 	}
-	r.include(c, &h)
+	if !negated {
+		r.include(c, &h)
+	}
 
 	if i := nonNeg(c.findSet(showWords), c.find("current state", "let me see", "so far", "what we have")); i >= 0 && !c.hasSet(identityNoun) && len(paths) == 0 {
 		h.add(i, intent.Action{Op: intent.OpShow})

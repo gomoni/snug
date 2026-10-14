@@ -19,6 +19,41 @@ type tok struct {
 	// parts are the corrected pieces of a hyphenated word that is not a
 	// slot ("ssh-schlüssel"), each matched like a word of its own.
 	parts []string
+	// typed is w before any correction; fixed is true when a correction
+	// changed w or a part into another word (not merely its plural).
+	typed string
+	fixed bool
+}
+
+// literal is c with every correction taken back: the words as typed.
+func (c clause) literal() clause {
+	out := clause{toks: make([]tok, len(c.toks))}
+	for i, t := range c.toks {
+		if !t.fixed {
+			out.toks[i] = t
+			continue
+		}
+		out.toks[i] = tok{raw: t.raw, w: t.typed, q: t.q, typed: t.typed}
+		if t.parts != nil {
+			for _, p := range strings.Split(t.typed, "-") {
+				if p != "" {
+					out.toks[i].parts = append(out.toks[i].parts, p)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// plural reports whether a and b are one word with and without a plural or
+// third-person s: "edits" corrected to "edit" is the same word, not a guess.
+func plural(a, b string) bool {
+	return a == b+"s" || b == a+"s" || a == b+"es" || b == a+"es"
+}
+
+// fixed reports whether a correction changed any word of c.
+func (c clause) fixed() bool {
+	return slices.ContainsFunc(c.toks, func(t tok) bool { return t.fixed })
 }
 
 // is reports whether t is one of the words in m, as a whole or by a part.
@@ -59,7 +94,7 @@ var symbolSeparators = set("+ & — – / |")
 // distance does not correct: below four letters one edit turns most words
 // into others, so these are listed rather than guessed.
 var shortWords = map[string]string{"nd": "and", "cal": "call", "giv": "give", "th": "the", "teh": "the",
-	"plz": "please", "pls": "please", "u": "you", "ur": "your", "wth": "with", "w/": "with", "jut": "just"}
+	"plz": "please", "pls": "please", "u": "you", "ur": "your", "wth": "with", "w/": "with", "jut": "just", "nto": "not", "nott": "not", "dnot": "don't"}
 
 // trimPunct strips what surrounds a word but cannot be part of a path, a name
 // or a value, and reports whether it ended its clause: a comma, a semicolon,
@@ -107,6 +142,7 @@ func split(request string, keep func(raw string) bool) []clause {
 			continue
 		}
 		low := lower(raw)
+		typed := low
 		if !keep(raw) {
 			if s, ok := shortWords[low]; ok {
 				low = s
@@ -116,17 +152,20 @@ func split(request string, keep func(raw string) bool) []clause {
 			flush()
 			continue
 		}
-		t := tok{raw: raw, w: low, q: q}
+		t := tok{raw: raw, w: low, q: q, typed: typed}
 		if !keep(raw) {
 			t.w = correct(low)
 			if strings.Contains(low, "-") && !lexicon[low] && wordLike(low) {
 				for _, p := range strings.Split(low, "-") {
 					if p != "" {
-						t.parts = append(t.parts, correct(p))
+						c := correct(p)
+						t.parts = append(t.parts, c)
+						t.fixed = t.fixed || c != p
 					}
 				}
 			}
 		}
+		t.fixed = t.fixed || t.w != typed && !plural(typed, t.w)
 		cur.toks = append(cur.toks, t)
 		if end {
 			flush()
