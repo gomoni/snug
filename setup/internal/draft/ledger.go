@@ -145,12 +145,14 @@ func (d *Draft) Decide(p Pending, accept bool) Outcome {
 	return o
 }
 
-// RecordIdentity records an identity the human picked. names[0] is what the
-// ledger prints; the rest are other spellings a later request may use for the
-// same identity.
-func (d *Draft) RecordIdentity(kind string, names []string, origin string, turn int) {
+// RecordIdentity records an identity the human picked: src is SourceUser
+// for one they named or picked from a question, with origin their request,
+// and SourceIngest for one the analysis proposed and they accepted, with
+// origin what proposed it. names[0] is what the ledger prints; the rest are
+// other spellings a later request may use for the same identity.
+func (d *Draft) RecordIdentity(kind string, names []string, src Source, origin string, turn int) {
 	d.ledger = append(d.ledger, Entry{
-		Turn: turn, Source: SourceUser, Origin: origin, Confirmed: true, Names: slices.Clone(names),
+		Turn: turn, Source: src, Origin: origin, Confirmed: true, Names: slices.Clone(names),
 		Action: intent.Action{Op: intent.OpSelectIdentity, Kind: kind, Account: names[0]},
 	})
 }

@@ -240,7 +240,7 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 	}
 	before := s.snapshot()
 	s.close(p.N)
-	out := s.pinKey(kind, value, p.said, p.at)
+	out := s.pinKey(kind, value, p.said, p.at, false)
 	out = append(out, s.checkIdentity(ctx)...)
 	s.commit(before, fmt.Sprintf("the answer to #%d", p.N))
 	return out
@@ -250,8 +250,9 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 // at as where the human named it. It pins nothing, and says why, when the
 // draft already pins that kind, when value is not a candidate, or for a
 // signing key while the ssh key or the author is missing. The caller checks
-// the pinned ssh key against GitHub.
-func (s *Session) pinKey(kind, value, said string, at int) []Line {
+// the pinned ssh key against GitHub. proposed records the pin as the
+// analysis's proposal the human accepted, not as words of theirs.
+func (s *Session) pinKey(kind, value, said string, at int, proposed bool) []Line {
 	if cur, full := s.slotFull(kind); full {
 		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
 	}
@@ -263,7 +264,7 @@ func (s *Session) pinKey(kind, value, said string, at int) []Line {
 	if kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
 		return []Line{info("not pinned: signing key %s goes with an ssh key and a git author, and the draft pins %s.", safe.Inline(value), missingForSigning(s.d))}
 	}
-	p := Pending{said: said, at: at}
+	p := Pending{said: said, at: at, proposed: proposed}
 	idx := cands[j].idx
 	switch kind {
 	case "ssh":
@@ -275,8 +276,18 @@ func (s *Session) pinKey(kind, value, said string, at int) []Line {
 	}
 	a := s.authors[idx]
 	s.d.SetGit(a.Name, a.Email)
-	s.d.RecordIdentity("git", nonEmpty(a.String(), a.Name, a.Email), said, at)
+	s.recordPin("git", nonEmpty(a.String(), a.Name, a.Email), p)
 	return []Line{info("pinned git author %s.", safe.Inline(a.String()))}
+}
+
+// recordPin records a pin in the ledger: as the human's pick, or, for one
+// accepted from the opening card, as the analysis's proposal they accepted.
+func (s *Session) recordPin(kind string, names []string, p Pending) {
+	if p.proposed {
+		s.d.RecordIdentity(kind, names, draft.SourceIngest, "the analysis", p.at)
+		return
+	}
+	s.d.RecordIdentity(kind, names, draft.SourceUser, p.said, p.at)
 }
 
 // netIncluded reports whether the draft reaches the internet.
@@ -286,7 +297,7 @@ func (s *Session) netIncluded() bool {
 
 func (s *Session) pinSSH(k hostfacts.SSHKey, p Pending) []Line {
 	s.d.SetSSH(k.Path)
-	s.d.RecordIdentity("ssh", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p.said, p.at)
+	s.recordPin("ssh", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p)
 	stem := safe.Inline(k.Stem)
 	out := []Line{info("pinned ssh key %s (the public half; the private key stays in your agent).", stem)}
 	if !k.InAgent {
@@ -305,7 +316,7 @@ func (s *Session) pinSSH(k hostfacts.SSHKey, p Pending) []Line {
 // proxy and as that author.
 func (s *Session) pinSigning(k hostfacts.SSHKey, p Pending) []Line {
 	s.d.SetSigningKey(k.Path)
-	s.d.RecordIdentity("signing", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p.said, p.at)
+	s.recordPin("signing", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p)
 	out := []Line{info("pinned signing key %s (the public half; commits are signed through the agent proxy).", safe.Inline(k.Stem))}
 	if !k.InAgent {
 		out = append(out, warn("warning: the host ssh-agent does not hold this key. snug will refuse to start until `ssh-add` has loaded it."))
@@ -328,7 +339,7 @@ func missingForSigning(d *draft.Draft) string {
 
 func (s *Session) pinGitHub(a hostfacts.GHAccount, p Pending) []Line {
 	s.d.SetGH(a.Host, a.User)
-	s.d.RecordIdentity("github", nonEmpty(a.User, a.Host+"/"+a.User), p.said, p.at)
+	s.recordPin("github", nonEmpty(a.User, a.Host+"/"+a.User), p)
 	out := []Line{info("pinned GitHub login %s.", safe.Inline(a.Host+"/"+a.User))}
 	if path, err := s.cfg.LookPath("gh"); err == nil {
 		if !strings.HasPrefix(path, "/usr/") && !strings.HasPrefix(path, "/opt/") {

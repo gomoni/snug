@@ -55,14 +55,14 @@ func TestOpeningSuggestsTheIdentityTheRepositoryAndHostPointAt(t *testing.T) {
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
 	os.WriteFile(filepath.Join(w.Home, ".ssh", "config"), []byte("Host github.com\n  IdentityFile ~/.ssh/id_account2\n"), 0o600)
 	_, out := start(w)
-	contains(t, out, "Remote origin git@github.com:account2/project.git (ssh).", "nothing is pinned until you answer",
+	contains(t, out, `Remote "origin" "git@github.com:account2/project.git" (ssh).`, "nothing is pinned until you answer",
 		"GitHub login account2; ssh key id_account2; signing key id_other; git author Account Two <two@example.com>")
 	lacks(t, out, "Last 10 commits", "Found on this host", "Each request stands alone")
 	s, _ := start(w)
 	contains(t, text(s.Details(ctx)),
 		"Last 10 commits: 10 by Account Two <two@example.com>.", "5 carry an ssh signature that verifies with your key id_other.",
-		"ssh key id_account2  (~/.ssh/config: Host github.com)", "signing key id_other  (5 of the last 10 commits carry an ssh signature that verifies with it)",
-		"git author Account Two <two@example.com>", "GitHub login account2  (the owner in the remote url)", "nothing is pinned until you answer")
+		"ssh key id_account2  (~/.ssh/config `Host github.com` for the remote's host \"github.com\")", "signing key id_other  (5 of the last 10 commits carry an ssh signature that verifies with it)",
+		"git author Account Two <two@example.com>", `GitHub login account2  (the owner "account2" in the remote url "git@github.com:account2/project.git")`, "nothing is pinned until you answer")
 }
 
 func TestIdentityQuestionPutsTheSuggestionFirstAndSigningNeedsSSHAndGit(t *testing.T) {
@@ -101,7 +101,7 @@ func TestSigningKeyIsPinnedAfterSSHAndGit(t *testing.T) {
 	for _, q := range s.Pending() {
 		pend.WriteString(q.Line().Text + "\n")
 	}
-	contains(t, pend.String(), "id_account2  account2@laptop", "<- suggested: ~/.ssh/config: Host github.com", "/pick ssh id_account2 takes the suggestion")
+	contains(t, pend.String(), "id_account2  account2@laptop", "<- suggested: ~/.ssh/config `Host github.com`", "/pick ssh id_account2 takes the suggestion")
 	contains(t, text(s.Pick(ctx, "ssh", "id_account2")), "pinned ssh key id_account2")
 	contains(t, text(s.Pick(ctx, "git", "two@example.com")), "pinned git author")
 	out = text(s.Pick(ctx, "signing", "id_other"))
@@ -308,4 +308,22 @@ func TestOpeningCardPinsCarryACost(t *testing.T) {
 	}
 	card := strings.Join(opts, "\n")
 	contains(t, card, "SIGNING ORACLE for id_other", "authenticate with this key", "GitHub token of github.com/account2")
+}
+
+// TestOpeningCardPinIsLedgeredAsAProposal: a pin accepted from the opening
+// card is recorded as what it is, the analysis's proposal the human accepted,
+// not as words the human said.
+func TestOpeningCardPinIsLedgeredAsAProposal(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
+	s, _ := startRules(w)
+	contains(t, say(s, "yes"), "(answering #1)", "pinned git author")
+	body := s.Draft().Render()
+	contains(t, body, "# proposed from the analysis, accepted: git identity Account Two <two@example.com>, github identity account2")
+	lacks(t, body, "intent (you, confirmed)")
+	s2, _ := startRules(w)
+	say(s2, "no")
+	contains(t, say(s2, "use my github account"), "which GitHub login")
+	contains(t, text(s2.Pick(ctx, "github", "account2")), "pinned GitHub login")
+	contains(t, s2.Draft().Render(), "# intent (you, confirmed)")
 }
