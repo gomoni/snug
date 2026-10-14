@@ -760,3 +760,27 @@ func TestHomeTmpfsListIsPinnedToTheDocumentsQuotingIt(t *testing.T) {
 			"again with nothing to catch it.", p.Tmpfs, want)
 	}
 }
+
+// TestTrustedConfigRootsIncludesHomeDefaultUnderCustomXDG: under a custom
+// $XDG_CONFIG_HOME the set still holds $HOME/.config/snug, because a later run
+// without the variable reads it (redteam setup r7 R7-5). ConfigDirs and
+// ConfigFile keep following the variable: protection widens, loading does not.
+func TestTrustedConfigRootsIncludesHomeDefaultUnderCustomXDG(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	t.Setenv("XDG_CONFIG_HOME", "/s/x")
+	want := []string{"/etc/snug", "/s/x/snug", "/home/u/.config/snug"}
+	if got := TrustedConfigRoots(); !slices.Equal(got, want) {
+		t.Errorf("TrustedConfigRoots() = %v, want %v", got, want)
+	}
+	if got := ConfigDirs(); !slices.Equal(got, []string{"/etc/snug/profiles.d", "/s/x/snug/profiles.d"}) {
+		t.Errorf("ConfigDirs() = %v", got)
+	}
+	if got := ConfigFile(); got != "/s/x/snug/config.toml" {
+		t.Errorf("ConfigFile() = %q", got)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", "/home/u/.config")
+	if got := TrustedConfigRoots(); !slices.Equal(got, []string{"/etc/snug", "/home/u/.config/snug"}) {
+		t.Errorf("an XDG_CONFIG_HOME equal to the default must not list the root twice: %v", got)
+	}
+}

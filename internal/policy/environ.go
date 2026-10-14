@@ -174,15 +174,20 @@ type Context struct {
 	// expressed none, and Resolve substitutes DefaultTmpfsSize.
 	TmpfsSizeBytes uint64
 
-	// ProfileDirs are the directories the trusted profile set was READ from,
-	// passed in rather than derived here so profile.ConfigDirs stays the single
-	// author of that path — a resolver recomputing it would be a second copy
-	// that drifts. Resolve refuses a writable grant covering any of them:
-	// invariant 3 says the trusted profile set comes from outside the sandboxed
-	// material, and a payload that can write a profile grants itself
-	// permissions for the NEXT run. Empty disables the check, which is what a
-	// unit test wanting to resolve without a host profile store gets.
-	ProfileDirs []string
+	// ConfigRoots are the snug configuration directories trusted configuration
+	// (profiles.d, config.toml) is read from, passed in rather than derived
+	// here so profile.TrustedConfigRoots stays the single author of those
+	// paths — a resolver recomputing them would be a second copy that drifts.
+	// Resolve refuses a writable grant covering any of them, or any ancestor:
+	// invariant 3 says the trusted profile set comes from outside the
+	// sandboxed material, and a payload that can write a profile or
+	// config.toml's defaults grants itself permissions for the NEXT run. The
+	// set includes $HOME/.config/snug even under a custom $XDG_CONFIG_HOME,
+	// because a run without that variable reads it; an $XDG_CONFIG_HOME only
+	// some other shell sets cannot be known and is not covered. Empty disables
+	// the check, which is what a unit test wanting to resolve without a host
+	// configuration gets.
+	ConfigRoots []string
 
 	// RuntimeDirs are the directories snug keeps a run's host-side endpoints
 	// in, this run's own first — every place runtimeDir could have put them,

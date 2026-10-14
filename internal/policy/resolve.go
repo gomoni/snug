@@ -260,7 +260,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// PERSISTS". Sandboxing ~/.config/snug is already refused, one level up, for
 	// an unrelated reason (it sits in @home's tmpfs), which is why nothing
 	// noticed.
-	if err := refuseWritableProfileStore(set, names, vars, ctx.ProfileDirs, env); err != nil {
+	if err := refuseWritableConfigRoot(set, names, vars, ctx.ConfigRoots, env); err != nil {
 		return nil, err
 	}
 
@@ -1475,8 +1475,10 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// refuseWritableProfileStore refuses a selection whose writable grants reach a
-// directory snug reads profiles from.
+// refuseWritableConfigRoot refuses a selection whose writable grants reach a
+// snug configuration directory (Context.ConfigRoots): profiles.d and
+// config.toml alike, since config.toml's defaults select profiles for the next
+// bare run just as a profile file grants them.
 //
 // Read access is deliberately NOT refused: a profile is not a secret, and the
 // payload can read snug's own builtins out of @sys's /usr anyway. Write access
@@ -1485,10 +1487,11 @@ func sortedKeys(m map[string]bool) []string {
 // foothold in the next one") is true of the tmpfs and was not true of this.
 //
 // Both directions of coverage are refused. A grant EQUAL to or CONTAINING the
-// store is the obvious one. A grant INSIDE it is refused too: loadDir reads
-// *.toml at the top level, so a subdirectory is not loaded today, and a refusal
-// that depends on that stays correct only until someone adds a walk.
-func refuseWritableProfileStore(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs []string, env Environ) error {
+// directory — any ancestor — is the obvious one. A grant INSIDE it is refused
+// too: loadDir reads *.toml at the top level, so a subdirectory is not loaded
+// today, and a refusal that depends on that stays correct only until someone
+// adds a walk.
+func refuseWritableConfigRoot(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs []string, env Environ) error {
 	if len(dirs) == 0 {
 		return nil
 	}
@@ -1512,14 +1515,12 @@ func refuseWritableProfileStore(set map[ProfileName]*Profile, names []ProfileNam
 					continue
 				}
 				return fmt.Errorf("refusing to grant WRITE access to %s: profile %q grants %s, "+
-					"and snug reads its trusted profiles from there.\n"+
-					"       A process inside could write a profile file that a LATER run loads, "+
-					"which is a\n"+
-					"       sandbox granting itself permissions — the one thing the profile set "+
-					"being outside\n"+
-					"       the sandboxed material prevents. Edit profiles on the host, or keep the "+
-					"copy you\n"+
-					"       want to edit somewhere else and install it with cp.",
+					"and snug reads its trusted configuration (profiles.d, config.toml) from there.\n"+
+					"       A process inside could write a profile file or config.toml that a LATER run\n"+
+					"       loads, which is a sandbox granting itself permissions — the one thing\n"+
+					"       the profile set being outside the sandboxed material prevents. Edit\n"+
+					"       profiles on the host, or keep the copy you want to edit somewhere else\n"+
+					"       and install it with cp.",
 					VisibleText(dir), name, VisibleText(host))
 			}
 		}

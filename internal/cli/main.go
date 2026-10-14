@@ -672,10 +672,11 @@ func run(cfg config) int {
 		HostSSHConfig:  sshValues,
 		HostShims:      detectHostShims(),
 		TmpfsSizeBytes: tmpfsSizeBytes,
-		// The directories the registry above was loaded from, so Resolve can
-		// refuse a writable grant reaching them. Same call profile.Load makes,
-		// so the check cannot disagree with what was actually read.
-		ProfileDirs: profile.ConfigDirs(),
+		// Every snug configuration directory a run could read, so Resolve can
+		// refuse a writable grant reaching one. Derived from the same author
+		// as profile.ConfigDirs and configPath, so the check cannot disagree
+		// with what is actually read.
+		ConfigRoots: profile.TrustedConfigRoots(),
 		// Every place a run's endpoints can live, so a grant cannot reach a
 		// concurrent run's. See Context.RuntimeDirs.
 		RuntimeDirs: runtimeDirCandidates(),
