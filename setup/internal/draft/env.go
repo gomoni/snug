@@ -42,6 +42,21 @@ var writtenBySnug = []string{"HOME", "LANG", "LOGNAME", "PATH", "PS1", "PWD", "S
 // noVerbs have no environ verb at all in snug's roster.
 var noVerbs = []string{"CDPATH", "GOFLAGS", "LD_LIBRARY_PATH", "LD_PRELOAD"}
 
+// hostPointers are names whose value points at something on the host that a
+// copied string does not bring along, each with the narrow thing to use
+// instead. None is in snug's own set (writtenBySnug); snug writes
+// SSH_AUTH_SOCK only when a profile pins an identity.
+var hostPointers = map[string]string{
+	"GIT_ASKPASS":              "git runs the host program it names and uses its answer as a credential; pin an identity for pushing",
+	"SSH_ASKPASS":              "ssh runs the host program it names to get a passphrase; pin an identity, whose key stays in your agent",
+	"SSH_AUTH_SOCK":            "your agent signs with every key it holds; snug writes this itself when the profile pins an identity (one key, through its proxy)",
+	"GNUPGHOME":                "it names your host keyring, which the sandbox does not get; sign commits with a pinned ssh signing key",
+	"XDG_RUNTIME_DIR":          "it names a host directory the sandbox does not have and carries obligations (mode 0700, session lifetime) a copied string cannot meet",
+	"DBUS_SESSION_BUS_ADDRESS": "the sandbox has no desktop bus, by design",
+	"DISPLAY":                  "the sandbox has no X11 display, by design",
+	"WAYLAND_DISPLAY":          "the sandbox has no Wayland display, by design",
+}
+
 // listVars are the names snug knows as path lists, the only ones that take prepend.
 var listVars = []string{
 	"CLASSPATH", "GOPATH", "INFOPATH", "NODE_PATH", "PATH", "PERL5LIB", "PKG_CONFIG_PATH",
@@ -57,6 +72,9 @@ func (d *Draft) setEnv(a intent.Action) Outcome {
 	}
 	if slices.Contains(noVerbs, name) {
 		return refuse(CodeNoVerb, "snug accepts no profile setting for "+name)
+	}
+	if why, ok := hostPointers[name]; ok {
+		return refuse(CodeHostPointer, name+": "+why)
 	}
 	switch a.Verb {
 	case "set", "inherit":
