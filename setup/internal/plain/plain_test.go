@@ -47,7 +47,7 @@ func contains(t *testing.T, out string, wants ...string) {
 const outOfScope = `{"op":"refuse","code":"out_of_scope"}`
 
 // TestPlainAnswersOnlyAWholeAnswerLine: a line that is yes, no or numbers
-// answers the newest question, and nothing else does. "y" does not name a
+// answers the question just printed, and nothing else does. "y" does not name a
 // login, so it pins none; "save" is a request even with a question open, and
 // refuses naming it; "2" picks the second login listed; with nothing open, a
 // bare answer says so.

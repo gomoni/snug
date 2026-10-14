@@ -23,11 +23,13 @@ func goProject(t *testing.T, w *testworld.World) {
 // startRules is start with the rules interpreter, snug-setup's default.
 func startRules(w *testworld.World) (*Session, string) {
 	s, lines := New(ctx, Config{Interpreter: rules.Interpreter{}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	s.Shown(lines)
 	return s, text(lines)
 }
 
 func start(w *testworld.World) (*Session, string) {
 	s, lines := New(ctx, Config{Interpreter: llm.Interpreter{M: w.Model}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	s.Shown(lines)
 	return s, text(lines)
 }
 
@@ -190,4 +192,60 @@ func TestNoChangeIsNotACardItem(t *testing.T) {
 	out := say(s, "needs internet and podman")
 	contains(t, out, "@net is already in the draft.", "1. add @podman-socket")
 	lacks(t, out, "2. ")
+}
+
+// TestBareYesOnlyAnswersLastPrinted: a bare answer applies to the question
+// printed in answer to the line before it, says which it answered, and with
+// none there applies nothing. The opening card is not reachable by a "yes"
+// typed under a refusal.
+func TestBareYesOnlyAnswersLastPrinted(t *testing.T) {
+	w := testworld.New(t)
+	goProject(t, w)
+	s, _ := startRules(w)
+	if numbers(s)[0] != 1 {
+		t.Fatalf("no opening card: %v", numbers(s))
+	}
+	contains(t, say(s, "give it my ~/.ssh"), "refuses (sensitive_home)")
+	out := say(s, "yes")
+	contains(t, out, "nothing changed", "#1: /accept 1")
+	if !s.Draft().Empty() || len(s.Pending()) != 1 {
+		t.Fatalf("a yes under a refusal applied the card printed above it:\n%s\n%s", out, s.Draft().Render())
+	}
+	contains(t, say(s, "I need internet"), "? #2")
+	out = say(s, "yes")
+	contains(t, out, "(answering #2)")
+	if !slices.Contains(s.Draft().Include, "@net") || !slices.Equal(numbers(s), []int{1}) {
+		t.Errorf("yes to #2: %v %s", numbers(s), s.Draft().Render())
+	}
+	// Only one question open, and it was printed last: the lead line is
+	// still there.
+	s2, _ := startRules(w)
+	contains(t, say(s2, "no"), "(answering #1)", "not applied")
+}
+
+// TestNeverMindKeepsADeclinedCardClosed: words that take back the line just
+// typed do not undo the decline before it, and a line holding a request and
+// its own retraction applies neither.
+func TestNeverMindKeepsADeclinedCardClosed(t *testing.T) {
+	w := testworld.New(t)
+	goProject(t, w)
+	s, _ := startRules(w)
+	say(s, "no")
+	if len(s.Pending()) != 0 {
+		t.Fatalf("decline left %v", numbers(s))
+	}
+	out := say(s, "let it read ~/.ssh, no wait, never mind")
+	contains(t, out, "nothing from it is applied and nothing earlier was undone")
+	if len(s.Pending()) != 0 {
+		t.Errorf("never mind beside a request reopened %v:\n%s", numbers(s), out)
+	}
+	out = say(s, "never mind")
+	contains(t, out, "nothing was undone", "/undo reopens #1")
+	if len(s.Pending()) != 0 {
+		t.Errorf("never mind reopened %v:\n%s", numbers(s), out)
+	}
+	contains(t, text(s.Undo()), "#1 is open again")
+	if !slices.Equal(numbers(s), []int{1}) || !s.Draft().Empty() {
+		t.Errorf("/undo: %v %s", numbers(s), s.Draft().Render())
+	}
 }

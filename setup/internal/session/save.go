@@ -27,7 +27,9 @@ func (s *Session) Save(ctx context.Context, name string) (bool, []Line) {
 	if open := s.blocking(); len(open) > 0 {
 		out := []Line{info("not saved: %d question(s) are open, and a profile is saved only once each has an answer:", len(open))}
 		for _, p := range open {
-			out = append(out, info("  #%d %s\n      %s", p.N, p.Question, p.Answer))
+			l := info("  #%d %s\n      %s", p.N, p.Question, p.Answer)
+			l.Q = p.N
+			out = append(out, l)
 		}
 		return false, out
 	}

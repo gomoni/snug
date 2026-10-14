@@ -122,6 +122,13 @@ func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 func (s *Session) understood(ctx context.Context, said string, acts []intent.Action) (*Turn, []Line) {
 	var out []Line
 	var rest []intent.Action
+	if slices.ContainsFunc(acts, func(a intent.Action) bool { return a.Op == intent.OpUndo }) &&
+		slices.ContainsFunc(acts, func(a intent.Action) bool { return a.Op != intent.OpUndo && a.Op != intent.OpNote }) {
+		// "read ~/.ssh, no wait, never mind": the line takes itself back.
+		// Undoing the step before it as well would reach a decision the human
+		// made earlier, so neither half runs.
+		return nil, []Line{info("that line both asks for something and takes something back (%s), so nothing from it is applied and nothing earlier was undone. Say each on a line of its own.", quote(said))}
+	}
 	for _, a := range acts {
 		switch a.Op {
 		case intent.OpAnalyze:
@@ -129,7 +136,7 @@ func (s *Session) understood(ctx context.Context, said string, acts []intent.Act
 		case intent.OpAdvise:
 			out = append(out, s.Advice(ctx)...)
 		case intent.OpUndo:
-			out = append(out, s.Undo()...)
+			out = append(out, s.undoRequest()...)
 		case intent.OpToolchain:
 			acts, lines := s.toolchain(a.Name)
 			rest = append(rest, acts...)
@@ -355,7 +362,7 @@ func (s *Session) infoAction(ctx context.Context, t *Turn, acts []intent.Action,
 		}
 		return out
 	case intent.OpAsk:
-		return []Line{{Question, "the model asks: \"" + safe.Inline(a.Question) + "\"\n  Nothing changed. Answer with a request of its own, for example \"I need internet\" or \"use my github\"; each request stands alone."}}
+		return []Line{{Kind: Question, Text: "the model asks: \"" + safe.Inline(a.Question) + "\"\n  Nothing changed. Answer with a request of its own, for example \"I need internet\" or \"use my github\"; each request stands alone."}}
 	case intent.OpShow:
 		return s.Show()
 	case intent.OpListIdentities:
