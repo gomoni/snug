@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,15 +43,17 @@ type Person struct {
 }
 
 // Signature counts sampled commits whose gpgsig header is of a Format and, for
-// an ssh signature, was made with the key whose SHA256 fingerprint is
-// Fingerprint. It is a claim the commit makes: nothing here verifies it, so
-// the only thing a fingerprint is ever used for is to point at one of the
-// human's own public keys.
+// an ssh signature, names the key whose SHA256 fingerprint is Fingerprint.
+// Verified is true when that ssh signature verifies over the commit, in git's
+// namespace, under the key it names; a gpg signature is never verified. An
+// unverified fingerprint is a claim anyone can write, public keys being
+// public, and Suggest never selects a key from one.
 type Signature struct {
 	Format      string // ssh, gpg
 	Fingerprint string // SHA256:..., ssh only
 	Email       string // the author email of the signed commits
 	Commits     int
+	Verified    bool
 }
 
 // RepoFacts is what a repository's own files say.
@@ -75,10 +76,9 @@ type RepoFacts struct {
 // running git is the defence. What remains is reading bytes the attacker wrote:
 // the files are opened through an os.Root on the target so no link leaves it,
 // regular files only and non-blocking, every size bounded (see gitobj.go), and
-// every string is cleaned and cut before it is shown. The signature claims in
-// commits can be forged to make the suggestion point at a different one of the
-// human's OWN keys; the suggestion is only ever a default for a question the
-// human answers.
+// every string is cleaned and cut before it is shown. A gpgsig header can name
+// any public key, the human's own included; only an ssh signature that
+// verifies over its commit (Signature.Verified) is evidence of who made it.
 func AnalyzeRepo(target string) (*RepoFacts, []string) {
 	root, err := os.OpenRoot(target)
 	if err != nil {
@@ -267,10 +267,12 @@ type commit struct {
 }
 
 // parseCommit reads the headers of a commit object: first parent, author and
-// the kind of signature (and for ssh the fingerprint of the key that made it).
-// The message after the blank line is not read.
-func parseCommit(b []byte) commit {
+// the kind of signature (for ssh the fingerprint of the key it names, and
+// whether it verifies over the object). The message is only ever part of the
+// signed bytes; it is not read for anything else.
+func parseCommit(obj []byte) commit {
 	var c commit
+	b := obj
 	if i := bytes.Index(b, []byte("\n\n")); i >= 0 {
 		b = b[:i]
 	}
@@ -295,7 +297,7 @@ func parseCommit(b []byte) commit {
 			sigLines = append(sigLines, val)
 		}
 	}
-	c.sig = parseSignature(strings.Join(sigLines, "\n"))
+	c.sig = parseSignature(strings.Join(sigLines, "\n"), signedPayload(obj))
 	return c
 }
 
@@ -315,30 +317,18 @@ func cut(s string) string {
 	return s
 }
 
-// parseSignature classifies a gpgsig value. For an SSH signature it decodes the
-// armoured SSHSIG blob and returns the SHA256 fingerprint of the public key
-// inside it, spelled as ssh-keygen -l does. The signature itself is not
-// verified.
-func parseSignature(s string) Signature {
+// parseSignature classifies a gpgsig value. For an SSH signature it returns
+// the SHA256 fingerprint of the public key the SSHSIG names, spelled as
+// ssh-keygen -l does, and whether the signature verifies over payload.
+func parseSignature(s string, payload []byte) Signature {
 	switch {
 	case strings.Contains(s, "BEGIN SSH SIGNATURE"):
-		var body strings.Builder
-		for _, l := range strings.Split(s, "\n") {
-			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "-----") {
-				body.WriteString(l)
-			}
-		}
-		raw, err := base64.StdEncoding.DecodeString(body.String())
-		if err != nil || len(raw) < 6+4+4 || string(raw[:6]) != "SSHSIG" {
+		sig, err := decodeSSHSig(s)
+		if err != nil || len(sig.pub) == 0 {
 			return Signature{Format: "ssh"}
 		}
-		raw = raw[6+4:] // magic, version
-		n := binary.BigEndian.Uint32(raw)
-		if n == 0 || int64(n) > int64(len(raw)-4) {
-			return Signature{Format: "ssh"}
-		}
-		sum := sha256.Sum256(raw[4 : 4+n])
-		return Signature{Format: "ssh", Fingerprint: "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])}
+		sum := sha256.Sum256(sig.pub)
+		return Signature{Format: "ssh", Fingerprint: "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), Verified: payload != nil && sig.verify(payload)}
 	case strings.Contains(s, "BEGIN PGP SIGNATURE"), strings.Contains(s, "BEGIN SIGNED MESSAGE"):
 		return Signature{Format: "gpg"}
 	}

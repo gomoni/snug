@@ -50,15 +50,16 @@ type SuggestInput struct {
 
 // Suggest computes the identity pick. It is pure: no filesystem, no command.
 //
-// Abuse: a hostile repository chooses its remote url, its author lines and the
-// public key inside its signatures, so it can steer this toward any one of the
-// human's own keys, accounts or profiles, or away from the right one, and make
-// a lie look like evidence ("193 of 200 commits"). The steering is bounded by
-// what Suggest can return: only values that exist among the human's own keys,
-// gh logins, profiles and git authors, matched byte for byte, never a value
-// taken from the repo; and by what happens next: the pick is a default put
-// first in a question the human answers, and nothing is pinned without that
-// answer.
+// Abuse: a hostile repository chooses its remote url and its author lines, so
+// it can steer this toward any one of the human's own keys, accounts or
+// profiles, or away from the right one, and make a lie look like evidence
+// ("193 of 200 commits"). Its signatures steer nothing unless they verify, and
+// one that verifies under the human's key was made by that key's holder. The
+// steering is bounded by what Suggest can return: only values that exist among
+// the human's own keys, gh logins, profiles and git authors, matched byte for
+// byte, never a value taken from the repo; and by what happens next: the pick
+// is shown with its reason on the opening card, and nothing is pinned until the
+// human answers that card or an identity question.
 func Suggest(in SuggestInput) *IdentityPick {
 	if in.Repo == nil {
 		return nil
@@ -110,6 +111,8 @@ func Suggest(in SuggestInput) *IdentityPick {
 
 	// A signing key: the key most of the dominant author's ssh-signed commits
 	// were made with, found among the human's own .pub files by fingerprint.
+	// Only a signature that verified over its commit counts: an unverified one
+	// is a header the repository wrote, naming a public key anyone can copy.
 	byFP := func(fp string) string {
 		for _, k := range in.Keys {
 			if k.Fingerprint == fp {
@@ -120,7 +123,7 @@ func Suggest(in SuggestInput) *IdentityPick {
 	}
 	n := map[string]int{}
 	for _, s := range in.Repo.Signers {
-		if s.Format == "ssh" && s.Email == dom.Email && byFP(s.Fingerprint) != "" {
+		if s.Format == "ssh" && s.Verified && s.Email == dom.Email && byFP(s.Fingerprint) != "" {
 			n[byFP(s.Fingerprint)] += s.Commits
 		}
 	}
@@ -132,7 +135,7 @@ func Suggest(in SuggestInput) *IdentityPick {
 	}
 	switch {
 	case best != "":
-		p.Signing = Reason{best, fmt.Sprintf("%d of the last %d commits carry an ssh signature made with it", n[best], in.Repo.Sampled)}
+		p.Signing = Reason{best, fmt.Sprintf("%d of the last %d commits carry an ssh signature that verifies with it", n[best], in.Repo.Sampled)}
 	case stemOfConfigKey(in.GitSigningKey, in.Keys) != "":
 		p.Signing = Reason{stemOfConfigKey(in.GitSigningKey, in.Keys), "your git config user.signingkey"}
 	default:
