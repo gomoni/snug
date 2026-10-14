@@ -1371,11 +1371,11 @@ func Expand(reg map[ProfileName]*Profile, selected []ProfileName) (map[ProfileNa
 var retiredProfiles = map[ProfileName]string{
 	"cwd-rw": "@cwd-rw is now @target-rw: the grant was always {target}, the " +
 		"directory named on the command line, and \"cwd\" named a side effect of " +
-		"--chdir rather than the grant itself. Rewrite the selection",
+		"--chdir rather than the grant itself. Rewrite the selection as @target-rw.",
 	"git-ro": "@git-ro is now @git: the -ro suffix asserted a read-only bind, and this " +
 		"profile binds nothing — it reads user.name, user.email and init.defaultBranch " +
 		"from the host's git config and GENERATES ~/.gitconfig inside. Rewrite the " +
-		"selection",
+		"selection as @git.",
 	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
