@@ -183,7 +183,10 @@ func TestGoldScores(t *testing.T) {
 		exact, set, core float64
 	}{
 		{"gold/gold.jsonl", 0.856, 0.856, 0.856},
-		{"gold/gold-v4.jsonl", 0.76, 0.76, 0.76},
+		// Two typos that widen ("giv it acess to the internt", "let it wirte
+		// to this projcet") are a question now, by design: a correction
+		// never grants unasked.
+		{"gold/gold-v4.jsonl", 0.72, 0.72, 0.72},
 		{"data/train-v4.val.jsonl", 0.666, 0.666, 0.666},
 	} {
 		s, rows := scoreFile(t, filepath.Join(model, g.file))
