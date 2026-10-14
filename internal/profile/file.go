@@ -763,7 +763,10 @@ const systemConfigRoot = "/etc/snug"
 // unset or empty. "" when neither is known. It is the one author of that
 // spelling: ConfigDirs, ConfigFile and TrustedConfigRoots all derive from it.
 func userConfigRoot() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	// The XDG Base Directory spec makes a relative value invalid and says to
+	// ignore it. Honouring it would also root the store at the working
+	// directory, which TrustedConfigRoots could not name for the resolver.
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
 		return filepath.Join(xdg, "snug")
 	}
 	return homeConfigRoot()

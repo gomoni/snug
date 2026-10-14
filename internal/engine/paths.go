@@ -103,12 +103,14 @@ func KeyForTarget(target string) string {
 	return targetkey.Hash(target)
 }
 
-// dataHomeDir returns $XDG_DATA_HOME, or ~/.local/share when it is unset.
+// dataHomeDir returns $XDG_DATA_HOME, or ~/.local/share when it is unset or
+// relative: the XDG Base Directory spec makes a relative value invalid, and
+// DataRoots could not name a store rooted at the working directory.
 // String arithmetic only — no filesystem access — so both planPaths (which
 // must stay pure for --dry-run) and New's vdir walk, which creates and
 // verifies what this names, compute the identical value.
 func dataHomeDir() (string, error) {
-	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+	if d := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(d) {
 		return d, nil
 	}
 	home, err := os.UserHomeDir()
@@ -131,7 +133,7 @@ const dataDirName = "snug"
 // shell sets cannot be known here. String arithmetic only, like dataHomeDir.
 func DataRoots() []string {
 	var roots []string
-	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+	if d := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(d) {
 		roots = append(roots, filepath.Join(d, dataDirName))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
