@@ -63,6 +63,8 @@ type Pending struct {
 	unclear *intent.Unclear
 	// shown are the keys of an identity question's numbered candidates.
 	shown []string
+	// proposed marks a pin carried from the opening card, for the ledger.
+	proposed bool
 }
 
 // Line renders the question with its options and the line that answers it.

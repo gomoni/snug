@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/draft"
@@ -99,6 +100,13 @@ func (s *Session) proposalTurn(ctx context.Context, p ingest.Proposal) *Turn {
 	}
 	t.Items = items
 	return t
+}
+
+// remoteLine names the remote the identity was picked for. Its name and url
+// are the project's text, so they are quoted as data: a url can be written to
+// read like snug-setup's own words.
+func remoteLine(r ingest.Remote) Line {
+	return info("Remote %s %s (%s).", strconv.Quote(safe.Inline(r.Name)), strconv.Quote(safe.Inline(r.URL)), safe.Inline(r.Scheme))
 }
 
 // fullAuthor reports whether the host's git author with this email has a
@@ -269,7 +277,7 @@ func (s *Session) Analyze(ctx context.Context) []Line {
 	out = append(out, info("%s", describeTarget(s.cfg.Host.Target, s.facts.Target)))
 	out = append(out, s.projectWarnings()...)
 	if s.pick != nil {
-		out = append(out, info("Remote %s %s (%s).", safe.Inline(s.pick.Remote.Name), safe.Inline(s.pick.Remote.URL), safe.Inline(s.pick.Remote.Scheme)))
+		out = append(out, remoteLine(s.pick.Remote))
 	}
 	card := s.proposalLines(ctx, prop)
 	if l := s.suggestionLine(ctx); l != "" {
@@ -444,7 +452,7 @@ func (s *Session) repoLines(ctx context.Context) []Line {
 	}
 	var out []Line
 	if p := s.pick; p != nil {
-		out = append(out, info("Remote %s %s (%s).", safe.Inline(p.Remote.Name), safe.Inline(p.Remote.URL), safe.Inline(p.Remote.Scheme)))
+		out = append(out, remoteLine(p.Remote))
 	}
 	if r.Sampled > 0 {
 		var who []string
@@ -510,7 +518,7 @@ func (s *Session) repoLines(ctx context.Context) []Line {
 	}
 	known := ""
 	if s.facts.SSH.Known[p.Remote.Host] {
-		known = "; " + safe.Inline(p.Remote.Host) + " is in your known_hosts"
+		known = "; " + strconv.Quote(p.Remote.Host) + " is in your known_hosts"
 	}
 	add("GitHub login", p.GH, "")
 	add("ssh key", p.SSH, known)

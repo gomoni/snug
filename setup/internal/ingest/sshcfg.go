@@ -138,6 +138,36 @@ func StemsFor(hosts []SSHHost, host string) []string {
 	return out
 }
 
+// stemFor is the first of StemsFor's stems and the patterns of the Host line
+// it came from, as the config spells them ("*" for `Host *`): what a reason
+// shows, rather than the remote's host, which the project chose.
+func stemFor(hosts []SSHHost, host string) (stem, patterns string) {
+	stems := StemsFor(hosts, host)
+	if len(stems) == 0 {
+		return "", ""
+	}
+	low := strings.ToLower(host)
+	for _, pass := range []func(SSHHost) bool{
+		func(h SSHHost) bool {
+			return slices.ContainsFunc(h.Patterns, func(p string) bool { return strings.ToLower(p) == low })
+		},
+		func(h SSHHost) bool { return strings.ToLower(h.HostName) == low },
+		func(h SSHHost) bool { return matchesPatterns(h.Patterns, low) },
+	} {
+		for _, h := range hosts {
+			if !pass(h) {
+				continue
+			}
+			for _, f := range h.IdentityFiles {
+				if strings.TrimSuffix(path.Base(f), ".pub") == stems[0] {
+					return stems[0], strings.Join(h.Patterns, " ")
+				}
+			}
+		}
+	}
+	return stems[0], ""
+}
+
 // matchesPatterns applies ssh's Host rule: a name matches when some positive
 // pattern matches and no `!` pattern does.
 func matchesPatterns(pats []string, host string) bool {

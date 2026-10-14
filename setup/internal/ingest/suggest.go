@@ -3,6 +3,7 @@ package ingest
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/hostfacts"
@@ -86,7 +87,7 @@ func Suggest(in SuggestInput) *IdentityPick {
 		p.Conflict = append(p.Conflict, pr.Name)
 	}
 	if len(p.Conflict) == 1 {
-		p.Profile = Reason{p.Conflict[0], "it pins " + r.Host + " and the author of " + fmt.Sprint(dom.Commits) + " of the last " + fmt.Sprint(total) + " commits"}
+		p.Profile = Reason{p.Conflict[0], "it pins the remote's host " + strconv.Quote(r.Host) + " and the author of " + fmt.Sprint(dom.Commits) + " of the last " + fmt.Sprint(total) + " commits"}
 		p.Conflict = nil
 	} else if len(p.Conflict) == 0 {
 		p.Conflict = nil
@@ -95,15 +96,15 @@ func Suggest(in SuggestInput) *IdentityPick {
 	have := func(stem string) bool {
 		return slices.ContainsFunc(in.Keys, func(k hostfacts.SSHKey) bool { return k.Stem == stem })
 	}
-	switch stems := StemsFor(in.SSH.Hosts, r.Host); {
-	case len(stems) > 0 && have(stems[0]):
-		p.SSH = Reason{stems[0], "~/.ssh/config: Host " + r.Host}
+	switch stem, pats := stemFor(in.SSH.Hosts, r.Host); {
+	case stem != "" && have(stem):
+		p.SSH = Reason{stem, "~/.ssh/config `Host " + pats + "` for the remote's host " + strconv.Quote(r.Host)}
 	case profileKey(in.Profiles, p.Profile.Value, have) != "":
 		p.SSH = Reason{profileKey(in.Profiles, p.Profile.Value, have), "your profile " + p.Profile.Value}
 	default:
 		for _, k := range in.Keys {
 			if strings.Contains(strings.ToLower(k.Comment), r.Host) {
-				p.SSH = Reason{k.Stem, "its comment names " + r.Host}
+				p.SSH = Reason{k.Stem, "its comment names the remote's host " + strconv.Quote(r.Host)}
 				break
 			}
 		}
@@ -181,7 +182,7 @@ func Suggest(in SuggestInput) *IdentityPick {
 	default:
 		for _, a := range in.GH {
 			if a.Host == r.Host && r.Owner != "" && a.User == r.Owner {
-				p.GH = Reason{a.User, "the owner in the remote url"}
+				p.GH = Reason{a.User, "the owner " + strconv.Quote(r.Owner) + " in the remote url " + strconv.Quote(r.URL)}
 			}
 		}
 		if p.GH.Value == "" {
@@ -192,7 +193,7 @@ func Suggest(in SuggestInput) *IdentityPick {
 				}
 			}
 			if len(active) == 1 {
-				p.GH = Reason{active[0].User, "your active gh login for " + r.Host}
+				p.GH = Reason{active[0].User, "your active gh login for the remote's host " + strconv.Quote(r.Host)}
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -114,5 +115,27 @@ func TestSuggestNeedsARemote(t *testing.T) {
 	in.Repo.Remotes = nil
 	if Suggest(in) != nil || Suggest(SuggestInput{}) != nil {
 		t.Error("a pick without a remote")
+	}
+}
+
+// TestSuggestReasonQuotesTheProject: the reason for an ssh key names the Host
+// line of the human's config that matched, and the remote's host only as
+// quoted data, so a host written to read like snug-setup's words ("(checked")
+// shows as what it is.
+func TestSuggestReasonQuotesTheProject(t *testing.T) {
+	in := snugLike()
+	r := ParseRemoteURL("git@github.com) and GitHub lists it as your key (checked:me/x.git")
+	if !strings.Contains(r.Host, "(checked") {
+		t.Fatalf("the remote parses to host %q; the case needs the text in it", r.Host)
+	}
+	in.Repo.Remotes = []Remote{r}
+	in.SSH = SSHFacts{Hosts: ParseSSHConfig(strings.NewReader("Host *\n  IdentityFile ~/.ssh/github_auth\n"))}
+	p := Suggest(in)
+	if p == nil || p.SSH.Value != "github_auth" {
+		t.Fatalf("%+v", p)
+	}
+	want := "~/.ssh/config `Host *` for the remote's host " + strconv.Quote(r.Host)
+	if p.SSH.Why != want {
+		t.Errorf("why %q, want %q", p.SSH.Why, want)
 	}
 }

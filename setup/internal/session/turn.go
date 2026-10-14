@@ -401,7 +401,7 @@ func offlineWish(said string, acts []intent.Action) bool {
 func (s *Session) proposeUser(t *Turn, acts []intent.Action, it Item) []Line {
 	a := it.Action
 	if it.Pin {
-		return s.pinKey(a.Kind, a.Account, t.Said, t.N)
+		return s.pinKey(a.Kind, a.Account, t.Said, t.N, it.Why != "")
 	}
 	src, origin := draft.SourceUser, t.Said
 	if it.Why != "" {
