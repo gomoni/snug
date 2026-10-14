@@ -36,8 +36,8 @@ const usage = `usage: snug-setup [--model FILE.gguf | --openai-url URL [--model 
   --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
                        scripts/fetch-llama-server.sh puts the tested release there)
   --offline            never ask GitHub whether an ssh key belongs to an account
-  --plain              accepted and ignored: snug-setup always asks nothing. The newest question is
-                       answered with a line of yes, no or its numbers; any with /accept, /decline
+  --plain              accepted and ignored: snug-setup always asks nothing. The question printed just
+                       before is answered with a line of yes, no or its numbers; any with /accept, /decline
                        and /pick (/help lists them).
   --profile-dir DIR    where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
   DIR                  the project directory the profile is for (default: the current directory)

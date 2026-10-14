@@ -61,20 +61,29 @@ func parseAnswer(text string) (reply, bool) {
 	return reply{}, false
 }
 
-// answer applies r to the newest open question, the one the human last saw.
-// A pick from a choice is returned as a turn, the same as a request.
+// answer applies r to the question the front end printed last in answer to
+// the line before this one (Heard, Shown), and says which it answered. With no
+// such question still open it applies nothing and lists what is open: a "yes"
+// typed under a refusal or a listing must not land on a card printed further
+// up. A pick from a choice is returned as a turn, the same as a request.
 func (s *Session) answer(ctx context.Context, r reply) (*Turn, []Line) {
 	if len(s.pending) == 0 {
 		return nil, []Line{info("there is no open question to answer; say what the sandbox needs, or /help.")}
 	}
-	p := s.pending[len(s.pending)-1]
-	lead := info("(answering #%d)", p.N)
-	if len(s.pending) == 1 {
-		lead = Line{}
+	p, ok := s.find(s.before)
+	if !ok {
+		out := []Line{info("a bare yes, no or number answers the question printed just before it, and the last thing printed asked none; nothing changed. Open:")}
+		for _, q := range s.pending {
+			out = append(out, info("  #%d: %s", q.N, q.Answer))
+		}
+		return nil, out
 	}
+	lead := info("(answering #%d)", p.N)
 	with := func(lines []Line) []Line {
-		if lead.Text == "" {
-			return lines
+		if _, open := s.find(p.N); open {
+			// The answer did not close it, so it is still the question
+			// the human last read about.
+			lead.Q = p.N
 		}
 		return append([]Line{lead}, lines...)
 	}

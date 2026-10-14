@@ -64,10 +64,13 @@ const (
 type Line struct {
 	Kind LineKind
 	Text string
+	// Q is the number of the question the line prints, 0 for any other line.
+	// Shown reads it.
+	Q int
 }
 
-func info(format string, a ...any) Line { return Line{Info, fmt.Sprintf(format, a...)} }
-func warn(format string, a ...any) Line { return Line{Warn, fmt.Sprintf(format, a...)} }
+func info(format string, a ...any) Line { return Line{Kind: Info, Text: fmt.Sprintf(format, a...)} }
+func warn(format string, a ...any) Line { return Line{Kind: Warn, Text: fmt.Sprintf(format, a...)} }
 
 // Session is one conversation: the draft, the host's facts, the pending
 // questions and the undo stack.
@@ -78,6 +81,10 @@ type Session struct {
 	undo    []step
 	pending []Pending
 	lastN   int
+	// shown is the question the front end printed last in answer to the
+	// current line, and before that the one printed last in answer to the
+	// line before it: the only question a bare yes, no or number may answer.
+	shown, before int
 
 	keys        []hostfacts.SSHKey
 	gh          []hostfacts.GHAccount
@@ -98,6 +105,9 @@ type step struct {
 	what    string
 	d       *draft.Draft
 	pending []Pending
+	// declined is the card a decline closed, 0 for any other step: a
+	// request to undo never reopens it, only /undo does.
+	declined int
 }
 
 // New detects the host's facts and returns a session, with the lines that
@@ -142,6 +152,21 @@ func (s *Session) commit(before step, what string) {
 	s.undo = append(s.undo, before)
 }
 
+// Heard tells the session that the human typed a line: what the front end
+// printed for the line before it is now what a bare answer refers to.
+func (s *Session) Heard() { s.before, s.shown = s.shown, 0 }
+
+// Shown tells the session that the front end printed lines. A front end
+// that never calls Heard and Shown gets no bare answers: each one asks which
+// question it is for.
+func (s *Session) Shown(lines []Line) {
+	for _, l := range lines {
+		if l.Q > 0 {
+			s.shown = l.Q
+		}
+	}
+}
+
 // Undo restores the state before the last commit. An overwrite question is
 // never restored: it was asked about a body the draft no longer has.
 func (s *Session) Undo() []Line {
@@ -152,12 +177,27 @@ func (s *Session) Undo() []Line {
 	s.undo = s.undo[:len(s.undo)-1]
 	s.d = st.d
 	s.pending = slices.DeleteFunc(st.pending, func(p Pending) bool { return p.Kind == Overwrite })
+	if st.declined > 0 {
+		return []Line{info("undone: %s; #%d is open again and nothing from it is applied.", st.what, st.declined)}
+	}
 	return []Line{info("undone: %s.", st.what)}
+}
+
+// undoRequest is an undo the interpreter read in a request ("never mind",
+// "take that back"). It does not reopen a card the human declined: a "no" is
+// already the narrow answer, and words that sound like retracting the line
+// just typed must not resurrect a grant refused earlier. /undo still does.
+func (s *Session) undoRequest() []Line {
+	if n := len(s.undo); n > 0 && s.undo[n-1].declined > 0 {
+		d := s.undo[n-1].declined
+		return []Line{info("the last thing done was your no to #%d, and nothing from it is in the draft, so nothing was undone. /undo reopens #%d if that is what you meant.", d, d)}
+	}
+	return s.Undo()
 }
 
 // Show returns the draft as it would be saved.
 func (s *Session) Show() []Line {
-	out := []Line{{Shown, strings.TrimRight(s.d.Render(), "\n")}}
+	out := []Line{{Kind: Shown, Text: strings.TrimRight(s.d.Render(), "\n")}}
 	if s.d.Empty() && len(s.pending) > 0 {
 		out = append(out, info("Nothing is in the draft yet; %d question(s) are open and nothing from them is applied until you answer (/pending lists them).", len(s.pending)))
 	}
@@ -188,9 +228,9 @@ func refusal(code, detail string) []Line {
 	if detail != "" {
 		text += ": " + safe.Inline(detail)
 	}
-	out := []Line{{Refused, text}}
+	out := []Line{{Kind: Refused, Text: text}}
 	if e, ok := texts.Refusal(code); ok {
-		out = append(out, Line{Refused, e.String()})
+		out = append(out, Line{Kind: Refused, Text: e.String()})
 	}
 	return out
 }
@@ -204,7 +244,7 @@ func readRefusal(code string) []Line {
 		text += "\n" + e.String()
 	}
 	text += "\nIf I misread you, say it differently — nothing changed."
-	return []Line{{Refused, text}}
+	return []Line{{Kind: Refused, Text: text}}
 }
 
 // ListIdentities lists the host's identities of kind.
@@ -265,7 +305,7 @@ func (s *Session) listIdentities(kind string, short bool) []Line {
 	if footer != "" {
 		b.WriteString(footer + "\n")
 	}
-	return []Line{{Shown, strings.TrimRight(b.String(), "\n")}}
+	return []Line{{Kind: Shown, Text: strings.TrimRight(b.String(), "\n")}}
 }
 
 func dash(s string) string {

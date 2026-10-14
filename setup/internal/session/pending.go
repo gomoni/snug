@@ -73,7 +73,7 @@ func (p Pending) Line() Line {
 		b.WriteString("\n    " + o)
 	}
 	b.WriteString("\n  answer: " + p.Answer)
-	return Line{Question, b.String()}
+	return Line{Kind: Question, Text: b.String(), Q: p.N}
 }
 
 // Pending returns the open questions, oldest first.
@@ -280,6 +280,9 @@ func (s *Session) Decline(n int) []Line {
 		out = append(out, info("nothing changed."))
 	}
 	s.commit(before, fmt.Sprintf("the answer to #%d", n))
+	if p.Kind == Card && len(s.undo) > 0 {
+		s.undo[len(s.undo)-1].declined = n
+	}
 	return out
 }
 

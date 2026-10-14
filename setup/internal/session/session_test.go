@@ -26,10 +26,12 @@ func open(w *testworld.World, offline bool) *Session {
 
 // say is what --plain does with a request line.
 func say(s *Session, request string) string {
+	s.Heard()
 	t, lines := s.Submit(ctx, request)
 	if t != nil {
 		lines = append(lines, s.Defer(ctx, t)...)
 	}
+	s.Shown(lines)
 	return text(lines)
 }
 

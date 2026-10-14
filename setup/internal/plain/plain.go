@@ -1,8 +1,9 @@
 // Package plain is snug-setup without a screen: one reader, one line at a
 // time, and a line is a request, an answer, or a slash command. Nothing is
 // ever asked. Where the TUI would ask, the session opens a numbered question;
-// a line that is only yes, no or numbers ("only 1 and 3") answers the newest
-// one, and /accept N, /decline N and /pick KIND VALUE answer any. Every other
+// a line that is only yes, no or numbers ("only 1 and 3") answers the one
+// printed in answer to the line before it, and /accept N, /decline N and
+// /pick KIND VALUE answer any. Every other
 // line is a request, so a request is never taken for an answer.
 package plain
 
@@ -30,7 +31,7 @@ type Config struct {
 }
 
 const answerHelp = `Answers to open questions (--plain asks nothing; it opens numbered questions):
-  yes | no | 2 | only 1 and 3  answer the newest question: all, none, or the items to keep
+  yes | no | 2 | only 1 and 3  answer the question printed just before: all, none, or the items to keep
   /pending                  list the open questions and the line that answers each
   /accept N                 yes to question N
   /decline N                no to question N
@@ -49,7 +50,8 @@ const answerHelp = `Answers to open questions (--plain asks nothing; it opens nu
 func Run(ctx context.Context, cfg Config) *session.Session {
 	p := &printer{w: cfg.Out}
 	s, lines := session.New(ctx, cfg.Session)
-	p.say("snug-setup: one request per line; answer the newest question with yes, no or its numbers, any question with /accept, /decline and /pick (see /help).")
+	p.s = s
+	p.say("snug-setup: one request per line; answer the question just printed with yes, no or its numbers, any question with /accept, /decline and /pick (see /help).")
 	p.print(lines)
 	in := bufio.NewReader(cfg.In)
 	for {
@@ -74,11 +76,19 @@ func Run(ctx context.Context, cfg Config) *session.Session {
 	return s
 }
 
-type printer struct{ w io.Writer }
+// printer writes lines and tells the session which question it printed, the
+// one a bare answer on the next line refers to.
+type printer struct {
+	w io.Writer
+	s *session.Session
+}
 
 func (p *printer) say(s string) { fmt.Fprintln(p.w, safe.Clean(s)) }
 
 func (p *printer) print(lines []session.Line) {
+	if p.s != nil {
+		p.s.Shown(lines)
+	}
 	for _, l := range lines {
 		p.say(l.Text)
 	}
@@ -89,6 +99,7 @@ func handle(ctx context.Context, s *session.Session, p *printer, line string) bo
 	if line == "" {
 		return false
 	}
+	s.Heard()
 	if !strings.HasPrefix(line, "/") {
 		t, lines := s.Submit(ctx, line)
 		p.print(lines)
