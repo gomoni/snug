@@ -211,8 +211,13 @@ func (s *Session) Accept(ctx context.Context, n int) []Line {
 	case Card:
 		s.close(n)
 		acts := p.turn.actions()
+		pinned := false
 		for _, i := range p.held {
 			out = append(out, s.proposeUser(p.turn, acts, p.turn.Items[i])...)
+			pinned = pinned || p.turn.Items[i].Pin
+		}
+		if pinned {
+			out = append(out, s.checkIdentity(ctx)...)
 		}
 	case Conflict:
 		s.close(n)
@@ -296,13 +301,18 @@ func (s *Session) AcceptSome(ctx context.Context, n int, keep []int) []Line {
 	s.close(n)
 	acts := p.turn.actions()
 	var out []Line
+	pinned := false
 	for j, i := range p.held {
 		it := p.turn.Items[i]
 		if slices.Contains(keep, j+1) {
 			out = append(out, s.proposeUser(p.turn, acts, it)...)
+			pinned = pinned || it.Pin
 		} else {
 			out = append(out, info("not applied: %s.", it.Sentence))
 		}
+	}
+	if pinned {
+		out = append(out, s.checkIdentity(ctx)...)
 	}
 	s.commit(before, fmt.Sprintf("the answer to #%d", n))
 	return out

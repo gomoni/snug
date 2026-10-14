@@ -214,9 +214,20 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 		s.commit(before, fmt.Sprintf("the answer to #%d", p.N))
 		return []Line{info("no %s pinned.", kindName(kind))}
 	}
+	if _, full := s.slotFull(kind); !full && kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
+		if slices.ContainsFunc(s.Candidates(kind), func(c Candidate) bool { return c.Key == value }) {
+			out := []Line{info("a signing key goes with an ssh key and a git author, and the draft pins %s. I opened the question for what is missing; answer it, then /pick signing %s again (#%d stays open). Nothing written.", missingForSigning(s.d), safe.Inline(value), p.N)}
+			if s.d.SSH == nil {
+				out = append(out, s.askIdentity("ssh", "", p.said, p.at)...)
+			}
+			if s.d.Git == nil {
+				out = append(out, s.askIdentity("git", "", p.said, p.at)...)
+			}
+			return out
+		}
+	}
 	cands := s.Candidates(kind)
-	j := slices.IndexFunc(cands, func(c Candidate) bool { return c.Key == value })
-	if j < 0 {
+	if !slices.ContainsFunc(cands, func(c Candidate) bool { return c.Key == value }) {
 		keys := make([]string, len(cands))
 		for k, c := range cands {
 			keys[k] = safe.Inline(c.Key)
@@ -227,36 +238,45 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 	if cur, full := s.slotFull(kind); full {
 		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
 	}
-	if kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
-		out := []Line{info("a signing key goes with an ssh key and a git author, and the draft pins %s. I opened the question for what is missing; answer it, then /pick signing %s again (#%d stays open). Nothing written.", missingForSigning(s.d), safe.Inline(value), p.N)}
-		if s.d.SSH == nil {
-			out = append(out, s.askIdentity("ssh", "", p.said, p.at)...)
-		}
-		if s.d.Git == nil {
-			out = append(out, s.askIdentity("git", "", p.said, p.at)...)
-		}
-		return out
-	}
 	before := s.snapshot()
 	s.close(p.N)
-	var out []Line
-	idx := cands[j].idx
-	switch kind {
-	case "ssh":
-		out = s.pinSSH(s.keys[idx], p)
-	case "signing":
-		out = s.pinSigning(s.keys[idx], p)
-	case "github":
-		out = s.pinGitHub(s.gh[idx], p)
-	case "git":
-		a := s.authors[idx]
-		s.d.SetGit(a.Name, a.Email)
-		s.d.RecordIdentity("git", nonEmpty(a.String(), a.Name, a.Email), p.said, p.at)
-		out = []Line{info("pinned git author %s.", safe.Inline(a.String()))}
-	}
+	out := s.pinKey(kind, value, p.said, p.at)
 	out = append(out, s.checkIdentity(ctx)...)
 	s.commit(before, fmt.Sprintf("the answer to #%d", p.N))
 	return out
+}
+
+// pinKey pins the candidate of kind whose Key is value, recording said and
+// at as where the human named it. It pins nothing, and says why, when the
+// draft already pins that kind, when value is not a candidate, or for a
+// signing key while the ssh key or the author is missing. The caller checks
+// the pinned ssh key against GitHub.
+func (s *Session) pinKey(kind, value, said string, at int) []Line {
+	if cur, full := s.slotFull(kind); full {
+		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
+	}
+	cands := s.Candidates(kind)
+	j := slices.IndexFunc(cands, func(c Candidate) bool { return c.Key == value })
+	if j < 0 {
+		return []Line{info("%q is not a %s on this host; nothing written.", safe.Inline(value), kindName(kind))}
+	}
+	if kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
+		return []Line{info("not pinned: signing key %s goes with an ssh key and a git author, and the draft pins %s.", safe.Inline(value), missingForSigning(s.d))}
+	}
+	p := Pending{said: said, at: at}
+	idx := cands[j].idx
+	switch kind {
+	case "ssh":
+		return s.pinSSH(s.keys[idx], p)
+	case "signing":
+		return s.pinSigning(s.keys[idx], p)
+	case "github":
+		return s.pinGitHub(s.gh[idx], p)
+	}
+	a := s.authors[idx]
+	s.d.SetGit(a.Name, a.Email)
+	s.d.RecordIdentity("git", nonEmpty(a.String(), a.Name, a.Email), said, at)
+	return []Line{info("pinned git author %s.", safe.Inline(a.String()))}
 }
 
 // netIncluded reports whether the draft reaches the internet.
@@ -321,7 +341,7 @@ func (s *Session) pinGitHub(a hostfacts.GHAccount, p Pending) []Line {
 		out = append(out, info("no ssh key is pinned, so git over ssh has none; ask for one (\"use my ssh key for %s\") if it should push.", safe.Inline(a.User)))
 	}
 	if s.d.Git == nil && len(s.authors) > 0 {
-		out = append(out, info("no git author is pinned; ask for one (\"use my git author\") to pin identity.git too."))
+		out = append(out, info("no git author is pinned; ask for one (\"commit as NAME <EMAIL>\") to pin identity.git too."))
 	}
 	return out
 }
