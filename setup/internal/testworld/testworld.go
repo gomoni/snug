@@ -6,8 +6,12 @@
 package testworld
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha512"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,13 +31,55 @@ import (
 	"github.com/gomoni/snug/setup/internal/verify"
 )
 
-// BlobOf is a valid ssh-ed25519 key blob that differs per seed.
-func BlobOf(seed byte) string {
-	raw := append([]byte("\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"), make([]byte, 32)...)
-	for i := 0; i < 32; i++ {
-		raw[len(raw)-1-i] = seed + byte(i)
+// keyOf is the ed25519 key of seed: real, so a commit can be signed with it.
+func keyOf(seed byte) ed25519.PrivateKey {
+	var sd [ed25519.SeedSize]byte
+	for i := range sd {
+		sd[i] = seed + byte(i)
 	}
-	return base64.StdEncoding.EncodeToString(raw)
+	return ed25519.NewKeyFromSeed(sd[:])
+}
+
+func putString(b *bytes.Buffer, s []byte) {
+	binary.Write(b, binary.BigEndian, uint32(len(s)))
+	b.Write(s)
+}
+
+func pubBlob(seed byte) []byte {
+	var b bytes.Buffer
+	putString(&b, []byte("ssh-ed25519"))
+	putString(&b, keyOf(seed).Public().(ed25519.PublicKey))
+	return b.Bytes()
+}
+
+// BlobOf is the ssh-ed25519 public key blob of seed, base64 as in a .pub file.
+func BlobOf(seed byte) string { return base64.StdEncoding.EncodeToString(pubBlob(seed)) }
+
+// SignCommit is the armoured SSHSIG that `git commit -S` with gpg.format=ssh
+// makes with the key of seed over payload (namespace git, sha512).
+func SignCommit(seed byte, payload []byte) string {
+	h := sha512.Sum512(payload)
+	var signed bytes.Buffer
+	signed.WriteString("SSHSIG")
+	for _, f := range [][]byte{[]byte("git"), nil, []byte("sha512"), h[:]} {
+		putString(&signed, f)
+	}
+	var sig bytes.Buffer
+	putString(&sig, []byte("ssh-ed25519"))
+	putString(&sig, ed25519.Sign(keyOf(seed), signed.Bytes()))
+	var b bytes.Buffer
+	b.WriteString("SSHSIG")
+	binary.Write(&b, binary.BigEndian, uint32(1))
+	for _, f := range [][]byte{pubBlob(seed), []byte("git"), nil, []byte("sha512"), sig.Bytes()} {
+		putString(&b, f)
+	}
+	enc := base64.StdEncoding.EncodeToString(b.Bytes())
+	var lines []string
+	for len(enc) > 70 {
+		lines = append(lines, enc[:70])
+		enc = enc[70:]
+	}
+	return "-----BEGIN SSH SIGNATURE-----\n" + strings.Join(append(lines, enc), "\n") + "\n-----END SSH SIGNATURE-----"
 }
 
 // Model answers from a table keyed by the request text, with "|file" appended

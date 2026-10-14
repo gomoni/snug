@@ -19,7 +19,7 @@ func snugLike() SuggestInput {
 		Repo: &RepoFacts{
 			Remotes: []Remote{ParseRemoteURL("git@github.com:gomoni/snug.git")},
 			Authors: []Person{{"Michal V", "m@example.org", 193}, {"Other", "o@example.org", 7}},
-			Signers: []Signature{{"gpg", "", "m@example.org", 193}, {"ssh", sign.Fingerprint, "m@example.org", 7}},
+			Signers: []Signature{{"gpg", "", "m@example.org", 193, false}, {"ssh", sign.Fingerprint, "m@example.org", 7, true}},
 			Sampled: 200,
 		},
 		SSH:     SSHFacts{Hosts: ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))},
@@ -70,7 +70,7 @@ func TestSuggestPrefersAProfilePinningTheSameAuthor(t *testing.T) {
 func TestSuggestNeverReturnsAValueFromTheRepo(t *testing.T) {
 	in := snugLike()
 	in.Repo.Authors = []Person{{"Evil", "evil@attacker.example", 200}}
-	in.Repo.Signers = []Signature{{"ssh", "SHA256:attackerkey", "evil@attacker.example", 200}}
+	in.Repo.Signers = []Signature{{"ssh", "SHA256:attackerkey", "evil@attacker.example", 200, true}}
 	in.Repo.Remotes = []Remote{ParseRemoteURL("git@evil.example:ceo/repo.git")}
 	p := Suggest(in)
 	if p.Author.Value != "m@example.org" || p.Author.Why != "your global git author" {

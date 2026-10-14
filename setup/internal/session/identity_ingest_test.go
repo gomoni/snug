@@ -1,9 +1,6 @@
 package session
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,21 +24,6 @@ func gitIn(t *testing.T, dir, stdin string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// sshSig is an armoured SSHSIG whose public key is the testworld key of seed.
-func sshSig(seed byte) string {
-	raw, _ := base64.StdEncoding.DecodeString(testworld.BlobOf(seed))
-	var b bytes.Buffer
-	b.WriteString("SSHSIG")
-	binary.Write(&b, binary.BigEndian, uint32(1))
-	binary.Write(&b, binary.BigEndian, uint32(len(raw)))
-	b.Write(raw)
-	for _, s := range []string{"git", "", "sha512", "x"} {
-		binary.Write(&b, binary.BigEndian, uint32(len(s)))
-		b.WriteString(s)
-	}
-	return "-----BEGIN SSH SIGNATURE-----\n" + base64.StdEncoding.EncodeToString(b.Bytes()) + "\n-----END SSH SIGNATURE-----"
-}
-
 // repoWithHistory makes a git work tree at the world's target whose commits are
 // by Account Two, every other one signed with the testworld key of signSeed.
 func repoWithHistory(t *testing.T, w *testworld.World, remote string, signSeed byte, n int) {
@@ -57,7 +39,7 @@ func repoWithHistory(t *testing.T, w *testworld.World, remote string, signSeed b
 		}
 		body += "author Account Two <two@example.com> 1700000000 +0000\ncommitter Account Two <two@example.com> 1700000000 +0000\n"
 		if i%2 == 0 {
-			lines := strings.Split(sshSig(signSeed), "\n")
+			lines := strings.Split(testworld.SignCommit(signSeed, []byte(body+"\nc\n")), "\n")
 			body += "gpgsig " + lines[0] + "\n"
 			for _, l := range lines[1:] {
 				body += " " + l + "\n"
@@ -78,8 +60,8 @@ func TestOpeningSuggestsTheIdentityTheRepositoryAndHostPointAt(t *testing.T) {
 	lacks(t, out, "Last 10 commits", "Found on this host", "Each request stands alone")
 	s, _ := start(w)
 	contains(t, text(s.Details(ctx)),
-		"Last 10 commits: 10 by Account Two <two@example.com>.", "5 carry an ssh signature made with your key id_other (signatures are read, not verified)",
-		"ssh key id_account2  (~/.ssh/config: Host github.com)", "signing key id_other  (5 of the last 10 commits carry an ssh signature made with it)",
+		"Last 10 commits: 10 by Account Two <two@example.com>.", "5 carry an ssh signature that verifies with your key id_other.",
+		"ssh key id_account2  (~/.ssh/config: Host github.com)", "signing key id_other  (5 of the last 10 commits carry an ssh signature that verifies with it)",
 		"git author Account Two <two@example.com>", "GitHub login account2  (the owner in the remote url)", "nothing is pinned until you answer")
 }
 
@@ -299,4 +281,31 @@ func TestSensitiveRefusalListsAFewKeys(t *testing.T) {
 	if n := strings.Count(say(s, "which keys do I have?"), "SHA256:"); n != 12 {
 		t.Errorf("%d keys listed for the question", n)
 	}
+}
+
+// TestOpeningCardPinsCarryACost: a "yes" to the opening card pins what it
+// lists, so every pin on it says what it hands the sandbox: the signing key
+// its oracle and the authentication through the proxy, the GitHub login its
+// token.
+func TestOpeningCardPinsCarryACost(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
+	os.WriteFile(filepath.Join(w.Home, ".ssh", "config"), []byte("Host github.com\n  IdentityFile ~/.ssh/id_account2\n"), 0o600)
+	s, _ := startRules(w)
+	opts := s.Pending()[0].Options
+	pins := 0
+	for _, o := range opts {
+		if !strings.Contains(o, ". pin ") {
+			continue
+		}
+		pins++
+		if !strings.Contains(o, "\n      cost: ") {
+			t.Errorf("pin without a cost line: %q", o)
+		}
+	}
+	if pins != 4 {
+		t.Fatalf("%d pins on the card: %q", pins, opts)
+	}
+	card := strings.Join(opts, "\n")
+	contains(t, card, "SIGNING ORACLE for id_other", "authenticate with this key", "GitHub token of github.com/account2")
 }

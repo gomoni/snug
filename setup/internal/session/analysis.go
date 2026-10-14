@@ -180,12 +180,28 @@ func (s *Session) identityItems(ctx context.Context) []Item {
 		}
 		it := Item{Action: intent.Action{Op: intent.OpSelectIdentity, Kind: c.kind, Account: cands[i].Key}, Class: ClassGrant,
 			Ticked: true, Pin: true, Sentence: "pin " + kindName(c.kind) + " " + s.pinLabel(c.kind, cands[i]), Why: c.r.Why}
-		if c.kind == "ssh" || c.kind == "signing" {
-			it.Abuse = draft.Abuse["identity"]
+		name := safe.Inline(cands[i].Key)
+		if c.kind == "github" {
+			name = s.pinLabel(c.kind, cands[i])
 		}
+		it.Abuse = pinCost(c.kind, name)
 		out = append(out, it)
 	}
 	return out
+}
+
+// pinCost is the cost line of a pin on the opening card, so a "yes" to the card
+// is a yes to each of them read. name is the key stem or the HOST/LOGIN.
+func pinCost(kind, name string) string {
+	switch kind {
+	case "ssh":
+		return draft.Abuse["identity"]
+	case "signing":
+		return "the sandbox gets a SIGNING ORACLE for " + name + ": anything signed with it, commits and tags in your name included, comes from inside; and the agent proxy also lets it authenticate with this key to any host that trusts it."
+	case "github":
+		return "the sandbox gets the GitHub token of " + name + " and can act as that account on GitHub with whatever the token allows."
+	}
+	return "commits made in the sandbox carry this name and email."
 }
 
 // notProposed lists what the analysis saw a use for and did not put on the
@@ -439,11 +455,14 @@ func (s *Session) repoLines(ctx context.Context) []Line {
 			who = append(who, fmt.Sprintf("%d by %s <%s>", a.Commits, safe.Inline(a.Name), safe.Inline(a.Email)))
 		}
 		line := fmt.Sprintf("Last %d commits: %s.", r.Sampled, strings.Join(who, ", "))
-		type key struct{ format, fp string }
+		type key struct {
+			format, fp string
+			ok         bool
+		}
 		var order []key
 		count := map[key]int{}
 		for _, sg := range r.Signers {
-			k := key{sg.Format, sg.Fingerprint}
+			k := key{sg.Format, sg.Fingerprint, sg.Verified}
 			if _, ok := count[k]; !ok {
 				order = append(order, k)
 			}
@@ -451,17 +470,22 @@ func (s *Session) repoLines(ctx context.Context) []Line {
 		}
 		var sigs []string
 		for _, k := range order {
+			mine := s.stemByFingerprint(k.fp)
 			switch {
-			case k.format == "ssh" && s.stemByFingerprint(k.fp) != "":
-				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature made with your key %s", count[k], safe.Inline(s.stemByFingerprint(k.fp))))
+			case k.format == "ssh" && k.ok && mine != "":
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature that verifies with your key %s", count[k], safe.Inline(mine)))
+			case k.format == "ssh" && mine != "":
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature naming your key %s that does NOT verify, so it is not evidence of anything", count[k], safe.Inline(mine)))
+			case k.format == "ssh" && k.ok:
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature that verifies with a key you do not have", count[k]))
 			case k.format == "ssh":
-				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature made with a key you do not have", count[k]))
+				sigs = append(sigs, fmt.Sprintf("%d carry an ssh signature that does not verify", count[k]))
 			default:
-				sigs = append(sigs, fmt.Sprintf("%d carry a gpg signature", count[k]))
+				sigs = append(sigs, fmt.Sprintf("%d carry a gpg signature (not checked)", count[k]))
 			}
 		}
 		if len(sigs) > 0 {
-			line += " " + strings.Join(sigs, "; ") + " (signatures are read, not verified)."
+			line += " " + strings.Join(sigs, "; ") + "."
 		}
 		out = append(out, info("%s", line))
 	}
