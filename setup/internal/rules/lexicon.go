@@ -45,8 +45,12 @@ var (
 	questionHead = set("what which how does do is are can could will would should why where who when welche was wie kann ist jak co který která je")
 	identityNoun = set("identity identities account accounts ssh key keys signing login logins author")
 	seccompWords = set("seccomp")
-	sensitiveDir = set(".ssh .aws .gnupg .netrc .docker .kube .git-credentials .npmrc .pypirc")
-	offTopic     = set("joke poem song story weather recipe tuple rain forecast")
+	sensitiveDir = set(".ssh .aws .gnupg .netrc .docker .kube .git-credentials .npmrc .pypirc .password-store .mozilla .librewolf")
+	// sensitiveConfig are the credential stores under ~/.config the rules
+	// refuse by name; the draft refuses them, and every other one it lists,
+	// whatever the rules say.
+	sensitiveConfig = []string{".config/gcloud", ".config/google-chrome", ".config/chromium", ".config/BraveSoftware", ".config/microsoft-edge"}
+	offTopic        = set("joke poem song story weather recipe tuple rain forecast")
 )
 
 // fillers are words that carry no request by themselves. A clause made only

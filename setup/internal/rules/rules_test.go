@@ -216,3 +216,20 @@ func TestCorrectionNeverCreatesGrant(t *testing.T) {
 		t.Errorf("%+v", u)
 	}
 }
+
+// TestCredentialStoresReadAsRefusals is redteam setup r7 R7-5 at the rules:
+// a personal access token and the credential stores the draft refuses are
+// read as the refusal, not as a grant for the draft to catch.
+func TestCredentialStoresReadAsRefusals(t *testing.T) {
+	for in, code := range map[string]string{
+		"keep my GITHUB_PAT":            "secret_in_env",
+		"let it read ~/.password-store": "sensitive_home",
+		"let it read ~/.mozilla":        "sensitive_home",
+		"let it read ~/.config/gcloud":  "sensitive_home",
+		"read ~/.config/chromium":       "sensitive_home",
+	} {
+		if got := read(t, host, in); len(got) == 0 || got[0] != refuse(code) {
+			t.Errorf("%q: %v, want refuse %s", in, got, code)
+		}
+	}
+}

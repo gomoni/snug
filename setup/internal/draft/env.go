@@ -12,8 +12,9 @@ import (
 
 // secretName, secretWord, secretURL and secretProxy name the variables refused
 // as credentials. The substrings match anywhere; the words match one
-// _-separated segment, so PRIVATE_KEY and SSH_AUTH_SOCK are refused while
-// KEYBOARD_LAYOUT and AUTHOR_NAME are not, and TOKEN must end a segment, so
+// _-separated segment, so PRIVATE_KEY, SSH_AUTH_SOCK and GITHUB_PAT (a
+// personal access token) are refused while KEYBOARD_LAYOUT, AUTHOR_NAME and
+// PATH are not, and TOKEN must end a segment, so
 // GITHUB_TOKEN and APITOKEN_X are refused and TOKENIZERS_PARALLELISM is not. A
 // glued ...KEY at the end (OPENAIKEY) is refused. A connection URL for a
 // database, queue or index, and a proxy URL, routinely carry user:password, so
@@ -21,7 +22,7 @@ import (
 // (PASSWORD_STORE_DIR, AUTH_TYPE); the human can set them by hand.
 var (
 	secretName  = regexp.MustCompile(`(?i)TOKEN(_|$)|SECRET|PASSWORD|PASSPHRASE|API_?KEY|CREDENTIAL|COOKIE|BEARER|JWT|WEBHOOK|CONNECTION_STRING|CONN_STR|KEY$`)
-	secretWord  = regexp.MustCompile(`(?i)(^|_)(KEYS?|PASS|PASSWD|PWD|AUTH|DSN|PRIVATE|SESSION|SESSIONID|SK|HMAC|SALT)(_|$)`)
+	secretWord  = regexp.MustCompile(`(?i)(^|_)(KEYS?|PASS|PASSWD|PWD|AUTH|DSN|PRIVATE|SESSION|SESSIONID|SK|HMAC|SALT|PAT)(_|$)`)
 	secretURL   = regexp.MustCompile(`(?i)((^|_)(DATABASE|DB|REDIS|MONGO|MONGODB|POSTGRES|POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|BROKER|KAFKA|ELASTICSEARCH|CLICKHOUSE|SMTP|MAIL|NATS|CACHE)|INDEX)_UR[LI](_[A-Z0-9]+)?$`)
 	secretProxy = regexp.MustCompile(`(?i)^(HTTPS?|ALL|FTP|SOCKS5?)_PROXY$`)
 	// secretValue is a set value that carries a credential whatever the name:
