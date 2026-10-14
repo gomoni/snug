@@ -202,7 +202,7 @@ func (s *Session) analyzeAgain(ctx context.Context, prop ingest.Proposal) []Line
 // Details is /why: everything the opening leaves out. Nothing in it opens a
 // question or changes the draft.
 func (s *Session) Details(ctx context.Context) []Line {
-	out := []Line{info("Found on this host: %d ssh public key(s), %d GitHub login(s), %d git author(s). Each request stands alone: the model remembers nothing but the draft.", len(s.keys), len(s.gh), len(s.authors))}
+	out := []Line{info("Found on this host: %d ssh public key(s), %d GitHub login(s), %d git author(s). Each request stands alone: nothing but the draft is remembered between them.", len(s.keys), len(s.gh), len(s.authors))}
 	if s.cfg.Offline {
 		out = append(out, info("Offline: GitHub is not asked whether a key belongs to an account."))
 	}
@@ -234,7 +234,7 @@ func heldAll(t *Turn) []int {
 }
 
 // Advice answers a request for a recommendation about identities from the
-// facts the session has, without the model. It is the same short answer every
+// facts the session has. It is the same short answer every
 // time it is asked, with what the draft pins by now; /why has the reasons.
 func (s *Session) Advice(ctx context.Context) []Line {
 	l := s.suggestionLine(ctx)

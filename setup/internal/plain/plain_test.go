@@ -46,26 +46,25 @@ func contains(t *testing.T, out string, wants ...string) {
 
 const outOfScope = `{"op":"refuse","code":"out_of_scope"}`
 
-// TestPlainNeverConsumesARequestAsAnAnswer is the eaten-input bug the line
-// REPL had: after a question, "save", "y", "1" and "none" are requests for the
-// model, every one, and the save refuses naming the line that answers.
-func TestPlainNeverConsumesARequestAsAnAnswer(t *testing.T) {
+// TestPlainAnswersOnlyAWholeAnswerLine: a line that is yes, no or numbers
+// answers the newest question, and nothing else does. "y" does not name a
+// login, so it pins none; "save" is a request even with a question open, and
+// refuses naming it; "2" picks the second login listed; with nothing open, a
+// bare answer says so.
+func TestPlainAnswersOnlyAWholeAnswerLine(t *testing.T) {
 	w := testworld.New(t)
 	w.Reply("assign github account2", `{"op":"select_identity","kind":"github","account":"account2"}`)
-	for _, l := range []string{"y", "1", "none"} {
-		w.Reply(l, outOfScope)
-	}
 	w.Reply("save", `{"op":"name_profile","name":"work"}`, `{"op":"save"}`)
-	s, out := run(t, w, "assign github account2\ny\n1\nnone\nsave\n")
-	if got, want := w.Model.Requests(), []string{"assign github account2", "y", "1", "none", "save"}; !slices.Equal(got, want) {
-		t.Errorf("requests the model saw: %q, want %q", got, want)
+	s, out := run(t, w, "assign github account2\ny\nsave\n2\nnone\n")
+	if got, want := w.Model.Requests(), []string{"assign github account2", "save"}; !slices.Equal(got, want) {
+		t.Errorf("requests the interpreter saw: %q, want %q", got, want)
 	}
-	if s.Draft().GH != nil {
-		t.Errorf("an identity was pinned without /pick: %+v", s.Draft().GH)
+	if s.Draft().GH == nil || s.Draft().GH.User != "account2" {
+		t.Errorf("pinned %+v, want account2", s.Draft().GH)
 	}
-	contains(t, out, "? #1 which GitHub login should the sandbox act as?",
-		"not saved: 1 question(s) are open", "/pick github LOGIN, or /pick github none",
-		"1 question(s) were still open.")
+	contains(t, out, "? #1 which GitHub login should the sandbox act as?", "2. github.com/account2",
+		"#1 is answered with the number of one listed GitHub login", "not saved: 1 question(s) are open",
+		"pinned GitHub login github.com/account2", "there is no open question to answer")
 	if _, err := os.Stat(filepath.Join(w.ProfDir, "work.toml")); err == nil {
 		t.Error("saved with an open question")
 	}

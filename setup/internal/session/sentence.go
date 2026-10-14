@@ -70,11 +70,17 @@ func Sentence(d *draft.Draft, a intent.Action) string {
 	case intent.OpSave:
 		return "save the profile"
 	case intent.OpRefuse:
-		return "the model read this as a request snug refuses (" + a.Code + ")"
+		return "read as a request snug refuses (" + a.Code + ")"
 	case intent.OpNote:
 		return "note: " + a.Topic
 	case intent.OpAsk:
 		return "the model asks: \"" + safe.Inline(a.Question) + "\""
+	case intent.OpAnalyze:
+		return "analyze the project and propose what its files make plain"
+	case intent.OpAdvise:
+		return "suggest the identity this project points at"
+	case intent.OpUndo:
+		return "undo the last step"
 	}
 	return a.Op
 }

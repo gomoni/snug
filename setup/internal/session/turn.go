@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -59,7 +58,8 @@ type Item struct {
 	Why string
 }
 
-// Turn is one request the model understood, classified and not yet applied.
+// Turn is one request the interpreter understood, classified and not yet
+// applied.
 type Turn struct {
 	N     int
 	Said  string
@@ -96,103 +96,64 @@ func widening(a intent.Action) bool {
 	return false
 }
 
-// analyzeRE routes a request to look at the project to Analyze without the
-// model, which has no action that means it and answers with the nearest one.
-var analyzeRE = regexp.MustCompile(`(?i)\banaly[sz]`)
-
-// adviceRE routes "what identities do you suggest" to Advice, for the same
-// reason: the model has no action that means it. Matching is on the word for
-// recommending near a word for an identity, typos of "recommend" included;
-// what the route does is print text, so a request it takes by mistake costs
-// one irrelevant paragraph and grants nothing.
-var adviceRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*\b.*\b(identit|account|ssh|key|signing)|\b(identit|account|ssh|key|signing)\w*\b.*\b(rec+o?m+e?nd|suggest)`)
-
-// signingRE routes talk of a signing key to the identity questions: the model
-// has no kind for it until it is retrained on select_identity signing. The
-// route only opens questions; nothing is pinned without an answer.
-var signingRE = regexp.MustCompile(`(?i)\bsig\w*\b.*\b(key|commit)|\b(key|commit)\w*\b.*\bsig\w*\b`)
-
-// signingQuestions opens the signing key question, and the ssh key question
-// beside it when the request also asks for ssh access and none is pinned: a
-// signing key goes with an ssh key and an author.
-func (s *Session) signingQuestions(text string) []Line {
-	before := s.snapshot()
-	var out []Line
-	if _, ok := s.slotFull("ssh"); !ok && regexp.MustCompile(`(?i)\bssh\b`).MatchString(text) {
-		out = append(out, s.askIdentity("ssh", "", text, s.turn)...)
-	}
-	out = append(out, s.askIdentity("signing", "", text, s.turn)...)
-	s.commit(before, "your request "+quote(text))
-	return out
-}
-
-// recommendRE routes a bare "what do you recommend" to the analysis, the one
-// thing snug-setup recommends from.
-var recommendRE = regexp.MustCompile(`(?i)\b(rec+o?m+e?nd|suggest)\w*`)
-
-// includeVerbRE and the profile word together with the exact name of one of
-// the human's profiles make "reuse my vyskocilm profile" a request to include
-// it. The model has no action for that until it is retrained on include_profile.
-var includeVerbRE = regexp.MustCompile(`(?i)\b(use|reuse|include|add|apply|take|load|base)\b`)
-
-// profileNamed returns the name of the human's profile text asks to include,
-// "" when it asks for none: the verb, the word profile and the exact name as a
-// word of its own must all be there. What it returns is looked up in the
-// human's profiles, so text cannot name anything else.
-func (s *Session) profileNamed(text string) string {
-	if !includeVerbRE.MatchString(text) || !strings.Contains(strings.ToLower(text), "profile") {
-		return ""
-	}
-	words := strings.FieldsFunc(text, func(r rune) bool {
-		return !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
-	})
-	for _, n := range s.profileNames() {
-		if slices.Contains(words, n) {
-			return n
-		}
-	}
-	return ""
-}
-
 // Submit reads text through the interpreter and returns the understood turn,
 // applying nothing. It returns a nil Turn, with lines saying why, when the
 // interpreter did not understand text or failed.
 func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	text = strings.TrimSpace(text)
-	if analyzeRE.MatchString(text) {
-		return nil, s.Analyze(ctx)
+	if a, ok := parseAnswer(text); ok {
+		return s.answer(ctx, a)
 	}
-	if adviceRE.MatchString(text) {
-		return nil, s.Advice(ctx)
-	}
-	if signingRE.MatchString(text) {
-		return nil, s.signingQuestions(text)
-	}
-	if name := s.profileNamed(text); name != "" {
-		return nil, s.IncludeProfile(ctx, name)
-	}
-	if recommendRE.MatchString(text) {
-		return nil, s.Analyze(ctx)
-	}
+	s.dropChoices()
 	acts, err := s.cfg.Interpreter.Interpret(ctx, s.context(), text)
 	if err != nil {
-		return nil, s.notUnderstood(err)
+		return nil, s.notUnderstood(text, err)
 	}
-	s.turn++
-	return s.classify(ctx, s.turn, text, acts), nil
+	return s.understood(ctx, text, acts)
 }
 
-// notUnderstood says why a request changed nothing.
-func (s *Session) notUnderstood(err error) []Line {
+// understood runs the session's own ops among acts at once (analysis, advice,
+// undo) and returns the rest as a turn, nil when nothing is left.
+func (s *Session) understood(ctx context.Context, said string, acts []intent.Action) (*Turn, []Line) {
+	var out []Line
+	var rest []intent.Action
+	for _, a := range acts {
+		switch a.Op {
+		case intent.OpAnalyze:
+			out = append(out, s.Analyze(ctx)...)
+		case intent.OpAdvise:
+			out = append(out, s.Advice(ctx)...)
+		case intent.OpUndo:
+			out = append(out, s.Undo()...)
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) == 0 {
+		return nil, out
+	}
+	s.turn++
+	return s.classify(ctx, s.turn, said, rest), out
+}
+
+// notUnderstood says why a request changed nothing. An interpreter's choices
+// become a numbered question the next line can answer with a number.
+func (s *Session) notUnderstood(said string, err error) []Line {
 	var u *intent.Unclear
 	if !errors.As(err, &u) {
 		return []Line{warn("error: %s", safe.Inline(err.Error()))}
 	}
-	why := ""
-	if u.Why != "" {
-		why = " (" + safe.Inline(u.Why) + ")"
+	if len(u.Choices) == 0 {
+		why := ""
+		if u.Why != "" {
+			why = " (" + safe.Inline(u.Why) + ")"
+		}
+		return []Line{warn("I did not understand that, and nothing changed%s. Try saying it differently.", why)}
 	}
-	return []Line{warn("I did not understand that, and nothing changed%s. Try saying it differently.", why)}
+	before := s.snapshot()
+	p := s.open(Pending{Kind: Choice, said: said, at: s.turn, unclear: u})
+	s.commit(before, "your request "+quote(said))
+	return []Line{p.Line()}
 }
 
 // classify decides each action's class against a clone of the draft with the
@@ -339,7 +300,7 @@ func (s *Session) applyTurn(ctx context.Context, t *Turn, ticked []int, deferCar
 func (s *Session) infoAction(ctx context.Context, t *Turn, acts []intent.Action, a intent.Action) []Line {
 	switch a.Op {
 	case intent.OpRefuse:
-		return modelRefusal(a.Code)
+		return readRefusal(a.Code)
 	case intent.OpNote:
 		var out []Line
 		if a.Topic == "identity_one" && s.d.SSH == nil && s.d.GH == nil && s.d.Git == nil && !s.includesPin() {

@@ -75,8 +75,7 @@ func TestFewKeysAreAllListed(t *testing.T) {
 func TestAdviceAgainIsShortAndSaysWhatIsPinned(t *testing.T) {
 	w := testworld.New(t)
 	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
-	w.Reply("use my git author", `{"op":"select_identity","kind":"git","account":""}`)
-	s, _ := start(w)
+	s, _ := startRules(w)
 	first := say(s, "should not AI reccomend identities?")
 	again := say(s, "what identities do you recommend?")
 	if first != again {
@@ -87,7 +86,7 @@ func TestAdviceAgainIsShortAndSaysWhatIsPinned(t *testing.T) {
 	}
 	lacks(t, first, "Last 10 commits", "Remote origin")
 	contains(t, first, "/why has the reasons")
-	say(s, "use my git author")
+	s.askIdentity("git", "", "my git author", 0)
 	text(s.Pick(ctx, "git", "two@example.com"))
 	contains(t, say(s, "recommend an identity"), "The draft pins git author two@example.com.")
 }

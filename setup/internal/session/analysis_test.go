@@ -10,6 +10,7 @@ import (
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/llm"
+	"github.com/gomoni/snug/setup/internal/rules"
 	"github.com/gomoni/snug/setup/internal/testworld"
 )
 
@@ -17,6 +18,12 @@ func goProject(t *testing.T, w *testworld.World) {
 	t.Helper()
 	os.WriteFile(filepath.Join(w.Target, "go.mod"), []byte("module github.com/acme/app\n"), 0o644)
 	os.Mkdir(filepath.Join(w.Target, ".git"), 0o755)
+}
+
+// startRules is start with the rules interpreter, snug-setup's default.
+func startRules(w *testworld.World) (*Session, string) {
+	s, lines := New(ctx, Config{Interpreter: rules.Interpreter{}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	return s, text(lines)
 }
 
 func start(w *testworld.World) (*Session, string) {
@@ -75,17 +82,14 @@ func TestAnalyzeAfterDeclineOffersItAgain(t *testing.T) {
 	contains(t, text(s.Analyze(ctx)), "? #2 what I found in the project")
 }
 
-// TestAnalyzeRequestSkipsTheModel: "can you analyze the target dir" is
-// answered from the project, not by the nearest action the model has.
-func TestAnalyzeRequestSkipsTheModel(t *testing.T) {
+// TestAnalyzeRequestIsTheAnalysis: "can you analyze the target dir" is
+// answered from the project.
+func TestAnalyzeRequestIsTheAnalysis(t *testing.T) {
 	w := testworld.New(t)
 	goProject(t, w)
-	s, _ := start(w)
+	s, _ := startRules(w)
 	out := say(s, "can you analyze the target dir and suggest a setup?")
 	contains(t, out, "The proposal is open as #1")
-	if len(w.Model.Prompts) != 0 {
-		t.Errorf("the model was asked: %v", w.Model.Prompts)
-	}
 }
 
 // TestHostileTargetProposesNothingFromItsText: a go.mod linked to a file
@@ -115,4 +119,48 @@ func TestEveryProposedVariableIsAcceptedByTheDraft(t *testing.T) {
 		t.Fatalf("%d of %d variables reach the card", len(turn.Items), len(p.Env))
 	}
 	_ = draft.SourceIngest
+}
+
+// TestCardAnswersInWords: "only 2" keeps the second item of the newest card
+// and applies nothing else; "yes" takes a whole card.
+func TestCardAnswersInWords(t *testing.T) {
+	w := testworld.New(t)
+	goProject(t, w)
+	s, out := startRules(w)
+	contains(t, out, "1. add @git", "2. set GOMODCACHE", `or say which to keep ("only 1 and 3")`)
+	out = say(s, "only 2")
+	if slices.Contains(s.Draft().Include, "@git") || !strings.Contains(s.Draft().Render(), "GOMODCACHE") || strings.Contains(s.Draft().Render(), "GOCACHE =") {
+		t.Errorf("only 2 applied:\n%s\n%s", s.Draft().Render(), out)
+	}
+	contains(t, out, "not applied: add @git")
+	contains(t, say(s, "yes"), "there is no open question")
+	say(s, "needs internet")
+	say(s, "yes")
+	if !slices.Contains(s.Draft().Include, "@net") {
+		t.Errorf("yes did not apply the card: %s", s.Draft().Render())
+	}
+}
+
+// TestNotUnderstoodOffersChoices: a line the rules cannot read changes
+// nothing and opens a numbered choice; a number submits that reading as a
+// request, whose card still waits for its own answer.
+func TestNotUnderstoodOffersChoices(t *testing.T) {
+	w := testworld.New(t)
+	s, _ := startRules(w)
+	out := say(s, "needs internet and go")
+	contains(t, out, `I understood add @net, but not "go". Nothing changed.`, "1. only add @net", "2. add @net; ")
+	if !s.Draft().Empty() {
+		t.Fatalf("an unclear line changed the draft: %s", s.Draft().Render())
+	}
+	out = say(s, "1")
+	contains(t, out, `your request "needs internet and go" widens the sandbox`, "add @net")
+	if !s.Draft().Empty() {
+		t.Fatalf("a choice applied without its card: %s", s.Draft().Render())
+	}
+	out = say(s, "blorf frobnicate")
+	contains(t, out, `I did not understand "blorf frobnicate"`)
+	say(s, "the usual")
+	if n := slices.IndexFunc(s.Pending(), func(p Pending) bool { return p.Kind == Choice }); n < 0 || len(s.Pending()) != 2 {
+		t.Errorf("a new line keeps one choice open beside the card: %v", s.Pending())
+	}
 }
