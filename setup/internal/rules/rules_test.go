@@ -3,6 +3,7 @@ package rules
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gomoni/snug/setup/internal/intent"
@@ -137,5 +138,14 @@ func TestSlotsComeFromKnownFacts(t *testing.T) {
 	}
 	if got := read(t, host, "use the deploy ssh key"); !slices.Equal(got, []intent.Action{pick("ssh", "")}) {
 		t.Errorf("%v", got)
+	}
+}
+
+// TestMissingProfileOffersTheHumansOwn: a profile the human does not have is
+// said so, and their own profiles are the choices.
+func TestMissingProfileOffersTheHumansOwn(t *testing.T) {
+	u := unclear(t, host, "use my work profile")
+	if !strings.Contains(u.Why, `no snug profile called "work"`) || len(u.Choices) != 2 || u.Choices[0].Actions[0].Op != intent.OpIncludeProfile {
+		t.Errorf("%+v", u)
 	}
 }

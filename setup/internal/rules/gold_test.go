@@ -182,7 +182,7 @@ func TestGoldScores(t *testing.T) {
 		file             string
 		exact, set, core float64
 	}{
-		{"gold/gold.jsonl", 0.85, 0.85, 0.856},
+		{"gold/gold.jsonl", 0.856, 0.856, 0.856},
 		{"gold/gold-v4.jsonl", 0.76, 0.76, 0.76},
 		{"data/train-v4.val.jsonl", 0.5, 0.5, 0.5},
 	} {

@@ -72,6 +72,9 @@ func Sentence(d *draft.Draft, a intent.Action) string {
 	case intent.OpRefuse:
 		return "read as a request snug refuses (" + a.Code + ")"
 	case intent.OpNote:
+		if a.Topic == "help" {
+			return "say what snug-setup can do"
+		}
 		return "note: " + a.Topic
 	case intent.OpAsk:
 		return "the model asks: \"" + safe.Inline(a.Question) + "\""

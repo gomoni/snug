@@ -96,7 +96,7 @@ func choices(unknown string, understood []intent.Action) []intent.Choice {
 		picked = append(picked, r.i)
 	}
 	for _, i := range fallback {
-		if len(picked) == n {
+		if len(picked) == n || len(understood) > 0 {
 			break
 		}
 		if !slices.Contains(picked, i) && !covered(options[i].acts, understood) {
