@@ -142,25 +142,40 @@ func TestCardAnswersInWords(t *testing.T) {
 }
 
 // TestNotUnderstoodOffersChoices: a line the rules cannot read changes
-// nothing and opens a numbered choice; a number submits that reading as a
-// request, whose card still waits for its own answer.
+// nothing. With one reading left it is a yes/no question, and yes submits it
+// as a request whose card still waits; a line not understood at all offers
+// three numbered readings.
 func TestNotUnderstoodOffersChoices(t *testing.T) {
 	w := testworld.New(t)
 	s, _ := startRules(w)
-	out := say(s, "needs internet and go")
-	contains(t, out, `I understood add @net, but not "go". Nothing changed.`, "1. only add @net", "2. add @net; ")
+	out := say(s, "needs internet and list them")
+	contains(t, out, `I understood add @net, but not "list them". Nothing changed. Only add @net?`, "answer: yes or no")
 	if !s.Draft().Empty() {
 		t.Fatalf("an unclear line changed the draft: %s", s.Draft().Render())
 	}
-	out = say(s, "1")
-	contains(t, out, `your request "needs internet and go" widens the sandbox`, "add @net")
+	out = say(s, "yes")
+	contains(t, out, `your request "needs internet and list them" widens the sandbox`, "add @net")
 	if !s.Draft().Empty() {
 		t.Fatalf("a choice applied without its card: %s", s.Draft().Render())
 	}
 	out = say(s, "blorf frobnicate")
-	contains(t, out, `I did not understand "blorf frobnicate"`)
+	contains(t, out, `I did not understand "blorf frobnicate"`, "1. ", "2. ", "3. ")
 	say(s, "the usual")
 	if n := slices.IndexFunc(s.Pending(), func(p Pending) bool { return p.Kind == Choice }); n < 0 || len(s.Pending()) != 2 {
 		t.Errorf("a new line keeps one choice open beside the card: %v", s.Pending())
 	}
+}
+
+// TestToolchainWordProposesTheAnalysisCaches: "needs internet and go" in a Go
+// project puts the Go caches beside @net, or points at the opening card that
+// already holds them; with no go.mod it says there is nothing to propose.
+func TestToolchainWordProposesTheAnalysisCaches(t *testing.T) {
+	w := testworld.New(t)
+	goProject(t, w)
+	s, _ := startRules(w)
+	s.Decline(1)
+	contains(t, say(s, "needs internet and go"), "add @net", "set GOMODCACHE={target}/.cache/go-mod", "set GOCACHE={target}/.cache/go-build")
+	w2 := testworld.New(t)
+	s2, _ := startRules(w2)
+	contains(t, say(s2, "it's a rust project"), "the target has no Cargo.toml, so there is no rust cache to propose")
 }

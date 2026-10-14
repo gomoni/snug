@@ -49,7 +49,7 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 			alone := r.clause(cl)
 			acts := r.clause(merged)
 			if len(acts) > 0 {
-				if len(acts) == len(alone) && !r.filler(carry) {
+				if len(acts) == len(alone) && r.unknown(carry) {
 					unknown = append(unknown, carry.text())
 				}
 				done = append(done, part{merged, acts})
@@ -73,7 +73,7 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 			merged := clause{toks: append(slices.Clone(last.cl.toks), carry.toks...)}
 			if acts := r.clause(merged); len(acts) > len(last.acts) {
 				done[len(done)-1] = part{merged, acts}
-			} else if !r.filler(carry) {
+			} else if r.unknown(carry) {
 				unknown = append(unknown, carry.text())
 			}
 		case !r.filler(carry):
@@ -107,6 +107,9 @@ type reader struct {
 	// missing is a profile name a request asked to include that the human
 	// does not have.
 	missing string
+	// last is the last path an earlier clause spelled, for "put it on the
+	// path" in the next.
+	last *pathTok
 }
 
 // hit is an action with the index of the word that produced it, so a clause
@@ -168,6 +171,22 @@ func (r *reader) slot(raw string) bool {
 	return envName(raw) || r.profile(raw) != "" || r.stem(raw) != "" || r.login(raw) != ""
 }
 
+// unknown reports whether c, left over beside parts that were understood,
+// asks for something the rules could not read: a word that asks for
+// something (meaningful), or a host name the request spells, that produced
+// no action.
+func (r *reader) unknown(c clause) bool {
+	if r.filler(c) {
+		return false
+	}
+	for _, t := range c.toks {
+		if t.is(meaningful) || r.slot(t.raw) {
+			return true
+		}
+	}
+	return false
+}
+
 // filler reports whether every word of c is one that carries no request.
 func (r *reader) filler(c clause) bool {
 	for _, t := range c.toks {
@@ -212,6 +231,17 @@ func (r *reader) keyWord(w string) bool {
 		}
 	}
 	return false
+}
+
+// keyHint is the first word of c that is part of a key's name or comment on
+// this host, "" when none is.
+func (r *reader) keyHint(c clause) string {
+	for _, t := range c.toks {
+		if r.keyWord(t.w) {
+			return t.raw
+		}
+	}
+	return ""
 }
 
 // keyNotName are words next to "key" that say nothing about which key.
@@ -381,7 +411,7 @@ func (r *reader) clause(c clause) []intent.Action {
 	if c.hasSet(offTopic) {
 		return []intent.Action{refuse("out_of_scope")}
 	}
-	if i := c.findSet(undoWords); i >= 0 || c.has("take that back", "take it back", "never mind", "nevermind", "scratch that", "forget that", "forget it", "roll back", "go back") {
+	if i := c.findSet(undoWords); i >= 0 || c.has("take that back", "take it back", "never mind", "nevermind", "scratch that", "forget that", "forget it", "roll back", "go back", "what you just did", "you just did") {
 		return []intent.Action{{Op: intent.OpUndo}}
 	}
 	if c.hasSet(dropWords) && c.has("it", "that") && len(r.paths(c)) == 0 && r.objectless(c) {
@@ -411,7 +441,10 @@ func (r *reader) clause(c clause) []intent.Action {
 		if t := r.topic(c); t != "" {
 			return []intent.Action{note(t)}
 		}
-	} else if c.has("list") || c.has("do i have") {
+		if slices.ContainsFunc(c.toks, func(t tok) bool { return strings.HasPrefix(t.raw, "@") && !slices.Contains(intent.Builtins, t.raw) }) {
+			return []intent.Action{note("profiles")}
+		}
+	} else if c.has("list") {
 		if acts := r.listing(c); acts != nil {
 			return acts
 		}
@@ -490,7 +523,7 @@ func (r *reader) clause(c clause) []intent.Action {
 		h.add(max(c.find("publish", "-p", "expose"), 0), refuse("port_publish"))
 		refused, publish = true, true
 	}
-	door := !publish && (c.hasSet(doorWords) || c.has("host browser", "my browser", "the browser")) && !(c.has("expose") && len(paths) > 0)
+	door := !publish && (c.hasSet(doorWords) || c.has("host browser", "my browser", "the browser", "laptop browser", "reachable from", "from outside", "from the outside")) && !(c.has("expose") && len(paths) > 0)
 	if !door && !publish {
 		hp := -1
 		for i, t := range c.toks {
@@ -539,7 +572,10 @@ func (r *reader) clause(c clause) []intent.Action {
 		refused, secret = true, true
 	}
 	deny := false
-	if i := c.findSet(denyWords); i >= 0 || c.has("leave") && c.has("out") || c.has("keep") && c.has("out") || c.has("mount nothing", "not exist", "shouldn't exist") {
+	if neg && c.has("reachable", "visible", "see", "read", "access", "readable") && (len(paths) > 0 || c.has("directory", "folder", "dir")) && !c.hasSet(writeWords) {
+		h.add(max(c.find("reachable", "visible", "see", "read", "access", "readable"), 0), refuse("deny_rule"))
+		refused, deny = true, true
+	} else if i := c.findSet(denyWords); i >= 0 || c.has("leave") && c.has("out") || c.has("keep") && c.has("out") || c.has("mount nothing", "not exist", "shouldn't exist") {
 		i = max(i, c.find("leave", "keep", "mount nothing", "not exist", "shouldn't exist"))
 		h.add(i, refuse("deny_rule"))
 		refused, deny = true, true
@@ -548,6 +584,14 @@ func (r *reader) clause(c clause) []intent.Action {
 	// Paths.
 	pathVar := c.has("to path", "on the path", "to the path", "on path", "in path", "into path", "$path") ||
 		slices.ContainsFunc(c.toks, func(t tok) bool { return t.raw == "PATH" || t.raw == "$PATH" })
+	if len(paths) > 0 {
+		last := paths[len(paths)-1]
+		r.last = &last
+	} else if pathVar && r.last != nil && c.has("it", "that", "them") {
+		p := *r.last
+		p.pos = c.find("it", "that", "them")
+		paths = []pathTok{p}
+	}
 	stage := c.hasSet(stageWords) || c.has("run") && !c.hasSet(tmpWords) && !c.hasSet(writeWords) && !c.hasSet(readWords)
 	access := "ro"
 	switch {
@@ -594,7 +638,7 @@ func (r *reader) clause(c clause) []intent.Action {
 		}
 		here := c.findSet(hereWords)
 		if here < 0 {
-			here = c.find("this directory", "this dir", "this folder", "my files", "current directory", "@target-rw")
+			here = c.find("this directory", "this dir", "this folder", "my files", "current directory", "working dir", "working directory", "work dir", "workdir", "@target-rw")
 		}
 		ro := c.hasSet(onlyRead) || c.has("only read", "read only") || neg && c.hasSet(writeWords)
 		switch {
@@ -621,8 +665,10 @@ func (r *reader) clause(c clause) []intent.Action {
 		}
 	}
 
-	reading := file != "" && (c.hasSet(readWords) || c.has("check", "through", "figure", "open", "have a look"))
-	if !sock && !publish && !reading {
+	reading := file != "" && (c.hasSet(readWords) || c.hasSet(analyzeWords) || c.has("check", "through", "figure", "open", "have a look"))
+	// "share ~/.docker with the container" names a container as where a
+	// refused path would go, not as a wish for one.
+	if !sock && !publish && !reading && !hostNet && !identityRefused {
 		img := c.findSet(imageWords)
 		if img < 0 {
 			img = c.find("@podman-build")
@@ -695,10 +741,10 @@ func (r *reader) clause(c clause) []intent.Action {
 	}
 	r.include(c, &h)
 
-	if i := nonNeg(c.findSet(showWords), c.find("current state", "let me see", "so far", "what we have")); i >= 0 && !c.hasSet(identityNoun) {
+	if i := nonNeg(c.findSet(showWords), c.find("current state", "let me see", "so far", "what we have")); i >= 0 && !c.hasSet(identityNoun) && len(paths) == 0 {
 		h.add(i, intent.Action{Op: intent.OpShow})
 	}
-	if i := c.findSet(saveWords); i >= 0 {
+	if i := nonNeg(c.findSet(saveWords), c.find("profiles.d", "write it out", "schreib es raus")); i >= 0 {
 		h.add(i, intent.Action{Op: intent.OpSave})
 	} else if i := c.find("write it", "write the profile", "write the file", "write it out", "done", "fertig", "hotovo"); i >= 0 && len(paths) == 0 && !c.hasSet(hereWords) {
 		h.add(i, intent.Action{Op: intent.OpSave})
@@ -715,9 +761,17 @@ func (r *reader) clause(c clause) []intent.Action {
 		if i := c.findSet(helpWords); i >= 0 || c.has("what can you do", "who are you", "how does this work") {
 			return []intent.Action{note("help")}
 		}
+		if i := c.findSet(langWords); i >= 0 {
+			return []intent.Action{{Op: intent.OpToolchain, Name: toolchain[c.toks[i].w]}}
+		}
 	}
 	return h.actions()
 }
+
+// toolchain names the language a word of langWords is about, in the names
+// ingest uses.
+var toolchain = map[string]string{"go": "go", "golang": "go", "node": "node", "nodejs": "node", "javascript": "node",
+	"typescript": "node", "npm": "node", "python": "python", "pip": "python", "rust": "rust", "cargo": "rust"}
 
 func nonNeg(a, b int) int {
 	if a < 0 {
@@ -802,7 +856,7 @@ func (r *reader) topic(c clause) string {
 // signing key, a git author. Account words are taken only when they name
 // something on this host.
 func (r *reader) identity(c clause, h *hits) {
-	if c.hasSet(bothWords) && (c.hasSet(accountWords) || c.has("github")) {
+	if c.hasSet(bothWords) && (c.hasSet(accountWords) || c.has("github", "identities", "konten", "konto", "účty")) {
 		h.add(c.findSet(bothWords), note("identity_one"))
 		return
 	}
@@ -834,9 +888,9 @@ func (r *reader) identity(c clause, h *hits) {
 		}
 	}
 	if sign >= 0 {
-		s := ""
-		if stem != "" {
-			s = stem
+		s := stem
+		if s == "" {
+			s = r.keyHint(c)
 		}
 		h.add(sign, pick("signing", s))
 		if ssh >= 0 && (key < 0 || ssh < sign-2 || ssh > sign+2) {
@@ -855,12 +909,7 @@ func (r *reader) identity(c clause, h *hits) {
 	if ssh >= 0 || key >= 0 || stem != "" {
 		hint := stem
 		if hint == "" {
-			for _, i := range []int{key - 1, ssh - 1, key + 1} {
-				if i >= 0 && i < len(c.toks) && r.keyWord(c.toks[i].w) {
-					hint = c.toks[i].raw
-					break
-				}
-			}
+			hint = r.keyHint(c)
 		}
 		h.add(nonNeg(stemAt, nonNeg(ssh, key)), pick("ssh", hint))
 	}

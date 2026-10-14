@@ -8,40 +8,40 @@ package rules
 var (
 	netWords     = set("internet internetu internetzugang network networking net online netzwerk síť sítě site download downloads downloading stahování stahovat fetch crates pypi registry egress")
 	netTools     = set("npm pip pip3 cargo yarn pnpm uv gem bundle maven gradle composer")
-	offWords     = set("offline off-line airgapped air-gapped")
+	offWords     = set("offline off-line airgapped air-gapped airgap disconnect disconnected unplug")
 	negWords     = set("nepotřebuju no not don't dont never without disable disabled off none nicht kein keine keinen ohne ne bez nechci isn't doesn't shouldn't can't cannot")
 	dropWords    = set("remove drop forget delete unmount revoke odeber odstraň smaž entfernen")
 	desktopWords = set("x11 wayland gui clipboard dbus d-bus pulseaudio pulse xorg display desktop notifications screenshot screenshots")
 	podmanWords  = set("docker podman container containers testcontainers compose docker-compose daemon kontejner kontejnery")
 	imageWords   = set("image images dockerfile containerfile buildah")
 	buildWords   = set("build builds building bauen sestavit")
-	writeWords   = set("read/write write writable writeable edit modify change rw read-write zapisovat zápis schreiben schreib touch touching")
-	readWords    = set("read readable ro look see view peek browse lesend lesen číst mount inspect")
+	writeWords   = set("read/write rewrite write writable writeable edit modify change rw read-write zapisovat zápis schreiben schreib touch touching")
+	readWords    = set("read readable ro look see view peek browse lesend lesen číst přečti přečíst podívej mount inspect")
 	onlyRead     = set("read-only readonly lesend ro")
 	tmpWords     = set("tmpfs scratch temporary temp ephemeral memory throwaway discarded survive")
 	hereWords    = set("here project repo repository code sem tady hier projekt projektu target")
 	parentWords  = set("parent sibling siblings neighbouring neighboring")
 	claudeWords  = set("claude anthropic")
-	pushWords    = set("push pushes pushing")
+	pushWords    = set("push pushes pushing pushovat pushnout")
 	signWords    = set("sign signs signed signing signature signatures signiert podepisovat podepsat")
 	keyWords     = set("key keys klíč klíče schlüssel")
 	accountWords = set("account accounts login logins účet")
 	listWords    = set("list which what what's whats show loaded configured available welche geladen")
-	bothWords    = set("both two multiple second another too")
+	bothWords    = set("both two multiple second another too beide oba obě")
 	inheritWords = set("keep pass inherit export copy forward propagate through")
 	nameVerbs    = set("call name pojmenuj nenne benenne")
-	showWords    = set("show print display ukaž zeig")
-	saveWords    = set("save persist uložit ulož speichern")
-	helpWords    = set("help hi hello hey thanks thank díky ahoj hallo danke")
+	showWords    = set("show print display dump ukaž zeig")
+	saveWords    = set("save persist uložit ulož speichern fertig")
+	helpWords    = set("help hi hello hey thanks thank options díky ahoj hallo danke")
 	includeVerbs = set("include reuse")
 	doorWords    = set("door serve expose listen")
 	denyWords    = set("hide exclude block deny blacklist invisible mask")
-	modifiers    = set("only away thrown afterwards memory fine here email name author identity address config configuration profile setup tell figure out what whats")
+	modifiers    = set("configure configured accordingly decide allow permissions grant things only away thrown afterwards memory fine here email name author identity address config configuration profile setup tell figure out what whats")
 	recommend    = set("recommend recommends recommended recommending suggest suggests suggested suggesting suggestion advise advice doporuč doporučit empfehlen")
 	analyzeWords = set("analyze analyse analysis scan")
-	undoWords    = set("undo revert")
+	undoWords    = set("undo revert rückgängig")
 	stageWords   = set("stage available binary binaries executable tools tool")
-	langWords    = set("go golang node python rust java ruby")
+	langWords    = set("go golang node nodejs javascript typescript npm python pip rust cargo")
 	questionHead = set("what which how does do is are can could will would should why where who when welche was wie kann ist jak co který která je")
 	identityNoun = set("identity identities account accounts ssh key keys signing login logins author")
 	seccompWords = set("seccomp")
@@ -73,6 +73,25 @@ var notTypos = set(`same name names named game came come some home hope those th
 	editor editors visual pager term anything many branches codeberg full mein sein meine nepotřebuju
 	reachable remote kill trust server servers side toml venv that's borg helm hood hook docs directly
 	pyproject world plus roll toho jako jaké mail rights hand`)
+
+// meaningful are the words that ask for something: every set above but the
+// fillers and the modifiers. A part of a request holding none of them is
+// narration ("the agent runs a server") and is not reported as unknown when
+// the rest was understood.
+var meaningful = func() map[string]bool {
+	m := map[string]bool{}
+	for _, s := range []map[string]bool{netWords, netTools, desktopWords, podmanWords, imageWords, buildWords, writeWords,
+		readWords, onlyRead, tmpWords, parentWords, claudeWords, pushWords, signWords, keyWords, accountWords, listWords,
+		inheritWords, nameVerbs, showWords, saveWords, includeVerbs, doorWords, denyWords, recommend, analyzeWords, undoWords,
+		stageWords, langWords, seccompWords, offTopic} {
+		for w := range s {
+			if !fillers[w] && !modifiers[w] {
+				m[w] = true
+			}
+		}
+	}
+	return m
+}()
 
 // lexicon is every word a correction may land on: the words of the sets
 // above and the fillers.

@@ -110,20 +110,46 @@ func TestUnknownWordIsNeverItsNearestAction(t *testing.T) {
 	}
 }
 
-// TestPartlyUnderstoodAppliesNothing: one clause understood and one not is
-// not understood; the first choice is the understood part alone.
+// TestPartlyUnderstoodAppliesNothing: one clause understood and one that
+// asks for something the rules cannot read is not understood; the first
+// choice is the understood part alone, and the session's own steering
+// (analysis, advice) is not offered beside it.
 func TestPartlyUnderstoodAppliesNothing(t *testing.T) {
-	u := unclear(t, host, "needs internet and go")
-	if u.Unknown != "go" || !slices.Equal(u.Understood, []intent.Action{use("@net"), note("net")}) {
+	u := unclear(t, host, "needs internet and list them")
+	if u.Unknown != "list them" || !slices.Equal(u.Understood, []intent.Action{use("@net"), note("net")}) {
 		t.Fatalf("%+v", u)
 	}
-	if !slices.Equal(u.Choices[0].Actions, u.Understood) {
-		t.Errorf("first choice %v, want the understood part", u.Choices[0].Actions)
+	if len(u.Choices) != 1 || !slices.Equal(u.Choices[0].Actions, u.Understood) {
+		t.Errorf("choices %+v, want the understood part alone", u.Choices)
 	}
-	for _, c := range u.Choices[1:] {
-		if !slices.Equal(c.Actions[:2], u.Understood) {
-			t.Errorf("choice %v does not keep the understood part", c.Actions)
+}
+
+// TestToolchainWordIsUnderstood: a word naming a toolchain snug-setup knows
+// is a toolchain action, never "not understood".
+func TestToolchainWordIsUnderstood(t *testing.T) {
+	for in, want := range map[string][]intent.Action{
+		"needs internet and go": {use("@net"), note("net"), {Op: intent.OpToolchain, Name: "go"}},
+		"it's a rust project":   {{Op: intent.OpToolchain, Name: "rust"}},
+		"uses node":             {{Op: intent.OpToolchain, Name: "node"}},
+	} {
+		if got := read(t, host, in); !slices.Equal(got, want) {
+			t.Errorf("%q\n got %v\nwant %v", in, got, want)
 		}
+	}
+}
+
+// TestShortWordTypos: short misspellings are listed, not guessed by edit
+// distance; a profile name is never rewritten by the list.
+func TestShortWordTypos(t *testing.T) {
+	got := read(t, host, "plz giv it netwrok nd cal it snugdev")
+	want := []intent.Action{use("@net"), note("net"), {Op: intent.OpNameProfile, Name: "snugdev"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	c := host
+	c.Profiles = []string{"nd"}
+	if got := read(t, c, "use my nd profile"); !slices.Equal(got, []intent.Action{{Op: intent.OpIncludeProfile, Name: "nd"}}) {
+		t.Errorf("%v", got)
 	}
 }
 

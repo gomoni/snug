@@ -14,6 +14,10 @@ const (
 	OpAdvise = "advise"
 	// OpUndo takes back the last thing the session did.
 	OpUndo = "undo"
+	// OpToolchain names a language toolchain the request mentions (Name: go,
+	// node, python, rust); the session proposes what the analysis would for
+	// it.
+	OpToolchain = "toolchain"
 )
 
 // Choice is one reading an interpreter offers when it did not understand a
