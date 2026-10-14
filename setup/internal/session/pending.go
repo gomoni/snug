@@ -132,6 +132,9 @@ func (s *Session) open(p Pending) Pending {
 		if len(cands) > 0 && cands[0].Why != "" {
 			p.Answer = fmt.Sprintf("/pick %s %s takes the suggestion, /pick %s %s another, /pick %s none", p.kind, safe.Inline(cands[0].Key), p.kind, keyWord[p.kind], p.kind)
 		}
+		if len(p.shown) > 0 {
+			p.Answer += "; or the number of one listed, or no"
+		}
 	case SecondProfile:
 		cur, _ := s.slotFull(p.kind)
 		p.Question = fmt.Sprintf("the draft already pins the %s %q, and a profile pins one: \"%s\" needs a second profile. Save this one and start a second?",
@@ -142,10 +145,14 @@ func (s *Session) open(p Pending) Pending {
 		p.Answer = fmt.Sprintf("/accept %d writes it, /decline %d keeps the file", p.N, p.N)
 	case Choice:
 		u := p.unclear
+		why := ""
+		if u.Why != "" {
+			why = " (" + safe.Inline(u.Why) + ")"
+		}
 		if len(u.Understood) > 0 {
-			p.Question = "I understood " + s.sentences(u.Understood) + ", but not \"" + safe.Inline(u.Unknown) + "\". Nothing changed. Did you mean:"
+			p.Question = "I understood " + s.sentences(u.Understood) + ", but not \"" + safe.Inline(u.Unknown) + "\"" + why + ". Nothing changed. Did you mean:"
 		} else {
-			p.Question = "I did not understand \"" + safe.Inline(u.Unknown) + "\"; nothing changed. Did you mean:"
+			p.Question = "I did not understand \"" + safe.Inline(u.Unknown) + "\"" + why + "; nothing changed. Did you mean:"
 		}
 		for j, c := range u.Choices {
 			o := s.sentences(c.Actions)
@@ -318,13 +325,19 @@ func (s *Session) AcceptSome(ctx context.Context, n int, keep []int) []Line {
 	return out
 }
 
-// sentences says what acts would do, notes left out.
+// sentences says what acts would do, notes left out unless there is nothing
+// else.
 func (s *Session) sentences(acts []intent.Action) string {
-	var out []string
+	var out, notes []string
 	for _, a := range acts {
 		if a.Op != intent.OpNote {
 			out = append(out, Sentence(s.d, a))
+		} else {
+			notes = append(notes, Sentence(s.d, a))
 		}
+	}
+	if len(out) == 0 {
+		out = notes
 	}
 	return strings.Join(out, "; ")
 }

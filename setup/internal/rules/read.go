@@ -88,6 +88,9 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 	if slices.Contains(acts, refuse("out_of_scope")) {
 		return []intent.Action{refuse("out_of_scope")}, nil
 	}
+	if len(acts) == 0 && r.missing != "" {
+		return nil, r.noSuchProfile(request)
+	}
 	if len(acts) == 0 || len(unknown) > 0 {
 		u := &intent.Unclear{Unknown: strings.Join(unknown, "; "), Understood: acts}
 		if len(acts) == 0 {
@@ -101,6 +104,9 @@ func Read(c intent.Context, request string) ([]intent.Action, error) {
 
 type reader struct {
 	c intent.Context
+	// missing is a profile name a request asked to include that the human
+	// does not have.
+	missing string
 }
 
 // hit is an action with the index of the word that produced it, so a clause
@@ -133,6 +139,28 @@ func pick(kind, account string) intent.Action {
 	return intent.Action{Op: intent.OpSelectIdentity, Kind: kind, Account: account}
 }
 
+// notAName are the words before "profile" that do not name one.
+var notAName = set("my the a an this that your our own new snug same other existing old usual default sandbox")
+
+// noSuchProfile is the answer to a request to include a profile the human
+// does not have: their own profiles, closest name first, as the choices.
+func (r *reader) noSuchProfile(request string) *intent.Unclear {
+	u := &intent.Unclear{Unknown: strings.TrimSpace(request), Why: "you have no snug profile called \"" + r.missing + "\""}
+	names := slices.Clone(r.c.Profiles)
+	w := strings.ToLower(r.missing)
+	slices.SortStableFunc(names, func(a, b string) int { return distance(w, strings.ToLower(a)) - distance(w, strings.ToLower(b)) })
+	for i, n := range names {
+		if i == 3 {
+			break
+		}
+		u.Choices = append(u.Choices, intent.Choice{Actions: []intent.Action{{Op: intent.OpIncludeProfile, Name: n}}})
+	}
+	if len(names) == 0 {
+		u.Why += ", and no profile at all"
+	}
+	return u
+}
+
 // slot reports whether raw is a word the request spells exactly and that must
 // not be corrected: a host name the session knows, or an environment variable
 // name. A word holding anything but letters is never corrected anyway.
@@ -143,7 +171,7 @@ func (r *reader) slot(raw string) bool {
 // filler reports whether every word of c is one that carries no request.
 func (r *reader) filler(c clause) bool {
 	for _, t := range c.toks {
-		if !fillers[t.w] && !negWords[t.w] && !modifiers[t.w] && !onlyRead[t.w] && !readWords[t.w] && !tmpWords[t.w] && !hereWords[t.w] {
+		if !fillers[t.w] && !negWords[t.w] && !offWords[t.w] && !modifiers[t.w] && !onlyRead[t.w] && !readWords[t.w] && !tmpWords[t.w] && !hereWords[t.w] {
 			return false
 		}
 	}
@@ -617,7 +645,10 @@ func (r *reader) clause(c clause) []intent.Action {
 		}
 	}
 
-	if !hostNet {
+	// "offline is fine" accepts what another part asks for; it is not a
+	// request to drop the internet.
+	content := c.hasSet(offWords) && c.has("fine", "ok", "okay", "acceptable", "enough")
+	if !hostNet && !content {
 		ni := c.findSet(netWords)
 		if ni < 0 {
 			ni = c.find("@net", "go get", "go mod", "go modules", "openai")
@@ -907,6 +938,11 @@ func (r *reader) include(c clause, h *hits) {
 		if p := r.profile(t.raw); p != "" {
 			h.add(i, intent.Action{Op: intent.OpIncludeProfile, Name: p})
 			return
+		}
+	}
+	if i := c.find("profile", "profiles", "profil"); i > 0 && c.hasSet(includeVerbs) || i > 0 && c.has("use", "add", "apply", "load") {
+		if w := c.toks[i-1]; !notAName[w.w] && intent.ValidProfileName(w.raw) {
+			r.missing = w.raw
 		}
 	}
 }
