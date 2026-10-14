@@ -13,6 +13,7 @@ package rules
 
 import (
 	"context"
+	"errors"
 	"path"
 	"regexp"
 	"slices"
@@ -34,6 +35,33 @@ func (Interpreter) Interpret(_ context.Context, c intent.Context, request string
 // read, or when a part of it that is not filler could not be read; the
 // Unclear carries what the rest was read as and up to three choices.
 func Read(c intent.Context, request string) ([]intent.Action, error) {
+	if name, email, rest, first, ok := typedAuthor(request); ok {
+		pin := pick("git", name+" <"+email+">")
+		r := &reader{c: c}
+		if !slices.ContainsFunc(split(rest, r.slot), func(cl clause) bool { return !r.filler(cl) }) {
+			return []intent.Action{pin}, nil
+		}
+		acts, err := Read(c, rest)
+		var u *intent.Unclear
+		// The pin keeps its place in what was said.
+		with := func(acts []intent.Action) []intent.Action {
+			if first {
+				return append([]intent.Action{pin}, acts...)
+			}
+			return append(slices.Clone(acts), pin)
+		}
+		switch {
+		case err == nil:
+			return with(acts), nil
+		case errors.As(err, &u):
+			u.Understood = with(u.Understood)
+			for i := range u.Choices {
+				u.Choices[i].Actions = with(u.Choices[i].Actions)
+			}
+			return nil, u
+		}
+		return nil, err
+	}
 	r := &reader{c: c}
 	clauses := split(request, r.slot)
 	type part struct {
@@ -178,6 +206,36 @@ func doubtful(sure, literal, corrected []intent.Action, doubted, fixes, unknown 
 	}
 	u.Choices = append(u.Choices, intent.Choice{Actions: corrected})
 	return u
+}
+
+// authorREs find a git author the request spells out: "commit as NAME
+// <EMAIL>", "author NAME EMAIL", "my git name is NAME, email EMAIL". The
+// values are the human's own words, so they are taken as typed rather than
+// matched against the host's authors; the session checks their shape.
+var authorREs = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:\b(?:pin|set|use)\s+)?(?:\b(?:the|my)\s+)?(?:\bgit\s+)?\b(?:commit(?:s|ting)?\s+as|author(?:ed)?(?:\s+as)?|as\s+the\s+author)\s+(.+?)\s*<\s*([^<>]*?)\s*>`),
+	regexp.MustCompile(`(?i)(?:\b(?:pin|set|use)\s+)?(?:\b(?:the|my)\s+)?(?:\bgit\s+)?\b(?:commit(?:s|ting)?\s+as|author(?:ed)?(?:\s+as)?)\s+((?:[^\s<>@,]+\s+){0,4}?[^\s<>@,]+)\s+<?([^\s<>,]+@[^\s<>,]+?)>?(?:[\s,;]|[.!]?$)`),
+	regexp.MustCompile(`(?i)(?:\bmy\s+)?(?:\bgit\s+)?(?:\bauthor\s+)?\bname\s+is\s+(.+?)\s*(?:,|;|\band\b)\s*(?:(?:my|the)\s+)?(?:e-?mail|address)(?:\s+is)?\s+<?([^\s<>,]+@[^\s<>,]+?)>?(?:[\s,;]|[.!]?$)`),
+}
+
+// typedAuthor returns the name and email a request spells out for the git
+// author, the request without them, and whether they came before anything
+// else in it; ok is false when it spells none.
+func typedAuthor(request string) (name, email, rest string, first, ok bool) {
+	for _, re := range authorREs {
+		m := re.FindStringSubmatchIndex(request)
+		if m == nil {
+			continue
+		}
+		name = strings.Trim(strings.TrimSpace(request[m[2]:m[3]]), "\"'“”")
+		email = strings.TrimRight(request[m[4]:m[5]], ".")
+		if name == "" {
+			continue
+		}
+		before := request[:m[0]]
+		return name, email, before + " " + request[m[1]:], strings.Trim(before, " \t,;+&") == "", true
+	}
+	return "", "", "", false, false
 }
 
 type reader struct {

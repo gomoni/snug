@@ -14,6 +14,7 @@ import (
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/intent"
 	"github.com/gomoni/snug/setup/internal/llm"
+	"github.com/gomoni/snug/setup/internal/rules"
 	"github.com/gomoni/snug/setup/internal/testworld"
 )
 
@@ -805,4 +806,40 @@ func TestAskIsAQuestionNotADeadEnd(t *testing.T) {
 	out := say(s, "make it safe")
 	contains(t, out, "What should the sandbox be able to do?", "Answer with a request of its own")
 	lacks(t, out, "say it differently")
+}
+
+// TestCommitAsNameEmailPinsAuthor: an author the human spells out is pinned
+// with the values as typed, from a card, even when the host knows no such
+// author; a malformed email or a control character pins nothing.
+func TestCommitAsNameEmailPinsAuthor(t *testing.T) {
+	w := testworld.New(t)
+	for _, tc := range []struct{ say, name, email string }{
+		{"commit as Jane Q. Public <jane@example.org>", "Jane Q. Public", "jane@example.org"},
+		{"my git name is Jane Doe, email jane@doe.io", "Jane Doe", "jane@doe.io"},
+		{"author Kofi Doe <kofi@example.com>", "Kofi Doe", "kofi@example.com"},
+	} {
+		s := openRules(w)
+		out := say(s, tc.say)
+		contains(t, out, "pin git author "+tc.name+" <"+tc.email+">", "cost: commits made in the sandbox carry this name and email.")
+		if s.Draft().Git != nil {
+			t.Fatalf("%q pinned before the answer", tc.say)
+		}
+		contains(t, say(s, "yes"), "pinned git author")
+		if g := s.Draft().Git; g == nil || g.Name != tc.name || g.Email != tc.email {
+			t.Errorf("%q: %+v", tc.say, g)
+		}
+	}
+	for _, bad := range []string{"commit as Me <not-an-email>", "commit as Me\u0007 <me@example.org>", "commit as \u202eMe <me@example.org>"} {
+		s := openRules(w)
+		out := say(s, bad)
+		contains(t, out, "not pinned")
+		if s.Draft().Git != nil || len(s.Pending()) != 0 {
+			t.Errorf("%q: %+v %v\n%s", bad, s.Draft().Git, numbers(s), out)
+		}
+	}
+}
+
+func openRules(w *testworld.World) *Session {
+	s, _ := New(ctx, Config{Interpreter: rules.Interpreter{}, Run: w.Run, Host: w.Host(), LookPath: w.LookPath, Offline: true, ProfileDir: w.ProfDir, ProfileDirs: []string{w.ProfDir}})
+	return s
 }
