@@ -129,6 +129,7 @@ func run() error {
 		Home:       home,
 		Target:     target,
 		RuntimeDir: os.Getenv("XDG_RUNTIME_DIR"),
+		ConfigHome: os.Getenv("XDG_CONFIG_HOME"),
 	}
 	// One front end serves the terminal too: it asks nothing, so only a line
 	// that is nothing but an answer is taken for one, and it is the only one

@@ -184,11 +184,41 @@ func TestDraftRefusesWritableGrantOnSnugSetupCache(t *testing.T) {
 	}
 }
 
+// TestSnugConfigNotWritable is redteam setup r7 R7-5's setup half: rw on
+// snug's own config directory, or on any directory above it, lets the sandbox
+// write the profiles the next snug run trusts. That holds for ~/.config/snug
+// and for $XDG_CONFIG_HOME/snug outside the home; ro stays allowed.
+func TestSnugConfigNotWritable(t *testing.T) {
+	h := testHost()
+	h.ConfigHome = "/srv/cfg"
+	for _, p := range []string{"~/.config/snug", "~/.config/snug/profiles.d", "~/.config", "/srv/cfg/snug/profiles.d", "/srv/cfg", "/srv"} {
+		d := New(h)
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
+		}
+		if !d.Empty() {
+			t.Errorf("grant rw %s changed the draft", p)
+		}
+	}
+	for _, p := range []string{"~/.config/snug/profiles.d", "/srv/cfg/snug"} {
+		d := New(h)
+		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "ro")); o.Refused != "" {
+			t.Errorf("grant ro %s refused: %+v", p, o)
+		}
+	}
+	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/srv/other", "access", "rw")); o.Refused != "" {
+		t.Errorf("a sibling of the config home refused: %+v", o)
+	}
+}
+
 // TestCredentialFilesRefused is redteam setup r1 S2's read half: files that
 // hold a token are refused at any access, like ~/.ssh.
 func TestCredentialFilesRefused(t *testing.T) {
 	for _, p := range []string{"~/.git-credentials", "~/.npmrc", "~/.pypirc", "~/.cargo/credentials.toml",
-		"~/.cargo/credentials", "~/.config/containers/auth.json", "~/.config/containers"} {
+		"~/.cargo/credentials", "~/.config/containers/auth.json", "~/.config/containers",
+		// redteam setup r7 R7-5.
+		"~/.config/gcloud", "~/.password-store", "~/.password-store/work", "~/.mozilla", "~/.mozilla/firefox",
+		"~/.librewolf", "~/.config/google-chrome", "~/.config/chromium/Default", "~/.config/BraveSoftware"} {
 		for _, access := range []string{"ro", "rw", "tmpfs"} {
 			d := New(testHost())
 			if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", access)); o.Refused != "sensitive_home" {
@@ -269,7 +299,9 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 		"AZURE_STORAGE_CONNECTION_STRING", "CONN_STR", "SESSION_COOKIE", "OP_SESSION_my", "SESSION", "SESSIONID",
 		"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "OPENAIKEY", "PRIVKEY", "SLACK_WEBHOOK_URL",
 		"DISCORD_WEBHOOK", "JWT", "JWT_SIGNING", "BEARER", "HMAC", "SIGNING_SALT", "STRIPE_SK", "DATABASE_URL_RO",
-		"KAFKA_URL", "ELASTICSEARCH_URL", "SMTP_URL", "NATS_URL", "APITOKEN_X"} {
+		"KAFKA_URL", "ELASTICSEARCH_URL", "SMTP_URL", "NATS_URL", "APITOKEN_X",
+		// redteam setup r7 R7-5: a personal access token by its usual name.
+		"GITHUB_PAT", "GH_PAT", "PAT", "GITLAB_PAT_RO"} {
 		for _, verb := range []string{"inherit", "set"} {
 			d := New(testHost())
 			o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", verb, "value", "x"))
@@ -280,7 +312,7 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 	}
 	for _, name := range []string{"EDITOR", "PAGER", "KEYBOARD_LAYOUT", "XKB_DEFAULT_LAYOUT", "LC_ALL",
 		"PASSTHROUGH", "AUTHOR_NAME", "BASE_URL", "TOKENIZERS_PARALLELISM", "MAX_TOKENS", "NO_PROXY", "GOPROXY",
-		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "GNUPGHOME", "DOCKER_CONFIG", "KEYFILE"} {
+		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "GNUPGHOME", "DOCKER_CONFIG", "KEYFILE", "PATTERN", "SPATIAL_DIR"} {
 		d := New(testHost())
 		if o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", "inherit")); o.Refused != "" {
 			t.Errorf("inherit %s refused: %+v", name, o)

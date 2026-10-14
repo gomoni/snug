@@ -38,6 +38,7 @@ type Host struct {
 	Home       string
 	Target     string
 	RuntimeDir string // $XDG_RUNTIME_DIR, "" when unset
+	ConfigHome string // $XDG_CONFIG_HOME, "" when unset
 
 	EvalSymlinks func(string) (string, error)
 	Stat         func(string) (fs.FileInfo, error)
@@ -376,7 +377,27 @@ var sensitiveHome = []string{
 	".claude", ".claude.json",
 	".local/share/keyrings", ".gnome2/keyrings", ".local/share/kwalletd",
 	".git-credentials", ".npmrc", ".pypirc", ".cargo/credentials", ".cargo/credentials.toml",
-	".config/containers/auth.json",
+	".config/containers/auth.json", ".config/gcloud", ".password-store",
+	// Browser profiles: saved passwords, session cookies, OAuth tokens.
+	".mozilla", ".librewolf", ".config/google-chrome", ".config/chromium",
+	".config/BraveSoftware", ".config/microsoft-edge",
+}
+
+// snugConfigDirs are the directories snug reads its trusted profile set from:
+// ~/.config/snug, and $XDG_CONFIG_HOME/snug when that is set, each also as it
+// resolves. A hostile process with rw on one, or on a directory above one,
+// writes the profiles the next snug run trusts.
+func (d *Draft) snugConfigDirs() []string {
+	dirs := []string{filepath.Join(filepath.Clean(d.Host.Home), ".config", "snug")}
+	if d.Host.ConfigHome != "" {
+		dirs = append(dirs, filepath.Join(filepath.Clean(d.Host.ConfigHome), "snug"))
+	}
+	for _, c := range slices.Clone(dirs) {
+		if r, err := d.Host.evalSymlinks(c); err == nil && r != c {
+			dirs = append(dirs, r)
+		}
+	}
+	return dirs
 }
 
 // hostRunHome lists paths, relative to $HOME, that the host executes or reads
@@ -431,6 +452,12 @@ func (d *Draft) checkHostPath(p, access string) *Outcome {
 			}
 		}
 		if access == "rw" {
+			for _, c := range d.snugConfigDirs() {
+				if under(q, c) || under(c, q) {
+					o := refuse("sensitive_home", fmt.Sprintf("%s%s is, or contains, %s, where snug reads the profiles it trusts; grant it ro", q, via, c))
+					return &o
+				}
+			}
 			for _, s := range hostRunHome {
 				full := filepath.Join(home, s)
 				if under(q, full) || (under(full, q) && under(q, home)) {

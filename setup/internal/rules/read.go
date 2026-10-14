@@ -373,7 +373,7 @@ func secretEnv(name string) bool {
 			return true
 		}
 	}
-	return strings.HasSuffix(name, "_KEY") || strings.HasSuffix(name, "_PASS")
+	return strings.HasSuffix(name, "_KEY") || strings.HasSuffix(name, "_PASS") || name == "PAT" || strings.HasSuffix(name, "_PAT") || strings.Contains(name, "_PAT_")
 }
 
 // pathTok is a path the request spells, in the spelling grant_path takes.
@@ -445,6 +445,8 @@ func sensitive(p string) (bool, string) {
 	case rest == ".config/gh" || strings.HasPrefix(rest, ".config/gh/"):
 		return true, "github"
 	case sensitiveDir[first], strings.HasPrefix(rest, ".local/share/keyrings"):
+		return true, ""
+	case slices.ContainsFunc(sensitiveConfig, func(d string) bool { return rest == d || strings.HasPrefix(rest, d+"/") }):
 		return true, ""
 	}
 	return false, ""
