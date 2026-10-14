@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -241,4 +243,25 @@ func TestSigningRequestOpensTheQuestions(t *testing.T) {
 		t.Errorf("an identity was pinned unanswered: %s", s.Draft().Render())
 	}
 	lacks(t, say(s, "design a key"), "should sign")
+}
+
+// TestOpeningCardNamesTheSuggestedIdentity: the identity the facts point at
+// is on the opening card, each piece numbered; nothing is pinned before the
+// answer, and "only" pins the pieces named. A signing key with no ssh key to
+// go with it is not offered: accepting it could only fail.
+func TestOpeningCardNamesTheSuggestedIdentity(t *testing.T) {
+	w := testworld.New(t)
+	repoWithHistory(t, w, "git@github.com:account2/project.git", 3, 10)
+	s, out := startRules(w)
+	contains(t, out, "pin git author Account Two <two@example.com>", "pin GitHub login github.com/account2", "It is on card #1.")
+	lacks(t, out, "pin signing key", "pin ssh key")
+	if s.Draft().SSH != nil || s.Draft().GH != nil || s.Draft().Git != nil {
+		t.Fatalf("pinned before the answer: %s", s.Draft().Render())
+	}
+	n := slices.IndexFunc(s.Pending()[0].Options, func(o string) bool { return strings.Contains(o, "pin git author") }) + 1
+	out = say(s, fmt.Sprintf("only %d", n))
+	if s.Draft().Git == nil || s.Draft().Git.Email != "two@example.com" || s.Draft().GH != nil || slices.Contains(s.Draft().Include, "@git") {
+		t.Errorf("only %d: %s\n%s", n, s.Draft().Render(), out)
+	}
+	contains(t, out, "pinned git author Account Two <two@example.com>.", "not applied: pin GitHub login")
 }

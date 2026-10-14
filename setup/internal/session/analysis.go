@@ -83,12 +83,94 @@ func (s *Session) proposalTurn(ctx context.Context, p ingest.Proposal) *Turn {
 			items = append(items, it)
 		}
 	}
+	items = append(items, s.identityItems(ctx)...)
 	if len(items) == 0 {
 		s.turn--
 		return nil
 	}
 	t.Items = items
 	return t
+}
+
+// pinLabel names a candidate on a card line: the key and its comment, the
+// login, or the author, without the fingerprint and the reason the line
+// already carries.
+func (s *Session) pinLabel(kind string, c Candidate) string {
+	switch kind {
+	case "ssh", "signing":
+		k := s.keys[c.idx]
+		l := safe.Inline(k.Stem)
+		if k.Comment != "" {
+			l += " (" + safe.Inline(k.Comment) + ")"
+		}
+		if !k.InAgent {
+			l += " [not in the agent]"
+		}
+		return l
+	case "github":
+		return safe.Inline(s.gh[c.idx].Host + "/" + s.gh[c.idx].User)
+	}
+	return safe.Inline(s.authors[c.idx].String())
+}
+
+// identityItems are the opening card's identity: the profile of the human's
+// that already pins the identity the facts point at, when snug accepts it, or
+// else each suggested piece the draft does not pin yet, in the order a pin
+// needs them (a signing key goes with an ssh key and an author). Every value
+// is one of the host's own candidates, matched exactly; nothing comes from
+// the repository.
+//
+// Abuse: a hostile repository steers which of the human's own keys, logins
+// and profiles is suggested (ingest.Suggest says how far). The card names
+// each one with its reason and pins nothing until the human answers it, and
+// "only 1 and 3" leaves any of them out.
+func (s *Session) identityItems(ctx context.Context) []Item {
+	p := s.pick
+	if p == nil {
+		return nil
+	}
+	if p.Profile.Value != "" {
+		if msg, checked := s.refusalOf(ctx, p.Profile.Value); !(checked && msg != "") {
+			a := intent.Action{Op: intent.OpIncludeProfile, Name: p.Profile.Value}
+			if _, ok := s.userProfile(a.Name); !ok || slices.Contains(s.d.Include, a.Name) || s.heldBy(a) > 0 {
+				return nil
+			}
+			return []Item{{Action: a, Class: ClassGrant, Ticked: true, Sentence: Sentence(s.d, a), Abuse: s.abuseOf(a), Why: p.Profile.Why}}
+		}
+	}
+	var out []Item
+	for _, c := range []struct {
+		kind string
+		r    ingest.Reason
+	}{{"ssh", p.SSH}, {"git", p.Author}, {"signing", p.Signing}, {"github", p.GH}} {
+		if c.r.Value == "" {
+			continue
+		}
+		if _, full := s.slotFull(c.kind); full {
+			continue
+		}
+		if _, ok := s.includedPin(c.kind); ok {
+			continue
+		}
+		cands := s.Candidates(c.kind)
+		i := slices.IndexFunc(cands, func(k Candidate) bool { return k.Why != "" })
+		if i < 0 {
+			continue
+		}
+		if c.kind == "signing" && !(s.d.SSH != nil || slices.ContainsFunc(out, func(it Item) bool { return it.Action.Kind == "ssh" })) {
+			continue
+		}
+		if c.kind == "signing" && !(s.d.Git != nil || slices.ContainsFunc(out, func(it Item) bool { return it.Action.Kind == "git" })) {
+			continue
+		}
+		it := Item{Action: intent.Action{Op: intent.OpSelectIdentity, Kind: c.kind, Account: cands[i].Key}, Class: ClassGrant,
+			Ticked: true, Pin: true, Sentence: "pin " + kindName(c.kind) + " " + s.pinLabel(c.kind, cands[i]), Why: c.r.Why}
+		if c.kind == "ssh" || c.kind == "signing" {
+			it.Abuse = draft.Abuse["identity"]
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // notProposed lists what the analysis saw a use for and did not put on the
@@ -158,11 +240,12 @@ func (s *Session) Analyze(ctx context.Context) []Line {
 	if s.pick != nil {
 		out = append(out, info("Remote %s %s (%s).", safe.Inline(s.pick.Remote.Name), safe.Inline(s.pick.Remote.URL), safe.Inline(s.pick.Remote.Scheme)))
 	}
+	card := s.proposalLines(ctx, prop)
 	if l := s.suggestionLine(ctx); l != "" {
 		out = append(out, info("%s", l))
 	}
 	out = append(out, s.profileSummary(ctx)...)
-	out = append(out, s.proposalLines(ctx, prop)...)
+	out = append(out, card...)
 	if n := notProposed(prop, s.d, true); n != "" {
 		out = append(out, info("Not proposed: %s.", n))
 	}
@@ -282,7 +365,12 @@ func (s *Session) suggestionLine(ctx context.Context) string {
 	} else if len(p.Conflict) > 1 {
 		l += fmt.Sprintf(" Several of your profiles pin %s with this author: %s. Name one.", safe.Inline(p.Remote.Host), strings.Join(p.Conflict, ", "))
 	}
-	return l + " Say \"use my ssh key\" (or github account, git author, \"sign commits with my key\") to be asked."
+	for _, q := range s.pending {
+		if q.Kind == Card && q.turn.Ingest && slices.ContainsFunc(q.turn.Items, func(it Item) bool { return it.Pin }) {
+			return l + fmt.Sprintf(" It is on card #%d.", q.N)
+		}
+	}
+	return l + " Say \"use my ssh key\", \"use my github account\", \"sign commits with my key\" or \"commit as NAME <EMAIL>\" to be asked."
 }
 
 // identityStatus says what the draft pins and which questions are open, ""
@@ -392,7 +480,7 @@ func (s *Session) repoLines(ctx context.Context) []Line {
 		sug = append(sug, fmt.Sprintf("  git author %s <%s>  (%s)", safe.Inline(p.AuthorName), safe.Inline(p.Author.Value), safe.Inline(p.Author.Why)))
 	}
 	if len(sug) > 0 {
-		out = append(out, info("Suggested identity for this project (nothing is pinned until you answer):\n%s\nSay \"use my github account\", \"use my ssh key\", \"use my git author\" or \"sign commits with my key\" and the question puts these first.", strings.Join(sug, "\n")))
+		out = append(out, info("Suggested identity for this project (nothing is pinned until you answer):\n%s\nSay \"use my github account\", \"use my ssh key\", \"commit as NAME <EMAIL>\" or \"sign commits with my key\" and the question puts these first.", strings.Join(sug, "\n")))
 	}
 	return out
 }

@@ -305,8 +305,10 @@ bin/snug-setup ~/src/proj
 
 Opening reads marker file names, `go.mod` / `package.json` project name, `.git`,
 and your host (`profiles.d`, `~/.ssh/config` Host/IdentityFile, `known_hosts`
-host names, `allowed_signers`, public keys), then opens card #1: `@git`, cache
-variables under `{target}/.cache`, numbered. Answer the newest question in
+host names, `allowed_signers`, public keys), then opens card #1, numbered:
+`@git`, cache variables under `{target}/.cache`, and the identity the remote and
+history point at (ssh key, git author, signing key, GitHub login; only your own,
+matched exactly), or your profile that already pins it. Answer the newest question in
 words: `yes`, `no`, `only 1 and 3`; any question with `/accept N`, `/decline N`,
 `/pick KIND VALUE`. The project's git history is read as bytes (no `git` runs in
 it: a hostile `.git/config` names programs git would execute) to suggest which

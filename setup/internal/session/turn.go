@@ -56,6 +56,10 @@ type Item struct {
 	// "" for an action the human asked for. A non-empty Why records the
 	// action as SourceIngest.
 	Why string
+	// Pin is true for an identity the opening card names exactly: accepting
+	// the card pins Action.Account, a candidate Key of Action.Kind, with no
+	// further question.
+	Pin bool
 }
 
 // Turn is one request the interpreter understood, classified and not yet
@@ -352,6 +356,9 @@ func offlineWish(said string, acts []intent.Action) bool {
 // one, otherwise here.
 func (s *Session) proposeUser(t *Turn, acts []intent.Action, it Item) []Line {
 	a := it.Action
+	if it.Pin {
+		return s.pinKey(a.Kind, a.Account, t.Said, t.N)
+	}
 	src, origin := draft.SourceUser, t.Said
 	if it.Why != "" {
 		src, origin = draft.SourceIngest, it.Why
