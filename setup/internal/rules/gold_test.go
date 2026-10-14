@@ -184,7 +184,7 @@ func TestGoldScores(t *testing.T) {
 	}{
 		{"gold/gold.jsonl", 0.856, 0.856, 0.856},
 		{"gold/gold-v4.jsonl", 0.76, 0.76, 0.76},
-		{"data/train-v4.val.jsonl", 0.658, 0.658, 0.658},
+		{"data/train-v4.val.jsonl", 0.666, 0.666, 0.666},
 	} {
 		s, rows := scoreFile(t, filepath.Join(model, g.file))
 		t.Logf("%s: %s", g.file, s)
