@@ -246,15 +246,26 @@ func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
 	return out
 }
 
-// pinKey pins the candidate of kind whose Key is value, recording said and
-// at as where the human named it. It pins nothing, and says why, when the
-// draft already pins that kind, when value is not a candidate, or for a
+// pinKey pins the candidate of kind whose Key is value, or for git a typed
+// "Name <email>" that CheckAuthor accepts, recording said and at as where the
+// human named it. It pins nothing, and says why, when the draft already pins
+// that kind, when value is neither, or for a
 // signing key while the ssh key or the author is missing. The caller checks
 // the pinned ssh key against GitHub. proposed records the pin as the
 // analysis's proposal the human accepted, not as words of theirs.
 func (s *Session) pinKey(kind, value, said string, at int, proposed bool) []Line {
 	if cur, full := s.slotFull(kind); full {
 		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
+	}
+	if name, email, ok := draft.ParseAuthor(value); ok && kind == "git" {
+		// An author the human typed (typedAuthorItem): their words, not one
+		// of the host's candidates.
+		if err := draft.CheckAuthor(name, email); err != nil {
+			return []Line{info("not pinned: %s.", safe.Inline(err.Error()))}
+		}
+		s.d.SetGit(name, email)
+		s.recordPin("git", []string{value, name, email}, Pending{said: said, at: at, proposed: proposed})
+		return []Line{info("pinned git author %s.", safe.Inline(value))}
 	}
 	cands := s.Candidates(kind)
 	j := slices.IndexFunc(cands, func(c Candidate) bool { return c.Key == value })

@@ -182,7 +182,7 @@ func TestGoldScores(t *testing.T) {
 		file             string
 		exact, set, core float64
 	}{
-		{"gold/gold.jsonl", 0.856, 0.856, 0.856},
+		{"gold/gold.jsonl", 0.868, 0.868, 0.868},
 		// Two typos that widen ("giv it acess to the internt", "let it wirte
 		// to this projcet") are a question now, by design: a correction
 		// never grants unasked.

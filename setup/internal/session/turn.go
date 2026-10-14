@@ -220,6 +220,7 @@ func (s *Session) classify(ctx context.Context, n int, said string, acts []inten
 			it.Class = ClassInfo
 		case intent.OpSelectIdentity:
 			it.Class = ClassIdentity
+			s.typedAuthorItem(&it, said)
 		case intent.OpReadFile:
 			it.Class = ClassFile
 		default:
@@ -239,6 +240,30 @@ func (s *Session) classify(ctx context.Context, n int, said string, acts []inten
 		t.Items = append(t.Items, it)
 	}
 	return t
+}
+
+// typedAuthorItem makes a git author the request spells out ("commit as NAME
+// <EMAIL>") a pin on the turn's card instead of a question: the human typed
+// both values, so there is nothing to choose between. It applies only when
+// both appear in the request as typed, so a model cannot invent them, and
+// only while the draft pins no author; a value CheckAuthor refuses is said
+// and not applied.
+func (s *Session) typedAuthorItem(it *Item, said string) {
+	a := it.Action
+	name, email, ok := draft.ParseAuthor(a.Account)
+	if a.Kind != "git" || !ok || !strings.Contains(said, name) || !strings.Contains(said, email) {
+		return
+	}
+	if _, full := s.slotFull("git"); full {
+		return
+	}
+	if err := draft.CheckAuthor(name, email); err != nil {
+		it.Class, it.Msg = ClassInfo, "not pinned: "+safe.Inline(err.Error())+"."
+		return
+	}
+	it.Class, it.Ticked, it.Pin = ClassGrant, true, true
+	it.Sentence = "pin git author " + safe.Inline(name+" <"+email+">")
+	it.Abuse = pinCost("git", "")
 }
 
 // heldBy returns the number of the open card that lists a among the actions it
