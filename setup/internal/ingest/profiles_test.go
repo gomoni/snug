@@ -142,27 +142,42 @@ func TestLoadProfilesReadsLikeSnug(t *testing.T) {
 }
 
 // TestProfileDirsAreSnugs holds ProfileDirs to the directories snug's
-// ConfigDirs lists: the same two literals, the same fallback, and nothing
-// else.
+// ConfigDirs lists: the same system root, the same $XDG_CONFIG_HOME/snug with
+// its $HOME/.config fallback, the same profiles.d leaf, and nothing else. The
+// setup module cannot import snug's internal/profile, so it reads the source.
 func TestProfileDirsAreSnugs(t *testing.T) {
 	raw, err := os.ReadFile("../../../internal/profile/file.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	i := strings.Index(src, "func ConfigDirs() []string {")
-	if i < 0 {
-		t.Fatal("ConfigDirs is gone from internal/profile/file.go")
+	fn := func(sig string) string {
+		i := strings.Index(src, sig)
+		if i < 0 {
+			t.Fatalf("%s is gone from internal/profile/file.go", sig)
+		}
+		return src[i : i+strings.Index(src[i:], "\n}\n")]
 	}
-	body := src[i : i+strings.Index(src[i:], "\n}\n")]
-	for _, want := range []string{
-		`dirs := []string{"/etc/snug/profiles.d"}`,
-		`os.Getenv("XDG_CONFIG_HOME")`,
-		`filepath.Join(home, ".config")`,
-		`filepath.Join(xdg, "snug", "profiles.d")`,
+	if !strings.Contains(src, `const systemConfigRoot = "/etc/snug"`) {
+		t.Error(`snug's systemConfigRoot is no longer "/etc/snug"; ProfileDirs must follow it`)
+	}
+	for sig, wants := range map[string][]string{
+		"func ConfigDirs() []string {": {
+			`filepath.Join(systemConfigRoot, "profiles.d")`,
+			`filepath.Join(user, "profiles.d")`,
+		},
+		"func userConfigRoot() string {": {
+			`os.Getenv("XDG_CONFIG_HOME")`,
+			`filepath.Join(xdg, "snug")`,
+			`homeConfigRoot()`,
+		},
+		"func homeConfigRoot() string {": {`filepath.Join(home, ".config", "snug")`},
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("snug's ConfigDirs no longer contains %s; ProfileDirs must follow it", want)
+		body := fn(sig)
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("snug's %s no longer contains %s; ProfileDirs must follow it", sig, want)
+			}
 		}
 	}
 	if got := ProfileDirs("", "/home/u"); !slices.Equal(got, []string{"/etc/snug/profiles.d", "/home/u/.config/snug/profiles.d"}) {
