@@ -524,6 +524,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 						name, f.Key, VisibleText(asked), VisibleText(l.At), ownerPhrase(l, env.Uid()),
 						VisibleText(dest))
 				}
+				for _, spelled := range []string{asked, dest} {
+					if err := refuseIdentityKeyEngineState(name, f.Key, spelled, ctx, env); err != nil {
+						return nil, err
+					}
+				}
 				// dest, not expanded: the key is opened with RESOLVE_NO_SYMLINKS
 				// (hostread.RequiredNoLinks), so the stored path must already
 				// be spelled without the trusted links authorableLinks followed.
