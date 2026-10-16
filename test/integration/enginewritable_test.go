@@ -130,11 +130,14 @@ func TestEngineBinaryInsideAWritableGrantIsRefused(t *testing.T) {
 }
 
 // TestEngineToolchainRootContainsAWritableGrantIsRefused is issue #405's
-// second half, end to end — the finding the ticket exists for. The toolchain
-// root ($SNUG_PODMAN_ROOT) is the TARGET's own parent, which @parent-ro
-// grants read-only; the target itself sits strictly inside it and @target-rw
-// grants THAT rw. The root itself trips no check, but the writable grant
-// inside its tree must.
+// second half, end to end. The toolchain root ($SNUG_PODMAN_ROOT) is the
+// TARGET's own parent, which @parent-ro grants read-only; the target itself
+// sits strictly inside it and @target-rw grants THAT rw. It fails if a
+// writable grant inside the root's tree stops being refused before the
+// payload runs. The refusal now comes from Resolve (a WRITE grant overlapping
+// the root, in either direction), so this asserts that message, not the
+// tree check in policy.CheckEngineToolchainTree that this fixture used to
+// reach.
 func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 	budget(t, 60*time.Second)
 
@@ -156,13 +159,13 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 
 	r := runEnv(t, env, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
 	if r.ran {
-		t.Fatalf("the payload ran — the toolchain root's TREE arm did not refuse a root whose own "+
+		t.Fatalf("the payload ran — the toolchain root's overlap refusal did not refuse a root whose own "+
 			"descendant (%s) is a writable grant:\n%s", proj, r.out)
 	}
 	if r.code == 0 {
 		t.Fatalf("snug exited 0 without running the payload — that is not a refusal:\n%s", r.out)
 	}
-	for _, want := range []string{toolchainRoot, proj, "engine toolchain root", "TREE"} {
+	for _, want := range []string{toolchainRoot, proj, "engine toolchain root", "$SNUG_PODMAN_ROOT"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("refusal does not contain %q:\n%s", want, r.out)
 		}
@@ -179,9 +182,9 @@ func TestEngineToolchainRootContainsAWritableGrantIsRefused(t *testing.T) {
 	env2 := append(append([]string{}, base...), scratchHomeEnv(t)...)
 	env2 = append(env2, "SNUG_PODMAN="+wrapper2, "SNUG_PODMAN_ROOT="+cleanRoot)
 	r2 := runEnv(t, env2, []string{"-p", "@podman-socket"}, proj, `echo SHOULD-NOT-RUN`)
-	if strings.Contains(r2.out, "engine toolchain root") && strings.Contains(r2.out, "TREE") {
-		t.Fatalf("control: a clean toolchain root with nothing writable inside it was refused by "+
-			"the tree check too:\n%s", r2.out)
+	if strings.Contains(r2.out, "engine toolchain root") {
+		t.Fatalf("control: a clean toolchain root with nothing writable inside it was refused as "+
+			"overlapping a writable grant too:\n%s", r2.out)
 	}
 }
 
