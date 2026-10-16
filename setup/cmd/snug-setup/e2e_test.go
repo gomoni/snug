@@ -295,8 +295,8 @@ func TestE2ERefusedGrantsAreNeverSaved(t *testing.T) {
 func TestE2EGarbledLineChangesNothingAndSavesNothing(t *testing.T) {
 	w := newWorld(t)
 	out, code := w.setup("asdf qwer zxcv\n/save work\n")
-	if code != 0 {
-		t.Fatalf("exit %d:\n%s", code, out)
+	if code != exitOpen {
+		t.Fatalf("exit %d, want %d (the did-you-mean question is left open):\n%s", code, exitOpen, out)
 	}
 	mustContain(t, out, `I did not understand "asdf qwer zxcv"; nothing changed. Did you mean:`, "nothing to save yet.")
 	if files := w.scratchFiles(); len(files) != 0 {
@@ -323,18 +323,49 @@ func TestE2ESaveWaitsForOpenQuestions(t *testing.T) {
 	mustContain(t, out, "wrote "+filepath.Join(w.profile, "work.toml"))
 }
 
-// TestE2EExitStatusOfAFailedSession records, without judging it, that
-// snug-setup exits 0 when the session ends with an accepted draft unsaved: main
-// discards the session plain.Run returns. A script cannot tell a saved
-// profile from a refused one by the status; it has to read the output or look
-// for the file. The assertion is on the file, which is what a caller can rely
-// on; the status is only logged.
-func TestE2EExitStatusOfAFailedSession(t *testing.T) {
-	w := newWorld(t)
-	out, code := w.setup("needs internet\nyes\n")
-	mustContain(t, out, "The draft was not saved.")
-	t.Logf("snug-setup exit status with an unsaved draft: %d", code)
-	if _, err := os.Stat(filepath.Join(w.profile, "work.toml")); err == nil {
-		t.Errorf("a profile was written although the draft was not saved")
+// TestE2EExitStatus fails if the status stops telling a script what became of
+// the session: 0 for a saved profile or for nothing to lose, 3 for a draft
+// left unsaved (a refused /save included), 4 for questions left open with
+// no draft. The file is checked beside the status so a code is never
+// satisfied by a session that did nothing.
+func TestE2EExitStatus(t *testing.T) {
+	profile := func(w *world) string { return filepath.Join(w.profile, "work.toml") }
+	tests := []struct {
+		name, script string
+		code         int
+		saved        bool
+	}{
+		{"saved", "needs internet\nyes\n/save work\n", 0, true},
+		{"nothing asked", "", 0, false},
+		{"only refused requests", "let it write to ~/.ssh\n", 0, false},
+		{"accepted draft never saved", "needs internet\nyes\n", exitUnsaved, false},
+		{"save refused by an open question, then EOF", "needs internet\n/save work\n", exitOpen, false},
+		{"unsaved draft and a question open", "needs internet\nyes\nlet it write to ~/.cache/x\n", exitUnsaved, false},
+		{"saved, then a question opened", "needs internet\nyes\n/save work\nlet it write to ~/.cache/x\n", exitOpen, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			out, code := w.setup(tc.script)
+			if code != tc.code {
+				t.Errorf("exit status %d, want %d:\n%s", code, tc.code, out)
+			}
+			_, err := os.Stat(profile(w))
+			if (err == nil) != tc.saved {
+				t.Errorf("profile written = %v, want %v:\n%s", err == nil, tc.saved, out)
+			}
+		})
+	}
+}
+
+func TestExitStatusPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		unsaved bool
+		open    int
+		want    int
+	}{{false, 0, 0}, {true, 0, exitUnsaved}, {false, 2, exitOpen}, {true, 2, exitUnsaved}} {
+		if got := exitStatus(tc.unsaved, tc.open); got != tc.want {
+			t.Errorf("exitStatus(%v, %d) = %d, want %d", tc.unsaved, tc.open, got, tc.want)
+		}
 	}
 }
