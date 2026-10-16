@@ -4,6 +4,13 @@
 // question about identities, is Go's. A model can read requests instead
 // (--model, --openai-url). It is a convenience: snug never needs it, and a
 // profile it writes is read by snug like any other file.
+//
+// Exit status: 0 when the session ended with nothing to lose (a profile was
+// saved and nothing changed after it, or no change was ever accepted and no
+// question is open); 1 for a usage or startup error; 3 when the draft was not
+// saved; 4 when only questions are still open; 130 when a signal ended it.
+// 3 wins over 4. A refused /save leaves the draft unsaved, so a session that
+// ends after one exits 3 or 4 and never 0.
 package main
 
 import (
@@ -41,16 +48,42 @@ const usage = `usage: snug-setup [--model FILE.gguf | --openai-url URL [--model 
                        and /pick (/help lists them).
   --profile-dir DIR    where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
   DIR                  the project directory the profile is for (default: the current directory)
+
+exit status:
+  0    nothing to lose: the profile was saved, or nothing was accepted and no question is open
+  1    usage or startup error
+  3    the session ended with a draft that was not saved (a refused /save counts)
+  4    the session ended with questions still open and no unsaved draft
+  130  interrupted
 `
 
+const (
+	exitUnsaved = 3
+	exitOpen    = 4
+)
+
+// exitStatus is the status a finished session earns. Unsaved wins over open
+// questions: a script that sees 4 knows no draft was lost.
+func exitStatus(unsaved bool, open int) int {
+	switch {
+	case unsaved:
+		return exitUnsaved
+	case open > 0:
+		return exitOpen
+	}
+	return 0
+}
+
 func main() {
-	if err := run(); err != nil {
+	code, err := run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "snug-setup: %v\n", err)
 		os.Exit(1)
 	}
+	os.Exit(code)
 }
 
-func run() error {
+func run() (int, error) {
 	fs := flag.NewFlagSet("snug-setup", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var bf backendFlags
@@ -61,20 +94,20 @@ func run() error {
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")
 	if err := fs.Parse(os.Args[1:]); err != nil {
-		return err
+		return 1, err
 	}
 	if err := bf.check(); err != nil {
 		fs.Usage()
-		return err
+		return 1, err
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
-		return fmt.Errorf("at most one directory")
+		return 1, fmt.Errorf("at most one directory")
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("cannot find your home directory: %w", err)
+		return 1, fmt.Errorf("cannot find your home directory: %w", err)
 	}
 	if h, err := filepath.EvalSymlinks(home); err == nil {
 		home = h
@@ -85,16 +118,16 @@ func run() error {
 	}
 	target, err := filepath.Abs(dir)
 	if err != nil {
-		return err
+		return 1, err
 	}
 	if t, err := filepath.EvalSymlinks(target); err == nil {
 		target = t
 	}
 	if err := draft.CheckTarget(target); err != nil {
-		return err
+		return 1, err
 	}
 	if fi, err := os.Stat(target); err != nil || !fi.IsDir() {
-		return fmt.Errorf("%s is not a directory", target)
+		return 1, fmt.Errorf("%s is not a directory", target)
 	}
 	if *profileDir == "" {
 		cfg := os.Getenv("XDG_CONFIG_HOME")
@@ -109,7 +142,7 @@ func run() error {
 
 	interp, closer, err := newInterpreter(ctx, bf, home)
 	if err != nil {
-		return err
+		return 1, err
 	}
 	defer closer.Close()
 
@@ -134,7 +167,7 @@ func run() error {
 	// One front end serves the terminal too: it asks nothing, so only a line
 	// that is nothing but an answer is taken for one, and it is the only one
 	// that follows the session's rules.
-	plain.Run(ctx, plain.Config{
+	sess := plain.Run(ctx, plain.Config{
 		Session: session.Config{
 			Interpreter: interp,
 			Run:         hostfacts.ExecRunner,
@@ -148,5 +181,5 @@ func run() error {
 		Echo: !isTerminal(os.Stdin),
 	})
 	finished.Store(true)
-	return nil
+	return exitStatus(sess.Unsaved(), len(sess.Pending())), nil
 }
