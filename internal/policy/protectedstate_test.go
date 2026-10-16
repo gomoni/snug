@@ -378,7 +378,6 @@ func TestEngineTmpSiblingsAllowed(t *testing.T) {
 			"/tmp/snug-engines-1000x",
 			"/tmp/snug-2000-1",
 			"/tmp/snugx-1000-1",
-			"/tmp/work/snug-1000-1",
 			"/tmp/x/../snug-1000x",
 		} {
 			cases = append(cases, protCase{name: acc + " " + g, acc: acc, grant: g, prefixes: protPrefixes, exist: []string{filepath.Clean(g)}})
@@ -436,4 +435,34 @@ func TestRelativeRootsMatchNothingAbsolute(t *testing.T) {
 		{name: "relative data root", acc: "rw", grant: "/home/u/proj/sub/rel/snug",
 			dataRoots: []EngineDataRoot{{Path: "rel/snug"}}, exist: []string{"/home/u/proj/sub/rel/snug"}},
 	})
+}
+
+// TestGrantUnderAThirdTmpdirRunDirIsRefused: a concurrent run started with a
+// $TMPDIR this process never learns keeps its per-run engine directory there,
+// so the parent-anchored prefixes miss it. The name is matched at any depth.
+// The allowed rows are the positive control: a look-alike name that is not
+// snug's own, or another uid's, stays grantable.
+func TestGrantUnderAThirdTmpdirRunDirIsRefused(t *testing.T) {
+	var cases []protCase
+	for _, acc := range []string{"ro", "rw"} {
+		for name, grant := range map[string]string{
+			"third tmpdir run dir":     "/s/customtmp/snug-1000-victim",
+			"third tmpdir inside":      "/s/customtmp/snug-1000-victim/conf",
+			"third tmpdir runroot":     "/s/customtmp/snug-engines-1000-abc/rr",
+			"deep component":           "/a/b/snug-1000-9/c/d",
+			"dotdot into third tmpdir": "/s/x/../customtmp/snug-1000-victim",
+		} {
+			cases = append(cases, protCase{name: acc + " " + name, acc: acc, grant: grant, prefixes: protPrefixes, refused: true, want: tmpSentence})
+		}
+		for name, grant := range map[string]string{
+			"snug-notes":        "/s/customtmp/snug-notes",
+			"other uid":         "/s/customtmp/snug-1001-x",
+			"other uid root":    "/s/customtmp/snug-engines-1001-x",
+			"no trailing dash":  "/s/customtmp/snug-1000",
+			"suffix not prefix": "/s/customtmp/my-snug-1000-x",
+		} {
+			cases = append(cases, protCase{name: acc + " allowed " + name, acc: acc, grant: grant, prefixes: protPrefixes})
+		}
+	}
+	runProt(t, cases)
 }

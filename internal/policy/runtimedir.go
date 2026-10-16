@@ -88,6 +88,9 @@ func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, va
 						return engineTmpDirRefusal(name, host, entry)
 					}
 				}
+				if entry, ok := anyComponentNamePrefix(grants, sortedPrefixes); ok {
+					return engineTmpDirRefusal(name, host, entry)
+				}
 			}
 		}
 	}
@@ -117,9 +120,36 @@ func underNamePrefix(env Environ, grants []string, prefix string) (string, bool)
 	return "", false
 }
 
+// anyComponentNamePrefix reports whether any component of any of grants has a
+// name starting with the final element of one of prefixes, and returns the
+// grant's path up to and including that component.
+//
+// underNamePrefix is anchored to the temp directories this process can name,
+// but a concurrent run started with a different $TMPDIR keeps its per-run
+// engine directory under a parent this process never learns. The name is the
+// only part every run shares, so it is matched at any depth.
+func anyComponentNamePrefix(grants, prefixes []string) (string, bool) {
+	for _, prefix := range prefixes {
+		namePrefix := filepath.Base(filepath.Clean(prefix))
+		for _, g := range grants {
+			for i := 1; i < len(g); i++ {
+				if g[i-1] != '/' {
+					continue
+				}
+				comp, _, _ := strings.Cut(g[i:], "/")
+				if strings.HasPrefix(comp, namePrefix) {
+					return g[:i+len(comp)], true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 func engineTmpDirRefusal(profile ProfileName, grant, entry string) error {
 	return fmt.Errorf("refusing to grant %s: profile %q grants it, and it reaches %s, a per-run directory\n"+
-		"       snug's container engine keeps under the temp directory: another run's podman socket,\n"+
+		"       snug's container engine keeps under a temp directory (another run's may be under a\n"+
+		"       $TMPDIR this process cannot see): another run's podman socket,\n"+
 		"       and the containers.conf and storage.conf snug generated for it. A sandbox that can\n"+
 		"       see one can drive that run's engine or rewrite its configuration. A read-only grant\n"+
 		"       does not help: a read-only mount does not stop connect().\n"+

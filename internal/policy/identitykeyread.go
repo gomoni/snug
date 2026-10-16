@@ -50,6 +50,11 @@ func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Contex
 		}
 	}
 
+	if entry, ok := anyComponentNamePrefix(grants, prefixes); ok {
+		return identityKeyRefusal(name, key, path, "a directory named like a per-run engine directory "+VisibleText(entry),
+			"Another snug run's per-run state may live there")
+	}
+
 	roots := append([]EngineDataRoot(nil), ctx.EngineDataRoots...)
 	sort.Slice(roots, func(i, j int) bool { return roots[i].Path < roots[j].Path })
 	for _, root := range roots {
