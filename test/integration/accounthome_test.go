@@ -35,13 +35,13 @@ func hostAccountHome(t *testing.T) string {
 	return f[5]
 }
 
-// TestHOMEDifferentFromTheAccountHomeIsRefused runs the binary a user installs,
-// with $HOME pointing at a scratch directory that the account database does not
-// know. It fails if a run goes ahead with a $HOME of the caller's choosing,
-// which would decide where every {home} grant points. Nothing may start: no
-// payload, no process naming the target. The controls: the refusal names the
-// account's real home, and the same binary accepts $HOME equal to it.
-func TestHOMEDifferentFromTheAccountHomeIsRefused(t *testing.T) {
+// TestHOMEDifferentFromTheAccountHomeChangesNothing runs the binary a user
+// installs with $HOME pointing at a scratch directory, and again with a
+// relative one. It fails if either is refused or if the scratch directory
+// reaches the policy: the dry-run must be byte-identical to the one under the
+// account's own HOME and must not mention the scratch directory. --dry-run, so
+// nothing is started against the developer's real home.
+func TestHOMEDifferentFromTheAccountHomeChangesNothing(t *testing.T) {
 	budget(t)
 	requireSandbox(t)
 	proj, _ := target(t)
@@ -51,25 +51,22 @@ func TestHOMEDifferentFromTheAccountHomeIsRefused(t *testing.T) {
 		t.Fatal("control: the scratch HOME is the account's home")
 	}
 
-	r := runEnv(t, baseEnv("HOME="+scratch), nil, proj, `echo SHOULD-NOT-RUN`)
-	if r.ran || strings.Contains(r.out, "SHOULD-NOT-RUN") {
-		t.Fatalf("the payload ran under a HOME that is not the account's:\n%s", r.out)
-	}
-	if r.code != exitPolicyCode {
-		t.Errorf("exit %d, want %d:\n%s", r.code, exitPolicyCode, r.out)
-	}
-	for _, want := range []string{scratch, acct, "Unset HOME, or set HOME=" + acct} {
-		if !strings.Contains(r.out, want) {
-			t.Errorf("the refusal does not contain %q:\n%s", want, r.out)
-		}
-	}
-	assertNoStageStarted(t, proj)
-
-	// Control: HOME equal to the account's home is not refused. --dry-run, so
-	// nothing is started against the developer's real home.
-	out, code := cli(t, baseEnv("HOME="+acct), "--dry-run", proj, "--", "/bin/true")
+	want, code := cli(t, baseEnv("HOME="+acct), "--dry-run", proj, "--", "/bin/true")
 	if code != 0 {
-		t.Errorf("control: HOME equal to the account's home was refused (exit %d):\n%s", code, out)
+		t.Fatalf("control: HOME equal to the account's home was refused (exit %d):\n%s", code, want)
+	}
+	for _, host := range []string{scratch, "relative/home"} {
+		out, code := cli(t, baseEnv("HOME="+host), "--dry-run", proj, "--", "/bin/true")
+		if code != 0 {
+			t.Errorf("HOME=%q was refused (exit %d):\n%s", host, code, out)
+			continue
+		}
+		if out != want {
+			t.Errorf("HOME=%q changed the dry-run:\n%s", host, out)
+		}
+		if strings.Contains(out, scratch) {
+			t.Errorf("HOME=%q reached the policy:\n%s", host, out)
+		}
 	}
 }
 
@@ -211,12 +208,11 @@ func TestNestedSnugUnsetHOMETakesTheAuthoredHome(t *testing.T) {
 	}
 }
 
-// TestNestedSnugRefusesAChangedHOME fails if the inner snug accepts a $HOME the
-// payload changed. The payload controls its own environment, so a $HOME other
-// than the generated passwd's is the payload's choice and must stop the run
-// before anything is derived from it. Control: the unchanged $HOME resolves in
-// the same sandbox.
-func TestNestedSnugRefusesAChangedHOME(t *testing.T) {
+// TestNestedSnugIgnoresAChangedHOME fails if the inner snug lets a HOME the
+// payload changed move anything. The payload controls its own environment, so
+// HOME=/tmp is the payload's choice and must not matter: the inner snug takes
+// the generated passwd's home, as it does with HOME unchanged.
+func TestNestedSnugIgnoresAChangedHOME(t *testing.T) {
 	budget(t)
 	n := newNested(t)
 	r := n.run(t, `./snug --dry-run "$PWD" -- true; echo "unchanged-exit=$?"
@@ -224,11 +220,11 @@ HOME=/tmp ./snug --dry-run "$PWD" -- true; echo "changed-exit=$?"`).mustRun(t)
 	if !strings.Contains(r.out, "unchanged-exit=0") {
 		t.Fatalf("control: the unchanged HOME was refused:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, "changed-exit="+strconv.Itoa(exitPolicyCode)) {
-		t.Errorf("the inner snug did not exit %d for HOME=/tmp:\n%s", exitPolicyCode, r.out)
+	if !strings.Contains(r.out, "changed-exit=0") {
+		t.Errorf("the inner snug did not exit 0 for HOME=/tmp:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, `$HOME "/tmp" is not this account's home directory "`+n.canonical+`"`) {
-		t.Errorf("the refusal does not name both directories:\n%s", r.out)
+	if got := strings.Count(r.out, "home "+n.canonical+" "+fromSnugAuthoredSource); got != 2 {
+		t.Errorf("want both inner runs to take the authored home %q, got %d:\n%s", n.canonical, got, r.out)
 	}
 }
 

@@ -6,9 +6,8 @@ import "os"
 
 // fixtureAccountHomeEnv names the directory this binary reports as the
 // account's home. Only a binary built with -tags snugfixture reads it: the
-// integration suite points $HOME at a scratch directory, which the real
-// account database does not know, and policy.AccountHome refuses a $HOME that
-// is not the account's. Name and group still come from the real source, so
+// integration suite uses a scratch directory as the home, which the real
+// account database does not know. Name and group still come from the real source, so
 // only the home is replaced. No install or release target passes the tag.
 const fixtureAccountHomeEnv = "SNUG_FIXTURE_ACCOUNT_HOME"
 

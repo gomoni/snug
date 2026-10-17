@@ -516,7 +516,7 @@ func (p *Policy) rejectHostHomeBind() error {
 			"       key, no enumeration) exists to prevent, defeated by a mount.\n"+
 			"       There is no flag to allow it. Grant the part you meant instead, e.g.\n"+
 			"       ro = [\"{home}/src\"] in your own profile. If the target sits directly in\n"+
-			"       your home directory, @parent-ro's \"the target's parent\" IS $HOME — move\n"+
+			"       your home directory, @parent-ro's \"the target's parent\" is that directory — move\n"+
 			"       the project one level down (~/src/myproject) or select without it.",
 			provenance(m), where, what, m.Access)
 	}
