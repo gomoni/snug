@@ -45,6 +45,8 @@ var update = flag.Bool("update", false, "rewrite golden files")
 // (issue #422's kind check) and the pinned golden would silently stop testing
 // the clearance it is named for.
 type envFakeEnv struct {
+	// kube is host kubeconfig bytes by path, for Environ.KubeConfig.
+	kube  map[string][]byte
 	dirs  map[string]bool
 	files map[string]bool
 	links map[string]string
@@ -146,7 +148,11 @@ func newEnvFakeEnv() *envFakeEnv {
 // filesystem half never fires here.
 func (f *envFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil }
 func (f *envFakeEnv) KubeConfig(p string) (kubecfg.File, error) {
-	return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+	data, ok := f.kube[p]
+	if !ok {
+		return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+	}
+	return kubecfg.Parse(data)
 }
 
 func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
