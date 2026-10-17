@@ -536,11 +536,11 @@ func run(cfg config) int {
 	}
 	notes := newNotes(live, cfg.verbose)
 
-	// The account comes first, before anything reads a file under $HOME:
-	// profile.Load, the config file and the XDG defaults all derive their
-	// directories from it, and a $HOME that is not this account's home must
-	// stop the run before any of them is read from there. An unset HOME is
-	// set to the account's, so every later os.UserHomeDir() agrees.
+	// The account comes first, before anything reads a file under the home
+	// directory: profile.Load, the config file and the XDG defaults all derive
+	// their directories from it. The HOME snug was started with is replaced by
+	// the account's, so every later os.UserHomeDir() agrees and no directory is
+	// read from a home the account database does not name.
 	// There is no fallback for a failed lookup: a placeholder name or home
 	// would be a silent narrowing (invariant 5).
 	env := policy.OSEnviron{}
@@ -548,14 +548,12 @@ func run(cfg config) int {
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
-	home, err := policy.AccountHome(env, pwHome, os.Getenv("HOME"))
+	home, err := policy.AccountHome(pwHome)
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}
-	if os.Getenv("HOME") == "" {
-		if err := os.Setenv("HOME", home); err != nil {
-			return refuse(cfg, exitPolicy, err)
-		}
+	if err := os.Setenv("HOME", home); err != nil {
+		return refuse(cfg, exitPolicy, err)
 	}
 	notes.aside("snug: account: %s, home %s (from %s)\n", policy.VisibleText(name),
 		policy.VisibleText(home), policy.VisibleText(accountFrom))

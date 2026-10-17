@@ -55,9 +55,9 @@ func TestPasswdHomeIsHOMEByConstruction(t *testing.T) {
 			env := baseEnv(fixtureHome(home)...)
 			if tc.refused {
 				r := runEnv(t, env, nil, proj, `echo SHOULD-NOT-RUN`)
-				if r.ran || r.code != exitPolicyCode || !strings.Contains(r.out, "$HOME") ||
-					!strings.Contains(r.out, "set HOME to "+resolvedHome) {
-					t.Errorf("a user-owned $HOME link: ran=%v exit %d, want a refusal (exit %d) naming the fix:\n%s",
+				if r.ran || r.code != exitPolicyCode || !strings.Contains(r.out, "home directory "+home+" resolves through the link") ||
+					!strings.Contains(r.out, "make the account's home directory (getent passwd field 6) "+resolvedHome) {
+					t.Errorf("a user-owned home link: ran=%v exit %d, want a refusal (exit %d) naming the fix:\n%s",
 						r.ran, r.code, exitPolicyCode, r.out)
 				}
 				return

@@ -3,6 +3,7 @@ package policy
 import (
 	"io/fs"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -10,30 +11,27 @@ import (
 	"time"
 )
 
+// TestAccountHome fails if AccountHome answers anything but the passwd
+// entry's home, or lets an empty or relative one through. Nothing about the
+// directory is looked up: whether it exists is Resolve's refusal.
 func TestAccountHome(t *testing.T) {
-	env := newFakeEnv()
-	env.dirs["/home/u"] = true
-	env.dirs["/srv/u"] = true
-	env.links["/h"] = "/home/u"
-
 	for _, tc := range []struct {
-		name, pw, home string
-		want, wantErr  string
+		name, pw      string
+		want, wantErr string
 	}{
-		{"HOME unset: the account's", "/home/u", "", "/home/u", ""},
-		{"HOME the same", "/home/u", "/home/u", "/home/u", ""},
-		{"HOME a link to the same directory keeps its spelling", "/home/u", "/h", "/h", ""},
-		{"pw_dir a link, HOME its target", "/h", "/home/u", "/home/u", ""},
-		{"HOME elsewhere", "/home/u", "/srv/u", "", `$HOME "/srv/u" is not this account's home directory "/home/u" (getent passwd); snug takes the home from the account. Unset HOME, or set HOME=/home/u`},
-		{"empty pw_dir", "", "/home/u", "", "gives this user no home directory"},
-		{"relative pw_dir", "home/u", "", "", "is not absolute"},
-		{"relative HOME", "/home/u", "u", "", "$HOME \"u\" is not absolute; unset HOME, or set HOME=/home/u"},
-		{"HOME missing", "/home/u", "/nowhere", "", "$HOME"},
+		{"absolute", "/home/u", "/home/u", ""},
+		{"a link spelling is kept", "/h", "/h", ""},
+		{"not on this host", "/not/on/this/host", "/not/on/this/host", ""},
+		{"empty", "", "", "gives this user no home directory"},
+		{"relative", "home/u", "", "is not absolute"},
 	} {
-		got, err := AccountHome(env, tc.pw, tc.home)
+		got, err := AccountHome(tc.pw)
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("%s: got %q, %v, want error containing %q", tc.name, got, err, tc.wantErr)
+			}
+			if got != "" {
+				t.Errorf("%s: refused but returned %q", tc.name, got)
 			}
 			continue
 		}
@@ -43,157 +41,89 @@ func TestAccountHome(t *testing.T) {
 	}
 }
 
-// TestAccountHome above is the table over AccountHome's whole contract; the
-// tests below name the individual promises so a refactor that breaks one fails
-// by that name.
-
-// TestAccountHomeIsThePasswdHomeWhenHOMEIsUnset fails if an unset $HOME ever
-// makes the run guess a home. The account's own spelling comes back unchanged,
-// link and all, and nothing about it is looked up: the check that the
-// directory exists is Resolve's.
-func TestAccountHomeIsThePasswdHomeWhenHOMEIsUnset(t *testing.T) {
-	env := newFakeEnv()
-	env.links["/h"] = "/home/u"
-	for _, pw := range []string{"/home/u", "/h", "/not/on/this/host"} {
-		got, err := AccountHome(env, pw, "")
-		if err != nil || got != pw {
-			t.Errorf("pw_dir %q, HOME unset: got %q, %v, want %q", pw, got, err, pw)
+// TestHostHOMEChangesNothing fails if the HOME snug was started with can move
+// the sandbox's home or refuse a run. AccountHome takes no HOME, so this holds
+// the property from the outside: with HOME set to another directory, to a
+// relative path, to a missing one or to nothing, the policy resolved from the
+// account's home is identical and nothing is refused. The control is that a
+// different ACCOUNT home does change the policy, so the comparison can fail.
+func TestHostHOMEChangesNothing(t *testing.T) {
+	resolveWith := func(t *testing.T, pw string) *Policy {
+		t.Helper()
+		env := newFakeEnv()
+		env.dirs["/home/u"] = true
+		env.dirs["/srv/u"] = true
+		home, err := AccountHome(pw)
+		if err != nil {
+			t.Fatalf("AccountHome(%q): %v", pw, err)
 		}
+		ctx := testCtx()
+		ctx.Home, ctx.HostPasswdHome = home, home
+		p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+		if err != nil {
+			t.Fatalf("Resolve with home %q: %v", home, err)
+		}
+		return p
+	}
+	want := resolveWith(t, "/home/u")
+	for _, hostHOME := range []string{"", "/srv/u", "/nowhere", "u", "relative/dir"} {
+		t.Setenv("HOME", hostHOME)
+		if got := resolveWith(t, "/home/u"); !reflect.DeepEqual(got, want) {
+			t.Errorf("HOME=%q changed the resolved policy", hostHOME)
+		}
+	}
+	if reflect.DeepEqual(resolveWith(t, "/srv/u"), want) {
+		t.Error("control: a different account home resolved to the same policy")
 	}
 }
 
-// TestAccountHomeRefusesADivergentHOME fails if a $HOME naming a different
-// directory than the account's is ever preferred, or quietly replaced, instead
-// of refused. The refusal must name both directories and the fix, and must not
-// hand back a home alongside the error.
-func TestAccountHomeRefusesADivergentHOME(t *testing.T) {
-	env := newFakeEnv()
-	for _, d := range []string{"/srv/u", "/home", "/home/u2"} {
-		env.dirs[d] = true
-	}
-	for _, home := range []string{"/srv/u", "/home", "/home/u2"} {
-		got, err := AccountHome(env, "/home/u", home)
-		if err == nil {
-			t.Errorf("HOME %q accepted as %q for an account whose home is /home/u", home, got)
-			continue
-		}
-		if got != "" {
-			t.Errorf("HOME %q: refused but still returned %q", home, got)
-		}
-		for _, want := range []string{home, "/home/u", "Unset HOME, or set HOME=/home/u"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("HOME %q: refusal %q does not contain %q", home, err, want)
-			}
-		}
-	}
-}
-
-// TestAccountHomeKeepsHOMEsSpellingOfTheSameDirectory fails if two spellings of
-// one directory are refused as a mismatch (a Silverblue-shaped host has
-// /home -> /var/home, and either spelling is what a login might export), or if
-// the returned spelling is canonicalised: the human's own spelling is what a
-// later refusal quotes when it tells them what to set HOME to.
-func TestAccountHomeKeepsHOMEsSpellingOfTheSameDirectory(t *testing.T) {
-	env := newFakeEnv()
-	env.resolveParents = true
-	env.links["/home"] = "/var/home"
-	env.dirs["/var/home"] = true
-	env.dirs["/var/home/u"] = true
-	delete(env.dirs, "/home/u")
-	// Control: the fixture really resolves the two spellings to one directory.
-	a, errA := env.EvalSymlinks("/home/u")
-	b, errB := env.EvalSymlinks("/var/home/u")
-	if errA != nil || errB != nil || a != b || a != "/var/home/u" {
-		t.Fatalf("control: fixture resolves /home/u to %q (%v) and /var/home/u to %q (%v)", a, errA, b, errB)
-	}
-	for _, tc := range []struct{ pw, home string }{
-		{"/home/u", "/var/home/u"},
-		{"/var/home/u", "/home/u"},
-	} {
-		got, err := AccountHome(env, tc.pw, tc.home)
-		if err != nil || got != tc.home {
-			t.Errorf("pw_dir %q, HOME %q: got %q, %v, want HOME's own spelling", tc.pw, tc.home, got, err)
-		}
-	}
-}
-
-// TestAccountHomeHasNoFallback fails if a missing, empty or unusable account
-// home is ever answered from $HOME, or a broken $HOME from the account's
-// home: invariant 5, in both directions.
-func TestAccountHomeHasNoFallback(t *testing.T) {
-	env := newFakeEnv()
-	for _, tc := range []struct{ name, pw, home string }{
-		{"empty pw_dir, HOME set", "", "/home/u"},
-		{"empty pw_dir, HOME unset", "", ""},
-		{"relative pw_dir, HOME set", "home/u", "/home/u"},
-		{"HOME nonexistent, pw_dir fine", "/home/u", "/nowhere"},
-		{"HOME relative, pw_dir fine", "/home/u", "u"},
-	} {
-		got, err := AccountHome(env, tc.pw, tc.home)
-		if err == nil {
-			t.Errorf("%s: answered %q instead of refusing", tc.name, got)
-			continue
-		}
-		if got != "" {
-			t.Errorf("%s: refused but returned %q", tc.name, got)
-		}
-	}
-	_, err := AccountHome(env, "", "/home/u")
-	if err == nil || !strings.Contains(err.Error(), "snug does not fall back to $HOME") {
-		t.Errorf("the empty pw_dir refusal does not say it will not fall back: %v", err)
-	}
-}
-
-// TestAccountHomeRefusesAMissingPasswdHome fails if an account whose home does
-// not exist on the host is let through. With $HOME set, AccountHome cannot
-// compare and refuses; with $HOME unset the comparison is skipped, so it is
-// Resolve that must refuse, and this holds it to that.
-func TestAccountHomeRefusesAMissingPasswdHome(t *testing.T) {
-	env := newFakeEnv()
-	_, err := AccountHome(env, "/nowhere", "/nowhere")
-	if err == nil || !strings.Contains(err.Error(), "account database's home directory") {
-		t.Errorf("HOME set: got %v, want a refusal naming the account database's home", err)
-	}
-	got, err := AccountHome(env, "/nowhere", "")
-	if err != nil || got != "/nowhere" {
-		t.Fatalf("control: with HOME unset the account's home comes back untouched: got %q, %v", got, err)
-	}
-	ctx := testCtx()
-	ctx.Home = got
-	ctx.HostPasswdHome = got
-	_, err = Resolve(testRegistry(), testDefaults, ctx, env)
-	if err == nil || !strings.Contains(err.Error(), "$HOME") {
-		t.Errorf("Resolve accepted a home directory that does not exist: %v", err)
-	}
-}
-
-// TestUserLinkOnPasswdHomeTheFixWorks fails if the refusal for a home reached
-// through a link a sandbox could have planted advises something that does not
-// work. The account's home is a user-owned link; Resolve refuses it and says to
-// set HOME to the real directory; doing exactly that must then be accepted by
-// both AccountHome (the account's home is a link to the same directory) and
-// Resolve.
-func TestUserLinkOnPasswdHomeTheFixWorks(t *testing.T) {
+// TestUserLinkOnPasswdHomeRefusalText fails if the refusal for a home reached
+// through a link a sandbox could have planted names a variable, or advises
+// something that does not work. The account's home is a user-owned link;
+// Resolve must call it the home directory, tell the human to change the
+// account's home, and never mention HOME. Doing what it says (the real
+// directory as the account's home) must then be accepted.
+func TestUserLinkOnPasswdHomeRefusalText(t *testing.T) {
 	env := newFakeEnv()
 	env.hlLink(hlUser, "/h", "/home/u")
 
 	ctx := testCtx()
 	ctx.Home, ctx.HostPasswdHome = "/h", "/h"
-	if got, err := AccountHome(env, "/h", ""); err != nil || got != "/h" {
-		t.Fatalf("control: with HOME unset the account's own spelling comes back: %q, %v", got, err)
-	}
 	_, err := Resolve(testRegistry(), testDefaults, ctx, env)
-	if err == nil || !strings.Contains(err.Error(), "set HOME to /home/u instead") {
-		t.Fatalf("a user-owned link on the account's home: got %v, want the refusal advising HOME=/home/u", err)
+	if err == nil {
+		t.Fatal("a user-owned link on the account's home was accepted")
+	}
+	for _, want := range []string{
+		"home directory /h resolves through the link /h -> /home/u",
+		"make the account's home directory (getent passwd field 6) /home/u itself (usermod -d)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "HOME") {
+		t.Errorf("refusal names HOME, which snug does not read: %v", err)
 	}
 
-	home, err := AccountHome(env, "/h", "/home/u")
+	home, err := AccountHome("/home/u")
 	if err != nil || home != "/home/u" {
 		t.Fatalf("following the advice: AccountHome got %q, %v", home, err)
 	}
-	ctx.Home = home
+	ctx.Home, ctx.HostPasswdHome = home, home
 	if _, err := Resolve(testRegistry(), testDefaults, ctx, env); err != nil {
 		t.Errorf("following the advice: Resolve still refuses: %v", err)
+	}
+}
+
+// TestResolveRefusesAMissingPasswdHome fails if an account whose home does not
+// exist on the host is let through: AccountHome looks nothing up, so Resolve
+// must be the one to refuse.
+func TestResolveRefusesAMissingPasswdHome(t *testing.T) {
+	ctx := testCtx()
+	ctx.Home, ctx.HostPasswdHome = "/nowhere", "/nowhere"
+	_, err := Resolve(testRegistry(), testDefaults, ctx, newFakeEnv())
+	if err == nil || !strings.Contains(err.Error(), "home directory") {
+		t.Errorf("Resolve accepted a home directory that does not exist: %v", err)
 	}
 }
 
