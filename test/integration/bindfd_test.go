@@ -247,13 +247,15 @@ func TestConcurrentSandboxCannotSwapAGrantSourceBetweenResolveAndBind(t *testing
 	// no sleep almost every run met a link at resolve and was refused before bwrap
 	// was involved. Measured with the path form of the bind put back: 10 of 200
 	// runs printed the secret (2 of 200 with no sleep). With RESOLVE_NO_SYMLINKS
-	// dropped from the opener instead: 11 of 200.
+	// dropped from the opener instead: 11 of 200. The counter is written aside
+	// and renamed in: `echo > count` truncates first, and a host read landing
+	// between the truncate and the write saw an empty count in CI.
 	w := filepath.Join(s, "work")
 	swapper := startBgSandbox(t, env, []string{"-p", "swap"}, proj, fmt.Sprintf(
 		`cd %[1]s; i=0
 while [ ! -e %[1]s/stop ] && [ $i -lt 200000 ]; do
   mv -T d tmpd 2>/dev/null; mv -T evil d 2>/dev/null; mv -T d evil 2>/dev/null; mv -T tmpd d 2>/dev/null
-  i=$((i+1)); echo $i > %[1]s/count
+  i=$((i+1)); echo $i > %[1]s/count.new; mv -f %[1]s/count.new %[1]s/count
   sleep 0.00$((RANDOM %% 4))
 done`, w))
 	swapper.ready(t)
