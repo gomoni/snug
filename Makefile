@@ -12,7 +12,7 @@ all: build
 
 build:
 	CGO_ENABLED=0 go build -o $(BIN) ./cmd/snug
-	CGO_ENABLED=0 go build -C setup/ -o $(SETUP_BIN) ./cmd/snug-setup/
+	CGO_ENABLED=0 go build -C setup/ -o $(CURDIR)/$(SETUP_BIN) ./cmd/snug-setup/
 
 # The integration suite's snug: the same program plus internal/cli's
 # accountfixture.go, which lets a test name the directory it reports as the
@@ -518,7 +518,7 @@ install: build
 	install -Dm755 $(BIN) $(HOME)/.local/bin/snug
 
 clean:
-	rm -rf bin setup/bin
+	rm -rf bin
 
 
 # Prints the pattern so the gate's own hint can be copy-pasted.

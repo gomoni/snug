@@ -3,8 +3,6 @@
 # directory form — which is how the first attempt at this fix still left the
 # guard untracked.
 bin/*
-# snug-setup is its own module; its build output lands in setup/bin.
-setup/bin/
 # …except the sandbox guard, which is SOURCE that happens to live in bin/.
 # bin/ is ignored because it is where build output lands, and that rule silently
 # swallowed bin/blast-radius on the commit that introduced it: `git add -A` skipped
