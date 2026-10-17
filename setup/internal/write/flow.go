@@ -267,3 +267,81 @@ func ApplyFix(path, backup string, oldBody, newBody []byte) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
+
+// IdentityFiles returns the user files that define the profile identity and,
+// transitively, the non-built-in profiles it includes, as the extra files
+// verify.Run needs beside the draft. A file that defines skip (the profile
+// being written) is left out, so the check never sees an older copy of it.
+// identity "" returns nil.
+func IdentityFiles(files []ingest.ProfileFile, profiles []ingest.Profile, identity, skip string) []verify.File {
+	if identity == "" {
+		return nil
+	}
+	need := []string{identity}
+	for i := 0; i < len(need); i++ {
+		for _, p := range profiles {
+			if p.Name != need[i] {
+				continue
+			}
+			for _, inc := range p.Include {
+				if !strings.HasPrefix(inc, "@") && !slices.Contains(need, inc) {
+					need = append(need, inc)
+				}
+			}
+		}
+	}
+	var out []verify.File
+	for i, f := range files {
+		if slices.Contains(f.Defines, skip) {
+			continue
+		}
+		if slices.ContainsFunc(f.Defines, func(n string) bool { return slices.Contains(need, n) }) {
+			out = append(out, verify.File{Name: fmt.Sprintf("%d-%s", i, f.Name), Body: f.Body})
+		}
+	}
+	return out
+}
+
+// LineOf returns the 1-based number of the first line of rendered containing
+// token, or 0 when none does.
+func LineOf(rendered, token string) int {
+	if token == "" {
+		return 0
+	}
+	for i, l := range strings.Split(rendered, "\n") {
+		if strings.Contains(l, token) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// DryRunText runs `snug --dry-run -p NAME TARGET` for d the way verify.Run
+// does (the draft and others as the only profiles of a scratch configuration
+// directory) and returns what snug printed, for a human to read.
+func DryRunText(ctx context.Context, run hostfacts.Runner, snug string, d *draft.Draft, others []verify.File) (string, error) {
+	xdg, err := os.MkdirTemp("", "snug-setup-dry-")
+	if err != nil {
+		return "", fmt.Errorf("making a scratch config directory: %w (set TMPDIR to a writable directory)", err)
+	}
+	defer os.RemoveAll(xdg)
+	dir := filepath.Join(xdg, "snug", "profiles.d")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	for _, f := range others {
+		if err := os.WriteFile(filepath.Join(dir, f.Name), f.Body, 0o600); err != nil {
+			return "", err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, d.Name+".toml"), []byte(d.Render()), 0o600); err != nil {
+		return "", err
+	}
+	args := append([]string{"--dry-run"}, d.RunArgs(d.Host.Target)...)
+	res, err := run(ctx, []string{"XDG_CONFIG_HOME=" + xdg}, snug, args...)
+	out := string(res.Stdout)
+	if len(res.Stderr) > 0 {
+		out += "\n" + string(res.Stderr)
+	}
+	return out, err
+}

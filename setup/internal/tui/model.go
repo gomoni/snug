@@ -44,6 +44,8 @@ type Outcome struct {
 	Result Result
 	Sel    suggest.Selection
 	Fix    *probe.Warning // set for Fix
+	// Row is the row the cursor was on, for Edit to open the file at.
+	Row suggest.RowID
 }
 
 // Model is the bubbletea model of the screen.
@@ -71,6 +73,9 @@ func New(c Config) Model {
 func (m Model) Outcome() Outcome {
 	o := m.out
 	o.Sel = m.sel
+	if m.cursor < len(m.sel.Rows) {
+		o.Row = suggest.RowID(m.cursor)
+	}
 	return o
 }
 

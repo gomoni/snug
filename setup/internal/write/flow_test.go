@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/probe"
 	"github.com/gomoni/snug/setup/internal/testworld"
@@ -237,5 +238,56 @@ func TestPrepareFixRefusals(t *testing.T) {
 	w2, _ := fixWarning(t, "# @cwd-rw only in a comment\n")
 	if _, _, _, _, err := PrepareFix(w2, time.Now()); err == nil || !strings.Contains(err.Error(), "nothing to rename") {
 		t.Errorf("no token: %v", err)
+	}
+}
+
+func TestIdentityFiles(t *testing.T) {
+	files := []ingest.ProfileFile{
+		{Name: "accounts.toml", Body: []byte("a"), Defines: []string{"vyskocilm", "plainsof"}},
+		{Name: "tools.toml", Body: []byte("t"), Defines: []string{"gh-cli"}},
+		{Name: "unrelated.toml", Body: []byte("u"), Defines: []string{"other"}},
+		{Name: "old.toml", Body: []byte("o"), Defines: []string{"mine"}},
+	}
+	profiles := []ingest.Profile{
+		{Name: "vyskocilm", Include: []string{"@net", "gh-cli"}},
+		{Name: "gh-cli", Include: []string{"@net"}},
+	}
+	got := IdentityFiles(files, profiles, "vyskocilm", "mine")
+	if len(got) != 2 || !strings.HasSuffix(got[0].Name, "accounts.toml") || !strings.HasSuffix(got[1].Name, "tools.toml") {
+		t.Errorf("%+v", got)
+	}
+	if IdentityFiles(files, profiles, "", "mine") != nil {
+		t.Errorf("no identity must need no files")
+	}
+	if got := IdentityFiles(files, profiles, "other", "other"); len(got) != 0 {
+		t.Errorf("the file defining the profile being written must be left out: %+v", got)
+	}
+}
+
+func TestLineOf(t *testing.T) {
+	body := "a\n[profile.x]\ninclude = [\n  \"@net\",\n]\n"
+	if LineOf(body, "[profile.") != 2 || LineOf(body, `"@net"`) != 4 || LineOf(body, "absent") != 0 || LineOf(body, "") != 0 {
+		t.Errorf("lines %d %d", LineOf(body, "[profile."), LineOf(body, `"@net"`))
+	}
+}
+
+func TestDryRunTextUsesScratchConfig(t *testing.T) {
+	w := testworld.New(t)
+	d := newDraft(w, "x")
+	var env []string
+	var seen string
+	run := func(_ context.Context, e []string, name string, args ...string) (hostfacts.Result, error) {
+		env = e
+		x := strings.TrimPrefix(e[0], "XDG_CONFIG_HOME=")
+		b, err := os.ReadFile(filepath.Join(x, "snug", "profiles.d", "x.toml"))
+		seen = string(b)
+		return hostfacts.Result{Stdout: []byte("out " + strings.Join(args, " "))}, err
+	}
+	out, err := DryRunText(context.Background(), run, "snug", d, nil)
+	if err != nil || out != "out --dry-run -p x "+w.Target || len(env) != 1 || seen != d.Render() {
+		t.Errorf("%q %v %v", out, err, env)
+	}
+	if _, err := os.Stat(strings.TrimPrefix(env[0], "XDG_CONFIG_HOME=")); err == nil {
+		t.Errorf("scratch directory left behind")
 	}
 }
