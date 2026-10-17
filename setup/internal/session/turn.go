@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/compose"
@@ -141,6 +142,19 @@ func (s *Session) understood(ctx context.Context, said string, acts []intent.Act
 			acts, lines := s.toolchain(a.Name)
 			rest = append(rest, acts...)
 			out = append(out, lines...)
+		case intent.OpDropProfile:
+			if n, j := s.proposedBy(a.Name); n > 0 {
+				out = append(out, s.dropProposal(n, j, a.Name)...)
+				continue
+			}
+			rest = append(rest, a)
+		case intent.OpNote:
+			if a.Topic == "net" && !slices.Contains(s.d.Include, "@net") && !slices.ContainsFunc(acts, func(x intent.Action) bool { return x.Op == intent.OpUseProfile && x.Name == "@net" }) {
+				if n, _ := s.proposedBy("@net"); n == 0 {
+					out = append(out, info("@net is not in the draft."))
+				}
+			}
+			rest = append(rest, a)
 		default:
 			rest = append(rest, a)
 		}
@@ -150,6 +164,43 @@ func (s *Session) understood(ctx context.Context, said string, acts []intent.Act
 	}
 	s.turn++
 	return s.classify(ctx, s.turn, said, rest), out
+}
+
+// proposedBy returns the number of the open card that lists use_profile name,
+// and the item's 1-based position on it; 0, 0 when no card does.
+func (s *Session) proposedBy(name string) (int, int) {
+	for _, p := range s.pending {
+		if p.Kind != Card {
+			continue
+		}
+		for j, i := range p.held {
+			if a := p.turn.Items[i].Action; a.Op == intent.OpUseProfile && a.Name == name {
+				return p.N, j + 1
+			}
+		}
+	}
+	return 0, 0
+}
+
+// dropProposal answers "no internet" while card n proposes @net as its item j.
+// A card of that one item is declined; on a card of several, declining it all
+// would also throw away what the human did not mention, and keeping the rest
+// is an acceptance, so it says which answer does that and applies nothing.
+func (s *Session) dropProposal(n, j int, name string) []Line {
+	p, _ := s.find(n)
+	if len(p.held) == 1 {
+		return append([]Line{info("#%d proposed %s; you said no to it.", n, name)}, s.Decline(n)...)
+	}
+	var keep []string
+	for k := range p.held {
+		if k+1 != j {
+			keep = append(keep, strconv.Itoa(k+1))
+		}
+	}
+	l := info("#%d proposes %s as item %d, together with %d other item(s), so nothing was declined. "+
+		"/decline %d drops all of it; \"only %s\" applies the others without %s.", n, name, j, len(p.held)-1, n, strings.Join(keep, " and "), name)
+	l.Q = n
+	return []Line{l}
 }
 
 // markers name the file that shows each toolchain, for the line that says the

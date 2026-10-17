@@ -233,3 +233,17 @@ func TestCredentialStoresReadAsRefusals(t *testing.T) {
 		}
 	}
 }
+
+// TestNegatedNetDropsWhatACardProposes fails if "no internet please" is read
+// as the @net explainer when an open question proposes @net, or as a drop when
+// nothing has it (the gold rows hold that reading).
+func TestNegatedNetDropsWhatACardProposes(t *testing.T) {
+	acts, err := Read(intent.Context{Proposed: []string{"@net"}}, "no internet please")
+	if err != nil || len(acts) != 1 || acts[0] != (intent.Action{Op: intent.OpDropProfile, Name: "@net"}) {
+		t.Errorf("proposed: %+v %v", acts, err)
+	}
+	acts, err = Read(intent.Context{}, "no internet please")
+	if err != nil || len(acts) != 1 || acts[0] != (intent.Action{Op: intent.OpNote, Topic: "net"}) {
+		t.Errorf("not proposed: %+v %v", acts, err)
+	}
+}
