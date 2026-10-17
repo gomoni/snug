@@ -88,7 +88,7 @@ func TestOrdinaryIdentityFieldsStillResolve(t *testing.T) {
 }
 
 func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
-	// IdentityOwner exists so a mount staged AFTER resolution — the public key,
+	// IdentityOwners exists so a mount staged AFTER resolution — the public key,
 	// staged by startIdentity — carries the same `identity:<profile>`
 	// provenance as the three files Resolve stages itself. It read `(identity)`
 	// for one milestone, which put one of four sibling rows on the --dry-run
@@ -98,8 +98,8 @@ func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.IdentityOwner != "pinned" {
-		t.Fatalf("IdentityOwner = %q, want %q", p.IdentityOwner, "pinned")
+	if p.IdentityOwners["ssh"] != "pinned" {
+		t.Fatalf("IdentityOwners = %v, want ssh pinned by %q", p.IdentityOwners, "pinned")
 	}
 	for _, m := range p.Mounts {
 		if m.Guest == "/home/u/.gitconfig" && m.From[0] != "identity:pinned" {

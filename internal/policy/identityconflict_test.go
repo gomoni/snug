@@ -61,9 +61,9 @@ func TestIdentityIdenticalBlocksResolveWhateverTheSpelling(t *testing.T) {
 				t.Errorf("ssh.key = %q, want the expanded path: the stored value "+
 					"is the normalised one", p.Identity.SSH.Key)
 			}
-			if p.Identity.SSH.Agent == "" {
-				t.Error("ssh.agent is empty, want the parsed value: the stored " +
-					"value is the normalised one")
+			if want, _ := ParseSSHMode(string(tc.id.SSH.Agent)); p.Identity.SSH.Agent != want {
+				t.Errorf("ssh.agent = %q, want the parsed value %q: the stored "+
+					"value is the normalised one", p.Identity.SSH.Agent, want)
 			}
 		})
 	}
@@ -82,11 +82,11 @@ func TestIdentityDifferentBlocksStillRefuseNamingBoth(t *testing.T) {
 		{"different ssh.key",
 			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub", Agent: SSHAgentProxy}},
 			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/other.pub", Agent: SSHAgentProxy}}},
-		// Normalisation must not erase a real difference: proxy and none are
-		// different grants, not two spellings of one.
-		{"different ssh.agent",
-			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Agent: SSHAgentProxy}},
-			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Agent: SSHNone}}},
+		// Normalisation must not erase a real difference: the same key with
+		// and without the proxy are different grants of one block.
+		{"different ssh.agent on one key",
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub", Agent: SSHAgentProxy}},
+			Identity{Gh: IdentityGh{User: "you"}, SSH: IdentitySSH{Key: "{home}/.ssh/id_ed25519.pub", Agent: "none"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

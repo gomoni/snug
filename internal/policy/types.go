@@ -506,13 +506,14 @@ type Policy struct {
 	// decided rather than recomputing it (issue #43).
 	SystemSSHCarried []string
 
-	// IdentityOwner names the profile that pinned Identity, so a mount staged
-	// AFTER resolution can carry the same `identity:<profile>` provenance as the
-	// ones Resolve stages itself. Without it the public key staged by
-	// startIdentity read `(identity)` while its three siblings on the same
-	// --dry-run screen read `identity:acct-a` — one file attributed to nobody,
-	// in the block whose entire job is saying who asked for what.
-	IdentityOwner ProfileName
+	// IdentityOwners names, per identity block ("ssh", "git", "gh"), the
+	// profile that pinned it, so a mount staged AFTER resolution can carry the
+	// same `identity:<profile>` provenance as the ones Resolve stages itself.
+	// Without it the public key staged by startIdentity read `(identity)` while
+	// its siblings on the same --dry-run screen read `identity:acct-a` — one
+	// file attributed to nobody, in the block whose entire job is saying who
+	// asked for what. A key is present only for a block some profile set.
+	IdentityOwners map[string]ProfileName
 
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
@@ -554,10 +555,10 @@ type Policy struct {
 	// Policy: a fact learned post-resolution that the dry-run screen still has
 	// to be able to show.
 	//
-	// IdentityOwner is the nearest relative and the DIFFERENCE is the part to
+	// IdentityOwners is the nearest relative and the DIFFERENCE is the part to
 	// keep in mind. That field also exists to serve a mount staged after
 	// Resolve returns — but it is itself assigned INSIDE Resolve
-	// (resolve.go, `p.IdentityOwner = name`), so it is resolver output like
+	// (resolve.go, the per-block identity join), so it is resolver output like
 	// every other field here. This one is not: internal/cli writes it after
 	// Resolve has returned, from host IO the resolver is forbidden to do.
 	//

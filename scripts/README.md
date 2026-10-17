@@ -142,9 +142,11 @@ The claim: a sandbox pinned to one GitHub account acts as that account through
 **both** channels — `gh` and git-over-ssh — and cannot act as the other. Two
 sandboxes side by side, two accounts, no crossing.
 
-Nothing new is needed to express it. One `[identity]` block per profile pins the
-ssh key, the gh account and the git author together — one sub-block per tool, and
-nothing inherited between them. Two profiles are two accounts. Write them
+Nothing new is needed to express it. Each identity sub-block — ssh key, gh
+account, git author — is its own pin, and nothing is inherited between them; a
+profile carrying all three for one account is that account on every channel. Two
+such profiles are two accounts, and selecting both refuses on the first block
+they disagree on. Write them
 somewhere that is not the repository being sandboxed (invariant 3) —
 `~/.config/snug/profiles.d/accounts.toml`:
 
@@ -200,7 +202,7 @@ author: a@example.com
 ```
 
 The negative is the half that matters. The two-profile conflict is
-`TestIdentityDifferentBlocksStillRefuseNamingBoth`; these two are not asserted
+`TestIdentityPinPerBlockRefusesNamingBothOwners`; these two are not asserted
 anywhere, because each needs a host condition — a missing key file, and a `gh`
 that is not logged in:
 

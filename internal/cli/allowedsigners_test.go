@@ -118,10 +118,10 @@ func TestAllowedSignersLineRefusesAnUnprincipledEmail(t *testing.T) {
 func signingIdentityPolicy(t *testing.T, authPath, signPath string) *policy.Policy {
 	t.Helper()
 	return &policy.Policy{
-		Home:          "/home/u",
-		Mounts:        map[string]policy.Mount{},
-		Env:           map[string]policy.EnvVar{},
-		IdentityOwner: "pinned",
+		Home:           "/home/u",
+		Mounts:         map[string]policy.Mount{},
+		Env:            map[string]policy.EnvVar{},
+		IdentityOwners: map[string]policy.ProfileName{"ssh": "pinned", "git": "pinned"},
 		Identity: &policy.Identity{
 			SSH: policy.IdentitySSH{Agent: policy.SSHAgentProxy, Key: authPath},
 			Git: policy.IdentityGit{SigningKey: signPath, Email: "u@example.com"},

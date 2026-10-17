@@ -399,13 +399,15 @@ dns = true
 # An absent signing_key generates no signing config at all
 # and only one key is pinned.
 #
-# TWO ACCOUNTS ARE TWO PROFILES, and that needs no mechanism snug does not have.
-# Write the blocks twice with different keys and different identity.gh.user values; each
-# sandbox then acts as one account through BOTH channels — gh and git-over-ssh —
-# and cannot act as the other. Selecting both at once is a hard error naming
-# them, because an identity is a pin and two pins are a contradiction rather
-# than a union. scripts/README.md's by-hand section carries the two-account
-# check, negatives included.
+# EACH BLOCK IS ITS OWN PIN. Two selected profiles setting the same block
+# differently — two ssh keys, two gh users — is a hard error naming both,
+# because two pins of one block are a contradiction rather than a union.
+# Different blocks COMPOSE: ssh from one profile and gh from another make a
+# sandbox that pushes as one account and calls the API as the other. So two
+# accounts are two profiles each carrying all of its blocks, and selecting
+# both refuses on the first block they disagree on; keep an account's blocks in
+# one profile when they must agree. scripts/README.md's by-hand section carries
+# the two-account check, negatives included.
 #
 # The gh binary must be INSIDE for the staged token to be usable, and it is not
 # always under /usr — a tarball in ~/bin is common, and then @sys does not carry

@@ -75,13 +75,13 @@ var conditionalEnvs = []conditionalEnv{
 		writes: "points the container clients at its filtering proxy",
 	},
 	{
-		// Every selected identity is the same identity once normalised — Resolve
-		// refuses two that differ — so the per-profile half is "has an identity"
-		// and the agent mode is read once, off the resolved one.
+		// Every selected ssh block is the same block once normalised — Resolve
+		// refuses two that differ — so the per-profile half is "sets an ssh
+		// block" and the agent mode is read once, off the resolved one.
 		names:  []string{"SSH_AUTH_SOCK"},
 		key:    func(*Profile) string { return `identity.ssh.agent = "proxy"` },
 		on:     func(p *Policy) bool { return p.Identity != nil && p.Identity.SSH.Agent != SSHNone },
-		by:     func(prof *Profile) bool { return prof.Identity != nil },
+		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "ssh") },
 		writes: "points ssh at its one-key agent proxy",
 	},
 	{
@@ -89,14 +89,14 @@ var conditionalEnvs = []conditionalEnv{
 		outranks: []string{"GH_ENTERPRISE_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITHUB_TOKEN"},
 		key:      func(*Profile) string { return "identity.gh.user" },
 		on:       func(p *Policy) bool { return p.Identity != nil && p.Identity.Gh.User != "" },
-		by:       func(prof *Profile) bool { return prof.Identity != nil },
+		by:       func(prof *Profile) bool { return profileSetsBlock(prof, "gh") },
 		writes:   "points gh at the config it generates for that one account",
 	},
 	{
 		names:  []string{"GIT_CONFIG_GLOBAL"},
 		key:    func(*Profile) string { return "identity" },
-		on:     func(p *Policy) bool { return p.Identity != nil },
-		by:     func(prof *Profile) bool { return prof.Identity != nil },
+		on:     func(p *Policy) bool { return p.Identity.Pinned("git") || p.Identity.Pinned("ssh") },
+		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "git") || profileSetsBlock(prof, "ssh") },
 		writes: "points git at the ~/.gitconfig it generates",
 	},
 	{
@@ -228,4 +228,18 @@ func reaching(set map[ProfileName]*Profile, selected []ProfileName, owners map[P
 	}
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+// profileSetsBlock reports whether prof's raw identity sets block key. The ssh
+// agent is normalised first, so an ssh block holding only `agent = "none"` is
+// not counted, exactly as the join does not count it.
+func profileSetsBlock(prof *Profile, key string) bool {
+	if prof.Identity == nil {
+		return false
+	}
+	id := *prof.Identity
+	if mode, err := ParseSSHMode(string(id.SSH.Agent)); err == nil {
+		id.SSH.Agent = mode
+	}
+	return id.Pinned(key)
 }

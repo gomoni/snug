@@ -280,7 +280,6 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, err
 	}
 
-	var identityOwner ProfileName
 	var mtuOwner ProfileName
 	var loginOwner ProfileName
 	pluginAllow := map[string]bool{}
@@ -446,23 +445,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			id := *prof.Identity
 			id.SSH.Agent = mode
-			// A signing key with no agent is a config that cannot work. The
-			// private half stays in the host agent by construction, so
-			// agent = "none" leaves nothing inside to sign with — measured on
-			// git 2.55.0, that is `error: No private key found for public key
-			// "…"` followed by `fatal: failed to write commit object`, on every
-			// commit. Refuse the combination rather than generate it.
-			if id.Git.SigningKey != "" && id.SSH.Agent == SSHNone {
-				return nil, fmt.Errorf("profile %q: identity.git.signing_key needs "+
-					"identity.ssh.agent = \"proxy\": the private half of a signing key never enters "+
-					"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
-					"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
-					"identity.git.signing_key", name)
-			}
 			if err := refuseUnprincipledSigningEmail(name, id); err != nil {
-				return nil, err
-			}
-			if err := refuseHalfNamedHost(name, id); err != nil {
 				return nil, err
 			}
 			if err := refuseUnhostlikeHost(name, id); err != nil {
@@ -551,31 +534,44 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				// be spelled without the trusted links authorableLinks followed.
 				fv.SetString(dest)
 			}
-			// Identity does NOT join. Two profiles pinning different accounts
-			// is a question with no safe answer — silently picking one would
-			// mean the agent pushes as an identity the human did not choose —
-			// so it is a conflict, reported with both names.
+			// Identity joins ONE BLOCK AT A TIME. A block this profile does not
+			// set takes no part; a block two profiles set differently is a
+			// question with no safe answer — silently picking one would mean the
+			// agent acts as an account the human did not choose — so it is a
+			// conflict, reported with both names.
 			//
 			// The comparison is NORMALISED against NORMALISED, and it has to
 			// happen here rather than at the top of the block for that reason.
-			// p.Identity is what a previous iteration stored, and it was
-			// normalised before it was stored; comparing it against the raw
-			// TOML made every spelling that needs normalising — an omitted
-			// agent, an ssh.key holding a {…} variable, which is base.toml's
-			// own template — refuse itself (#559).
-			// Every leaf is a string inside a VALUE struct, so a field ADDED to
-			// Identity is compared here for free — signing_key arrived that way,
-			// with no edit, and the nested blocks kept the property. This must not
-			// become a field-by-field walk that can forget one; identityFields
-			// drives the hand-written lists that USED to sit elsewhere, and
-			// deliberately not this line.
-			if p.Identity != nil && *p.Identity != id {
-				return nil, fmt.Errorf("profiles %q and %q pin different identities; "+
-					"select only one", identityOwner, name)
+			// p.Identity holds what a previous iteration stored, normalised
+			// before it was stored; comparing it against the raw TOML made every
+			// spelling that needs normalising — an omitted agent, an ssh.key
+			// holding a {…} variable, which is base.toml's own template —
+			// refuse itself (#559). Participation is read off the normalised
+			// block too, which is why SSHNone is the zero value: an ssh block
+			// holding only `agent = "none"` grants nothing and pins nothing.
+			//
+			// reflect.Value.Equal over a value struct of strings is ==, so a
+			// leaf added to a block is compared here for free, and identityPins
+			// is derived from the type, so a block added to Identity is too.
+			want := reflect.ValueOf(id)
+			for _, pin := range identityPins {
+				in := want.Field(pin.Index)
+				if in.IsZero() {
+					continue
+				}
+				if p.Identity == nil {
+					p.Identity = &Identity{}
+					p.IdentityOwners = map[string]ProfileName{}
+				}
+				have := reflect.ValueOf(p.Identity).Elem()
+				if cur := have.Field(pin.Index); !cur.IsZero() && !cur.Equal(in) {
+					return nil, fmt.Errorf("profiles %q and %q pin different identity.%s; "+
+						"select only one of them, or make the two blocks identical",
+						p.IdentityOwners[pin.Key], name, pin.Key)
+				}
+				have.Field(pin.Index).Set(in)
+				p.IdentityOwners[pin.Key] = name
 			}
-			p.Identity = &id
-			identityOwner = name
-			p.IdentityOwner = name
 		}
 
 		// Network scalars, each joined permissive-ward. A profile can only ever
@@ -816,14 +812,23 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.Net.Nameservers = ctx.HostNameservers
 	}
 
-	// The git config is GENERATED from the [identity] pin, and only from it. One
-	// writer, one path: two code paths racing to author ~/.gitconfig is how the
-	// last silent displacement got in.
-	if p.Identity != nil {
+	// Rules that read two blocks run here, on the joined identity, because the
+	// two blocks may come from two profiles; each names every profile involved.
+	if err := refuseSigningWithoutAgent(p); err != nil {
+		return nil, err
+	}
+	if err := refuseHalfNamedHost(p); err != nil {
+		return nil, err
+	}
+
+	// The git config is GENERATED from the identity.git and identity.ssh pins,
+	// and only from them. One writer, one path: two code paths racing to author
+	// ~/.gitconfig is how the last silent displacement got in.
+	if p.Identity.Pinned("git") || p.Identity.Pinned("ssh") {
 		if cfg := GitConfigFrom(p.Identity, home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{"identity:" + string(identityOwner)},
+				Content: cfg, From: []string{p.IdentityProvenance("git", "ssh")},
 			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
 			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them, so
@@ -845,14 +850,14 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		if cfg := id.SSHConfig(home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{"identity:" + string(identityOwner)},
+				Content: cfg, From: []string{p.IdentityProvenance("ssh")},
 			})
 			// The pinned PUBLIC key is staged by startIdentity, not here: it is
 			// read from id.SSHKey AFTER expansion, so `{home}/...` and `~/...`
 			// are one path rather than two spellings with different fates.
 			p.Replace(Mount{
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
-				Content: ctx.KnownHosts, From: []string{"identity:" + string(identityOwner)},
+				Content: ctx.KnownHosts, From: []string{p.IdentityProvenance("ssh")},
 			})
 		}
 	}
@@ -1878,31 +1883,65 @@ func isHostName(s string) bool {
 	return true
 }
 
-func refuseHalfNamedHost(name ProfileName, id Identity) error {
+// refuseSigningWithoutAgent refuses identity.git.signing_key when no selected
+// profile turns the ssh agent proxy on. The private half stays in the host
+// agent by construction, so with no proxy there is nothing inside to sign with
+// — measured on git 2.55.0, that is `error: No private key found for public
+// key "…"` followed by `fatal: failed to write commit object`, on every commit.
+// Refuse the combination rather than generate it. The two keys live in two
+// blocks, so they may come from two profiles, and the refusal names both.
+func refuseSigningWithoutAgent(p *Policy) error {
+	id := p.Identity
+	if id == nil || id.Git.SigningKey == "" || id.SSH.Agent != SSHNone {
+		return nil
+	}
+	ssh := "no selected profile sets identity.ssh"
+	if o, ok := p.IdentityOwners["ssh"]; ok {
+		ssh = fmt.Sprintf("profile %q sets identity.ssh with no agent", o)
+	}
+	return fmt.Errorf("profile %q: identity.git.signing_key needs "+
+		"identity.ssh.agent = \"proxy\", and %s: the private half of a signing key never enters "+
+		"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
+		"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
+		"identity.git.signing_key", p.IdentityOwners["git"], ssh)
+}
+
+func refuseHalfNamedHost(p *Policy) error {
+	id := p.Identity
+	if id == nil {
+		return nil
+	}
 	sshActive := id.SSH.Key != "" || id.SSH.Agent != SSHNone
 	ghActive := id.Gh.User != "" || id.Gh.Host != ""
 	switch {
 	case id.Gh.Host != "" && id.SSH.Host == "" && sshActive:
-		return halfNamedHost(name, "gh", id.Gh.Host, "ssh",
+		return halfNamedHost(p.IdentityOwners["gh"], p.IdentityOwners["ssh"], "gh", id.Gh.Host, "ssh",
 			"~/.ssh/config, ~/.ssh/known_hosts and git's insteadOf rule")
 	case id.SSH.Host != "" && id.Gh.Host == "" && ghActive:
-		return halfNamedHost(name, "ssh", id.SSH.Host, "gh",
+		return halfNamedHost(p.IdentityOwners["ssh"], p.IdentityOwners["gh"], "ssh", id.SSH.Host, "gh",
 			"the gh token and GH_HOST")
 	}
 	return nil
 }
 
-func halfNamedHost(name ProfileName, named, host, missing, artifacts string) error {
-	return fmt.Errorf("profile %q: identity.%s.host = %s names a host and identity.%s.host "+
+// halfNamedHost is the refusal for one block naming a host the other does not.
+// named is the profile holding the block with the host, missing the profile
+// holding the other block; they are one profile when one profile set both.
+func halfNamedHost(name, missingOwner ProfileName, named, host, missing, artifacts string) error {
+	who := fmt.Sprintf("profile %q", name)
+	if missingOwner != name {
+		who = fmt.Sprintf("profiles %q and %q", name, missingOwner)
+	}
+	return fmt.Errorf("%s: identity.%s.host = %s names a host and identity.%s.host "+
 		"does not, so snug would generate %s for %q — the default — while the only host this "+
-		"profile names is %s.\n"+
+		"selection names is %s.\n"+
 		"       The two hosts are independent ON PURPOSE and they may differ, but nothing is\n"+
 		"       inherited between blocks: a fallback is a precedence rule and snug has none.\n"+
 		"       Name it in both, with the same value if it is the same host:\n"+
 		"         [profile.%s.identity.%s]\n"+
 		"         host = %s\n",
-		name, named, VisibleText(strconv.Quote(host)), missing, artifacts, DefaultIdentityHost,
-		VisibleText(strconv.Quote(host)), name, missing, VisibleText(strconv.Quote(host)))
+		who, named, VisibleText(strconv.Quote(host)), missing, artifacts, DefaultIdentityHost,
+		VisibleText(strconv.Quote(host)), missingOwner, missing, VisibleText(strconv.Quote(host)))
 }
 
 // refuseUnpinnedGhAccount refuses identity.gh.host with no identity.gh.user.

@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"math/rand"
 	"path"
 	"path/filepath"
@@ -568,7 +569,7 @@ func canon(p *Policy) string {
 	fmt.Fprintf(&b, "net mode=%s dns=%v nameservers=%v mtu=%d\n",
 		p.Net.Mode, p.Net.DNS, p.Net.Nameservers, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
-	fmt.Fprintf(&b, "identity owner=%s\n", p.IdentityOwner)
+	fmt.Fprintf(&b, "identity owners=%v\n", p.IdentityOwners)
 	fmt.Fprintf(&b, "topology %s\n", p.Topology)
 	fmt.Fprintf(&b, "identity %+v\n", p.Identity)
 	fmt.Fprintf(&b, "profiles %v\n", p.Profiles)
@@ -775,6 +776,11 @@ func keyDrops() []keyDrop {
 		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
+		// Whole blocks, because identity joins one block at a time: removing a
+		// block removes one pin, and must widen nothing the others grant.
+		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},
+		{"identity.git", "Identity.Git", func(p *Profile) { p.Identity.Git = IdentityGit{} }},
+		{"identity.gh", "Identity.Gh", func(p *Profile) { p.Identity.Gh = IdentityGh{} }},
 		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},
 		{"environ.merge", "Environ.Merge", func(p *Profile) { p.Environ.Merge = nil }},
 		{"environ.prepend", "Environ.Prepend", func(p *Profile) { p.Environ.Prepend = nil }},
@@ -975,8 +981,10 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 				t.Errorf("two drops claim %s", d.zeroes)
 			}
 			dropped[d.zeroes] = true
-			if _, ok := maxLeaves[d.zeroes]; !ok {
-				t.Errorf("%s: %q is not a leaf of Profile", d.key, d.zeroes)
+			// A whole-block drop names a struct, and zeroes every leaf under it.
+			covers := func(path string) bool { return path == d.zeroes || strings.HasPrefix(path, d.zeroes+".") }
+			if !slices.ContainsFunc(slices.Collect(maps.Keys(maxLeaves)), covers) {
+				t.Errorf("%s: %q is not a leaf or block of Profile", d.key, d.zeroes)
 				continue
 			}
 			p := maximalProfile()
@@ -984,7 +992,7 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 			after := map[string]reflect.Value{}
 			profileLeaves(reflect.ValueOf(p), "", after)
 			for path, was := range maxLeaves {
-				if path == d.zeroes {
+				if covers(path) {
 					if !after[path].IsZero() {
 						t.Errorf("%s does not zero %s", d.key, path)
 					}
