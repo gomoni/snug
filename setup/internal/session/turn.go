@@ -292,6 +292,20 @@ func (s *Session) abuseOf(a intent.Action) string {
 		return draft.Abuse[a.Name]
 	case intent.OpOpenDoor:
 		return draft.Abuse["listen_names"]
+	case intent.OpGrantPath:
+		return pathCost(a.Access)
+	}
+	return ""
+}
+
+// pathCost is the cost line of a read-only or writable path grant: what a
+// hostile process in the sandbox can do with it. "" for any other access.
+func pathCost(access string) string {
+	switch access {
+	case "ro":
+		return "the sandbox can read everything under this path, and with @net send it anywhere."
+	case "rw":
+		return "the sandbox can read, change and delete everything under this path, and the change persists on the host after the sandbox exits."
 	}
 	return ""
 }
