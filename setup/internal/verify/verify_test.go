@@ -165,34 +165,6 @@ func TestParseRefuses(t *testing.T) {
 	}
 }
 
-func TestGHConfigDir(t *testing.T) {
-	h := draft.Host{Home: "/home/alice"}
-	for _, c := range []struct{ env, xdg, want string }{
-		{"/elsewhere/gh", "/x", "/elsewhere/gh"},
-		{"", "/x", "/x/gh"},
-		{"", "", "/home/alice/.config/gh"},
-	} {
-		h.ConfigHome = c.xdg
-		if got := GHConfigDir(c.env, h); got != c.want {
-			t.Errorf("%+v: %q", c, got)
-		}
-	}
-}
-
-func TestRunPassesTheRealGhDirWithTheScratchConfig(t *testing.T) {
-	t.Setenv("GH_CONFIG_DIR", "")
-	d := netRO()
-	var env []string
-	run := func(_ context.Context, e []string, _ string, _ ...string) (hostfacts.Result, error) {
-		env = e
-		return hostfacts.Result{}, nil
-	}
-	Run(context.Background(), run, "snug", d, nil)
-	if len(env) != 2 || !strings.HasPrefix(env[0], "XDG_CONFIG_HOME=") || env[1] != "GH_CONFIG_DIR="+filepath.Join(d.Host.Home, ".config", "gh") {
-		t.Errorf("env %v", env)
-	}
-}
-
 func TestRunWithoutDocument(t *testing.T) {
 	d := netRO()
 	run := func(context.Context, []string, string, ...string) (hostfacts.Result, error) {

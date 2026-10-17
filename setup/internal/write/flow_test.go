@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -285,28 +284,11 @@ func TestDryRunTextUsesScratchConfig(t *testing.T) {
 		return hostfacts.Result{Stdout: []byte("out " + strings.Join(args, " "))}, err
 	}
 	out, err := DryRunText(context.Background(), run, "snug", d, nil)
-	if err != nil || out != "out --dry-run -p x "+w.Target || len(env) != 2 || seen != d.Render() {
+	if err != nil || out != "out --dry-run -p x "+w.Target || len(env) != 1 || seen != d.Render() {
 		t.Errorf("%q %v %v", out, err, env)
 	}
 	if _, err := os.Stat(strings.TrimPrefix(env[0], "XDG_CONFIG_HOME=")); err == nil {
 		t.Errorf("scratch directory left behind")
-	}
-}
-
-func TestDryRunTextPointsGhAtTheRealConfig(t *testing.T) {
-	t.Setenv("GH_CONFIG_DIR", "")
-	w := testworld.New(t)
-	d := newDraft(w, "x")
-	var env []string
-	run := func(_ context.Context, e []string, _ string, _ ...string) (hostfacts.Result, error) {
-		env = e
-		return hostfacts.Result{}, nil
-	}
-	if _, err := DryRunText(context.Background(), run, "snug", d, nil); err != nil {
-		t.Fatal(err)
-	}
-	if want := "GH_CONFIG_DIR=" + filepath.Join(d.Host.Home, ".config", "gh"); !slices.Contains(env, want) {
-		t.Errorf("env %v lacks %s", env, want)
 	}
 }
 

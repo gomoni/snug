@@ -366,7 +366,7 @@ func DryRunText(ctx context.Context, run hostfacts.Runner, snug string, d *draft
 		return "", err
 	}
 	args := append([]string{"--dry-run"}, d.RunArgs(d.Host.Target)...)
-	res, err := run(ctx, verify.SnugEnv(xdg, d.Host), snug, args...)
+	res, err := run(ctx, []string{"XDG_CONFIG_HOME=" + xdg}, snug, args...)
 	out := string(res.Stdout)
 	if len(res.Stderr) > 0 {
 		out += "\n" + string(res.Stderr)
