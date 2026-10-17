@@ -369,3 +369,24 @@ func TestExitStatusPrecedence(t *testing.T) {
 		}
 	}
 }
+
+// TestE2EHelpExitsZeroWithUsageOnly fails if --help is reported as an error:
+// a nonzero status, or a line starting "snug-setup:" on either stream. The
+// usage text is the positive control that the flag was read.
+func TestE2EHelpExitsZeroWithUsageOnly(t *testing.T) {
+	w := newWorld(t)
+	cmd := exec.Command(filepath.Join(w.bin, "snug-setup"), "--help")
+	cmd.Env = w.env()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("snug-setup --help: %v\n%s", err, out.String())
+	}
+	mustContain(t, out.String(), "usage: snug-setup", "exit status:")
+	if strings.Contains(out.String(), "snug-setup: ") || strings.Contains(out.String(), "help requested") {
+		t.Errorf("--help printed an error line:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "asks nothing") {
+		t.Errorf("--plain is still described as asking nothing:\n%s", out.String())
+	}
+}
