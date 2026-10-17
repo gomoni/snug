@@ -92,6 +92,9 @@ func (d *Draft) Render() string {
 		b.WriteString(l + "\n")
 	}
 	fmt.Fprintf(&b, "[profile.%s]\n", n)
+	if d.Description != "" {
+		fmt.Fprintf(&b, "description = %s\n", q(d.Description))
+	}
 
 	if inc := d.Includes(); len(inc) > 0 {
 		b.WriteString("include = [\n")

@@ -91,12 +91,15 @@ type GitIdentity struct{ Name, Email, SigningKey, SigningStem string }
 
 // Draft is the profile under construction. The zero value is not usable; call New.
 type Draft struct {
-	Name    string
-	Host    Host
-	Include []string
-	RO      []string
-	RW      []string
-	Tmpfs   []string
+	Name string
+	// Description is rendered as the profile's `description` key, right
+	// after the table header; "" renders nothing.
+	Description string
+	Host        Host
+	Include     []string
+	RO          []string
+	RW          []string
+	Tmpfs       []string
 	// Staged are host:name pairs rendered as ro = ["HOST:/snug/bin/NAME"].
 	Staged     []pair
 	EnvSet     []pair

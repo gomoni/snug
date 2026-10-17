@@ -877,3 +877,18 @@ func TestBaseReadOnlyIsStillInBaseToml(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDescription(t *testing.T) {
+	d := New(testHost())
+	d.Name = "x"
+	d.Description = `x "y"`
+	lines := strings.Split(d.Render(), "\n")
+	i := slices.Index(lines, "[profile.x]")
+	if i < 0 || lines[i+1] != `description = "x \"y\""` {
+		t.Errorf("want the description right after the header:\n%s", d.Render())
+	}
+	d.Description = ""
+	if strings.Contains(d.Render(), "description") {
+		t.Errorf("empty description rendered:\n%s", d.Render())
+	}
+}

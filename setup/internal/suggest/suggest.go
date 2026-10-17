@@ -71,6 +71,7 @@ type Selection struct {
 	Text map[RowID]string // Name and Desc, current text
 
 	profiles     []ingest.Profile
+	env          []ingest.EnvHint
 	parentIsHome bool
 }
 
@@ -91,6 +92,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		parentIsHome: filepath.Dir(target) == home,
 	}
 	prop := ingest.Propose(f.Target)
+	s.env = prop.Env
 
 	id := identityRow(f)
 	agent := agentRow(f.Target)
