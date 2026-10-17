@@ -9,7 +9,7 @@ import (
 const System = "You are snug-setup. Turn the request into snug profile actions. Reply with JSON only."
 
 // Context is everything the model is shown besides the request. Its JSON form
-// is the shape of testdata/prompts.jsonl, shared with the Python training side.
+// is the shape of testdata/prompts.jsonl.
 type Context struct {
 	Target string      `json:"target"`
 	Draft  Draft       `json:"draft"`
@@ -66,8 +66,8 @@ var headers = []string{"target:", "draft:", "host ", "file ", "last:", "request:
 // target, the least trusted input there is, so it cannot add a line of the
 // prompt's own: a control or formatting rune other than tab, and U+2028/2029,
 // are dropped, and a line that starts like one of FormatPrompt's is indented
-// by two spaces. An ordinary file is unchanged. prompt.py's _file_body is the
-// same rule, and testdata/prompts.jsonl holds the two equal.
+// by two spaces. An ordinary file is unchanged. testdata/prompts.jsonl holds
+// the rule.
 func fileBody(body string) string {
 	body = strings.Map(func(r rune) rune {
 		if r != '\n' && r != '\t' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029) {
@@ -95,7 +95,7 @@ func list(xs []string) string {
 }
 
 // FormatPrompt returns the system and user messages for ctx and request. The
-// user message is byte-exact with setup/model/prompt.py: lines in the order
+// user message is byte-exact with testdata/prompts.jsonl: lines in the order
 // target, draft, host ssh, host github, host git, host profiles, file, last,
 // request; the host, file and last lines are omitted when empty; lines are joined with "\n" and there is no
 // trailing newline; a file body has its trailing newlines stripped and goes
@@ -174,8 +174,7 @@ func oneLine(s string) string {
 
 // LastItems renders the actions of one turn for Context.Last: one item per
 // action, notes left out (they change nothing), each "op" followed by the
-// fields that say what it touched. prompt.py's last_items is the same rule,
-// and testdata/last.jsonl holds the two equal.
+// fields that say what it touched. testdata/last.jsonl holds the rule.
 func LastItems(acts []Action) []string {
 	var out []string
 	for _, a := range acts {

@@ -1,7 +1,6 @@
-// Package llm is how snug-setup asks a model for actions. A Backend is chosen
-// once at construction (cmd/snug-setup) and nothing after that asks which one
-// it is: Remote talks to an OpenAI-compatible server it did not start, and
-// Server starts a llama-server of its own and is a Remote.
+// Package llm is how snug-setup asks a model for actions: Remote talks to an
+// OpenAI-compatible server it did not start (llama-server, ollama, a hosted
+// API). snug-setup runs no model and starts no server of its own.
 package llm
 
 import (
@@ -34,9 +33,7 @@ type Remote struct {
 // DefaultModelName is sent when Remote.ModelName is empty.
 const DefaultModelName = "snug-setup"
 
-// Caps reports an unconstrained backend: the request carries the schema as
-// response_format, but a server of unknown make may ignore it, and the
-// absence of a grammar is not something snug-setup can observe.
+// Caps says where the server is and whether that is this machine.
 func (c *Remote) Caps() Caps {
 	return Caps{Where: c.Display() + " (remote)", Local: c.IsLoopback()}
 }
@@ -150,7 +147,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or pass --model FILE.gguf to have snug-setup start llama-server): %w", c.Display(), err)
+		return "", fmt.Errorf("cannot reach the model server at %s (start the server, or run without --openai-url to read requests by the rules): %w", c.Display(), err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -161,7 +158,7 @@ func (c *Remote) Complete(ctx context.Context, r Request) (string, error) {
 		msg := serverMessage(raw)
 		err := fmt.Errorf("model server answered %s: %s", resp.Status, msg)
 		if strings.Contains(strings.ToLower(msg), "not found") {
-			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --model NAME (ollama: `ollama list`; ollama needs the GGUF imported with a Modelfile that carries the Qwen chat template)", err, c.modelName())
+			err = fmt.Errorf("%w\nthe server does not have the model %q: name one it has with --model NAME (ollama: `ollama list`)", err, c.modelName())
 		}
 		return "", err
 	}

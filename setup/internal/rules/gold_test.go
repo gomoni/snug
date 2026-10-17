@@ -14,7 +14,7 @@ import (
 	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-// goldCase is one line of setup/model/gold/*.jsonl or data/*.val.jsonl.
+// goldCase is one line of testdata/*.jsonl.
 type goldCase struct {
 	ID       string                                 `json:"id"`
 	Tags     []string                               `json:"tags"`
@@ -25,7 +25,7 @@ type goldCase struct {
 	Actions  []map[string]string                    `json:"actions"`
 }
 
-// canon is evaluate.py's canon: the action as a JSON object with sorted keys,
+// canon is the action as a JSON object with sorted keys,
 // the text of an ask blanked.
 func canon(m map[string]string) string {
 	m = maps(m)
@@ -111,8 +111,8 @@ func noNotes(xs []string) []string {
 }
 
 // scoreFile runs every case of a gold file through Read. An *intent.Unclear
-// is scored as `ask`: it is the rules' way of asking the human, and
-// evaluate.py does not compare an ask's text.
+// is scored as `ask`: it is the rules' way of asking the human, and an ask's
+// text is not compared.
 func scoreFile(t *testing.T, file string) (score, []map[string]any) {
 	t.Helper()
 	f, err := os.Open(file)
@@ -172,24 +172,25 @@ func scoreFile(t *testing.T, file string) (score, []map[string]any) {
 	return s, rows
 }
 
-// TestGoldScores scores the rules on the gold sets with evaluate.py's metrics.
+// TestGoldScores scores the rules on the gold sets: exact (the same action
+// list), set (the same actions in any order) and core (the same, notes left
+// out).
 // The floors are the scores measured when the rules were written, so a change
 // that loses a case fails here; one that gains should raise them. Set
 // SNUG_SETUP_GOLD_REPORT to a directory to write each set's rows there.
 func TestGoldScores(t *testing.T) {
-	model := filepath.Join("..", "..", "model")
 	for _, g := range []struct {
 		file             string
 		exact, set, core float64
 	}{
-		{"gold/gold.jsonl", 0.868, 0.868, 0.868},
+		{"gold.jsonl", 0.868, 0.868, 0.868},
 		// Two typos that widen ("giv it acess to the internt", "let it wirte
 		// to this projcet") are a question now, by design: a correction
 		// never grants unasked.
-		{"gold/gold-v4.jsonl", 0.72, 0.72, 0.72},
-		{"data/train-v4.val.jsonl", 0.666, 0.666, 0.666},
+		{"gold-v4.jsonl", 0.72, 0.72, 0.72},
+		{"val-v4.jsonl", 0.666, 0.666, 0.666},
 	} {
-		s, rows := scoreFile(t, filepath.Join(model, g.file))
+		s, rows := scoreFile(t, filepath.Join("testdata", g.file))
 		t.Logf("%s: %s", g.file, s)
 		if testing.Verbose() {
 			for _, f := range s.fails {

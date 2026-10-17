@@ -15,16 +15,14 @@ type Request struct {
 	System, User string
 	Temperature  float64
 	MaxTokens    int
-	// Schema is the JSON schema the reply must satisfy. A backend that can
-	// enforce it while decoding does and says so in Caps; one that cannot
-	// leaves the decision to intent.Parse, which runs on every reply anyway.
+	// Schema is the JSON schema the reply must satisfy. It goes to the server
+	// as response_format, which a server may ignore, so intent.Parse decides
+	// on every reply anyway.
 	Schema json.RawMessage
 }
 
 // Caps is what a Backend says about itself, for the one sentence main prints.
 type Caps struct {
-	// Constrained: decoding is held to Request.Schema by the backend.
-	Constrained bool
 	// Where names the backend for the "starting" line.
 	Where string
 	// Local: the prompt never leaves this machine. It carries ssh key
@@ -34,8 +32,7 @@ type Caps struct {
 }
 
 // Backend answers Requests. Complete returns the model's text or an error;
-// it is called from one goroutine at a time. Close releases what the backend
-// started and is safe to call twice.
+// it is called from one goroutine at a time. Close is safe to call twice.
 type Backend interface {
 	Complete(ctx context.Context, r Request) (string, error)
 	Caps() Caps

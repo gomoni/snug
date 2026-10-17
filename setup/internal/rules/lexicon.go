@@ -2,9 +2,9 @@ package rules
 
 // The word sets the rules compare against. Each is the words that signal one
 // thing; a request is read by which sets its clauses touch. They were written
-// from the user messages of setup/model/data/train-v4.jsonl and from the words
-// snug-setup itself tells the human to say. The gold sets were not used to
-// write them.
+// from a generated set of user requests, since deleted, and from the words
+// snug-setup itself tells the human to say. The sets under testdata were not
+// used to write them.
 var (
 	netWords     = set("internet internetu internetzugang network networking net online netzwerk síť sítě site download downloads downloading stahování stahovat fetch crates pypi registry egress")
 	netTools     = set("npm pip pip3 cargo yarn pnpm uv gem bundle maven gradle composer")

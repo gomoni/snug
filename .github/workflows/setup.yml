@@ -1,15 +1,13 @@
 name: setup
 
 # snug-setup is its own Go module (setup/go.mod), so ci.yml's `make gate` runs
-# its vet and tests only through the last line of the gate target. Its default
-# path, the rules interpreter, needs no model, and every test of it is in the
-# unit job. The model is optional (--model, --openai-url) and so is the server
-# job: it is the secondary check of that path. The split lives here:
+# its vet and tests only through the last line of the gate target. Every test
+# of the module needs no model and no server: the optional model path
+# (--openai-url) is tested against an httptest server. The split lives here:
 #
-#   ci.yml   `make gate` -> gofmt, vet and the model-free tests of setup/ too
-#   setup.yml (this file) -> unit: the same, in the module's own terms with CGO
-#            off, gold scores of the rules included; server: the optional model
-#            path against a real llama-server on a real GGUF
+#   ci.yml   `make gate` -> gofmt, vet and the tests of setup/ too
+#   setup.yml (this file) -> the same, in the module's own terms with CGO off,
+#            gold scores of the rules included, and the binary built
 #
 # Not path-filtered. A workflow that does not run posts no check at all, and a
 # pull request requiring it would wait forever on "Expected" (see the draft
@@ -50,56 +48,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l setup)" || (gofmt -l setup; exit 1)
       - name: vet
-        run: cd setup && go vet ./... && go vet -tags integration ./...
+        run: cd setup && go vet ./...
       - name: test
         run: cd setup && go test ./...
-
-  # A real llama-server on a real, small model. Nothing here is fetched by
-  # snug-setup itself: scripts/fetch-llama-server.sh downloads the pinned
-  # llama.cpp release and refuses a download whose sha256 differs, and the
-  # model is checked against the hash below before it is used.
-  #
-  # Model: Qwen/Qwen2.5-0.5B-Instruct-GGUF, qwen2.5-0.5b-instruct-q4_k_m.gguf,
-  # 491,400,032 bytes, Apache-2.0 (the repository's LICENSE file and card say
-  # so). The URL names the repository commit, not a branch, so the bytes cannot
-  # change under the hash. It is the same architecture as the snug-setup
-  # fine-tune. Bump the commit, the hash and the cache key together.
-  server:
-    name: snug-setup with a real llama-server
-    if: ${{ github.event.pull_request.draft != true }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      CGO_ENABLED: '0'
-      MODEL_COMMIT: 9217f5db79a29953eb74d5343926648285ec7e67
-      MODEL_SHA256: 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-          cache-dependency-path: setup/go.sum
-      - name: Cache llama.cpp and the model
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/snug-setup
-            ~/test-model
-          key: setup-llama-b11541-qwen05-${{ env.MODEL_SHA256 }}-${{ hashFiles('scripts/fetch-llama-server.sh', 'setup/internal/llm/llama-server.manifest') }}
-      - name: llama-server (every file hashed against the manifest, cache hit or not)
-        run: sh scripts/fetch-llama-server.sh
-      - name: Test model (sha256 checked)
-        run: |
-          mkdir -p ~/test-model
-          f=~/test-model/model.gguf
-          if ! echo "$MODEL_SHA256  $f" | sha256sum -c --quiet 2>/dev/null; then
-            curl -fsSL -o "$f" "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/$MODEL_COMMIT/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-            echo "$MODEL_SHA256  $f" | sha256sum -c
-          fi
-      - name: Server backend on the real model
-        run: cd setup && SNUG_SETUP_TEST_MODEL=$HOME/test-model/model.gguf go test -tags integration -count=1 -v -run Real ./internal/llm
       - name: Binary builds without cgo
         run: make setup

@@ -142,8 +142,7 @@ func TestFileCannotAddPromptLines(t *testing.T) {
 	}
 }
 
-// TestLastFixture holds LastItems equal to prompt.py's last_items on the
-// shared fixture, and holds an account carrying a newline or U+2028 to one
+// TestLastFixture holds LastItems to the fixture, and holds an account carrying a newline or U+2028 to one
 // line: the item goes back into the next prompt, and model output must not
 // write a "request:" line there.
 func TestLastFixture(t *testing.T) {
