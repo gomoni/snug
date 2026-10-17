@@ -60,10 +60,10 @@ re-encoded values leave snug.
 
 Refused at Resolve, each naming the fix:
 
-- the kubeconfig under the target, or reachable by a writable grant (bytes,
-  second mount, a name on its chain) — whoever writes it chooses where the
-  host credential is sent. `@home`'s tmpfs does not count; it writes nothing
-  through;
+- the kubeconfig under the target, reachable by a writable grant (bytes,
+  second mount, a name on its chain), or with a second hard link — whoever
+  writes it chooses where the host credential is sent. `@home`'s tmpfs does
+  not count; it writes nothing through;
 - a missing context, a duplicate context/cluster/user name;
 - a cluster field outside the three above (`insecure-skip-tls-verify: true`,
   `proxy-url`, `certificate-authority` path, non-empty `extensions`, unknown);
@@ -73,8 +73,11 @@ Refused at Resolve, each naming the fix:
 - a user entry that is an exec plugin (`token = "host-exec"` is #659), names
   files, or carries `auth-provider`, `as*`, `username`/`password`, `tokenFile`;
 - a `service_account` that is not `namespace/name` of Kubernetes names;
-- a host kubectl that is relative, in the target, writable through a grant, or
-  not an ELF binary (distrobox-export, host-spawn, asdf shims).
+- a host kubectl that is relative, in the target, writable through a grant,
+  hard-linked, or not an ELF binary (distrobox-export, host-spawn, asdf shims).
+
+`certificate-authority-data` is parsed block by block as X.509 and re-encoded;
+a non-certificate block or trailing bytes refuse.
 
 When the host user has a client certificate AND a static token, only the
 certificate goes into the mint file; the token is never sent.
