@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,37 @@ var otherWarning = probe.Warning{
 	File: home + "/.config/snug/profiles.d/other.toml", Profiles: []string{"x"}, Line: "x: something else is wrong", Full: "something else is wrong. details.",
 }
 
+// reviewLog records what Apply was asked to do, so a test can tell "went back"
+// from "wrote".
+type reviewLog struct {
+	applied []string
+	err     error
+	blocked bool
+	body    string
+}
+
+func (l *reviewLog) review(title, done string) Review {
+	body := l.body
+	if body == "" {
+		body = "+ include = [\"@net\"]"
+	}
+	return Review{Title: title, Body: body, Blocked: l.blocked, Done: done, Apply: func() error {
+		if l.err != nil {
+			return l.err
+		}
+		l.applied = append(l.applied, title)
+		return nil
+	}}
+}
+
+func withLog(c Config, l *reviewLog) Config {
+	c.Plan = func(s suggest.Selection) (Review, error) {
+		return l.review("writes "+s.Text[suggest.Name]+".toml (new file)", "wrote x.toml"), nil
+	}
+	c.PlanFix = func(w probe.Warning) (Review, error) { return l.review("fixes "+w.File, "fixed "+w.File), nil }
+	return c
+}
+
 func config(f ingest.Facts, warns ...probe.Warning) Config {
 	sel := suggest.Suggest(f, home, target)
 	return Config{
@@ -83,6 +115,10 @@ func press(m Model, keys ...string) Model {
 			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
 		case "ctrl+c":
 			msg = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+		case "pgdown":
+			msg = tea.KeyPressMsg{Code: tea.KeyPgDown}
+		case "pgup":
+			msg = tea.KeyPressMsg{Code: tea.KeyPgUp}
 		default:
 			r := []rune(k)[0]
 			msg = tea.KeyPressMsg{Code: r, Text: k}
@@ -235,39 +271,182 @@ func TestQuitDirectWhenUnchanged(t *testing.T) {
 	}
 }
 
-func TestFixOnlyOnRename(t *testing.T) {
-	m := sized(New(config(facts(), otherWarning, renameWarning)), 100)
+func TestFixOnNonRenameSaysSo(t *testing.T) {
+	var l reviewLog
+	m := sized(New(withLog(config(facts(), otherWarning, renameWarning), &l)), 100)
+	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j", "j") // otherWarning
+	m = press(m, "f")
+	if m.pg != nil || !strings.Contains(screen(m), "no mechanical fix") || len(l.applied) != 0 {
+		t.Errorf("f on a non-rename:\n%s", screen(m))
+	}
+}
+
+func TestFixIsConfirmedInTheScreen(t *testing.T) {
+	var l reviewLog
+	m := sized(New(withLog(config(facts(), otherWarning, renameWarning), &l)), 100)
+	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j", "j", "j") // renameWarning
+	m = press(m, "f")
+	if !strings.Contains(screen(m), "fixes "+renameWarning.File) || !strings.Contains(screen(m), " y fix") {
+		t.Fatalf("no fix screen:\n%s", screen(m))
+	}
+	if len(l.applied) != 0 {
+		t.Fatalf("applied before y: %v", l.applied)
+	}
+	m = press(m, "n")
+	if strings.Contains(screen(m), "y fix") || !strings.Contains(screen(m), "NAME") || len(l.applied) != 0 {
+		t.Errorf("n did not return to the main screen:\n%s", screen(m))
+	}
+	next, cmd := press(m, "f").Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	m = next.(Model)
+	o := m.Outcome()
+	if cmd == nil || o.Result != Fixed || o.Done != "fixed "+renameWarning.File || len(l.applied) != 1 {
+		t.Errorf("y: %+v applied %v", o, l.applied)
+	}
+}
+
+func TestWriteIsConfirmedInTheScreen(t *testing.T) {
+	var l reviewLog
+	m := sized(New(withLog(config(facts()), &l)), 100)
+	m = press(m, "j", "j", "j", "j", "j", "space") // NETWORK off
+	m = press(m, "w")
+	for _, want := range []string{"writes snug-setup.toml (new file)", `+ include = ["@net"]`, " y write"} {
+		if !strings.Contains(screen(m), want) {
+			t.Errorf("review lacks %q:\n%s", want, screen(m))
+		}
+	}
+	if strings.Contains(screen(m), "NETWORK") || len(l.applied) != 0 {
+		t.Fatalf("the review shows the main screen or wrote early:\n%s", screen(m))
+	}
+	for _, back := range []string{"n", "esc"} {
+		b := press(m, back)
+		if !strings.Contains(screen(b), "NETWORK") || b.Outcome().Sel.Pick[suggest.Network] != 1 || len(l.applied) != 0 {
+			t.Errorf("%s: selection lost or wrote:\n%s", back, screen(b))
+		}
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	o := next.(Model).Outcome()
+	if cmd == nil || o.Result != Write || o.Done != "wrote x.toml" || len(l.applied) != 1 || o.Sel.Pick[suggest.Network] != 1 {
+		t.Errorf("y: %+v cmd %v applied %v", o, cmd != nil, l.applied)
+	}
+}
+
+func TestEditIsConfirmedThenOutcomeEdit(t *testing.T) {
+	var l reviewLog
+	m := sized(New(withLog(config(facts()), &l)), 100)
+	m = press(m, "e")
+	if !strings.Contains(screen(m), "y write, then open $EDITOR") {
+		t.Fatalf("%s", screen(m))
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if cmd == nil || next.(Model).Outcome().Result != Edit {
+		t.Errorf("e then y: %+v", next.(Model).Outcome())
+	}
+}
+
+func TestCtrlCOnAReviewWritesNothing(t *testing.T) {
+	var l reviewLog
+	m := press(sized(New(withLog(config(facts()), &l)), 100), "w")
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil || next.(Model).Outcome().Result != Interrupted || len(l.applied) != 0 {
+		t.Errorf("%+v applied %v", next.(Model).Outcome(), l.applied)
+	}
+}
+
+func TestBlockedReviewCannotBeApplied(t *testing.T) {
+	l := reviewLog{blocked: true}
+	m := press(sized(New(withLog(config(facts()), &l)), 100), "w")
+	if strings.Contains(screen(m), " y write") || !strings.Contains(screen(m), "esc back") {
+		t.Errorf("a blocked review offers y:\n%s", screen(m))
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if cmd != nil || len(l.applied) != 0 || next.(Model).rev == nil {
+		t.Errorf("y on a blocked review did something")
+	}
+}
+
+func TestPlanErrorIsShownNotFatal(t *testing.T) {
+	c := config(facts())
+	c.Plan = func(suggest.Selection) (Review, error) {
+		return Review{}, errors.New(`"bad_name" is not a profile name (letters, digits and dashes; no underscore, dot or leading @); change NAME`)
+	}
+	m := press(sized(New(c), 60), "w")
+	if m.pg != nil || m.Outcome().Result != Quit {
+		t.Fatalf("a Plan error left the main screen: %+v", m.Outcome())
+	}
+	s := screen(m)
+	if !strings.Contains(s, "change NAME") || !strings.Contains(s, "IDENTITY") {
+		t.Errorf("error not on the main screen:\n%s", s)
+	}
+	for _, l := range strings.Split(s, "\n") {
+		if n := utf8.RuneCountInString(l); n > 60 {
+			t.Errorf("%d runes: %q", n, l)
+		}
+	}
+}
+
+func TestApplyErrorReturnsToTheMainScreen(t *testing.T) {
+	l := reviewLog{err: errors.New("x.toml changed since the diff was shown; run snug-setup again")}
+	m := press(sized(New(withLog(config(facts()), &l)), 100), "w", "y")
+	if m.Outcome().Result != Quit || !strings.Contains(screen(m), "changed since the diff") || !strings.Contains(screen(m), "NAME") {
+		t.Errorf("%+v\n%s", m.Outcome(), screen(m))
+	}
+}
+
+func TestReviewScrolls(t *testing.T) {
+	var body []string
+	for i := range 100 {
+		body = append(body, fmt.Sprintf("line %03d", i))
+	}
+	l := reviewLog{body: strings.Join(body, "\n")}
+	m := press(sized(New(withLog(config(facts()), &l)), 80), "w")
+	has := func(s string) bool { return strings.Contains(screen(m), s) }
+	if !has("line 000") || has("line 099") {
+		t.Fatalf("not at the top:\n%s", screen(m))
+	}
+	m = press(m, "G")
+	if has("line 000") || !has("line 099") {
+		t.Errorf("G:\n%s", screen(m))
+	}
+	m = press(m, "g", "j", "j")
+	if has("line 000") || !has("line 002") {
+		t.Errorf("g j j:\n%s", screen(m))
+	}
+	m = press(m, "pgdown")
+	if has("line 002") || !has("line 039") {
+		t.Errorf("pgdown:\n%s", screen(m))
+	}
+	m = press(m, "pgup", "k")
+	if !has("line 001") {
+		t.Errorf("pgup k:\n%s", screen(m))
+	}
+	if n := strings.Count(screen(m), "\n") + 1; n > 40 {
+		t.Errorf("%d lines on a 40 line terminal", n)
+	}
+}
+
+func TestWhyOffRowShowsWhatTurningItOnGrants(t *testing.T) {
+	m := sized(New(config(facts())), 400)
+	m = press(m, "j", "j", "j", "j", "j", "space", "?") // NETWORK, off
+	if !strings.Contains(lineWith(t, m, "NETWORK"), "off") {
+		t.Fatalf("not off:\n%s", screen(m))
+	}
+	for _, f := range strings.Fields(draft.Abuse["@net"]) {
+		if !strings.Contains(screen(m), f) {
+			t.Fatalf("abuse sentence of @net missing %q:\n%s", f, screen(m))
+		}
+	}
+}
+
+func TestWhyFileIsCleaned(t *testing.T) {
+	w := otherWarning
+	w.File = home + "/.config/snug/profiles.d/a\x1b[2Jb.toml"
+	m := sized(New(config(facts(), w)), 200)
 	for range 9 {
 		m = press(m, "j")
 	}
-	m, _ = update2(m, "f")
-	if m.Outcome().Fix != nil || m.Outcome().Result != Quit || !strings.Contains(screen(m), "no mechanical fix") {
-		t.Errorf("f on a non-rename: %+v\n%s", m.Outcome(), screen(m))
-	}
-	m = press(m, "j")
-	next, cmd := m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
-	m = next.(Model)
-	if cmd == nil || m.Outcome().Result != Fix || m.Outcome().Fix == nil || m.Outcome().Fix.Old != "@cwd-rw" {
-		t.Errorf("f on a rename: %+v", m.Outcome())
-	}
-}
-
-func update2(m Model, k string) (Model, tea.Cmd) {
-	next, cmd := m.Update(tea.KeyPressMsg{Code: []rune(k)[0], Text: k})
-	return next.(Model), cmd
-}
-
-func TestWriteAndEditOutcomes(t *testing.T) {
-	m := sized(New(config(facts())), 100)
-	m = press(m, "j", "j", "j", "j", "j", "space")
-	m, cmd := update2(m, "w")
-	o := m.Outcome()
-	if cmd == nil || o.Result != Write || o.Sel.Pick[suggest.Network] != 1 {
-		t.Errorf("w: %+v", o)
-	}
-	m, _ = update2(sized(New(config(facts())), 100), "e")
-	if m.Outcome().Result != Edit {
-		t.Errorf("e: %+v", m.Outcome())
+	m = press(m, "?")
+	if strings.ContainsRune(screen(m), 0x1b) {
+		t.Errorf("an escape reached the screen:\n%q", screen(m))
 	}
 }
 
@@ -341,8 +520,42 @@ func TestDryRunShowsSnugOutput(t *testing.T) {
 		t.Errorf("%s", screen(m))
 	}
 	m = press(m, "x")
-	if !strings.Contains(screen(m), "NETWORK") {
-		t.Errorf("any key must return:\n%s", screen(m))
+	if strings.Contains(screen(m), "NETWORK") {
+		t.Errorf("an unknown key left the dry-run view:\n%s", screen(m))
+	}
+	for _, back := range []string{"q", "esc"} {
+		if b := press(m, back); !strings.Contains(b.View().Content, "NETWORK") {
+			t.Errorf("%s did not return:\n%s", back, screen(b))
+		}
+	}
+}
+
+func TestDryRunScrolls(t *testing.T) {
+	var out []string
+	for i := range 200 {
+		out = append(out, fmt.Sprintf("row %03d", i))
+	}
+	c := config(facts())
+	c.DryRun = func(*draft.Draft) (string, error) { return strings.Join(out, "\n"), nil }
+	m := press(sized(New(c), 80), "d")
+	has := func(s string) bool { return strings.Contains(screen(m), s) }
+	if !has("row 000") || has("row 199") {
+		t.Fatalf("the head is not shown first:\n%s", screen(m))
+	}
+	m = press(m, "G")
+	if !has("row 199") || has("row 000") {
+		t.Errorf("G:\n%s", screen(m))
+	}
+	m = press(m, "pgup")
+	if has("row 199") {
+		t.Errorf("pgup stayed at the end:\n%s", screen(m))
+	}
+	m = press(m, "g", "j")
+	if has("row 000") || !has("row 001") {
+		t.Errorf("g j:\n%s", screen(m))
+	}
+	if n := strings.Count(screen(m), "\n") + 1; n > 40 {
+		t.Errorf("%d lines on a 40 line terminal", n)
 	}
 }
 

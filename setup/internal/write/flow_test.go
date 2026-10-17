@@ -42,8 +42,8 @@ func TestPrepareChecksWithSnug(t *testing.T) {
 	if err != nil || len(p.Blocked) != 0 || len(p.Notes) != 0 {
 		t.Fatalf("%+v %v", p, err)
 	}
-	if !strings.HasSuffix(p.Screen(), "write? y/n ") {
-		t.Errorf("%s", p.Screen())
+	if !strings.HasPrefix(p.Title(), "writes ") || strings.Contains(p.Body(), "not written") {
+		t.Errorf("%s\n%s", p.Title(), p.Body())
 	}
 }
 
@@ -55,7 +55,7 @@ func TestWriteOverwriteShowsDiff(t *testing.T) {
 	if err != nil || !p.Overwrite || len(p.Blocked) != 0 {
 		t.Fatalf("%+v %v", p, err)
 	}
-	s := p.Screen()
+	s := p.Title() + "\n" + p.Body()
 	for _, want := range []string{"overwrites", "\n- include = [\"@git\"]", "\n+ "} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen lacks %q:\n%s", want, s)
@@ -123,8 +123,8 @@ func TestPrepareVerifyMismatchBlocks(t *testing.T) {
 	if err := Apply(p); err == nil {
 		t.Errorf("a blocked plan was applied")
 	}
-	if strings.Contains(p.Screen(), "write? y/n") {
-		t.Errorf("a blocked plan asks to write:\n%s", p.Screen())
+	if !strings.Contains(p.Body(), "not written") {
+		t.Errorf("a blocked plan does not say so:\n%s", p.Body())
 	}
 }
 
@@ -289,5 +289,52 @@ func TestDryRunTextUsesScratchConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(strings.TrimPrefix(env[0], "XDG_CONFIG_HOME=")); err == nil {
 		t.Errorf("scratch directory left behind")
+	}
+}
+
+func TestAfterWrite(t *testing.T) {
+	const run = "snug -p x ."
+	for _, c := range []struct {
+		name, dir string
+		want      []string
+	}{
+		{"default", "/home/a/.config/snug/profiles.d/", []string{run}},
+		{"xdg shaped", "/tmp/my cfg/snug/profiles.d", []string{
+			"snug will not look in /tmp/my cfg/snug/profiles.d: it reads /home/a/.config/snug/profiles.d",
+			"XDG_CONFIG_HOME='/tmp/my cfg' " + run}},
+		{"other", "/tmp/profiles", []string{
+			"snug will not look in /tmp/profiles: it reads /home/a/.config/snug/profiles.d; move the file there to use it"}},
+	} {
+		got := AfterWrite(run, c.dir, "/home/a/.config/snug/profiles.d")
+		if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPrepareSymlinkTargetBlocks(t *testing.T) {
+	w := testworld.New(t)
+	real := filepath.Join(t.TempDir(), "real.toml")
+	if err := os.WriteFile(real, []byte("[profile.x]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(w.ProfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(w.ProfDir, "x.toml")); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Prepare(context.Background(), newDraft(w, "x"), w.ProfDir, "", w.Run, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Blocked) != 1 || !strings.Contains(p.Blocked[0], "is a symlink") {
+		t.Fatalf("blocked %v", p.Blocked)
+	}
+	if err := Apply(p); err == nil {
+		t.Errorf("a blocked plan applied")
+	}
+	if got, _, _ := ReadProfile(real); got != "[profile.x]\n" {
+		t.Errorf("the link's target was touched: %q", got)
 	}
 }

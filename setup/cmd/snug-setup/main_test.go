@@ -167,13 +167,18 @@ func TestUsageHasNoModelFlags(t *testing.T) {
 			t.Errorf("usage mentions %q:\n%s", bad, r.stdout)
 		}
 	}
-	for _, want := range []string{"--print", "--offline", "--profile-dir", "--name", "130", "ambiguous identity"} {
+	for _, want := range []string{"--print", "--profile-dir", "--name", "130", "ambiguous identity"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("usage lacks %q", want)
 		}
 	}
-	if r := snugSetup(t, "", "--model", "x", "--print"); r.code != 1 {
-		t.Errorf("a removed flag was accepted: exit %d", r.code)
+	if strings.Contains(r.stdout, "--offline") {
+		t.Errorf("usage names a flag that was removed")
+	}
+	for _, flag := range []string{"--model", "--offline"} {
+		if r := snugSetup(t, "", flag, "x", "--print"); r.code != 1 {
+			t.Errorf("a removed flag %s was accepted: exit %d", flag, r.code)
+		}
 	}
 }
 
@@ -181,5 +186,42 @@ func TestBadNameFlag(t *testing.T) {
 	r := snugSetup(t, "", "--print", "--name", "bad_name", project(t, "app"))
 	if r.code != 1 || !strings.Contains(r.stderr, "--name") {
 		t.Errorf("exit %d: %s", r.code, r.stderr)
+	}
+}
+
+// TestPrintProbesOnlyIdentityCandidates: a profile of yours that pins no
+// identity and that the draft does not include is not asked about, so a marp
+// setup beside a Go project does not warn about a path missing from the
+// project. A refused identity candidate warns, with its whole line.
+func TestPrintProbesOnlyIdentityCandidates(t *testing.T) {
+	bin := t.TempDir()
+	long := strings.Repeat("far ", 40)
+	script := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do if [ \"$1\" = -p ]; then p=$2; fi; shift; done\n" +
+		"echo \"$p\" >> \"" + filepath.Join(bin, "asked") + "\"\n" +
+		"printf '%s' '{\"snug\":{\"format\":2,\"outcome\":\"refused\",\"policy_resolved\":false},\"refusal\":{\"message\":\"profile \\\"'$p'\\\" grants a path which is " + long + "missing\"}}'\n"
+	if err := os.WriteFile(filepath.Join(bin, "snug"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	prof := filepath.Join(home, ".config", "snug", "profiles.d")
+	os.MkdirAll(prof, 0o755)
+	body := "[profile.marp]\ninclude = [\"@net\"]\n" +
+		"[profile.work.identity.ssh]\nhost = \"github.com\"\nkey = \"{home}/.ssh/w.pub\"\n[profile.work.identity.git]\nname = \"A\"\nemail = \"m@example.org\"\n"
+	os.WriteFile(filepath.Join(prof, "accounts.toml"), []byte(body), 0o644)
+	cmd := exec.Command(binary, "--print", project(t, "app"))
+	cmd.Env = []string{"HOME=" + home, "PATH=" + bin}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%v: %s", err, errb.String())
+	}
+	asked, _ := os.ReadFile(filepath.Join(bin, "asked"))
+	if strings.TrimSpace(string(asked)) != "work" {
+		t.Errorf("snug was asked about %q, want only work", asked)
+	}
+	want := "! accounts.toml: work grants a path which is " + long + "missing"
+	if !strings.Contains(errb.String(), want) {
+		t.Errorf("stderr lacks the whole line:\n%s", errb.String())
 	}
 }

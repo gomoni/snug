@@ -30,12 +30,15 @@ func (m Model) render() string {
 	if w < 20 {
 		w = 20
 	}
-	if m.showDry {
-		var out []string
-		for _, l := range strings.Split(string(safe.Clean(m.dry)), "\n") {
-			out = append(out, clip(l, w))
+	if m.rev != nil {
+		hint := " y " + map[Result]string{Write: "write", Edit: "write, then open $EDITOR", Fixed: "fix"}[m.rev.kind] + "   n back   j/k pgup/pgdn g/G scroll"
+		if m.rev.r.Blocked {
+			hint = " esc back   j/k pgup/pgdn g/G scroll"
 		}
-		return strings.Join(append(out, "", m.st("dim", clip(" any key returns", w))), "\n")
+		return m.viewPager(*m.pg, hint)
+	}
+	if m.pg != nil {
+		return m.viewPager(*m.pg, " q back   j/k pgup/pgdn g/G scroll")
 	}
 
 	var refused map[suggest.RowID]string
@@ -120,7 +123,9 @@ func (m Model) render() string {
 
 	lines = append(lines, "")
 	if m.status != "" {
-		lines = append(lines, " "+m.st("warn", clip(safe.Inline(m.status), w-1)))
+		for _, l := range wrap(safe.Inline(m.status), w-2) {
+			lines = append(lines, " "+m.st("warn", l))
+		}
 	}
 	for _, l := range m.footer(w) {
 		lines = append(lines, m.st("dim", l))

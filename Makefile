@@ -518,7 +518,7 @@ install: build
 	install -Dm755 $(BIN) $(HOME)/.local/bin/snug
 
 clean:
-	rm -rf bin
+	rm -rf bin setup/bin
 
 
 # Prints the pattern so the gate's own hint can be copy-pasted.

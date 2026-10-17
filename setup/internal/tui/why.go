@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/safe"
 	"github.com/gomoni/snug/setup/internal/suggest"
 )
 
@@ -15,7 +16,7 @@ func (m Model) whyLines(width int) []string {
 	add := func(prefix, s string) { out = append(out, wrap(prefix+s, width)...) }
 	if w, ok := m.warningAt(); ok {
 		add("snug says: ", w.Full)
-		add("file: ", w.File)
+		add("file: ", safe.Inline(w.File))
 		return out
 	}
 	id := suggest.RowID(m.cursor)
@@ -26,6 +27,18 @@ func (m Model) whyLines(width int) []string {
 	for _, tok := range strings.Fields(c.Label) {
 		if a, ok := draft.Abuse[tok]; ok {
 			add(tok+": ", a)
+		}
+	}
+	if c.Label == suggest.Off {
+		for i, ch := range m.sel.Rows[id].Choices {
+			if i == m.sel.Pick[id] {
+				continue
+			}
+			for _, tok := range strings.Fields(ch.Label) {
+				if a, ok := draft.Abuse[tok]; ok {
+					add("turned on, "+tok+": ", a)
+				}
+			}
 		}
 	}
 	switch id {
@@ -48,22 +61,7 @@ func (m Model) whyLines(width int) []string {
 }
 
 // choice is the Choice the row currently shows.
-func (m Model) choice(id suggest.RowID) suggest.Choice {
-	switch id {
-	case suggest.Tools:
-		return m.sel.Tools()
-	case suggest.Name, suggest.Desc:
-		c := m.sel.Rows[id].Choices[0]
-		c.Label = m.sel.Text[id]
-		return c
-	}
-	r := m.sel.Rows[id]
-	if !r.Sure {
-		c := r.Choices[0]
-		return c
-	}
-	return r.Choices[m.sel.Pick[id]]
-}
+func (m Model) choice(id suggest.RowID) suggest.Choice { return m.sel.Current(id) }
 
 // wrap breaks s at spaces into lines of at most width runes, indenting
 // continuation lines by two. A word longer than a line is cut.

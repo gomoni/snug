@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 )
@@ -93,8 +94,30 @@ func TestCheckOtherRefusalNoFix(t *testing.T) {
 	if got[0].Old != "" || got[0].New != "" || got[0].Line != "a: something is wrong with it." {
 		t.Errorf("%+v", got[0])
 	}
-	if r := []rune(strings.TrimPrefix(got[1].Line, "b: ")); len(r) != 80 || r[79] != '…' {
-		t.Errorf("not cut to 80 runes with an ellipsis: %q", got[1].Line)
+	if got[1].Line != "b: "+strings.Repeat("x", 200) {
+		t.Errorf("the line was cut: %q", got[1].Line)
+	}
+}
+
+func TestCheckDoesNotRepeatTheProfileName(t *testing.T) {
+	var ran []string
+	run := fake(map[string][]byte{"marp": refusal(`profile "marp" grants "/work/d/x" which does not exist. More.`)}, &ran)
+	got := Check(context.Background(), run, "snug", "/w", []ingest.Profile{prof("marp", "marp.toml")})
+	if len(got) != 1 || got[0].Line != `marp grants "/work/d/x" which does not exist.` {
+		t.Errorf("%+v", got)
+	}
+}
+
+func TestScopeIsIdentityCandidatesAndWhatTheDraftIncludes(t *testing.T) {
+	pins := prof("work", "accounts.toml")
+	pins.Identity = ingest.ProfileIdentity{SSHHost: "github.com", Email: "m@example.org"}
+	tool := prof("gh-cli", "tools.toml")
+	other := prof("marp", "marp.toml")
+	d := draft.New(draft.Host{})
+	d.Include = []string{"@net", "gh-cli"}
+	got := Scope([]ingest.Profile{pins, tool, other}, d)
+	if len(got) != 2 || got[0].Name != "work" || got[1].Name != "gh-cli" {
+		t.Errorf("scope %+v", got)
 	}
 }
 

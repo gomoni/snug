@@ -48,7 +48,7 @@ func (d *Draft) RunArgs(dir string) []string {
 // RunLine is RunArgs as a shell command line.
 func (d *Draft) RunLine(dir string) string {
 	args := d.RunArgs(dir)
-	args[len(args)-1] = shellQuote(dir)
+	args[len(args)-1] = ShellQuote(dir)
 	return "snug " + strings.Join(args, " ")
 }
 
@@ -59,7 +59,9 @@ func (d *Draft) profileName() string {
 	return d.Name
 }
 
-func shellQuote(s string) string {
+// ShellQuote returns s as one shell word: unchanged when it holds only
+// characters a shell leaves alone, single-quoted otherwise.
+func ShellQuote(s string) string {
 	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-~") == "" {
 		return s
 	}

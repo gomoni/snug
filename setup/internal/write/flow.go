@@ -44,6 +44,10 @@ type Plan struct {
 // chose is broken in their own file, and the new file is still what the
 // screen says, so that goes to Notes ("profile will not run").
 //
+// A path at profileDir/NAME.toml that is a symlink or not a regular file
+// blocks the write with the message PrepareFix gives for the same case: the
+// rename in Apply would replace the link, not the file behind it.
+//
 // A profile called NAME defined anywhere but profileDir/NAME.toml blocks the
 // write: the new file would shadow or duplicate it. The error is for what
 // cannot be answered at all: an unusable name, an unreadable existing file,
@@ -60,6 +64,11 @@ func Prepare(ctx context.Context, d *draft.Draft, profileDir, snug string, run h
 		if def := filepath.Join(pr.Dir, pr.File); filepath.Clean(def) != filepath.Clean(p.Path) {
 			p.Blocked = append(p.Blocked, fmt.Sprintf("profile %s is defined in %s; change NAME", d.Name, safe.Inline(def)))
 		}
+	}
+	if err := regularFile(p.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		p.Overwrite = true
+		p.Blocked = append(p.Blocked, err.Error())
+		return p, nil
 	}
 	old, exists, err := ReadProfile(p.Path)
 	if err != nil {
@@ -123,27 +132,28 @@ func namesProfile(msg, name string) bool {
 	}
 }
 
-// Screen is the diff, the notes and, when the plan can be applied, the
-// question.
-func (p Plan) Screen() string {
-	var b strings.Builder
+// Title is the one line that says what applying the plan does to the file.
+func (p Plan) Title() string {
 	if p.Overwrite {
-		fmt.Fprintf(&b, "overwrites %s\n", safe.Inline(p.Path))
-	} else {
-		fmt.Fprintf(&b, "writes %s (new file)\n", safe.Inline(p.Path))
+		return "overwrites " + safe.Inline(p.Path)
 	}
-	b.WriteString(LineDiff(p.Old, p.New) + "\n")
+	return "writes " + safe.Inline(p.Path) + " (new file)"
+}
+
+// Body is the diff, then the notes, then, for a blocked plan, why it cannot
+// be applied. It ends without a newline and asks nothing.
+func (p Plan) Body() string {
+	var b strings.Builder
+	b.WriteString(LineDiff(p.Old, p.New))
 	for _, n := range p.Notes {
-		fmt.Fprintf(&b, "! %s\n", safe.Inline(n))
+		fmt.Fprintf(&b, "\n! %s", safe.Inline(n))
 	}
 	if len(p.Blocked) > 0 {
-		b.WriteString("not written: the file would not do what the screen says\n")
+		b.WriteString("\nnot written: the file would not do what the screen says")
 		for _, n := range p.Blocked {
-			fmt.Fprintf(&b, "! %s\n", n)
+			fmt.Fprintf(&b, "\n! %s", n)
 		}
-		return b.String()
 	}
-	b.WriteString("write? y/n ")
 	return b.String()
 }
 
@@ -172,6 +182,24 @@ func RunLine(d *draft.Draft, cwd string) string {
 		return d.RunLine(".")
 	}
 	return d.RunLine(d.Host.Target)
+}
+
+// AfterWrite returns the lines to print once the profile is written: the run
+// line when snug will find the file, and otherwise a note saying it will not.
+// defaultDir is where snug reads profiles from without help. A profileDir
+// shaped `X/snug/profiles.d` gets the run line behind `XDG_CONFIG_HOME=X`;
+// any other directory gets the note alone, because no run line would find the
+// profile there.
+func AfterWrite(runLine, profileDir, defaultDir string) []string {
+	if filepath.Clean(profileDir) == filepath.Clean(defaultDir) {
+		return []string{runLine}
+	}
+	note := "snug will not look in " + safe.Inline(profileDir) + ": it reads " + safe.Inline(defaultDir)
+	snugDir := filepath.Dir(profileDir)
+	if filepath.Base(profileDir) == "profiles.d" && filepath.Base(snugDir) == "snug" {
+		return []string{note, "XDG_CONFIG_HOME=" + draft.ShellQuote(filepath.Dir(snugDir)) + " " + runLine}
+	}
+	return []string{note + "; move the file there to use it"}
 }
 
 // PrepareFix reads the file a rename warning is about and returns it with the

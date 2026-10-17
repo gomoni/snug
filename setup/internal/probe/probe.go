@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +33,20 @@ type Warning struct {
 // may wrap the message in its own context.
 var renamed = regexp.MustCompile(`(@[a-z0-9-]+) is now (@[a-z0-9-]+):`)
 
-const maxLine = 80
+// Scope returns the profiles worth probing against one target: those that
+// pin an identity, because the IDENTITY row may offer any of them, and those
+// d includes. A profile of the person's own that is neither (a marp setup
+// beside a Go project) is left alone: its problems with this target are not
+// problems of this profile.
+func Scope(profiles []ingest.Profile, d *draft.Draft) []ingest.Profile {
+	var out []ingest.Profile
+	for _, p := range profiles {
+		if p.Identity.Pins() || slices.Contains(d.Include, p.Name) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // Check runs `snug --dry-run --json -p NAME TARGET` for each profile, in the
 // person's own configuration, and returns one Warning per problem: profiles of
@@ -78,7 +92,7 @@ func Check(ctx context.Context, run hostfacts.Runner, snug, target string, profi
 			out[i].Profiles = append(out[i].Profiles, p.Name)
 			continue
 		}
-		out = append(out, Warning{File: file, Profiles: []string{p.Name}, Full: msg, Line: p.Name + ": " + firstSentence(msg)})
+		out = append(out, Warning{File: file, Profiles: []string{p.Name}, Full: msg, Line: lineOf(p.Name, msg)})
 	}
 	for i := range out {
 		if w := &out[i]; w.Old != "" {
@@ -92,14 +106,20 @@ func Check(ctx context.Context, run hostfacts.Runner, snug, target string, profi
 	return out
 }
 
-// firstSentence is msg up to its first ". " or its end, cut to maxLine runes
-// with an ellipsis.
+// lineOf is the one-line form of snug's refusal msg for profile name: the
+// name, then the first sentence of msg. snug starts most messages with
+// `profile "NAME"`; that is dropped, so the name is not said twice.
+func lineOf(name, msg string) string {
+	if rest, ok := strings.CutPrefix(msg, "profile "+strconv.Quote(name)+" "); ok {
+		return name + " " + firstSentence(rest)
+	}
+	return name + ": " + firstSentence(msg)
+}
+
+// firstSentence is msg up to its first ". " or its end.
 func firstSentence(msg string) string {
 	if i := strings.Index(msg, ". "); i >= 0 {
 		msg = msg[:i+1]
-	}
-	if r := []rune(msg); len(r) > maxLine {
-		msg = string(r[:maxLine-1]) + "…"
 	}
 	return msg
 }

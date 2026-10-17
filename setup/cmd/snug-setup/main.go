@@ -5,7 +5,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -33,7 +32,7 @@ import (
 	"github.com/gomoni/snug/setup/internal/write"
 )
 
-const usage = `usage: snug-setup [--print] [--offline] [--profile-dir DIR] [--name NAME] [DIR]
+const usage = `usage: snug-setup [--print] [--profile-dir DIR] [--name NAME] [DIR]
 
   Suggests a snug profile for DIR (default: the current directory) on one screen,
   a row per part, each with a reason. Change any row, press w to see the diff and
@@ -43,7 +42,6 @@ const usage = `usage: snug-setup [--print] [--offline] [--profile-dir DIR] [--na
                        screen, no prompt, nothing written. Unsure picks come out as commented
                        include lines. An ambiguous identity (two profiles of yours match the
                        project equally) is left out, says so on stderr, and still exits 0.
-  --offline            accepted; snug-setup asks GitHub nothing either way
   --profile-dir DIR    where the profile is written (default: $XDG_CONFIG_HOME/snug/profiles.d)
   --name NAME          the profile's name instead of the one suggested; with --print, the way
                        past a name that exists already
@@ -77,7 +75,6 @@ func parseFlags(args []string) (options, error) {
 	fs.Usage = func() {}
 	var o options
 	fs.BoolVar(&o.print, "print", false, "")
-	fs.Bool("offline", false, "")
 	fs.StringVar(&o.profileDir, "profile-dir", "", "")
 	fs.StringVar(&o.name, "name", "", "")
 	if err := fs.Parse(args); err != nil {
@@ -127,12 +124,13 @@ func run() (int, error) {
 	if fi, err := os.Stat(target); err != nil || !fi.IsDir() {
 		return 1, fmt.Errorf("%s is not a directory", target)
 	}
+	cfg := os.Getenv("XDG_CONFIG_HOME")
+	if cfg == "" {
+		cfg = filepath.Join(home, ".config")
+	}
+	defaultDir := filepath.Join(cfg, "snug", "profiles.d")
 	if o.profileDir == "" {
-		cfg := os.Getenv("XDG_CONFIG_HOME")
-		if cfg == "" {
-			cfg = filepath.Join(home, ".config")
-		}
-		o.profileDir = filepath.Join(cfg, "snug", "profiles.d")
+		o.profileDir = defaultDir
 	}
 	tty := isTerminal(os.Stdin) && isTerminal(os.Stdout)
 	if !o.print && !tty {
@@ -144,7 +142,7 @@ func run() (int, error) {
 
 	s := &setup{
 		o: o, home: home, target: target, tty: tty, ctx: ctx,
-		run: hostfacts.ExecRunner,
+		run: hostfacts.ExecRunner, defaultDir: defaultDir,
 	}
 	s.snug, _ = exec.LookPath("snug")
 	s.gather()
@@ -164,6 +162,9 @@ type setup struct {
 	snug   string
 	facts  ingest.Facts
 	sel    suggest.Selection
+	// defaultDir is where snug reads profiles from when nobody points it
+	// elsewhere.
+	defaultDir string
 }
 
 func (s *setup) gather() {
@@ -207,7 +208,8 @@ func (s *setup) printOnly() (int, error) {
 			return 1, fmt.Errorf("profile name %s exists in %s; pass --name", name, safe.Inline(filepath.Join(s.facts.Profiles[i].Dir, s.facts.Profiles[i].File)))
 		}
 	}
-	for _, w := range probe.Check(s.ctx, s.run, s.snug, s.target, s.facts.Profiles) {
+	d, refused := s.build(s.sel)
+	for _, w := range probe.Check(s.ctx, s.run, s.snug, s.target, probe.Scope(s.facts.Profiles, d)) {
 		fmt.Fprintf(os.Stderr, "! %s: %s\n", safe.Inline(filepath.Base(w.File)), w.Line)
 	}
 	for _, n := range s.notes() {
@@ -216,14 +218,13 @@ func (s *setup) printOnly() (int, error) {
 	if r := s.sel.Rows[suggest.Identity]; s.sel.Pick[suggest.Identity] == 0 && strings.HasSuffix(r.Choices[0].Why, "— pick one") {
 		fmt.Fprintf(os.Stderr, "identity: %s\n", r.Choices[0].Why)
 	}
-	d, refused := s.build(s.sel)
 	for id, msg := range refused {
 		fmt.Fprintf(os.Stderr, "! %s: not in the profile: %s\n", strings.ToLower(rowName(id)), safe.Inline(msg))
 	}
 	out := d.Render()
 	for _, r := range s.sel.Rows {
 		if !r.Sure && s.sel.Pick[r.ID] != 0 {
-			out += fmt.Sprintf("# include = [%q]  # %s\n", r.Choices[0].Label, r.Choices[0].Why)
+			out += fmt.Sprintf("# include = [%q]  # %s\n", r.Choices[0].Label, s.sel.Current(r.ID).Why)
 		}
 	}
 	fmt.Print(out)
@@ -242,12 +243,15 @@ func (s *setup) short(p string) string {
 }
 
 func (s *setup) interactive() (int, error) {
-	in := bufio.NewReader(os.Stdin)
+	status := ""
 	for {
 		if s.snug != "" {
 			fmt.Fprintln(os.Stderr, "checking your profiles…")
 		}
-		warns := probe.Check(s.ctx, s.run, s.snug, s.target, s.facts.Profiles)
+		d, _ := s.build(s.sel)
+		warns := probe.Check(s.ctx, s.run, s.snug, s.target, probe.Scope(s.facts.Profiles, d))
+		var wrote *write.Plan
+		var wroteDraft *draft.Draft
 		cfg := tui.Config{
 			Target:      s.short(s.target),
 			Sel:         s.sel,
@@ -256,6 +260,11 @@ func (s *setup) interactive() (int, error) {
 			SnugMissing: s.snug == "",
 			NoColor:     os.Getenv("NO_COLOR") != "",
 			Build:       s.build,
+			Status:      status,
+			Plan: func(sel suggest.Selection) (tui.Review, error) {
+				return s.reviewWrite(sel, warns, func(p write.Plan, d *draft.Draft) { wrote, wroteDraft = &p, d })
+			},
+			PlanFix: s.reviewFix,
 		}
 		if s.snug != "" {
 			cfg.DryRun = func(d *draft.Draft) (string, error) {
@@ -280,28 +289,27 @@ func (s *setup) interactive() (int, error) {
 		switch out.Result {
 		case tui.Quit:
 			return 0, nil
-		case tui.Fix:
-			if err := s.fix(in, *out.Fix); err != nil {
-				fmt.Fprintf(os.Stderr, "snug-setup: %v\n", err)
-			}
+		case tui.Interrupted:
+			return 130, nil
+		case tui.Fixed:
+			status = out.Done
 			s.gather2()
 		case tui.Write, tui.Edit:
-			plan, d, done, err := s.plan(in, warns)
-			if err != nil {
-				return 1, err
-			}
-			if !done {
-				continue
-			}
-			if plan == nil {
-				return 0, nil
-			}
+			fmt.Println(out.Done)
 			if out.Result == tui.Edit {
-				return s.edit(plan.Path, d, out.Row), nil
+				return s.edit(wrote.Path, wroteDraft, out.Row), nil
 			}
-			fmt.Println(write.RunLine(d, mustGetwd()))
+			s.printRun(wroteDraft)
 			return 0, nil
 		}
+	}
+}
+
+// printRun prints how to run the profile just written, or why that line would
+// not find it.
+func (s *setup) printRun(d *draft.Draft) {
+	for _, l := range write.AfterWrite(write.RunLine(d, mustGetwd()), s.o.profileDir, s.defaultDir) {
+		fmt.Println(l)
 	}
 }
 
@@ -328,12 +336,13 @@ func mustGetwd() string {
 	return wd
 }
 
-// plan prepares and, on y, writes the profile. done is false when the person
-// should go back to the screen (the plan was blocked). A nil plan with done
-// true means they said no.
-func (s *setup) plan(in *bufio.Reader, warns []probe.Warning) (plan *write.Plan, d *draft.Draft, done bool, err error) {
-	d, refused := s.build(s.sel)
-	id := identityOf(s.sel)
+// reviewWrite prepares writing sel for the confirmation screen. Everything
+// that cannot be written is Blocked and shown; an error is for what cannot be
+// answered at all. wrote is called with the plan and draft once Apply has
+// written the file.
+func (s *setup) reviewWrite(sel suggest.Selection, warns []probe.Warning, wrote func(write.Plan, *draft.Draft)) (tui.Review, error) {
+	d, refused := s.build(sel)
+	id := identityOf(sel)
 	var idWarn *probe.Warning
 	for i := range warns {
 		if id != "" && slices.Contains(warns[i].Profiles, id) {
@@ -342,47 +351,45 @@ func (s *setup) plan(in *bufio.Reader, warns []probe.Warning) (plan *write.Plan,
 	}
 	p, err := write.Prepare(s.ctx, d, s.o.profileDir, s.snug, s.run, s.facts.Profiles, s.identityFiles(d.Name, id), idWarn)
 	if err != nil {
-		return nil, d, false, err
+		return tui.Review{}, err
 	}
 	for r, msg := range refused {
 		p.Blocked = append(p.Blocked, fmt.Sprintf("%s is on the screen but not in the profile: %s", strings.ToLower(rowName(r)), safe.Inline(msg)))
 	}
-	fmt.Print(p.Screen())
-	if len(p.Blocked) > 0 {
-		fmt.Println()
-		return nil, d, false, nil
-	}
-	if !yes(in) {
-		fmt.Println("not written.")
-		return nil, d, true, nil
-	}
-	if err := write.Apply(p); err != nil {
-		return nil, d, false, err
-	}
-	fmt.Printf("wrote %s\n", p.Path)
-	return &p, d, true, nil
+	return tui.Review{
+		Title:   p.Title(),
+		Body:    p.Body(),
+		Blocked: len(p.Blocked) > 0,
+		Done:    "wrote " + safe.Inline(p.Path),
+		Apply: func() error {
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
+			if err := write.Apply(p); err != nil {
+				return err
+			}
+			wrote(p, d)
+			return nil
+		},
+	}, nil
 }
 
-func yes(in *bufio.Reader) bool {
-	line, _ := in.ReadString('\n')
-	return strings.EqualFold(strings.TrimSpace(line), "y")
-}
-
-func (s *setup) fix(in *bufio.Reader, w probe.Warning) error {
+func (s *setup) reviewFix(w probe.Warning) (tui.Review, error) {
 	path, backup, oldB, newB, err := write.PrepareFix(w, time.Now())
 	if err != nil {
-		return err
+		return tui.Review{}, err
 	}
-	fmt.Printf("fixes %s (original saved as %s)\n%s\nfix? y/n ", safe.Inline(path), safe.Inline(backup), write.LineDiff(string(oldB), string(newB)))
-	if !yes(in) {
-		fmt.Println("not changed.")
-		return nil
-	}
-	if err := write.ApplyFix(path, backup, oldB, newB); err != nil {
-		return err
-	}
-	fmt.Printf("fixed %s\n", path)
-	return nil
+	return tui.Review{
+		Title: fmt.Sprintf("fixes %s (original saved as %s)", safe.Inline(path), safe.Inline(backup)),
+		Body:  write.LineDiff(string(oldB), string(newB)),
+		Done:  "fixed " + safe.Inline(path),
+		Apply: func() error {
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
+			return write.ApplyFix(path, backup, oldB, newB)
+		},
+	}, nil
 }
 
 // edit opens path in $EDITOR (fallback vi) at the row's line, then asks snug
