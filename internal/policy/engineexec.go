@@ -74,6 +74,10 @@ func (p *Policy) writableNameOnChain(env Environ, asGiven string) (name, asked s
 // resolution of asGiven passes through (writableNameOnChain) — the payload
 // choosing the engine rather than merely editing it.
 //
+// A writable bind that does not cover the resolved binary by name but reaches
+// it through a second mount of the same filesystem is refused too
+// (writableAliasOf), and so is a mount table that cannot be read.
+//
 // asGiven is the path AS NAMED: $SNUG_PODMAN's value, or exec.LookPath's
 // answer. NEVER a path a caller resolved first. That inversion is the fix:
 // resolution and judgement now happen in one function over ONE sample of
@@ -128,6 +132,18 @@ func (p *Policy) ResolveEngineBinary(env Environ, asGiven string) (string, error
 	}
 	if err := p.CheckEngineBinary(resolved); err != nil {
 		return "", err
+	}
+	if m, h, ok, err := p.writableAliasOf(env, resolved); err != nil {
+		return "", err
+	} else if ok {
+		return "", fmt.Errorf("%s cannot be this run's container engine: the rw grant %s reaches it through a second mount of the same filesystem.%s\n"+
+			"       snug execs this file as uid 0, pid 1 of the engine's pid namespace, with\n"+
+			"       CAP_SYS_ADMIN in this sandbox's user namespace and the whole delegated subuid\n"+
+			"       range — so an engine binary the payload can write is the payload choosing what\n"+
+			"       runs as root.\n"+
+			"       Fix: install the engine somewhere no mount of an rw grant reaches, or point\n"+
+			"       $SNUG_PODMAN at one, or drop the rw grant.",
+			resolved, VisibleText(m.Host), aliasNote(h))
 	}
 	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
 		return "", fmt.Errorf("%s cannot be this run's container engine: %s\n"+

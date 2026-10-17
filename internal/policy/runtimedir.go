@@ -50,8 +50,13 @@ func canonExisting(env Environ, p string) string {
 // entry directly under the parent rather than as fixed directories; a grant
 // containing the parent is left to the runtime-directory match above.
 //
+// A grant that is not under a directory or prefix by name but reaches it
+// through a second mount of the same filesystem (mt, see aliasOverlap) is
+// refused with the same text plus aliasNote. A nil or unusable mt disables
+// that arm only.
+//
 // Empty dirs and prefixes disable the check.
-func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs, prefixes []string, env Environ) error {
+func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs, prefixes []string, env Environ, mt *mountTable) error {
 	if len(dirs) == 0 && len(prefixes) == 0 {
 		return nil
 	}
@@ -82,10 +87,16 @@ func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, va
 							return runtimeDirRefusal(name, host, dir)
 						}
 					}
+					if h, ok := mt.aliasOverlap(env, host, dir); ok {
+						return fmt.Errorf("%w%s", runtimeDirRefusal(name, host, dir), aliasNote(h))
+					}
 				}
 				for _, prefix := range sortedPrefixes {
 					if entry, ok := underNamePrefix(env, grants, prefix); ok {
 						return engineTmpDirRefusal(name, host, entry)
+					}
+					if entry, h, ok := mt.aliasUnderNamePrefix(env, host, prefix); ok {
+						return fmt.Errorf("%w%s", engineTmpDirRefusal(name, host, entry), aliasNote(h))
 					}
 				}
 				if entry, ok := anyComponentNamePrefix(grants, sortedPrefixes); ok {
