@@ -134,6 +134,9 @@ func split(request string, keep func(raw string) bool) []clause {
 	}
 	for _, f := range strings.Fields(request) {
 		raw, end := trimPunct(f)
+		if f == ".." {
+			raw, end = f, false
+		}
 		q := strings.HasSuffix(f, "?")
 		if raw == "" {
 			if end {

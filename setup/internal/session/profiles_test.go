@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -286,4 +288,45 @@ func TestNotUnderstoodNamesTheOpenQuestion(t *testing.T) {
 	say(s, "needs internet")
 	out := say(s, "qwzx plorb")
 	contains(t, out, "if you meant to answer #1, which is still open, use its own commands: /accept 1")
+}
+
+// TestWriteToParentIsAGrantOrARefusal fails if "write to .." is not
+// understood, is applied without a card, or is granted when the parent holds
+// $HOME. The first world has the target two levels inside the home, so the
+// parent is an ordinary directory; the second has the home inside the parent.
+func TestWriteToParentIsAGrantOrARefusal(t *testing.T) {
+	w := testworld.New(t)
+	w.Target = filepath.Join(w.Home, "src", "proj")
+	if err := os.MkdirAll(w.Target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := openRules(w)
+	out := say(s, "write to ..")
+	contains(t, out, "writable: "+filepath.Join(w.Home, "src")+" (persists)", "cost: the sandbox can read, change and delete")
+	lacks(t, out, "did not understand")
+	if len(s.Pending()) != 1 || !s.Draft().Empty() {
+		t.Errorf("pending %v, draft %+v", numbers(s), s.Draft())
+	}
+
+	w = testworld.New(t)
+	s = openRules(w)
+	out = say(s, "write to ..")
+	contains(t, out, "refused (whole_home)")
+	if len(s.Pending()) != 0 || !s.Draft().Empty() {
+		t.Errorf("pending %v, draft %+v\n%s", numbers(s), s.Draft(), out)
+	}
+}
+
+// TestWriteToBareWordOffersPathReadings fails if a bare word after "write to"
+// is guessed into a grant, or if the readings offered for it are the generic
+// ones (analyze, identity, help) instead of the two grants it could mean.
+func TestWriteToBareWordOffersPathReadings(t *testing.T) {
+	w := testworld.New(t)
+	s := openRules(w)
+	out := say(s, "write to docs")
+	contains(t, out, "I did not understand", "writable: "+filepath.Join(w.Target, "docs"), "read-only: "+filepath.Join(w.Target, "docs"))
+	lacks(t, out, "analyze the project", "suggest the identity", "save the profile")
+	if !s.Draft().Empty() {
+		t.Errorf("guessed: %+v", s.Draft())
+	}
 }

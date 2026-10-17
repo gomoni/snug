@@ -466,7 +466,10 @@ func (r *reader) paths(c clause) []pathTok {
 		case strings.HasPrefix(raw, "/"), strings.HasPrefix(raw, "~/"), strings.HasPrefix(raw, "{home}"), strings.HasPrefix(raw, "{target}"), strings.HasPrefix(raw, "{target_parent}"):
 			p = raw
 		case raw == ".." || raw == "../":
-			continue
+			if !c.hasSet(writeWords) || c.hasSet(onlyRead) {
+				continue
+			}
+			p = "{target_parent}"
 		case strings.HasPrefix(raw, "../"):
 			p = "{target_parent}/" + strings.TrimPrefix(raw, "../")
 		case strings.HasPrefix(raw, "./"):
