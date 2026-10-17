@@ -42,7 +42,7 @@ import (
 // fields here now (MountNotes, Topology.ProcfsClosures*, Pasta, the
 // reportEnvEntry additions, and the synthetic PWD entry in buildReport).
 // STILL NOT HERE, named rather than silently absent: the host-derived
-// GIT/SSH/CLAUDE facts describeGit/describeSSH/describeClaude compute
+// SSH/CLAUDE facts describeSSH/describeClaude compute
 // (#332 F1f) and graft provenance beyond EngineView's own fields — the
 // "owned:" line and the engine-owned-host-paths list describeGrafts prints
 // (#332 F1h). Both were judged materially larger than the seven above and

@@ -42,8 +42,7 @@ const sshProbeTimeout = 5 * time.Second
 // permissions` naming a file the human never wrote, and snug's own SSH block
 // says nothing, because it only speaks for a path that was actually replaced.
 // A list that grows once per platform is a rule written somewhere it can be
-// forgotten; asking ssh is the same shape as asking git to tokenise a config
-// file instead of writing an INI parser (extractGitConfig).
+// forgotten; asking ssh is cheaper than writing an ssh_config parser.
 //
 // WHAT IT COSTS, stated plainly because it is a new host-side effect and
 // nothing else in snug has one of this shape:
@@ -153,9 +152,8 @@ func sshDefaultValues(ctx context.Context, ssh string) policy.SSHValues {
 // parseSSHValues keeps the whitelisted keys out of `ssh -G` output.
 //
 // The format is one `key value` per line, key lowercased by ssh itself, and
-// snug never writes an ssh_config parser: this is the same division of labour
-// extractGitConfig has with `git config --list` — the tool that owns the
-// grammar does the tokenising, and snug decides policy over the result.
+// snug never writes an ssh_config parser: the tool that owns the grammar does the
+// tokenising, and snug decides policy over the result.
 //
 // Includes and Match blocks are resolved by ssh before it prints, so an
 // `Include` in the host's file needs no handling here, and neither do the
@@ -163,8 +161,8 @@ func sshDefaultValues(ctx context.Context, ssh string) policy.SSHValues {
 //
 // A value that is not shaped like an algorithm list or an integer is dropped
 // and NAMED, never escaped. policy.sshValueOK applies the identical predicate
-// when rendering — two filters for the same reason the git extractor and
-// GitConfigFrom both drop control characters: this is the last place a host
+// when rendering — two filters for the same reason GitConfigFrom
+// also drops control characters: this is the last place a host
 // string can be stopped before it is a directive in a file the sandbox's ssh
 // obeys.
 func parseSSHValues(out string) policy.SSHValues {
@@ -289,8 +287,8 @@ func sshValuesLine(v policy.SSHValues) string {
 //     authors bytes.
 //
 // policy.systemSSHConfigCandidates applies the same rules again before any of
-// this can become a mount. Two filters, deliberately, for the same reason the
-// git extractor and GitConfigFrom both drop control characters.
+// this can become a mount. Two filters, deliberately, for the same reason
+// GitConfigFrom drops control characters.
 func parseSSHConfigChain(debug, home string) []string {
 	const marker = "Reading configuration data "
 	var out []string

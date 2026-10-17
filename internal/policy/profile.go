@@ -111,12 +111,6 @@ type Profile struct {
 	// LoginSet: it is an ordinary key, not a builtin.
 	Login []string
 
-	// Git is "off" | "extract", joined by max. "off" is the floor: an absent key
-	// means it, and the parser refuses it written. "extract" reconstructs the
-	// sandbox's git config from the host's — whitelisted keys only, never a
-	// bind. See gitextract.go for why binding the file is the wrong shape.
-	Git string
-
 	// Identity pins one git/ssh/gh account. See identity.go.
 	Identity *Identity
 

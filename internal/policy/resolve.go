@@ -279,7 +279,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, err
 	}
 
-	var identityOwner, gitOwner ProfileName
+	var identityOwner ProfileName
 	var mtuOwner ProfileName
 	var loginOwner ProfileName
 	pluginAllow := map[string]bool{}
@@ -464,6 +464,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			if err := refuseHalfNamedHost(name, id); err != nil {
 				return nil, err
 			}
+			if err := refuseUnhostlikeHost(name, id); err != nil {
+				return nil, err
+			}
 			if err := refuseUnpinnedGhAccount(name, id); err != nil {
 				return nil, err
 			}
@@ -582,16 +585,6 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			p.Net.Mode = p.Net.Mode.Join(mode)
-		}
-		if prof.Git != "" {
-			mode, err := ParseGitMode(prof.Git)
-			if err != nil {
-				return nil, fmt.Errorf("profile %q: %w", name, err)
-			}
-			if mode > p.Git {
-				gitOwner = name
-			}
-			p.Git = p.Git.Join(mode)
 		}
 		if prof.Podman != "" {
 			mode, err := ParsePodmanMode(prof.Podman)
@@ -822,25 +815,14 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.Net.Nameservers = ctx.HostNameservers
 	}
 
-	// The git config is GENERATED whenever anything asks for one — an identity
-	// pin, `git = "extract"`, or both. One writer, one path: two code paths
-	// racing to author ~/.gitconfig is how the last silent displacement got in.
-	//
-	// GitConfigFrom folds them in the right order: values extracted from the
-	// host fill in, an [identity] block overrides. A pin that a host value could
-	// silently override would not be a pin.
-	if p.Git == GitExtract || p.Identity != nil {
-		// Provenance names the stronger claimant: an [identity] block PINS this
-		// file, `git = "extract"` merely fills it in, and when both are present
-		// the pin is what a reader needs to see.
-		from := "git:" + string(gitOwner)
-		if identityOwner != "" {
-			from = "identity:" + string(identityOwner)
-		}
-		if cfg := GitConfigFrom(ctx.HostGit, p.Identity, home); len(cfg) > 0 {
+	// The git config is GENERATED from the [identity] pin, and only from it. One
+	// writer, one path: two code paths racing to author ~/.gitconfig is how the
+	// last silent displacement got in.
+	if p.Identity != nil {
+		if cfg := GitConfigFrom(p.Identity, home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{from},
+				Content: cfg, From: []string{"identity:" + string(identityOwner)},
 			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
 			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them, so
@@ -1394,10 +1376,6 @@ var retiredProfiles = map[ProfileName]string{
 	"cwd-rw": "@cwd-rw is now @target-rw: the grant was always {target}, the " +
 		"directory named on the command line, and \"cwd\" named a side effect of " +
 		"--chdir rather than the grant itself. Rewrite the selection as @target-rw.",
-	"git-ro": "@git-ro is now @git: the -ro suffix asserted a read-only bind, and this " +
-		"profile binds nothing — it reads user.name, user.email and init.defaultBranch " +
-		"from the host's git config and GENERATES ~/.gitconfig inside. Rewrite the " +
-		"selection as @git.",
 	"null": "there is no @null profile: a profile that grants nothing " +
 		"is a preference, not a grant. The lattice floor is what an empty " +
 		"selection already resolves to — use --no-defaults, not -p @null",
@@ -1805,7 +1783,7 @@ func refuseTargetInEphemeralGrant(set map[ProfileName]*Profile, names []ProfileN
 // the PRINCIPAL of the generated allowed_signers line (#576).
 //
 // THE RULE IS SCOPED TO signing_key ON PURPOSE. Everywhere else the email is a
-// value in a file snug quotes (`gitQuote` in gitextract.go), so a space in it is
+// value in a file snug quotes (`gitQuote` in gitconfig.go), so a space in it is
 // harmless. allowed_signers has NO quoting and SPACE IS ITS FIELD SEPARATOR, so
 // the same string stops being a value and becomes syntax — measured, an email of
 // `u@example.com,evil@example.com ssh-ed25519 AAAA...` authors a SIX-field line
@@ -1849,6 +1827,54 @@ func refuseUnprincipledSigningEmail(name ProfileName, id Identity) error {
 		"generated %s because %s. The file has one line, `PRINCIPAL namespaces=\"git\" KEY`, "+
 		"and it is unquoted — a principal is exactly one address. Set identity.git.email to a "+
 		"single address, or remove identity.git.signing_key", name, AllowedSignersGuest, why)
+}
+
+// refuseUnhostlikeHost refuses an identity.ssh.host or identity.gh.host that is
+// not a plain host name.
+//
+// The value is written UNQUOTED into syntax in three generated files: git's
+// `[url "git@<host>:"]` section header, ssh_config's `Host <host>` line, and
+// gh's hosts.yml key. gitQuote does not reach a section header, and a `"]`
+// there closes it. Measured on this branch, git 2.55: ssh.host
+// `a"] [core] sshCommand = id ["x` rendered `[url "git@a"] [core] sshCommand =
+// id ["x:"]`, and `git config --list --show-scope` inside reported
+// `global core.sshcommand=id [x:]` — a directive the profile never wrote, in
+// the file snug says carries no execution. A space does the same to ssh's Host
+// line, which takes a list of patterns. CheckText does not reach either: `"`,
+// `]` and space are not forging runes.
+//
+// So the value is held to the shape a host name has — letters, digits, `.`,
+// `-` — rather than escaped per consumer: three grammars are three quoting
+// rules to get wrong, and no host name needs anything else.
+func refuseUnhostlikeHost(name ProfileName, id Identity) error {
+	for _, h := range []struct{ key, v string }{
+		{"identity.ssh.host", id.SSH.Host},
+		{"identity.gh.host", id.Gh.Host},
+	} {
+		if h.v == "" || isHostName(h.v) {
+			continue
+		}
+		return fmt.Errorf("profile %q: %s = %s is not a host name. snug writes it unquoted "+
+			"into git's [url] section header, ssh's Host line and gh's hosts.yml, where a "+
+			"quote, bracket or space becomes syntax rather than part of the name. Use the bare "+
+			"host, letters, digits, '.' and '-' only (for example ghe.corp)",
+			name, h.key, VisibleText(strconv.Quote(h.v)))
+	}
+	return nil
+}
+
+func isHostName(s string) bool {
+	if s[0] == '-' || s[0] == '.' {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func refuseHalfNamedHost(name ProfileName, id Identity) error {

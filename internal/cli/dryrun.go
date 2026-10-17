@@ -96,7 +96,6 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeTopology(out, p)
 	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
-	describeGit(out, p)
 	describeCommitSigning(out, p)
 	describeSSH(out, p)
 	describeCommands(out, p, env)
@@ -1407,7 +1406,7 @@ func describeEngineResolution(out io.Writer, spelled, resolved string) {
 }
 
 // describeImageProvenance states who decides which bytes become an image, for
-// the same reason describeGit states who wrote the sandbox's git config: the
+// the same reason describeSSH states who wrote the sandbox's ssh_config: the
 // answer used to be "a file on this host that snug does not control", and a
 // screen that says nothing about it reads as though the resolved policy
 // covered it (issue #137).
@@ -1491,29 +1490,6 @@ func describeSignaturePolicy(out io.Writer, c *reportContainers) {
 	}
 }
 
-// describeGit states that the sandbox's git config was RECONSTRUCTED, and from
-// what.
-//
-// A `data ~/.gitconfig` row on its own says a file was generated; it does not say
-// that the host's was read to build it, nor that most of the host's file was
-// deliberately left behind. Both are decisions a human is entitled to see before
-// they run something — the first is host IO, the second is why their aliases are
-// missing inside.
-//
-// It also gives Policy.Git a reader. A field that is written and never read is a
-// field nobody notices going wrong.
-func describeGit(out io.Writer, p *policy.Policy) {
-	if p.Git != policy.GitExtract {
-		return
-	}
-	fmt.Fprintf(out, "GIT      config RECONSTRUCTED from the host's, never bound\n")
-	fmt.Fprintf(out, "         carried    %s\n", strings.Join(policy.SortedGitKeys(), " "))
-	fmt.Fprintf(out, "         left out   everything that names a program — credential.helper,\n")
-	fmt.Fprintf(out, "                    alias = !cmd, core.pager, core.sshCommand, textconv\n")
-	fmt.Fprintf(out, "         includeIf  \"gitdir:\" evaluated against this target; \"hasconfig:\"\n")
-	fmt.Fprintf(out, "                    and \"onbranch:\" ignored — the repository decides those\n")
-}
-
 // describeCommitSigning states the TRUST DECISION the generated
 // allowed_signers installs (#576).
 //
@@ -1541,16 +1517,14 @@ func describeCommitSigning(out io.Writer, p *policy.Policy) {
 }
 
 // describeSSH states that snug replaced this host's system-wide ssh_config,
-// and why — modelled directly on describeGit, because both are the same
-// disclosure ("we generated this file instead of trusting the host's") and
-// both need to say what triggered it and what it costs.
+// and why: a disclosure ("we generated this file instead of trusting the
+// host's") that needs to say what triggered it and what it costs.
 //
 // It reads p.SystemSSHConfigs — the record Resolve wrote — rather than
 // re-deriving the coverage predicate: the screen must describe what Resolve
 // actually decided, not recompute a second opinion that could disagree with
 // it. A host where nothing was replaced gets nothing here, silently and
-// correctly — the same as a host with no [identity] getting nothing from
-// describeGit.
+// correctly.
 //
 // It used to walk policy.SystemSSHConfigPaths itself, and that stopped being
 // the whole set when discovery landed (issue #42): the paths a run may
@@ -1724,7 +1698,7 @@ func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ) {
 // The second arm remains for a generated file that carries no entry, which is
 // unreachable today and is still cheaper than a screen that can lie.
 //
-// Modelled on describeGit and describeSSH, and gated the same way: on the
+// Modelled on describeSSH, and gated the same way: on the
 // AUTHORED KindData mount actually being in the resolved policy, so the screen
 // describes what Resolve decided rather than recomputing a second opinion that
 // could disagree with it. The trust arm and the settings.json sentence are gated
@@ -1987,7 +1961,7 @@ func projectedTargetSettings(p *policy.Policy) []string {
 // carries the trust entry for this target.
 //
 // It reads the staged CONTENT rather than re-reading the host, for the reason
-// describeGit and describeSSH exist in their present shape: the screen must
+// describeSSH exists in its present shape: the screen must
 // describe what snug decided, not recompute a second opinion that could
 // disagree. Mount.Content is a policy.Secret and stays one — what leaves this
 // function is a bool, and the only thing the caller prints is p.Target, which is

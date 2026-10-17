@@ -759,7 +759,7 @@ ssh-add -D 2>&1`).mustRun(t)
 // is a sentence without this check.
 //
 // resolve.go sets GIT_CONFIG_GLOBAL to the generated ~/.gitconfig whenever
-// git = "extract" or an [identity] block is present — REPLACING, not merging
+// an [identity] block is present — REPLACING, not merging
 // with, ~/.gitconfig and $XDG_CONFIG_HOME/git/config (both read by git when
 // GIT_CONFIG_GLOBAL is unset). $XDG_CONFIG_HOME is `{home}/.config`, one of
 // the eight writable tmpfs paths that die with the sandbox (base.toml,

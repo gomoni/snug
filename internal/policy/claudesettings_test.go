@@ -254,7 +254,7 @@ func TestClaudeSettingsCarriesNoContainer(t *testing.T) {
 // places it is enforced: FilterClaudeSettings (the normal path) and
 // ClaudeSettingsJSON (the backstop for a caller that never went through the
 // filter — mirroring GitConfigFrom's own re-check of control characters,
-// gitextract.go).
+// gitconfig.go).
 func TestClaudeSettingsRefusesAControlCharacter(t *testing.T) {
 	poisoned := "dark\x1b[1A\rPWNED"
 

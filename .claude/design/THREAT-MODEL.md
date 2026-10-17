@@ -340,7 +340,7 @@ stop the payload setting `GIT_CONFIG_KEY_0` for itself, and a writable `$HOME`
 reaches the same hijack through `~/.bashrc`. What snug owes is narrower — the
 `sanitise` rule, that the environment snug ITSELF hands over must not ship the
 override pre-installed. And **"you get what you configure" is not available
-to us about our own profiles**: `@claude`, `@git` and `@podman-socket` are
+to us about our own profiles**: `@claude` and `@podman-socket` are
 snug's material, so a shipped grant that hands over more than its abuse
 comment claims is a finding against snug, which is what `checkBuiltinEnvRoster`
 holds a builtin to a stricter rule than a human's profile for.

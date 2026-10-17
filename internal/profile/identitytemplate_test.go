@@ -120,10 +120,10 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 			"~/.config/snug/profiles.d/ would be, does not resolve: %v", err)
 	}
 
-	// Both includes actually took effect, not merely parsed: a future edit
+	// The include actually took effect, not merely parsed: a future edit
 	// that dropped the `include` line entirely would still parse and resolve
 	// (to an empty policy), and that must not read as this test passing.
-	for _, want := range []policy.ProfileName{"@net", "@git"} {
+	for _, want := range []policy.ProfileName{"@net"} {
 		if !slices.Contains(p.Profiles, want) {
 			t.Errorf("resolved policy does not carry %q; want the template's "+
 				"`include` to have pulled it in. Profiles: %v", want, p.Profiles)

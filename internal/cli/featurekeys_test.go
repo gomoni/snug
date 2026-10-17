@@ -7,8 +7,8 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 )
 
-// The rule #627 settled: a feature key (`network`, `dns`, `nss`, `podman`,
-// `git`) makes snug AUTHOR something — a generated file, a helper, a proxy —
+// The rule #627 settled: a feature key (`network`, `dns`, `nss`, `podman`)
+// makes snug AUTHOR something — a generated file, a helper, a proxy —
 // and never binds a host path at Resolve; a builtin that sets one is that key
 // plus the ordinary grants and includes the feature needs. The one bind a key
 // causes is podman's: after Resolve the CLI binds the per-run proxy socket snug
@@ -22,7 +22,6 @@ import (
 var featureKeyProfiles = map[policy.ProfileName]*policy.Profile{
 	"k-podman-socket": {Name: "k-podman-socket", Podman: "socket"},
 	"k-podman-build":  {Name: "k-podman-build", Podman: "build"},
-	"k-git":           {Name: "k-git", Git: "extract"},
 	"k-net":           {Name: "k-net", Network: "egress", DNS: true},
 	"k-nss":           {Name: "k-nss", NSS: true},
 	// login = ["claude"] alone refuses at Resolve for want of egress
@@ -49,11 +48,9 @@ func featureRegistry(t *testing.T) map[policy.ProfileName]*policy.Profile {
 	return m
 }
 
-// featureCtx gives every key something to author: host git values for `git`,
-// a nameserver for `dns`.
+// featureCtx gives every key something to author: a nameserver for `dns`.
 func featureCtx() policy.Context {
 	c := envGoldenCtx()
-	c.HostGit = policy.GitValues{"user.name": "Some One"}
 	c.HostNameservers = []string{"192.0.2.53"}
 	return c
 }
@@ -91,7 +88,7 @@ func TestAFeatureKeyAuthorsAndNeverBindsAHostPath(t *testing.T) {
 			t.Errorf("%s alone changed the engine grafts at Resolve (%d -> %d)", key, len(without.Grafts), len(with.Grafts))
 		}
 	}
-	// POSITIVE CONTROL: git's ~/.gitconfig and nss's three account files are
+	// POSITIVE CONTROL: nss's three account files are
 	// authored mounts the loop must have seen, or it compared nothing.
 	if authored < 4 {
 		t.Errorf("only %d authored mounts seen across the keys; the fixture no longer "+
@@ -108,7 +105,6 @@ func TestAFeatureBuiltinIsItsKeyPlusGrants(t *testing.T) {
 	for _, pair := range []struct{ builtin, key policy.ProfileName }{
 		{"@podman-socket", "k-podman-socket"},
 		{"@podman-build", "k-podman-build"},
-		{"@git", "k-git"},
 		{"@net", "k-net"},
 		{"@sys", "k-nss"},
 	} {
@@ -117,18 +113,18 @@ func TestAFeatureBuiltinIsItsKeyPlusGrants(t *testing.T) {
 		// The key the builtin itself writes carries the same value as the
 		// key-only profile: the twin is that key, not a different setting.
 		bp, kp := reg[pair.builtin], reg[pair.key]
-		if bp.Podman != kp.Podman || bp.Git != kp.Git || bp.NSS != kp.NSS ||
+		if bp.Podman != kp.Podman || bp.NSS != kp.NSS ||
 			bp.Network != kp.Network || bp.DNS != kp.DNS {
 			t.Errorf("%s writes a different feature value than %s: %+v vs %+v", pair.builtin,
 				pair.key, featureValues(bp), featureValues(kp))
 		}
 		// Resolved, the bundle may carry MORE — @podman-socket includes @sys,
 		// which sets nss — but never less of any feature.
-		if b.Podman < k.Podman || b.Git < k.Git || (k.NSS && !b.NSS) ||
+		if b.Podman < k.Podman || (k.NSS && !b.NSS) ||
 			b.Net.Mode < k.Net.Mode || (k.Net.DNS && !b.Net.DNS) {
-			t.Errorf("%s resolves to less of a feature than %s alone: podman %v/%v git %v/%v "+
+			t.Errorf("%s resolves to less of a feature than %s alone: podman %v/%v "+
 				"nss %v/%v network %v/%v dns %v/%v", pair.builtin, pair.key, b.Podman, k.Podman,
-				b.Git, k.Git, b.NSS, k.NSS, b.Net.Mode, k.Net.Mode, b.Net.DNS, k.Net.DNS)
+				b.NSS, k.NSS, b.Net.Mode, k.Net.Mode, b.Net.DNS, k.Net.DNS)
 		}
 		for guest, km := range k.Mounts {
 			bm, ok := b.Mounts[guest]
@@ -143,6 +139,6 @@ func TestAFeatureBuiltinIsItsKeyPlusGrants(t *testing.T) {
 	}
 }
 
-func featureValues(p *policy.Profile) [5]any {
-	return [5]any{p.Podman, p.Git, p.NSS, p.Network, p.DNS}
+func featureValues(p *policy.Profile) [4]any {
+	return [4]any{p.Podman, p.NSS, p.Network, p.DNS}
 }

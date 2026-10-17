@@ -1421,12 +1421,10 @@ func snugsOwnCovered(guest string) (at string, own ownedPath, ok bool) {
 // those profiles on the first invocation. The principled statement is the same
 // one: masking requires the outer mount to HAVE content at the inner path.
 //
-// Two names left this sentence stale before anyone re-read it, which is worth
-// noting because the row itself is load-bearing: @git's .gitconfig was cited
-// here as a BIND long after @git stopped binding anything (it extracts and
-// generates — .claude/design/GIT-CONFIG.md), and @claude's settings.json went
-// the same way in issue #17. Both are still covered by this row; they are just
-// covered as generated content rather than as binds.
+// @claude's settings.json was cited here as a BIND after it stopped being one
+// (issue #17), which is worth noting because the row itself is load-bearing.
+// The identity files and {home}/.gitconfig are covered as generated content
+// rather than as binds.
 //
 // This function compares guest paths lexically, which is only honest because
 // rejectRelocatedGrant runs first and refuses every non-Authored mount whose

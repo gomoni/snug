@@ -67,7 +67,6 @@ type rawProfile struct {
 	NSS     bool   `toml:"nss"`
 
 	Podman   string       `toml:"podman"`
-	Git      string       `toml:"git"`
 	Login    []string     `toml:"login"`
 	Identity *rawIdentity `toml:"identity"`
 }
@@ -374,7 +373,6 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			MTU:         r.MTU,
 			NSS:         r.NSS,
 			Podman:      r.Podman,
-			Git:         r.Git,
 			Login:       r.Login,
 			Identity:    identity,
 			Source:      source,
@@ -401,10 +399,7 @@ func checkFeatureModes(r rawProfile) error {
 	if _, err := policy.ParsePodmanMode(r.Podman); err != nil {
 		return err
 	}
-	if _, err := policy.ParseLoginSet(r.Login); err != nil {
-		return err
-	}
-	_, err := policy.ParseGitMode(r.Git)
+	_, err := policy.ParseLoginSet(r.Login)
 	return err
 }
 

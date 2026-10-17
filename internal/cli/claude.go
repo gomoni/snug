@@ -322,7 +322,7 @@ const maxCredentialsBytes = 64 << 10
 // `enabledPlugins` and the marketplace keys each name a program to run, a
 // variable to set, or code to fetch. A read-only bind of the host's file (what
 // this profile did until now) stops the sandbox EDITING it and SUPPLIES every
-// one of those — the ~/.gitconfig argument (gitextract.go's doc comment), one
+// one of those — the ~/.gitconfig argument (GitConfigFrom's doc comment), one
 // tool over. So this reads the host's file as DATA, keeps
 // policy.ClaudeSettingAllowlist's ten scalar keys, and writes the file the
 // sandbox actually sees. The filter itself lives in internal/policy, pure and
