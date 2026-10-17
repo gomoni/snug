@@ -118,3 +118,19 @@ func TestNotGrantedListsAzure(t *testing.T) {
 		t.Errorf("not-granted does not name ~/.azure, which holds a tenant-wide refresh token:\n%s", got)
 	}
 }
+
+// Red-team finding: the absent row was a constant, so a grant onto ~/.azure
+// was readable inside while the screen said absent.
+func TestKubeDryRunSaysWhenAGrantShowsAzure(t *testing.T) {
+	p := kubePolicy(t)
+	p.Mounts["/home/u/.azure"] = policy.Mount{Guest: "/home/u/.azure", Host: "/srv/az", Kind: policy.KindBind, From: []string{"leaky"}}
+	var b bytes.Buffer
+	describeKube(&b, buildKubeReport(p))
+	got := b.String()
+	if !strings.Contains(got, "VISIBLE    ~/.azure (granted by leaky)") {
+		t.Errorf("a granted ~/.azure is not called out:\n%s", got)
+	}
+	if strings.Contains(got, "~/.kube/cache, ~/.azure") {
+		t.Errorf("~/.azure is still listed absent:\n%s", got)
+	}
+}

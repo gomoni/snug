@@ -28,6 +28,7 @@ type reportKube struct {
 	// token, which the mint leaves out because a certificate is there.
 	StaticTokenUnused bool
 	Absent            []string // what the host file holds and the sandbox does not get
+	Visible           []string // credential-bearing paths a grant makes visible anyway
 	Shim              string
 	Socket            string
 }
@@ -47,14 +48,24 @@ func buildKubeReport(p *policy.Policy) *reportKube {
 	if len(k.HostUser.ClientCertData) == 0 {
 		cred = "your static token"
 	}
-	absent := append(append([]string{}, k.OtherContexts...), "the host user entry ("+strings.Join(k.HostUserShape, ", ")+")",
-		"~/.kube/cache", "~/.azure")
+	absent := append(append([]string{}, k.OtherContexts...), "the host user entry ("+strings.Join(k.HostUserShape, ", ")+")")
+	var visible []string
+	// Read off the policy, not asserted: a profile grant onto either path
+	// makes it visible whatever identity.kube does (red team: a host:guest
+	// bind onto ~/.azure was readable while this row said absent).
+	for _, rel := range []string{".kube/cache", ".azure"} {
+		if from, ok := guestVisible(p, p.Home+"/"+rel); ok {
+			visible = append(visible, "~/"+rel+" (granted by "+from+")")
+		} else {
+			absent = append(absent, "~/"+rel)
+		}
+	}
 	return &reportKube{
 		Context: k.Context, Server: k.Server, ServiceAccount: k.SANamespace + "/" + k.SAName,
 		Namespace: k.SANamespace, Kubectl: p.KubeMintBinary, KubectlProblem: p.KubeMintProblem,
 		MintArgv: k.MintArgv(kubectl, mintFile, cache), MintEnv: policy.KubeMintEnvNames(),
 		MintBudget: policy.KubeMintBudget, Requested: policy.KubeTokenDuration,
-		Credential: cred, Absent: absent,
+		Credential: cred, Absent: absent, Visible: visible,
 		StaticTokenUnused: len(k.HostUser.ClientCertData) > 0 && slices.Contains(k.HostUserShape, "static token"),
 		Shim:              policy.KubeTokenShimGuest, Socket: policy.KubeTokenSocketGuest,
 	}
@@ -103,10 +114,33 @@ func describeKube(out io.Writer, k *reportKube) {
 		}
 		fmt.Fprintf(out, "         %s %s\n", label, visibleValue(line))
 	}
+	for _, v := range k.Visible {
+		fmt.Fprintf(out, "         VISIBLE    %s — identity.kube does not keep it out\n", visibleValue(v))
+	}
 	fmt.Fprintf(out, "         reach      whatever %s's RoleBinding allows; snug cannot see RBAC and\n", visibleValue(k.ServiceAccount))
 	fmt.Fprintf(out, "                    claims nothing. After the run, up to one token lifetime — and only\n")
 	fmt.Fprintf(out, "                    if the Role grants no token/secret create or read, no workload\n")
 	fmt.Fprintf(out, "                    create or patch, no nodes/proxy. pods/exec, pods/portforward and\n")
 	fmt.Fprintf(out, "                    services/proxy reach the cluster's private network through the\n")
 	fmt.Fprintf(out, "                    API server\n")
+}
+
+// guestVisible reports whether guest is reachable inside through a grant: the
+// deepest mount at or above it is a bind, graft or generated file rather than
+// a tmpfs or snug's anchor. from is that mount's provenance.
+func guestVisible(p *policy.Policy, guest string) (string, bool) {
+	best := ""
+	for g := range p.Mounts {
+		if (g == guest || strings.HasPrefix(guest, g+"/")) && len(g) > len(best) {
+			best = g
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	m := p.Mounts[best]
+	if m.Anchor || m.Kind == policy.KindTmpfs {
+		return "", false
+	}
+	return strings.Join(m.From, "+"), true
 }

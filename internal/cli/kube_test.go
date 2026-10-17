@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -192,5 +194,80 @@ func TestKubeDryRunMintsNothing(t *testing.T) {
 	}
 	if _, err := startKubeIdentity(pol, policy.OSEnviron{}, false, false); err == nil {
 		t.Error("a real run started with no host kubectl")
+	}
+}
+
+func TestKubeMintBinaryRefusesAHardLink(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	copyTo := filepath.Join(dir, "kubectl")
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(copyTo, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkKubectlIsABinary(copyTo); err != nil {
+		t.Fatalf("control: a single-link ELF refused: %v", err)
+	}
+	if err := os.Link(copyTo, filepath.Join(dir, "other-name")); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkKubectlIsABinary(copyTo); err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Errorf("a kubectl with a second hard link was accepted: %v", err)
+	}
+}
+
+// A mint must not retire the OS thread it ran on: an earlier child of this
+// process whose Pdeathsig is tied to that thread — the stage, in a real run —
+// would be SIGKILLed with it. Measured as the stage dying partway through
+// TestKubeBrokerBudgetRefuses before runKubeMint unlocked its thread.
+func TestKubeMintDoesNotKillAnEarlierPdeathsigChild(t *testing.T) {
+	// Forked from many goroutines, so their parent threads are spread over
+	// the runtime's idle threads — the ones a mint goroutine is handed.
+	victims := make([]*exec.Cmd, 32)
+	var wg sync.WaitGroup
+	for i := range victims {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := exec.Command("sleep", "60")
+			c.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+			if err := c.Start(); err == nil {
+				victims[i] = c
+			}
+			time.Sleep(10 * time.Millisecond)
+		}()
+	}
+	wg.Wait()
+	for _, c := range victims {
+		if c == nil {
+			t.Fatal("could not start a victim")
+		}
+	}
+	defer func() {
+		for _, c := range victims {
+			c.Process.Kill()
+			c.Wait()
+		}
+	}()
+	stub := writeStub(t, `echo '{"status":{"token":"t","expirationTimestamp":"2999-01-01T00:00:00Z"}}'`)
+	for range 100 {
+		if _, _, err := runKubeMint(kubeMintCmd(context.Background(), []string{stub}, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range victims {
+		if err := c.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("a Pdeathsig child started before the mints was killed: %v", err)
+		}
+		var ws syscall.WaitStatus
+		if pid, _ := syscall.Wait4(c.Process.Pid, &ws, syscall.WNOHANG, nil); pid != 0 {
+			t.Fatalf("a Pdeathsig child started before the mints exited: %v", ws)
+		}
 	}
 }

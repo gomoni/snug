@@ -585,6 +585,7 @@ type jsonKube struct {
 	// StaticTokenUnused: the host user also holds a static token, never sent.
 	StaticTokenUnused bool     `json:"static_token_unused"`
 	Absent            []string `json:"absent"`
+	Visible           []string `json:"visible,omitempty"`
 	Shim              string   `json:"shim"`
 	Socket            string   `json:"socket"`
 }
@@ -889,8 +890,8 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Kubectl: text(k.Kubectl), KubectlProblem: text(k.KubectlProblem),
 			MintArgv: texts(k.MintArgv), MintEnv: k.MintEnv, MintBudget: k.MintBudget,
 			Requested: k.Requested, Credential: k.Credential, StaticTokenUnused: k.StaticTokenUnused,
-			Absent: texts(k.Absent),
-			Shim:   k.Shim, Socket: k.Socket,
+			Absent: texts(k.Absent), Visible: texts(k.Visible),
+			Shim: k.Shim, Socket: k.Socket,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

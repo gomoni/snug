@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,7 +37,9 @@ func newKubeFixture(t *testing.T, mode string) kubeFixture {
 		t.Fatal(err)
 	}
 	cfgDir := t.TempDir()
-	ca := base64.StdEncoding.EncodeToString([]byte("-----BEGIN CERTIFICATE-----\nRklYVFVSRQ==\n-----END CERTIFICATE-----\n"))
+	// A real self-signed certificate (snug-test-ca, no key kept): snug parses
+	// every CA block as X.509 before re-encoding it.
+	ca := "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJUVENCOWFBREFnRUNBZ0VCTUFvR0NDcUdTTTQ5QkFNQ01CY3hGVEFUQmdOVkJBTVRESE51ZFdjdGRHVnoKZEMxallUQWVGdzB5TmpBeE1ERXdNREF3TURCYUZ3MHpOakF4TURFd01EQXdNREJhTUJjeEZUQVRCZ05WQkFNVApESE51ZFdjdGRHVnpkQzFqWVRCWk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQk1ZVld3NjVka2svCkZiYk0vTjJJbnc4ZU5CYzN3bi94RmFzekQwamdqdEFwUFp0em9Eam1lblVrbUQ1TEh1RTJnNjIzcXpTNmFnM2YKa0RsOGxjUzlwbGFqTWpBd01BOEdBMVVkRXdFQi93UUZNQU1CQWY4d0hRWURWUjBPQkJZRUZEN2FIT3l2Sm4rdAp1T2IrbUtleG1nOVI2Zk1NTUFvR0NDcUdTTTQ5QkFNQ0EwY0FNRVFDSUdyd3dwaEFzV1Q2bWFVS0xsWXZ0VXpTCkVRUnZYN1k5T1N5NzJ4UVZDRm0vQWlBakNEYXRvQXIvNUd5YWFFUnkyNUpPSHQybmF5MXdjb0VDQ0psSUVNYUYKMnc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
 	kubeconfig := filepath.Join(cfgDir, "config")
 	if err := os.WriteFile(kubeconfig, []byte(fmt.Sprintf(`apiVersion: v1
 clusters:

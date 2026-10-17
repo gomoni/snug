@@ -66,9 +66,18 @@ func checkKubectlIsABinary(path string) error {
 		return fmt.Errorf("host kubectl %s: %w", policy.VisibleText(path), err)
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
 		return fmt.Errorf("host kubectl %s is not a regular file; snug runs it on the host with your "+
 			"cluster credential, so it must be the kubectl binary itself", policy.VisibleText(path))
+	}
+	// A second hard link is a second name the grant checks never judged — one
+	// inside a target an earlier run could write lets that run replace the
+	// bytes in place (red team, measured).
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
+		return fmt.Errorf("host kubectl %s has %d hard links; a second name for the binary is a second "+
+			"place it can be rewritten from, and snug runs it with your cluster credential — install "+
+			"kubectl as a file of its own", policy.VisibleText(path), st.Nlink)
 	}
 	head := make([]byte, 4)
 	n, _ := io.ReadFull(f, head)
@@ -144,6 +153,13 @@ var kubeTokenShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // runKubeMint runs cmd to completion on a locked OS thread — Pdeathsig fires
 // when the THREAD that forked the child exits, and the Go scheduler may retire
 // an unlocked one while the child still runs — and parses the TokenRequest.
+//
+// The thread is UNLOCKED again once the child has been waited for, and that is
+// not tidiness. A goroutine that exits while locked takes its OS thread with
+// it, and the thread it locked may be one an EARLIER fork ran on — the stage's.
+// The stage carries Pdeathsig too, so retiring that thread SIGKILLs it: measured
+// as `the stage closed the control channel without reporting the payload's
+// exit` partway through TestKubeBrokerBudgetRefuses, 64 mints in one run.
 func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
 	var out, errb cappedBuffer
 	out.max, errb.max = 1<<20, 16<<10
@@ -151,8 +167,7 @@ func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
 	done := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
-		// Never unlocked: the thread exits with the goroutine, which is what
-		// the Pdeathsig contract wants.
+		defer runtime.UnlockOSThread()
 		done <- cmd.Run()
 	}()
 	if err := <-done; err != nil {

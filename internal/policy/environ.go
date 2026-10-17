@@ -2,12 +2,14 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/gomoni/snug/internal/hostread"
 	"github.com/gomoni/snug/internal/kubecfg"
@@ -187,7 +189,17 @@ func unescapeMountinfo(s string) string {
 // KubeConfig opens with RESOLVE_NO_SYMLINKS: the path is a file the human
 // named, and a link planted on it would choose which server snug's host-side
 // mint sends a credential to.
+//
+// A second hard link is refused too: RESOLVE_NO_SYMLINKS does not see one, and
+// a link left inside a target an earlier run could write would let that run
+// rewrite the file in place (red team, measured with a pre-existing link).
 func (OSEnviron) KubeConfig(p string) (kubecfg.File, error) {
+	if fi, err := os.Lstat(p); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
+			return kubecfg.File{}, fmt.Errorf("it has %d hard links; a second name for the file "+
+				"is a second place it can be rewritten from. Copy it to a file of its own", st.Nlink)
+		}
+	}
 	data, err := hostread.RequiredNoLinks(p, hostread.MaxKubeconfigBytes)
 	if err != nil {
 		return kubecfg.File{}, err

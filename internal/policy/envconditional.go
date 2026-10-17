@@ -100,9 +100,12 @@ var conditionalEnvs = []conditionalEnv{
 		writes: "points git at the ~/.gitconfig it generates",
 	},
 	{
-		names:  []string{"KUBECONFIG"},
-		key:    func(*Profile) string { return "identity.kube" },
-		on:     func(p *Policy) bool { return p.Kube != nil },
+		names: []string{"KUBECONFIG"},
+		key:   func(*Profile) string { return "identity.kube" },
+		// The pin, not p.Kube: checkConditionalEnv runs before resolveKube
+		// builds the binding, so p.Kube is always nil here and the conflict
+		// would never fire (red team, measured).
+		on:     func(p *Policy) bool { return p.Identity.Pinned("kube") },
 		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "kube") },
 		writes: "points kubectl at the one-context kubeconfig it generates",
 	},

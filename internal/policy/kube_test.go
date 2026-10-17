@@ -483,3 +483,61 @@ func TestAzureFamilyIsInlineConfigAndItsPointersAreNot(t *testing.T) {
 		}
 	}
 }
+
+// Red-team findings on the identity.kube implementation, each a permanent test.
+
+func TestConditionalEnvKubeconfigRefused(t *testing.T) {
+	for name, side := range map[string]EnvGrants{
+		"set":     {Set: map[string]string{"KUBECONFIG": "/home/u/proj/sub/kc"}},
+		"inherit": {Inherit: []string{"KUBECONFIG"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, err := kubeResolve(t, kubeCase{profile: func(p *Profile) { p.Environ = side }})
+			if err == nil || p != nil || !strings.Contains(err.Error(), "KUBECONFIG") {
+				t.Fatalf("a profile's KUBECONFIG beside identity.kube resolved (%v); snug's value silently wins", err)
+			}
+		})
+	}
+}
+
+func TestKubeCADataIsReencodedNotCopied(t *testing.T) {
+	good, err := kubeResolve(t, kubeCase{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemCA := string(good.Kube.CAData)
+	withKey := pemCA + "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+	trailing := pemCA + "trailing bytes\n"
+	notCert := "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+	for name, bundle := range map[string]string{"private key after": withKey, "trailing bytes": trailing, "not x509": notCert} {
+		file := strings.Replace(kubeFixture(t), base64.StdEncoding.EncodeToString(good.Kube.CAData),
+			base64.StdEncoding.EncodeToString([]byte(bundle)), -1)
+		if file == kubeFixture(t) {
+			t.Fatal("fixture CA not found to replace; the test would pass vacuously")
+		}
+		if _, err := kubeResolve(t, kubeCase{file: file}); err == nil {
+			t.Errorf("%s: a CA bundle that is not only certificates was carried into the sandbox", name)
+		}
+	}
+}
+
+func TestKubeLoopbackCheckFoldsCaseAndTrailingDot(t *testing.T) {
+	for _, srv := range []string{"https://LOCALHOST:6443", "https://localhost.:6443", "https://Api.LocalHost"} {
+		wantKubeRefusal(t, kubeCase{file: strings.Replace(kubeFixture(t),
+			"https://aks-dev.example.azmk8s.io:443", srv, 1)}, "host's loopback")
+	}
+}
+
+func TestOSEnvironKubeConfigRefusesAHardLink(t *testing.T) {
+	dir := t.TempDir()
+	p := dir + "/config"
+	if err := os.WriteFile(p, []byte("clusters: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(p, dir+"/second-name"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (OSEnviron{}).KubeConfig(p); err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Errorf("a kubeconfig with a second hard link was read: %v", err)
+	}
+}

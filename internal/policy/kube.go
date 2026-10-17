@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -299,13 +300,14 @@ func kubeCluster(b *KubeBinding, c kubecfg.Cluster, ctx Context) error {
 		return fmt.Errorf("cluster %s: server %s is not https; a bearer token over plain http is readable "+
 			"on the path, and snug accepts only https://host[:port][/path]", name, VisibleText(server))
 	}
-	// A usability check, NOT the bound. The bound is pasta's
-	// `--map-host-loopback none` and `-T none` plus the stage sealing every
-	// host-owned address (net.go, stage/loopback.go): a DNS name that resolves
-	// to the host at run time is still sealed. Names are not resolved here,
-	// because resolution stays pure; this only turns a certain failure into a
-	// refusal that says why.
-	host := u.Hostname()
+	// A usability check, NOT the bound, and only for the SANDBOX side: inside,
+	// pasta's `--map-host-loopback none` and `-T none` plus the stage sealing
+	// every host-owned address (net.go, stage/loopback.go) are the bound, and a
+	// name resolving to the host at run time is still sealed. The host-side
+	// mint is outside that seal and dials whatever the kubeconfig names; what
+	// bounds it is that the kubeconfig is the human's (the location refusals
+	// above). Names are not resolved here, because resolution stays pure.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return kubeLoopback(name, server)
 	}
@@ -328,10 +330,11 @@ func kubeCluster(b *KubeBinding, c kubecfg.Cluster, ctx Context) error {
 		if err != nil {
 			return fmt.Errorf("cluster %s: certificate-authority-data is not base64: %v", name, err)
 		}
-		if blk, _ := pem.Decode(der); blk == nil || blk.Type != "CERTIFICATE" {
-			return fmt.Errorf("cluster %s: certificate-authority-data is not a PEM CERTIFICATE", name)
+		ca, err := reencodeCAs(der)
+		if err != nil {
+			return fmt.Errorf("cluster %s: certificate-authority-data %v", name, err)
 		}
-		b.CAData = der
+		b.CAData = ca
 	}
 	return nil
 }
@@ -556,4 +559,36 @@ func (p *Policy) ResolveKubeMintBinary(env Environ, asGiven string) (string, err
 		return "", fmt.Errorf("host kubectl %s: %s %s", VisibleText(asGiven), selectionClause(name, asked), why)
 	}
 	return resolved, nil
+}
+
+// reencodeCAs parses every PEM block of a CA bundle as an X.509 certificate
+// and re-encodes them, so what reaches the sandbox is snug's own encoding of
+// certificates it parsed — never the host bytes. A block of another type, a
+// block with headers, or anything but whitespace after the last block refuses:
+// checking only the first block let a trailing PRIVATE KEY ride through into
+// the sandbox's kubeconfig (red team, measured).
+func reencodeCAs(der []byte) ([]byte, error) {
+	var out []byte
+	rest := der
+	for {
+		blk, next := pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		if blk.Type != "CERTIFICATE" || len(blk.Headers) > 0 {
+			return nil, fmt.Errorf("holds a %q PEM block; only certificates are carried", blk.Type)
+		}
+		if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
+			return nil, fmt.Errorf("holds a certificate that does not parse: %v", err)
+		}
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: blk.Bytes})...)
+		rest = next
+	}
+	if len(out) == 0 {
+		return nil, errors.New("is not a PEM CERTIFICATE")
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return nil, errors.New("has bytes after its last certificate")
+	}
+	return out, nil
 }
