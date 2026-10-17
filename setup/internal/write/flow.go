@@ -53,29 +53,10 @@ type Plan struct {
 // cannot be answered at all: an unusable name, an unreadable existing file,
 // snug printing no document.
 func Prepare(ctx context.Context, d *draft.Draft, profileDir, snug string, run hostfacts.Runner, profiles []ingest.Profile, others []verify.File, idWarn *probe.Warning) (Plan, error) {
-	if !draft.ValidProfileName(d.Name) {
-		return Plan{}, fmt.Errorf("%q is not a profile name (letters, digits and dashes; no underscore, dot or leading @); change NAME", safe.Inline(d.Name))
+	p, done, err := newPlan(d, profileDir, profiles)
+	if err != nil || done {
+		return p, err
 	}
-	p := Plan{Path: filepath.Join(profileDir, d.Name+".toml"), New: d.Render()}
-	for _, pr := range profiles {
-		if pr.Name != d.Name {
-			continue
-		}
-		if def := filepath.Join(pr.Dir, pr.File); filepath.Clean(def) != filepath.Clean(p.Path) {
-			p.Blocked = append(p.Blocked, fmt.Sprintf("profile %s is defined in %s; change NAME", d.Name, safe.Inline(def)))
-		}
-	}
-	if err := regularFile(p.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		p.Overwrite = true
-		p.Blocked = append(p.Blocked, err.Error())
-		return p, nil
-	}
-	old, exists, err := ReadProfile(p.Path)
-	if err != nil {
-		return Plan{}, fmt.Errorf("cannot look at %s: %w", p.Path, err)
-	}
-	p.Old, p.Overwrite = old, exists
-
 	if snug == "" {
 		p.Notes = append(p.Notes, "not verified by snug")
 		return p, nil
@@ -96,6 +77,45 @@ func Prepare(ctx context.Context, d *draft.Draft, profileDir, snug string, run h
 		p.Blocked = append(p.Blocked, strings.Join(strings.Fields(safe.Inline(df.What)), " "))
 	}
 	return p, nil
+}
+
+// newPlan is the part of Prepare that needs no snug: the name, the other
+// definitions of it, and the file that is there now. done is true when the
+// plan is already blocked and nothing more can be asked of it.
+func newPlan(d *draft.Draft, profileDir string, profiles []ingest.Profile) (p Plan, done bool, err error) {
+	if !draft.ValidProfileName(d.Name) {
+		return Plan{}, false, fmt.Errorf("%q is not a profile name (letters, digits and dashes; no underscore, dot or leading @); change NAME", safe.Inline(d.Name))
+	}
+	p = Plan{Path: filepath.Join(profileDir, d.Name+".toml"), New: d.Render()}
+	for _, pr := range profiles {
+		if pr.Name != d.Name {
+			continue
+		}
+		if def := filepath.Join(pr.Dir, pr.File); filepath.Clean(def) != filepath.Clean(p.Path) {
+			p.Blocked = append(p.Blocked, fmt.Sprintf("profile %s is defined in %s; change NAME", d.Name, safe.Inline(def)))
+		}
+	}
+	if err := regularFile(p.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		p.Overwrite = true
+		p.Blocked = append(p.Blocked, err.Error())
+		return p, true, nil
+	}
+	old, exists, err := ReadProfile(p.Path)
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("cannot look at %s: %w", p.Path, err)
+	}
+	p.Old, p.Overwrite = old, exists
+	return p, false, nil
+}
+
+// PrepareIdentity returns the Plan for writing d, the identity profile
+// BuildIdentity made, to profileDir/NAME.toml. It writes nothing and does not
+// ask snug: the profile alone selects nothing worth comparing, and the project
+// profile that includes it is checked with this file beside it. It blocks and
+// errors on the same conditions as Prepare.
+func PrepareIdentity(d *draft.Draft, profileDir string, profiles []ingest.Profile) (Plan, error) {
+	p, _, err := newPlan(d, profileDir, profiles)
+	return p, err
 }
 
 // refusedIdentity returns the name of the profile in idWarn that snug's
@@ -155,6 +175,24 @@ func (p Plan) Body() string {
 		}
 	}
 	return b.String()
+}
+
+// Together returns the one confirmation screen for writing plans in order: a
+// title naming every file, and a body that heads each plan's own with the file
+// it is about. A single plan is shown as Title and Body show it. blocked is
+// true when any plan is: none of them is then written, because the later ones
+// include the earlier.
+func Together(plans ...Plan) (title, body string, blocked bool) {
+	if len(plans) == 1 {
+		return plans[0].Title(), plans[0].Body(), len(plans[0].Blocked) > 0
+	}
+	var titles, bodies []string
+	for _, p := range plans {
+		titles = append(titles, p.Title())
+		bodies = append(bodies, "== "+safe.Inline(p.Path)+"\n"+p.Body())
+		blocked = blocked || len(p.Blocked) > 0
+	}
+	return strings.Join(titles, ", and "), strings.Join(bodies, "\n\n"), blocked
 }
 
 // Apply writes the plan. It refuses a Blocked plan, and refuses to overwrite
@@ -296,16 +334,16 @@ func ApplyFix(path, backup string, oldBody, newBody []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// IdentityFiles returns the user files that define the profile identity and,
-// transitively, the non-built-in profiles it includes, as the extra files
+// IdentityFiles returns the user files that define the profiles names and,
+// transitively, the non-built-in profiles they include, as the extra files
 // verify.Run needs beside the draft. A file that defines skip (the profile
 // being written) is left out, so the check never sees an older copy of it.
-// identity "" returns nil.
-func IdentityFiles(files []ingest.ProfileFile, profiles []ingest.Profile, identity, skip string) []verify.File {
-	if identity == "" {
+// No names returns nil.
+func IdentityFiles(files []ingest.ProfileFile, profiles []ingest.Profile, skip string, names ...string) []verify.File {
+	if len(names) == 0 {
 		return nil
 	}
-	need := []string{identity}
+	need := slices.Clone(names)
 	for i := 0; i < len(need); i++ {
 		for _, p := range profiles {
 			if p.Name != need[i] {

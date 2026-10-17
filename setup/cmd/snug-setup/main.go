@@ -142,9 +142,9 @@ func run() (int, error) {
 
 	s := &setup{
 		o: o, home: home, target: target, tty: tty, ctx: ctx,
-		run: hostfacts.ExecRunner, defaultDir: defaultDir,
+		run: hostfacts.ExecRunner, lookPath: exec.LookPath, defaultDir: defaultDir,
 	}
-	s.snug, _ = exec.LookPath("snug")
+	s.snug, _ = s.lookPath("snug")
 	s.gather()
 	if o.print {
 		return s.printOnly()
@@ -159,9 +159,11 @@ type setup struct {
 	tty    bool
 	ctx    context.Context
 	run    hostfacts.Runner
-	snug   string
-	facts  ingest.Facts
-	sel    suggest.Selection
+	// lookPath finds a command on PATH; tests replace it.
+	lookPath func(string) (string, error)
+	snug     string
+	facts    ingest.Facts
+	sel      suggest.Selection
 	// defaultDir is where snug reads profiles from when nobody points it
 	// elsewhere.
 	defaultDir string
@@ -170,6 +172,7 @@ type setup struct {
 func (s *setup) gather() {
 	dirs := ingest.ProfileDirs(os.Getenv("XDG_CONFIG_HOME"), s.home)
 	s.facts = ingest.Gather(s.ctx, s.target, s.home, dirs, s.run)
+	s.facts.Binaries = ingest.LocateBinaries(suggest.ToolBinaries(), s.lookPath, filepath.EvalSymlinks)
 	s.sel = suggest.Suggest(s.facts, s.home, s.target)
 	if s.o.name != "" {
 		s.sel.Text[suggest.Name] = s.o.name
@@ -189,13 +192,6 @@ func (s *setup) notes() []string {
 	out = append(out, s.facts.Warnings...)
 	out = append(out, s.facts.Target.Warnings...)
 	return out
-}
-
-func identityOf(sel suggest.Selection) string {
-	if l := sel.Rows[suggest.Identity].Choices[sel.Pick[suggest.Identity]].Label; l != suggest.NoIdentity {
-		return l
-	}
-	return ""
 }
 
 func (s *setup) printOnly() (int, error) {
@@ -225,6 +221,9 @@ func (s *setup) printOnly() (int, error) {
 		fmt.Fprintf(os.Stderr, "! %s: not in the profile: %s\n", strings.ToLower(rowName(id)), safe.Inline(msg))
 	}
 	out := d.Render()
+	if id, _ := suggest.BuildIdentity(s.sel, s.host()); id != nil {
+		out = id.Render() + "\n" + out
+	}
 	for _, r := range s.sel.Rows {
 		if !r.Sure && s.sel.Pick[r.ID] == r.Suggested {
 			out += fmt.Sprintf("# include = [%q]  # %s\n", r.Choices[r.Cand].Label, s.sel.Current(r.ID).Why)
@@ -270,14 +269,10 @@ func (s *setup) interactive() (int, error) {
 			PlanFix: s.reviewFix,
 		}
 		if s.snug != "" {
-			cfg.DryRun = func(d *draft.Draft) (string, error) {
-				id := ""
-				for _, n := range d.Include {
-					if !strings.HasPrefix(n, "@") {
-						id = n
-					}
-				}
-				return write.DryRunText(s.ctx, s.run, s.snug, d, s.identityFiles(d.Name, id))
+			cfg.DryRun = func(sel suggest.Selection) (string, error) {
+				d, _ := s.build(sel)
+				id, _ := suggest.BuildIdentity(sel, s.host())
+				return write.DryRunText(s.ctx, s.run, s.snug, d, s.verifyFiles(d, id))
 			}
 		}
 		final, err := tea.NewProgram(tui.New(cfg), tea.WithContext(s.ctx)).Run()
@@ -324,8 +319,22 @@ func (s *setup) gather2() {
 	s.sel = keep
 }
 
-func (s *setup) identityFiles(name, identity string) []verify.File {
-	return write.IdentityFiles(s.facts.Files, s.facts.Profiles, identity, name)
+// verifyFiles returns the profile files snug needs beside d to resolve it:
+// the person's own for every profile d includes besides the built-ins, and
+// the new identity profile id, which no file holds yet. id is nil when the
+// identity is not a new one.
+func (s *setup) verifyFiles(d, id *draft.Draft) []verify.File {
+	var names []string
+	for _, n := range d.Include {
+		if !strings.HasPrefix(n, "@") && (id == nil || n != id.Name) {
+			names = append(names, n)
+		}
+	}
+	out := write.IdentityFiles(s.facts.Files, s.facts.Profiles, d.Name, names...)
+	if id != nil {
+		out = append(out, verify.File{Name: id.Name + ".toml", Body: []byte(id.Render())})
+	}
+	return out
 }
 
 func mustGetwd() string {
@@ -342,33 +351,59 @@ func mustGetwd() string {
 // reviewWrite prepares writing sel for the confirmation screen. Everything
 // that cannot be written is Blocked and shown; an error is for what cannot be
 // answered at all. wrote is called with the plan and draft once Apply has
-// written the file.
+// written the file. A new identity profile is written first and shown with the
+// project's on the same screen: the project includes it.
 func (s *setup) reviewWrite(sel suggest.Selection, warns []probe.Warning, wrote func(write.Plan, *draft.Draft)) (tui.Review, error) {
 	d, refused := s.build(sel)
-	id := identityOf(sel)
+	id, _ := suggest.BuildIdentity(sel, s.host())
+	name := sel.IdentityProfile()
 	var idWarn *probe.Warning
 	for i := range warns {
-		if id != "" && slices.Contains(warns[i].Profiles, id) {
+		if name != "" && slices.Contains(warns[i].Profiles, name) {
 			idWarn = &warns[i]
 		}
 	}
-	p, err := write.Prepare(s.ctx, d, s.o.profileDir, s.snug, s.run, s.facts.Profiles, s.identityFiles(d.Name, id), idWarn)
+	p, err := write.Prepare(s.ctx, d, s.o.profileDir, s.snug, s.run, s.facts.Profiles, s.verifyFiles(d, id), idWarn)
 	if err != nil {
 		return tui.Review{}, err
 	}
 	for r, msg := range refused {
 		p.Blocked = append(p.Blocked, fmt.Sprintf("%s is on the screen but not in the profile: %s", strings.ToLower(rowName(r)), safe.Inline(msg)))
 	}
+	plans := []write.Plan{p}
+	done := "wrote " + safe.Inline(p.Path)
+	var idPlan *write.Plan
+	if id != nil {
+		ip, err := write.PrepareIdentity(id, s.o.profileDir, s.facts.Profiles)
+		if err != nil {
+			return tui.Review{}, err
+		}
+		if id.Name == d.Name {
+			p.Blocked = append(p.Blocked, fmt.Sprintf("NAME %s is also the name of the new identity profile; change NAME", safe.Inline(d.Name)))
+		}
+		idPlan = &ip
+		plans = []write.Plan{ip, p}
+		done = "wrote " + safe.Inline(ip.Path) + " and " + safe.Inline(p.Path)
+	}
+	title, body, blocked := write.Together(plans...)
 	return tui.Review{
-		Title:   p.Title(),
-		Body:    p.Body(),
-		Blocked: len(p.Blocked) > 0,
-		Done:    "wrote " + safe.Inline(p.Path),
+		Title:   title,
+		Body:    body,
+		Blocked: blocked,
+		Done:    done,
 		Apply: func() error {
 			if err := s.ctx.Err(); err != nil {
 				return err
 			}
+			if idPlan != nil {
+				if err := write.Apply(*idPlan); err != nil {
+					return err
+				}
+			}
 			if err := write.Apply(p); err != nil {
+				if idPlan != nil {
+					return fmt.Errorf("wrote %s but not %s: %w", safe.Inline(idPlan.Path), safe.Inline(p.Path), err)
+				}
 				return err
 			}
 			wrote(p, d)
@@ -436,7 +471,7 @@ func (s *setup) rowToken(row suggest.RowID) string {
 	case suggest.Desc:
 		return "description"
 	case suggest.Identity:
-		if l := identityOf(s.sel); l != "" {
+		if l := s.sel.IdentityProfile(); l != "" {
 			return `"` + l + `"`
 		}
 		return `"@git"`

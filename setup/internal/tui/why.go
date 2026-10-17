@@ -29,6 +29,9 @@ func (m Model) whyLines(width int) []string {
 			add(tok+": ", a)
 		}
 	}
+	if c.Label == suggest.NewFromHost {
+		add("identity: ", draft.Abuse["identity"])
+	}
 	if c.Label == suggest.Off {
 		for i, ch := range m.sel.Rows[id].Choices {
 			if i == m.sel.Pick[id] {

@@ -48,7 +48,7 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case m.cursor == int(suggest.Name) || m.cursor == int(suggest.Desc):
 			return m.startEdit()
 		case m.cursor == int(suggest.Identity):
-			m.idm = &identityMenu{cursor: m.sel.Pick[suggest.Identity]}
+			m.idm = &identityMenu{cursor: m.pickedItem()}
 		}
 	case "?":
 		m.why = !m.why
@@ -162,14 +162,15 @@ func (m Model) dryKey(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// identityKey: j/k move, space picks, ? shows why, esc and q go back. Enter
-// does nothing: the menu is read-only apart from the pick.
+// identityKey: j/k move over choices and the switches under them, space picks
+// a choice or flips a switch, ? shows why, esc and q go back. Enter does
+// nothing: the menu is read-only apart from the pick and the switches.
 func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
 	menu := *m.idm
-	n := len(m.sel.Rows[suggest.Identity].Choices)
+	items := m.sel.IdentityItems()
 	switch k {
 	case "j", "down":
-		if menu.cursor < n-1 {
+		if menu.cursor < len(items)-1 {
 			menu.cursor++
 		}
 	case "k", "up":
@@ -177,7 +178,12 @@ func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
 			menu.cursor--
 		}
 	case "space":
-		m.sel = m.sel.WithPick(suggest.Identity, menu.cursor)
+		it := items[menu.cursor]
+		if it.IsPart {
+			m.sel = m.sel.WithPart(it.Part, !it.On)
+		} else {
+			m.sel = m.sel.WithPick(suggest.Identity, it.Choice)
+		}
 	case "?":
 		menu.why = !menu.why
 	case "esc", "q", "ctrl+c":
@@ -231,16 +237,25 @@ func (m Model) editKey(msg tea.KeyPressMsg, k string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) dryRun() (tea.Model, tea.Cmd) {
-	if m.cfg.DryRun == nil || m.cfg.Build == nil {
+	if m.cfg.DryRun == nil {
 		m.status = "snug not on PATH: nothing to dry-run"
 		return m, nil
 	}
-	d, _ := m.cfg.Build(m.sel)
-	out, err := m.cfg.DryRun(d)
+	out, err := m.cfg.DryRun(m.sel)
 	if err != nil {
 		out = "snug --dry-run failed: " + err.Error() + "\n" + out
 	}
 	p := newPager("snug --dry-run", out, m.width, m.height)
 	m.pg = &p
 	return m, nil
+}
+
+// pickedItem is the submenu line of the picked choice.
+func (m Model) pickedItem() int {
+	for i, it := range m.sel.IdentityItems() {
+		if !it.IsPart && it.Choice == m.sel.Pick[suggest.Identity] {
+			return i
+		}
+	}
+	return 0
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,5 +224,51 @@ func TestPrintProbesOnlyIdentityCandidates(t *testing.T) {
 	want := "! accounts.toml: work grants a path which is " + long + "missing"
 	if !strings.Contains(errb.String(), want) {
 		t.Errorf("stderr lacks the whole line:\n%s", errb.String())
+	}
+}
+
+// TestPrintNewFromHostWritesBothProfiles: a host with a key for github.com
+// and a global author, and no profile of yours, is offered a new identity
+// profile; --print shows it above the project profile that includes it.
+func TestPrintNewFromHostWritesBothProfiles(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := project(t, "app", "README.md")
+	gitEnv := []string{"GIT_AUTHOR_NAME=A", "GIT_AUTHOR_EMAIL=m@example.org", "GIT_COMMITTER_NAME=A", "GIT_COMMITTER_EMAIL=m@example.org", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"}
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@github.com:acme/app.git"}, {"add", "."}, {"commit", "-q", "-m", "x"}} {
+		cmd := exec.Command(git, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), gitEnv...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+	blob := base64.StdEncoding.EncodeToString([]byte("not a real key but valid base64 bytes"))
+	os.WriteFile(filepath.Join(home, ".ssh", "github_auth.pub"), []byte("ssh-ed25519 "+blob+" me@laptop\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\tname = Alice A\n\temail = m@example.org\n"), 0o644)
+	cmd := exec.Command(binary, "--print", dir)
+	cmd.Env = []string{"HOME=" + home, "PATH=" + filepath.Dir(git)}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%v: %s", err, errb.String())
+	}
+	o := out.String()
+	id, proj := strings.Index(o, "[profile.m]"), strings.Index(o, "[profile.app]")
+	if id < 0 || proj < 0 || id > proj {
+		t.Fatalf("want the identity profile m, then the project's:\n%s", o)
+	}
+	for _, want := range []string{`key = "{home}/.ssh/github_auth.pub"`, `name = "Alice A"`, `email = "m@example.org"`, "\n  \"m\",\n"} {
+		if !strings.Contains(o, want) {
+			t.Errorf("lacks %s:\n%s", want, o)
+		}
+	}
+	if strings.Contains(o[proj:], "identity.ssh") || strings.Contains(o, `"@git"`) {
+		t.Errorf("the project profile carries the identity block or @git:\n%s", o)
 	}
 }

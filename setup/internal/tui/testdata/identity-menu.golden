@@ -14,5 +14,8 @@ snug-setup  ~/work/snug-setup  IDENTITY
               ~/.ssh/config  Host github.com  → github_auth
         git   <p@example.org>
         gh    plainsof
+  ( ) new from host
+        [x] git M V <m@example.org>  10 of the last 10 commits, and your profile vyskocilm
+        [x] gh github.com/vyskocilm  your profile vyskocilm
 
- j/k move  space pick  ? why  esc back
+ j/k move  space pick or toggle  ? why  esc back

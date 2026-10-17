@@ -26,8 +26,9 @@ type Config struct {
 	// Build returns the draft for a selection and, per row, why the draft
 	// lacks something the row shows.
 	Build func(suggest.Selection) (*draft.Draft, map[suggest.RowID]string)
-	// DryRun renders `snug --dry-run` for a draft; nil when snug is missing.
-	DryRun func(*draft.Draft) (string, error)
+	// DryRun renders `snug --dry-run` for a selection; nil when snug is
+	// missing.
+	DryRun func(suggest.Selection) (string, error)
 	// Plan prepares writing the selection. The error is shown on the main
 	// screen: a Plan that fails never ends the program.
 	Plan func(suggest.Selection) (Review, error)
@@ -93,8 +94,8 @@ type Model struct {
 	out     Outcome
 }
 
-// identityMenu is the IDENTITY submenu: cursor is an index into the Identity
-// row's choices.
+// identityMenu is the IDENTITY submenu: cursor is an index into
+// Selection.IdentityItems, the choices and the switches under them.
 type identityMenu struct {
 	cursor int
 	why    bool

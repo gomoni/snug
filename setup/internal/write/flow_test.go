@@ -252,11 +252,11 @@ func TestIdentityFiles(t *testing.T) {
 		{Name: "vyskocilm", Include: []string{"@net", "gh-cli"}},
 		{Name: "gh-cli", Include: []string{"@net"}},
 	}
-	got := IdentityFiles(files, profiles, "vyskocilm", "mine")
+	got := IdentityFiles(files, profiles, "mine", "vyskocilm")
 	if len(got) != 2 || !strings.HasSuffix(got[0].Name, "accounts.toml") || !strings.HasSuffix(got[1].Name, "tools.toml") {
 		t.Errorf("%+v", got)
 	}
-	if IdentityFiles(files, profiles, "", "mine") != nil {
+	if IdentityFiles(files, profiles, "mine") != nil {
 		t.Errorf("no identity must need no files")
 	}
 	if got := IdentityFiles(files, profiles, "other", "other"); len(got) != 0 {
@@ -336,5 +336,74 @@ func TestPrepareSymlinkTargetBlocks(t *testing.T) {
 	}
 	if got, _, _ := ReadProfile(real); got != "[profile.x]\n" {
 		t.Errorf("the link's target was touched: %q", got)
+	}
+}
+
+func identityDraft(w *testworld.World, name string) *draft.Draft {
+	d := draft.New(w.Host())
+	d.Name = name
+	d.SetGH("github.com", "alice")
+	return d
+}
+
+func TestPrepareIdentityIsNewFileWithoutAskingSnug(t *testing.T) {
+	w := testworld.New(t)
+	p, err := PrepareIdentity(identityDraft(w, "alice"), w.ProfDir, nil)
+	if err != nil || len(p.Blocked) != 0 || p.Overwrite {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if p.Path != filepath.Join(w.ProfDir, "alice.toml") || !strings.Contains(p.New, "[profile.alice.identity.gh]") {
+		t.Errorf("%+v", p)
+	}
+	if len(w.Cmds) != 0 {
+		t.Errorf("ran %v; the identity profile is checked through the project", w.Cmds)
+	}
+}
+
+func TestPrepareIdentityBlocksWhenTheNameIsDefinedElsewhere(t *testing.T) {
+	w := testworld.New(t)
+	p, err := PrepareIdentity(identityDraft(w, "alice"), w.ProfDir, []ingest.Profile{{Name: "alice", File: "other.toml", Dir: w.ProfDir}})
+	if err != nil || len(p.Blocked) != 1 || !strings.Contains(p.Blocked[0], "other.toml") {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if err := Apply(p); err == nil {
+		t.Errorf("a blocked identity plan was applied")
+	}
+}
+
+func TestTogetherShowsBothDiffsAndBlocksOnEither(t *testing.T) {
+	w := testworld.New(t)
+	id, _ := PrepareIdentity(identityDraft(w, "alice"), w.ProfDir, nil)
+	proj, _ := Prepare(context.Background(), newDraft(w, "x"), w.ProfDir, "", w.Run, nil, nil, nil)
+	title, body, blocked := Together(id, proj)
+	if blocked {
+		t.Errorf("blocked")
+	}
+	for _, want := range []string{id.Path, proj.Path} {
+		if !strings.Contains(title, want) || !strings.Contains(body, "== "+want+"\n") {
+			t.Errorf("%s missing from\n%s\n%s", want, title, body)
+		}
+	}
+	if strings.Index(title, id.Path) > strings.Index(title, proj.Path) {
+		t.Errorf("the identity comes first: %s", title)
+	}
+	proj.Blocked = []string{"no"}
+	if _, _, blocked := Together(id, proj); !blocked {
+		t.Errorf("one blocked plan must block the screen")
+	}
+	if title, body, _ := Together(proj); title != proj.Title() || body != proj.Body() {
+		t.Errorf("a single plan shows as itself")
+	}
+}
+
+func TestIdentityFilesSeveralNames(t *testing.T) {
+	files := []ingest.ProfileFile{
+		{Name: "a.toml", Body: []byte("a"), Defines: []string{"alice"}},
+		{Name: "t.toml", Body: []byte("t"), Defines: []string{"gh-cli"}},
+		{Name: "u.toml", Body: []byte("u"), Defines: []string{"unrelated"}},
+	}
+	got := IdentityFiles(files, nil, "mine", "alice", "gh-cli")
+	if len(got) != 2 || !strings.HasSuffix(got[0].Name, "a.toml") || !strings.HasSuffix(got[1].Name, "t.toml") {
+		t.Errorf("%+v", got)
 	}
 }

@@ -233,41 +233,51 @@ func (m Model) word(id suggest.RowID) string {
 	return "changed"
 }
 
-// renderIdentity is the IDENTITY submenu: every choice of the row, the pinned
-// values of the profile under it, and a window of those lines that keeps the
-// cursor visible.
+// renderIdentity is the IDENTITY submenu: every choice of the row with the
+// pinned values of the profile under it, the switches the cursor can reach,
+// and a window of those lines that keeps the cursor visible.
 func (m Model) renderIdentity(w int) string {
 	r := m.sel.Rows[suggest.Identity]
+	items := m.sel.IdentityItems()
 	var body []string
-	start := make([]int, len(r.Choices))
-	for i, c := range r.Choices {
-		start[i] = len(body)
+	start := make([]int, len(items))
+	for n, it := range items {
+		start[n] = len(body)
 		cur := "  "
-		if m.idm.cursor == i {
+		if m.idm.cursor == n {
 			cur = "▸ "
 		}
-		radio := "( )"
-		if m.sel.Pick[suggest.Identity] == i {
-			radio = "(•)"
+		if it.IsPart {
+			box := "[ ]"
+			if it.On {
+				box = "[x]"
+			}
+			body = append(body, m.st("cursor", cur)+m.st("dim", clip("      "+box+" "+safe.Inline(it.Text), w-2)))
+		} else {
+			i := it.Choice
+			radio := "( )"
+			if m.sel.Pick[suggest.Identity] == i {
+				radio = "(•)"
+			}
+			head := radio + " " + safe.Inline(r.Choices[i].Label)
+			if i == r.Suggested {
+				head += "   suggested"
+			}
+			body = append(body, m.st("cursor", cur)+clip(head, w-2))
+			for _, l := range m.sel.IdentityDetail(i) {
+				body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
+			}
+			if iw := m.sel.IdentityWarning(i); iw != "" {
+				body = append(body, "        "+m.st("warn", clip("! "+iw, w-8)))
+			}
 		}
-		head := radio + " " + safe.Inline(c.Label)
-		if i == r.Suggested {
-			head += "   suggested"
-		}
-		body = append(body, m.st("cursor", cur)+clip(head, w-2))
-		for _, l := range m.sel.IdentityDetail(i) {
-			body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
-		}
-		if iw := m.sel.IdentityWarning(i); iw != "" {
-			body = append(body, "        "+m.st("warn", clip("! "+iw, w-8)))
-		}
-		if m.idm.why && m.idm.cursor == i {
-			for _, l := range m.identityWhy(i, w-8) {
+		if m.idm.why && m.idm.cursor == n {
+			for _, l := range m.identityWhy(it, w-8) {
 				body = append(body, "      "+m.st("dim", l))
 			}
 		}
 	}
-	foot := []string{" j/k move  space pick  ? why  esc back"}
+	foot := []string{" j/k move  space pick or toggle  ? why  esc back"}
 	room := m.height - 3 - len(foot)
 	lo := 0
 	if room > 0 && len(body) > room {
@@ -283,15 +293,10 @@ func (m Model) renderIdentity(w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// identityWhy is the `?` text under choice i of the submenu: why it was
-// suggested, or the facts the row holds for it.
-func (m Model) identityWhy(i, width int) []string {
-	c := m.sel.Rows[suggest.Identity].Choices[i]
+// identityWhy is the `?` text under a submenu line: the reasons it carries.
+func (m Model) identityWhy(it suggest.IdentItem, width int) []string {
 	var out []string
-	if c.Why != "" {
-		out = append(out, wrap(safe.Inline(c.Why), width)...)
-	}
-	for _, f := range c.Facts {
+	for _, f := range it.Why {
 		out = append(out, wrap(safe.Inline(f), width)...)
 	}
 	if len(out) == 0 {

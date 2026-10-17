@@ -102,7 +102,7 @@ func config(f ingest.Facts, warns ...probe.Warning) Config {
 		Build: func(s suggest.Selection) (*draft.Draft, map[suggest.RowID]string) {
 			return suggest.Build(s, draft.Host{Home: home, Target: target}, f.Profiles)
 		},
-		DryRun: func(d *draft.Draft) (string, error) { return "dry run of " + d.Name, nil },
+		DryRun: func(s suggest.Selection) (string, error) { return "dry run of " + s.Text[suggest.Name], nil },
 	}
 }
 
@@ -601,7 +601,7 @@ func TestIdentitySubmenuScrollsToCursor(t *testing.T) {
 	m := toIdentity(New(c))
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	m = press(next.(Model), "enter")
-	for range 14 {
+	for range 13 {
 		m = press(m, "j")
 	}
 	if !strings.Contains(screen(m), "▸ ( ) acct11") {
@@ -725,7 +725,7 @@ func TestDryRunScrolls(t *testing.T) {
 		out = append(out, fmt.Sprintf("row %03d", i))
 	}
 	c := config(facts())
-	c.DryRun = func(*draft.Draft) (string, error) { return strings.Join(out, "\n"), nil }
+	c.DryRun = func(suggest.Selection) (string, error) { return strings.Join(out, "\n"), nil }
 	m := press(sized(New(c), 80), "d")
 	has := func(s string) bool { return strings.Contains(screen(m), s) }
 	if !has("row 000") || has("row 199") {
@@ -750,7 +750,7 @@ func TestDryRunScrolls(t *testing.T) {
 
 func TestDryRunErrorIsShown(t *testing.T) {
 	c := config(facts())
-	c.DryRun = func(*draft.Draft) (string, error) { return "", errors.New("boom") }
+	c.DryRun = func(suggest.Selection) (string, error) { return "", errors.New("boom") }
 	m := press(sized(New(c), 100), "d")
 	if !strings.Contains(screen(m), "boom") {
 		t.Errorf("%s", screen(m))
@@ -829,5 +829,118 @@ func TestFooterEditIsLast(t *testing.T) {
 	m := sized(New(config(facts())), 200)
 	if !strings.HasSuffix(strings.TrimRight(screen(m), " \n"), "q quit  e edit & exit") {
 		t.Errorf("footer:\n%s", screen(m))
+	}
+}
+
+// hostOnly is a host with a github.com remote, one gh login, a global author,
+// an ssh config line and a git signing key, and no profile of the person's own.
+func hostOnly() ingest.Facts {
+	key := func(stem string) hostfacts.SSHKey {
+		return hostfacts.SSHKey{Stem: stem, Path: home + "/.ssh/" + stem + ".pub", Blob: "AAAA" + stem}
+	}
+	f := facts()
+	f.Profiles = nil
+	f.SSH = ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))}
+	f.Keys = []hostfacts.SSHKey{key("github_auth"), key("github_sign")}
+	f.Authors = []hostfacts.GitAuthor{{Name: "M V", Email: "m@example.org"}}
+	f.GitSigningKey = home + "/.ssh/github_sign.pub"
+	f.GH = []hostfacts.GHAccount{{Host: "github.com", User: "vyskocilm", Active: true}}
+	f.Binaries = map[string]ingest.Binary{"gh": {Path: home + "/bin/gh", Resolved: home + "/bin/gh"}}
+	return f
+}
+
+func TestIdentitySubmenuNewFromHostGolden(t *testing.T) {
+	m := toIdentity(sized(New(config(hostOnly())), 100))
+	m = press(m, "enter")
+	golden(t, "identity-menu-new-from-host", screen(m))
+}
+
+func TestNewFromHostIsTheRowValueAndNothingElseChanged(t *testing.T) {
+	m := sized(New(config(hostOnly())), 100)
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "new from host") || strings.Contains(l, "*") {
+		t.Errorf("%q", l)
+	}
+}
+
+func TestSubmenuCursorReachesEveryPartAndSpaceOnlyTogglesIt(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter")
+	if m.idm.cursor != 1 {
+		t.Fatalf("opens on the picked entry, got item %d", m.idm.cursor)
+	}
+	m = press(m, "j")
+	if it := m.sel.IdentityItems()[m.idm.cursor]; !it.IsPart || it.Part != suggest.PartSSH || !strings.HasPrefix(it.Text, "ssh github.com github_auth") {
+		t.Fatalf("first part is %+v", it)
+	}
+	m = press(m, "space")
+	if m.sel.PartOn(suggest.PartSSH) {
+		t.Errorf("space on a part line did not toggle it")
+	}
+	if m.sel.Pick[suggest.Identity] != 1 {
+		t.Errorf("space on a part line moved the pick to %d", m.sel.Pick[suggest.Identity])
+	}
+	if !strings.Contains(screen(m), "▸       [ ] ssh github.com github_auth") {
+		t.Errorf("the line does not show it is off:\n%s", screen(m))
+	}
+	m = press(m, "space")
+	if !m.sel.PartOn(suggest.PartSSH) {
+		t.Errorf("a second space did not switch it back on")
+	}
+	var seen []suggest.Part
+	for range 12 {
+		m = press(m, "j")
+		if it := m.sel.IdentityItems()[m.idm.cursor]; it.IsPart {
+			seen = append(seen, it.Part)
+		}
+	}
+	want := []suggest.Part{suggest.PartSigning, suggest.PartGit, suggest.PartGH, suggest.PartGHBinary}
+	if len(seen) < len(want) || fmt.Sprint(seen[:len(want)]) != fmt.Sprint(want) {
+		t.Errorf("parts reached %v, want %v", seen, want)
+	}
+}
+
+func TestSpaceOnTheEntryLinePicksItWithoutTouchingParts(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "k", "space")
+	if m.sel.Pick[suggest.Identity] != 0 {
+		t.Fatalf("pick %d", m.sel.Pick[suggest.Identity])
+	}
+	m = press(m, "j", "space")
+	if m.sel.Pick[suggest.Identity] != 1 || !m.sel.PartOn(suggest.PartGit) {
+		t.Errorf("pick %d, git %v", m.sel.Pick[suggest.Identity], m.sel.PartOn(suggest.PartGit))
+	}
+}
+
+func TestQuestionMarkOnAPartShowsItsReasonAndTheAbuseSentence(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "j", "?")
+	for _, want := range []string{"Host github.com", "SIGNING ORACLE"} {
+		if !strings.Contains(screen(m), want) {
+			t.Errorf("no %q in:\n%s", want, screen(m))
+		}
+	}
+}
+
+func TestQuestionMarkOnTheGHBinaryLineSaysItAddsNoAuthority(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "j", "j", "j", "j", "j", "?")
+	if it := m.sel.IdentityItems()[m.idm.cursor]; it.Part != suggest.PartGHBinary {
+		t.Fatalf("cursor on %+v", it)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(screen(m)), " "), "the sandbox can run every gh command the staged token authorises; the binary adds no authority of its own.") {
+		t.Errorf("%s", screen(m))
+	}
+}
+
+func TestQuestionMarkOnTheMainIdentityRowCarriesTheAbuseForNewFromHost(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "?")
+	if !strings.Contains(screen(m), "SIGNING ORACLE") {
+		t.Errorf("%s", screen(m))
+	}
+}
+
+func TestDryRunReceivesTheSelection(t *testing.T) {
+	c := config(hostOnly())
+	var got suggest.Selection
+	c.DryRun = func(s suggest.Selection) (string, error) { got = s; return "x", nil }
+	press(toIdentity(sized(New(c), 100)), "enter", "j", "space", "esc", "d")
+	if got.Rows == nil || got.PartOn(suggest.PartSSH) {
+		t.Errorf("dry run saw a selection without the toggle: %v", got.Parts)
 	}
 }

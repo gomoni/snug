@@ -187,3 +187,48 @@ func TestProfileDirsAreSnugs(t *testing.T) {
 		t.Errorf("xdg: %v", got)
 	}
 }
+
+func TestParseProfilesKeepsRoAndStages(t *testing.T) {
+	ps, err := ParseProfiles(`
+[profile.gh-cli]
+ro = ["{home}/bin/gh:/snug/bin/gh", "/opt/x:/snug/bin/other"]
+[profile.plain]
+ro = ["{home}/docs"]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Profile{}
+	for _, p := range ps {
+		by[p.Name] = p
+	}
+	if got := by["gh-cli"].RO; len(got) != 2 || got[0] != "{home}/bin/gh:/snug/bin/gh" {
+		t.Errorf("ro %q", got)
+	}
+	if !by["gh-cli"].Stages("gh") || by["gh-cli"].Stages("g") || by["plain"].Stages("gh") {
+		t.Errorf("Stages: gh-cli gh=%v g=%v, plain gh=%v", by["gh-cli"].Stages("gh"), by["gh-cli"].Stages("g"), by["plain"].Stages("gh"))
+	}
+}
+
+func TestLocateBinariesResolvesAndSkipsMissing(t *testing.T) {
+	look := func(n string) (string, error) {
+		switch n {
+		case "gh":
+			return "/home/a/bin/gh", nil
+		case "dangling":
+			return "/home/a/bin/dangling", nil
+		}
+		return "", os.ErrNotExist
+	}
+	eval := func(p string) (string, error) {
+		if strings.Contains(p, "dangling") {
+			return "", os.ErrNotExist
+		}
+		return "/usr/bin/gh", nil
+	}
+	got := LocateBinaries([]string{"gh", "nope", "dangling"}, look, eval)
+	want := map[string]Binary{"gh": {Path: "/home/a/bin/gh", Resolved: "/usr/bin/gh"}}
+	if len(got) != 1 || got["gh"] != want["gh"] {
+		t.Errorf("got %v", got)
+	}
+}

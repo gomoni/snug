@@ -403,12 +403,45 @@ type Facts struct {
 	// is not on PATH, which is different from having no login.
 	GH          []hostfacts.GHAccount
 	GHInstalled bool
-	Warnings    []string
+	// Keys are the public keys under ~/.ssh and Authors the global git
+	// author; IdentityPick matches the repository against them.
+	Keys    []hostfacts.SSHKey
+	Authors []hostfacts.GitAuthor
+	// Binaries are the host programs an identity part needs inside the
+	// sandbox, by command name; a name that is not on PATH is absent.
+	Binaries map[string]Binary
+	Warnings []string
+}
+
+// Binary is where a command is on the host: Path as PATH finds it, Resolved
+// after following symlinks. Resolved decides whether @sys already provides the
+// program; Path is what a profile stages.
+type Binary struct {
+	Path, Resolved string
+}
+
+// LocateBinaries finds each of names with lookPath and follows its symlinks
+// with evalSymlinks. A name lookPath does not find, or whose path cannot be
+// resolved, is absent from the result: there is nothing to stage.
+func LocateBinaries(names []string, lookPath func(string) (string, error), evalSymlinks func(string) (string, error)) map[string]Binary {
+	out := map[string]Binary{}
+	for _, n := range names {
+		p, err := lookPath(n)
+		if err != nil {
+			continue
+		}
+		r, err := evalSymlinks(p)
+		if err != nil {
+			continue
+		}
+		out[n] = Binary{Path: p, Resolved: r}
+	}
+	return out
 }
 
 // Gather runs every analysis. profileDirs are the directories snug reads
 // profiles from (ProfileDirs); nil reads none. The only commands it runs are
-// `git config --global` and `gh auth status`, through run: the target's own git config is read as
+// `git config --global`, `gh auth status` and `ssh-add -L`, through run: the target's own git config is read as
 // text by AnalyzeRepo, and git is never run in the target.
 func Gather(ctx context.Context, target, home string, profileDirs []string, run hostfacts.Runner) Facts {
 	f := Facts{Target: AnalyzeTarget(target)}
@@ -425,6 +458,8 @@ func Gather(ctx context.Context, target, home string, profileDirs []string, run 
 		signers = filepath.Join(home, ".config", "git", "allowed_signers")
 	}
 	f.SSH = LoadSSH(home, signers)
+	f.Keys, _ = hostfacts.SSHKeys(ctx, home, run)
+	f.Authors = hostfacts.GitAuthors(ctx, run)
 	f.Warnings = append(f.Warnings, f.SSH.Warnings...)
 	return f
 }

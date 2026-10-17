@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -56,7 +57,15 @@ type Profile struct {
 	File        string // base name of the file that defines it
 	Dir         string
 	Include     []string
-	Identity    ProfileIdentity
+	// RO are the profile's own `ro` entries as written, {home} and all.
+	RO       []string
+	Identity ProfileIdentity
+}
+
+// Stages reports whether the profile has an `ro` entry that binds a host file
+// as /snug/bin/NAME.
+func (p Profile) Stages(name string) bool {
+	return slices.ContainsFunc(p.RO, func(e string) bool { return strings.HasSuffix(e, ":/snug/bin/"+name) })
 }
 
 // ProfileFile is one profiles.d file as read, with the profiles it defines.
@@ -142,8 +151,8 @@ func readSmall(path string) ([]byte, error) {
 }
 
 // ParseProfiles extracts, from the text of one profiles.d file, each
-// [profile.NAME] table's description, include list and identity.ssh|git|gh
-// keys, in name order. The text is parsed as TOML, so quoting, multi-line
+// [profile.NAME] table's description, include list, ro list and
+// identity.ssh|git|gh keys, in name order. The text is parsed as TOML, so quoting, multi-line
 // arrays, dotted keys and inline tables mean what they mean to snug. A value
 // of the wrong type is left empty, which shows less on the screen and never
 // grants anything, because the only thing done with a profile is to have snug
@@ -170,6 +179,13 @@ func ParseProfiles(text string) ([]Profile, error) {
 			for _, v := range arr {
 				if s := tomlStr(v); s != "" {
 					p.Include = append(p.Include, safe.Inline(s))
+				}
+			}
+		}
+		if arr, ok := t["ro"].([]any); ok {
+			for _, v := range arr {
+				if s := tomlStr(v); s != "" {
+					p.RO = append(p.RO, safe.Inline(s))
 				}
 			}
 		}

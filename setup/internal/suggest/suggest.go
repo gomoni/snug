@@ -72,6 +72,9 @@ type Selection struct {
 	Rows []Row
 	Pick map[RowID]int    // current choice per row
 	Text map[RowID]string // Name and Desc, current text
+	// Parts are the switches inside an Identity choice; partsDefault is what
+	// Revert returns them to.
+	Parts map[Part]bool
 
 	profiles     []ingest.Profile
 	env          []ingest.EnvHint
@@ -81,6 +84,10 @@ type Selection struct {
 	gh           []hostfacts.GHAccount
 	ghInstalled  bool
 	descName     string
+	home         string
+	host         *hostIdentity
+	partsDefault map[Part]bool
+	binaries     map[string]ingest.Binary
 }
 
 // netPart is one reason for @net and the row it depends on: it counts only
@@ -97,14 +104,18 @@ type netPart struct {
 //
 // Abuse: the target chooses its remote, authors, file names and project names,
 // so it can steer a row toward any value that already exists on the host and
-// nowhere else. Identity offers only the person's own profiles that pin an
-// identity, and the other rows offer built-in names; a name taken from the
-// target reaches the screen only as a reason, through safe.Inline. Nothing the
-// target says turns an unsure pick on.
+// nowhere else. Identity offers the person's own profiles that pin an
+// identity and NewFromHost, whose every value is one of the host's keys, gh
+// logins or git author chosen by ingest.Suggest; the other rows offer built-in
+// names. A name taken from the target reaches the screen only as a reason,
+// through safe.Inline. Nothing the target says turns an unsure pick on.
 func Suggest(f ingest.Facts, home, target string) Selection {
 	s := Selection{
 		Pick:         map[RowID]int{},
 		Text:         map[RowID]string{},
+		Parts:        map[Part]bool{},
+		home:         home,
+		binaries:     f.Binaries,
 		profiles:     slices.Clone(f.Profiles),
 		parentIsHome: filepath.Dir(target) == home,
 		sshHosts:     f.SSH.Hosts,
@@ -114,7 +125,17 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 	prop := ingest.Propose(f.Target)
 	s.env = prop.Env
 
-	id := identityRow(f)
+	id, hi := identityRow(f)
+	s.host = hi
+	if hi != nil {
+		for _, p := range hi.parts {
+			s.Parts[p.id] = true
+		}
+	}
+	for _, t := range identityTools {
+		s.Parts[t.part] = true
+	}
+	s.partsDefault = maps.Clone(s.Parts)
 	agent := agentRow(f.Target)
 	s.netParts = []netPart{{why: "@claude", via: Agent, hasVia: true}}
 	for _, r := range prop.NetReasons {
@@ -187,6 +208,9 @@ func descName(t ingest.TargetFacts, target string) string {
 }
 
 func (s Selection) descFor(identity string) string {
+	if identity == NewFromHost && s.host != nil {
+		identity = s.host.name
+	}
 	if identity == NoIdentity {
 		return s.descName
 	}
@@ -211,7 +235,11 @@ func baseRow(parentIsHome bool) Row {
 	return r
 }
 
-func identityRow(f ingest.Facts) Row {
+// identityRow returns the Identity row and, when the host describes one, the
+// identity NewFromHost writes. NewFromHost comes after the profiles of yours,
+// and is the suggestion only when none of them is: no profile matches the
+// remote, and the match is not a tie between two.
+func identityRow(f ingest.Facts) (Row, *hostIdentity) {
 	r := Row{Sure: true, Choices: []Choice{{Label: NoIdentity}}}
 	for _, p := range f.Profiles {
 		if !p.Identity.Pins() || slices.ContainsFunc(r.Choices, func(c Choice) bool { return c.Label == p.Name }) {
@@ -219,7 +247,13 @@ func identityRow(f ingest.Facts) Row {
 		}
 		r.Choices = append(r.Choices, Choice{Label: p.Name, Facts: []string{"defined in " + safe.Inline(p.File)}})
 	}
-	pick := ingest.Suggest(ingest.SuggestInput{Repo: f.Repo, SSH: f.SSH, Profiles: f.Profiles, GitSigningKey: f.GitSigningKey})
+	pick := ingest.Suggest(ingest.SuggestInput{Repo: f.Repo, SSH: f.SSH, Keys: f.Keys, Profiles: f.Profiles, Authors: f.Authors, GH: f.GH, GitSigningKey: f.GitSigningKey})
+	taken := func(n string) bool {
+		return slices.ContainsFunc(f.Profiles, func(p ingest.Profile) bool { return strings.EqualFold(p.Name, n) }) ||
+			slices.ContainsFunc(f.Files, func(pf ingest.ProfileFile) bool { return strings.EqualFold(pf.Name, n+".toml") })
+	}
+	hi := newHostIdentity(f, pick, taken)
+	noMatch := false
 	switch {
 	case pick == nil:
 		r.Choices[0].Why = "no git remote"
@@ -236,8 +270,24 @@ func identityRow(f ingest.Facts) Row {
 		r.Choices[i].Facts = append(r.Choices[i].Facts, safe.Inline(pick.Profile.Why))
 	default:
 		r.Choices[0].Why = "no profile of yours matches the remote"
+		noMatch = true
 	}
-	return r
+	if hi == nil {
+		return r, nil
+	}
+	var names []string
+	c := Choice{Label: NewFromHost}
+	for _, p := range hi.parts {
+		names = append(names, strings.SplitN(p.text, " ", 2)[0])
+		c.Facts = append(c.Facts, safe.Inline(strings.SplitN(p.text, " ", 2)[0]+": "+p.why))
+	}
+	c.Facts = append(c.Facts, "writes the profile "+safe.Inline(hi.name)+" beside the project's")
+	c.Why = "from your host: " + strings.Join(names, " ")
+	r.Choices = append(r.Choices, c)
+	if noMatch {
+		r.Suggested = len(r.Choices) - 1
+	}
+	return r, hi
 }
 
 func agentRow(t ingest.TargetFacts) Row {
@@ -373,6 +423,9 @@ func (s Selection) Changed(id RowID) bool {
 	case Desc:
 		return s.Text[id] != s.derivedDesc()
 	}
+	if id == Identity && s.partsChanged() {
+		return true
+	}
 	return s.Pick[id] != s.Rows[id].Suggested
 }
 
@@ -385,7 +438,11 @@ func (s Selection) Revert(id RowID) Selection {
 	case Desc:
 		return s.WithText(id, s.derivedDesc())
 	}
-	return s.WithPick(id, s.Rows[id].Suggested)
+	s = s.WithPick(id, s.Rows[id].Suggested)
+	if id == Identity {
+		s.Parts = maps.Clone(s.partsDefault)
+	}
+	return s
 }
 
 // RevertAll returns a copy of s with every row back at its suggestion. s is
