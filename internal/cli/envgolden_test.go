@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gomoni/snug/internal/kubecfg"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 )
@@ -144,6 +145,9 @@ func newEnvFakeEnv() *envFakeEnv {
 // HostMounts: a fixture host has no pseudo-filesystem anywhere, so RULE 5's
 // filesystem half never fires here.
 func (f *envFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil }
+func (f *envFakeEnv) KubeConfig(p string) (kubecfg.File, error) {
+	return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+}
 
 func (f *envFakeEnv) EvalSymlinks(p string) (string, error) {
 	if t, ok := f.links[p]; ok {

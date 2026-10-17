@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/gomoni/snug/internal/kubecfg"
 )
 
 // ── a fake host, so these tests need no privileges and no real filesystem ────
@@ -41,6 +43,8 @@ func (f fakeInfo) Sys() any           { return f.sys }
 
 type fakeEnv struct {
 	dirs map[string]bool
+	// kube is host kubeconfig bytes by path, for Environ.KubeConfig.
+	kube map[string][]byte
 	// files is dirs' non-directory half. It exists for issue #29: the procfs
 	// entries snug replaces are FILES, and installProcfsReplacements asks
 	// Environ.Stat whether this host publishes each one (a kernel without
@@ -175,6 +179,16 @@ func newFakeEnv() *fakeEnv {
 }
 
 func (f *fakeEnv) HostMounts() ([]HostMount, error) { return f.mounts, nil }
+
+// KubeConfig decodes a fixture through the real decoder, so policy tests
+// exercise kubecfg rather than a stand-in for it.
+func (f *fakeEnv) KubeConfig(p string) (kubecfg.File, error) {
+	data, ok := f.kube[p]
+	if !ok {
+		return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+	}
+	return kubecfg.Parse(data)
+}
 
 func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 	if err, ok := f.symlinkErrs[p]; ok {

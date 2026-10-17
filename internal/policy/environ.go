@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/gomoni/snug/internal/hostread"
+	"github.com/gomoni/snug/internal/kubecfg"
 )
 
 // Environ is every host lookup the resolver needs. It exists so that Resolve is
@@ -71,6 +74,14 @@ type Environ interface {
 	// everything mounted BENEATH it, because bwrap's bind is RECURSIVE and
 	// carries them in.
 	HostMounts() ([]HostMount, error)
+
+	// KubeConfig reads the host kubeconfig at path — already spelled without
+	// links, because the identity path loop stored the link-free destination —
+	// and decodes it. Raw bytes never leave the method: the decoded File is
+	// the only thing policy sees, and it carries no host credential beyond the
+	// allowlisted fields Resolve chooses to keep. A missing file is an error
+	// for which errors.Is(err, fs.ErrNotExist) holds.
+	KubeConfig(path string) (kubecfg.File, error)
 
 	Uid() int
 	Gid() int
@@ -171,6 +182,17 @@ func unescapeMountinfo(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// KubeConfig opens with RESOLVE_NO_SYMLINKS: the path is a file the human
+// named, and a link planted on it would choose which server snug's host-side
+// mint sends a credential to.
+func (OSEnviron) KubeConfig(p string) (kubecfg.File, error) {
+	data, err := hostread.RequiredNoLinks(p, hostread.MaxKubeconfigBytes)
+	if err != nil {
+		return kubecfg.File{}, err
+	}
+	return kubecfg.Parse(data)
 }
 
 func (OSEnviron) Uid() int { return os.Getuid() }
