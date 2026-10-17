@@ -15,8 +15,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,9 +45,9 @@ const usage = `usage: snug-setup [--model FILE.gguf | --openai-url URL [--model 
   --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
                        scripts/fetch-llama-server.sh puts the tested release there)
   --offline            never ask GitHub whether an ssh key belongs to an account
-  --plain              accepted and ignored: snug-setup always asks nothing. The question printed just
-                       before is answered with a line of yes, no or its numbers; any with /accept, /decline
-                       and /pick (/help lists them).
+  --plain              accepted for compatibility and changes nothing: snug-setup reads lines from stdin and
+                       prints its questions as text. The question printed just before is answered with a
+                       line of yes, no or its numbers; or with /accept, /decline and /pick (/help lists them).
   --profile-dir DIR    where profiles are saved (default: $XDG_CONFIG_HOME/snug/profiles.d)
   DIR                  the project directory the profile is for (default: the current directory)
 
@@ -85,7 +87,8 @@ func main() {
 
 func run() (int, error) {
 	fs := flag.NewFlagSet("snug-setup", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	var bf backendFlags
 	fs.StringVar(&bf.Model, "model", "", "")
 	fs.StringVar(&bf.URL, "openai-url", "", "")
@@ -94,14 +97,19 @@ func run() (int, error) {
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Print(usage)
+			return 0, nil
+		}
+		fmt.Fprint(os.Stderr, usage)
 		return 1, err
 	}
 	if err := bf.check(); err != nil {
-		fs.Usage()
+		fmt.Fprint(os.Stderr, usage)
 		return 1, err
 	}
 	if fs.NArg() > 1 {
-		fs.Usage()
+		fmt.Fprint(os.Stderr, usage)
 		return 1, fmt.Errorf("at most one directory")
 	}
 
