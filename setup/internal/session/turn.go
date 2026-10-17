@@ -113,6 +113,12 @@ func (s *Session) Submit(ctx context.Context, text string) (*Turn, []Line) {
 	s.dropChoices()
 	acts, err := s.cfg.Interpreter.Interpret(ctx, s.context(), text)
 	if err != nil {
+		var u *intent.Unclear
+		if errors.As(err, &u) {
+			if t, lines, ok := s.answerTypo(ctx, text); ok {
+				return t, lines
+			}
+		}
 		return nil, s.notUnderstood(text, err)
 	}
 	return s.understood(ctx, text, acts)
@@ -235,17 +241,21 @@ func (s *Session) notUnderstood(said string, err error) []Line {
 	if !errors.As(err, &u) {
 		return []Line{warn("error: %s", safe.Inline(err.Error()))}
 	}
+	var open []Line
+	if q, ok := s.find(s.before); ok {
+		open = append(open, info("if you meant to answer #%d, which is still open, use its own commands: %s.", q.N, q.Answer))
+	}
 	if len(u.Choices) == 0 {
 		why := ""
 		if u.Why != "" {
 			why = " (" + safe.Inline(u.Why) + ")"
 		}
-		return []Line{warn("I did not understand that, and nothing changed%s. Try saying it differently.", why)}
+		return append([]Line{warn("I did not understand that, and nothing changed%s. Try saying it differently.", why)}, open...)
 	}
 	before := s.snapshot()
 	p := s.open(Pending{Kind: Choice, said: said, at: s.turn, unclear: u})
 	s.commit(before, "your request "+quote(said))
-	return []Line{p.Line()}
+	return append(open, p.Line())
 }
 
 // classify decides each action's class against a clone of the draft with the

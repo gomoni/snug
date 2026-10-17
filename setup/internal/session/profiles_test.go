@@ -241,3 +241,49 @@ func TestNegatedNetWithNothingToDropSaysSo(t *testing.T) {
 	out := say(s, "no internet please")
 	contains(t, out, "@net is not in the draft.", "offline unless the profile includes @net")
 }
+
+// TestAnswerTypoIsAskedNeverApplied fails if a typo of an answer word that
+// would widen ("yse" for yes, "onyl 1" for only 1) changes the draft or closes
+// the question, or is not offered back as a question on the same card. A typo
+// of no narrows, so it is applied and the reading is said. A real request that
+// resembles an answer word ("net") is still read as the request.
+func TestAnswerTypoIsAskedNeverApplied(t *testing.T) {
+	w := testworld.New(t)
+	for _, typo := range []string{"yse", "yess", "accpet"} {
+		s := openRules(w)
+		say(s, "needs internet")
+		out := say(s, typo)
+		contains(t, out, "Did you mean \"", "to #1", "Nothing changed")
+		lacks(t, out, "I did not understand")
+		if !s.Draft().Empty() || len(s.Pending()) != 1 {
+			t.Errorf("%q: draft %+v pending %v\n%s", typo, s.Draft(), numbers(s), out)
+		}
+		out = say(s, "yes")
+		contains(t, out, "added @net")
+	}
+	s := openRules(w)
+	say(s, "needs internet and my git name")
+	out := say(s, "onyl 2")
+	contains(t, out, "Did you mean \"only 2\" to #1")
+	if !s.Draft().Empty() {
+		t.Errorf("a typo applied a card: %+v", s.Draft())
+	}
+	s = openRules(w)
+	say(s, "needs internet")
+	out = say(s, "nno")
+	contains(t, out, `(read "nno" as "no")`, "not applied")
+	if len(s.Pending()) != 0 || !s.Draft().Empty() {
+		t.Errorf("no: %v %+v", numbers(s), s.Draft())
+	}
+}
+
+// TestNotUnderstoodNamesTheOpenQuestion fails if a line nothing could read,
+// typed while a question is open, hides that the question is open and how to
+// answer it.
+func TestNotUnderstoodNamesTheOpenQuestion(t *testing.T) {
+	w := testworld.New(t)
+	s := openRules(w)
+	say(s, "needs internet")
+	out := say(s, "qwzx plorb")
+	contains(t, out, "if you meant to answer #1, which is still open, use its own commands: /accept 1")
+}
