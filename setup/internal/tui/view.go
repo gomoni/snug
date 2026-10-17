@@ -114,6 +114,9 @@ func (m Model) render() string {
 		text := safe.Inline(filepath.Base(wn.File)) + ": " + wn.Line
 		warns = append(warns, m.st("cursor", cur)+m.st("warn", clip("! "+text, w-2-utf8.RuneCountInString(suffix))+suffix))
 	}
+	if iw := m.sel.IdentityWarning(m.sel.Pick[suggest.Identity]); iw != "" {
+		warns = append(warns, "  "+m.st("warn", clip("! "+iw, w-2)))
+	}
 	for _, n := range m.cfg.Notes {
 		warns = append(warns, "  "+m.st("warn", clip("! "+safe.Inline(n), w-2)))
 	}
@@ -264,6 +267,9 @@ func (m Model) renderIdentity(w int) string {
 		body = append(body, m.st("cursor", cur)+clip(head, w-2))
 		for _, l := range m.sel.IdentityDetail(i) {
 			body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
+		}
+		if iw := m.sel.IdentityWarning(i); iw != "" {
+			body = append(body, "        "+m.st("warn", clip("! "+iw, w-8)))
 		}
 		if m.idm.why && m.idm.cursor == i {
 			for _, l := range m.identityWhy(i, w-8) {

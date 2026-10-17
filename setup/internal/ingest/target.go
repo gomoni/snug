@@ -399,12 +399,16 @@ type Facts struct {
 	SSH      SSHFacts
 	// GitSigningKey is the global git config's user.signingkey.
 	GitSigningKey string
-	Warnings      []string
+	// GH are the logins `gh auth status` lists; GHInstalled is false when gh
+	// is not on PATH, which is different from having no login.
+	GH          []hostfacts.GHAccount
+	GHInstalled bool
+	Warnings    []string
 }
 
 // Gather runs every analysis. profileDirs are the directories snug reads
-// profiles from (ProfileDirs); nil reads none. The only command it runs is
-// `git config --global`, through run: the target's own git config is read as
+// profiles from (ProfileDirs); nil reads none. The only commands it runs are
+// `git config --global` and `gh auth status`, through run: the target's own git config is read as
 // text by AnalyzeRepo, and git is never run in the target.
 func Gather(ctx context.Context, target, home string, profileDirs []string, run hostfacts.Runner) Facts {
 	f := Facts{Target: AnalyzeTarget(target)}
@@ -416,6 +420,7 @@ func Gather(ctx context.Context, target, home string, profileDirs []string, run 
 	}
 	key, signers := hostfacts.GitSigning(ctx, run)
 	f.GitSigningKey = key
+	f.GH, f.GHInstalled = hostfacts.GitHubAccounts(ctx, run)
 	if signers == "" {
 		signers = filepath.Join(home, ".config", "git", "allowed_signers")
 	}

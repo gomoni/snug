@@ -258,6 +258,28 @@ type File struct {
 	Body []byte
 }
 
+// GHConfigDir is the directory gh reads its logins from for this person:
+// their $GH_CONFIG_DIR (envGH) when set, else $XDG_CONFIG_HOME/gh when
+// XDG_CONFIG_HOME is set, else ~/.config/gh.
+func GHConfigDir(envGH string, h draft.Host) string {
+	switch {
+	case envGH != "":
+		return envGH
+	case h.ConfigHome != "":
+		return filepath.Join(h.ConfigHome, "gh")
+	}
+	return filepath.Join(h.Home, ".config", "gh")
+}
+
+// SnugEnv is the environment added to a snug run that reads its profiles from
+// the scratch config directory xdg. gh finds its logins under
+// $XDG_CONFIG_HOME, which is now the scratch one, so GH_CONFIG_DIR points it
+// back at the person's own: without it snug reports "no gh token" for a login
+// that exists. The value is a path to gh's own directory, never a token.
+func SnugEnv(xdg string, h draft.Host) []string {
+	return []string{"XDG_CONFIG_HOME=" + xdg, "GH_CONFIG_DIR=" + GHConfigDir(os.Getenv("GH_CONFIG_DIR"), h)}
+}
+
 // Run writes d as a profile of a fresh XDG_CONFIG_HOME, with the files in
 // others beside it, runs `snug --dry-run --json` on it the way the run line
 // will, and returns the parsed document. A refusal (exit 77) still yields a
@@ -284,7 +306,7 @@ func Run(ctx context.Context, run hostfacts.Runner, snug string, d *draft.Draft,
 		return Doc{}, fmt.Errorf("writing the draft for the check: %w", err)
 	}
 	args := append([]string{"--dry-run", "--json"}, d.RunArgs(d.Host.Target)...)
-	res, err := run(ctx, []string{"XDG_CONFIG_HOME=" + xdg}, snug, args...)
+	res, err := run(ctx, SnugEnv(xdg, d.Host), snug, args...)
 	if len(res.Stdout) == 0 {
 		if errors.Is(err, exec.ErrNotFound) {
 			return Doc{}, fmt.Errorf("%s cannot be run: %w", snug, err)

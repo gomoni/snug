@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 )
 
@@ -367,5 +368,27 @@ func TestNetworkReasonIsNotRepeatedForTwoMarkers(t *testing.T) {
 		{Name: "go", Marker: "go.mod"}, {Name: "go", Marker: "sub/go.mod"}}}}
 	if got := Suggest(f, home, "/home/alice/work/app").Current(Network).Why; got != "go mod download" {
 		t.Errorf("reason %q", got)
+	}
+}
+
+func TestIdentityWarningNeedsTheSameHostAndUser(t *testing.T) {
+	p := fullProfile()
+	p.Identity.GHHost = "ghe.example.com"
+	f := ingest.Facts{
+		Profiles:    []ingest.Profile{p},
+		GHInstalled: true,
+		GH:          []hostfacts.GHAccount{{Host: "github.com", User: "vyskocilm"}},
+	}
+	s := Suggest(f, home, "/home/alice/work/snug")
+	if got := s.IdentityWarning(0); got != "" {
+		t.Errorf("none has no gh login: %q", got)
+	}
+	want := "vyskocilm: gh not logged in as vyskocilm on ghe.example.com — gh auth login --hostname ghe.example.com"
+	if got := s.IdentityWarning(1); got != want {
+		t.Errorf("%q", got)
+	}
+	s.gh = append(s.gh, hostfacts.GHAccount{Host: "GHE.example.com", User: "vyskocilm"})
+	if got := s.IdentityWarning(1); got != "" {
+		t.Errorf("logged in, still warned: %q", got)
 	}
 }

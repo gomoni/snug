@@ -218,13 +218,16 @@ func (s *setup) printOnly() (int, error) {
 	if r := s.sel.Rows[suggest.Identity]; s.sel.Pick[suggest.Identity] == 0 && strings.HasSuffix(r.Choices[0].Why, "— pick one") {
 		fmt.Fprintf(os.Stderr, "identity: %s\n", r.Choices[0].Why)
 	}
+	if w := s.sel.IdentityWarning(s.sel.Pick[suggest.Identity]); w != "" {
+		fmt.Fprintf(os.Stderr, "! %s\n", w)
+	}
 	for id, msg := range refused {
 		fmt.Fprintf(os.Stderr, "! %s: not in the profile: %s\n", strings.ToLower(rowName(id)), safe.Inline(msg))
 	}
 	out := d.Render()
 	for _, r := range s.sel.Rows {
-		if !r.Sure && s.sel.Pick[r.ID] != 0 {
-			out += fmt.Sprintf("# include = [%q]  # %s\n", r.Choices[0].Label, s.sel.Current(r.ID).Why)
+		if !r.Sure && s.sel.Pick[r.ID] == r.Suggested {
+			out += fmt.Sprintf("# include = [%q]  # %s\n", r.Choices[r.Cand].Label, s.sel.Current(r.ID).Why)
 		}
 	}
 	fmt.Print(out)
@@ -448,7 +451,7 @@ func (s *setup) rowToken(row suggest.RowID) string {
 			}
 		}
 		if !s.sel.Rows[row].Sure {
-			return `"` + s.sel.Rows[row].Choices[0].Label + `"`
+			return `"` + s.sel.Rows[row].Choices[s.sel.Rows[row].Cand].Label + `"`
 		}
 	}
 	return "[profile."

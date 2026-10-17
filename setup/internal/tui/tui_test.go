@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/probe"
 	"github.com/gomoni/snug/setup/internal/suggest"
@@ -39,7 +40,9 @@ func facts() ingest.Facts {
 			Languages:  []ingest.Lang{{Name: "go", Marker: "go.mod", Project: "github.com/gomoni/snug-setup"}},
 			Containers: []string{"Containerfile"},
 		},
-		Profiles: []ingest.Profile{idProfile("vyskocilm", "m@example.org", "gh-cli"), idProfile("plainsof", "p@example.org")},
+		Profiles:    []ingest.Profile{idProfile("vyskocilm", "m@example.org", "gh-cli"), idProfile("plainsof", "p@example.org")},
+		GHInstalled: true,
+		GH:          []hostfacts.GHAccount{{Host: "github.com", User: "vyskocilm"}, {Host: "github.com", User: "plainsof"}},
 		Repo: &ingest.RepoFacts{
 			Remotes: []ingest.Remote{ingest.ParseRemoteURL("git@github.com:gomoni/snug.git")},
 			Authors: []ingest.Person{{Name: "M", Email: "m@example.org", Commits: 10}},
@@ -593,6 +596,31 @@ func TestIdentitySubmenuScrollsToCursor(t *testing.T) {
 	}
 	if n := strings.Count(screen(m), "\n") + 1; n > 12 {
 		t.Errorf("%d lines on a 12 line terminal", n)
+	}
+}
+
+func TestIdentityGhWarnings(t *testing.T) {
+	f := facts()
+	f.GH = []hostfacts.GHAccount{{Host: "github.com", User: "plainsof"}}
+	m := sized(New(config(f)), 120)
+	const want = "! vyskocilm: gh not logged in as vyskocilm on github.com — gh auth login --hostname github.com"
+	if !strings.Contains(screen(m), want) {
+		t.Errorf("no login warning:\n%s", screen(m))
+	}
+	m2 := press(toIdentity(m), "enter")
+	if !strings.Contains(screen(m2), want) || strings.Count(screen(m2), "gh not logged in") != 1 {
+		t.Errorf("submenu must list it under the entry only:\n%s", screen(m2))
+	}
+	m = press(toIdentity(m), "space")
+	if strings.Contains(screen(m), "gh not logged in") {
+		t.Errorf("plainsof is logged in:\n%s", screen(m))
+	}
+
+	f = facts()
+	f.GHInstalled, f.GH = false, nil
+	m = sized(New(config(f)), 120)
+	if !strings.Contains(screen(m), "! gh not on PATH: vyskocilm's gh login not checked") {
+		t.Errorf("no missing-gh line:\n%s", screen(m))
 	}
 }
 

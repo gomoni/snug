@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/safe"
 )
@@ -77,6 +78,8 @@ type Selection struct {
 	parentIsHome bool
 	netParts     []netPart
 	sshHosts     []ingest.SSHHost
+	gh           []hostfacts.GHAccount
+	ghInstalled  bool
 	descName     string
 }
 
@@ -105,6 +108,8 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		profiles:     slices.Clone(f.Profiles),
 		parentIsHome: filepath.Dir(target) == home,
 		sshHosts:     f.SSH.Hosts,
+		gh:           f.GH,
+		ghInstalled:  f.GHInstalled,
 	}
 	prop := ingest.Propose(f.Target)
 	s.env = prop.Env
@@ -474,4 +479,30 @@ func (s Selection) IdentityDetail(i int) []string {
 
 func keyStem(p string) string {
 	return strings.TrimSuffix(path.Base(p), ".pub")
+}
+
+// IdentityWarning returns what the host's own gh says against choice i of the
+// Identity row, "" when nothing: the profile pins a gh login that `gh auth
+// status` does not list, or gh is not installed so the login was not checked.
+// It is a fact about the host, found without snug, and refuses nothing.
+func (s Selection) IdentityWarning(i int) string {
+	name := s.Rows[Identity].Choices[i].Label
+	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name && p.Identity.Pins() })
+	if name == NoIdentity || pi < 0 || s.profiles[pi].Identity.GHUser == "" {
+		return ""
+	}
+	id := s.profiles[pi].Identity
+	if !s.ghInstalled {
+		return safe.Inline("gh not on PATH: " + name + "'s gh login not checked")
+	}
+	host := id.GHHost
+	if host == "" {
+		host = "github.com"
+	}
+	if slices.ContainsFunc(s.gh, func(a hostfacts.GHAccount) bool {
+		return strings.EqualFold(a.Host, host) && a.User == id.GHUser
+	}) {
+		return ""
+	}
+	return safe.Inline(name + ": gh not logged in as " + id.GHUser + " on " + host + " — gh auth login --hostname " + host)
 }
