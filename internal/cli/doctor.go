@@ -22,23 +22,14 @@ import (
 //
 // IT STATES WHAT THE PROBE MEASURED AND STOPS. The probe unshares a network
 // namespace and reads /proc/net/dev inside it; the answer is "this kernel
-// gives snug a real, empty netns". That is not a statement about what a RUN
-// can reach and must not be read as one: `-p @net` has full egress and
-// `@http-proxy` has a door, and doctor has no profile selected at all.
-//
-// The two consequence lines that used to be here said "no egress, no host
-// loopback, no abstract unix sockets" and then footnoted X11/D-Bus/Wayland.
-// The first three are false the moment a net profile is selected, and the
-// footnote was a repair (issue #288) for a claim that did not belong on this
-// row in the first place: those are pathname sockets, closed by the MOUNT
-// POLICY, by absence — see CLAUDE.md. The netns closes the ABSTRACT instance
-// only. The versions that CAN say this live where the profiles are known —
-// dryrun.go's two describeNetwork arms and config.go's networkConsequence —
-// and this constant is still swept alongside them by
+// gives snug a real, empty netns". What a RUN can reach depends on the
+// profiles selected, and doctor selects none, so this row says nothing about
+// egress, host loopback or sockets. The emitters that can — dryrun.go's
+// describeNetwork arms and config.go's networkConsequence — are swept
+// alongside this constant by
 // TestTheNetworkBlockDoesNotClaimPathnameSocketsAreNetnsScoped.
 const doctorNetnsOKMessage = "" +
-	"  ✅ an unshared network namespace comes up empty — loopback and nothing else\n" +
-	"     ℹ️  what a RUN can reach is the profiles' answer, not this probe's — `snug config`\n"
+	"  ✅ an unshared network namespace comes up empty — loopback and nothing else\n"
 
 // doctor reports whether this host can run snug, so a user diagnoses a machine
 // before their first run rather than during it.
