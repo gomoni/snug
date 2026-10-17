@@ -13,7 +13,6 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 type info struct{ fs.FileInfo }
@@ -41,16 +40,16 @@ func fixture(t *testing.T, name string) Doc {
 	return doc
 }
 
-func say(d *draft.Draft, text string, acts ...intent.Action) {
+func say(d *draft.Draft, text string, acts ...draft.Action) {
 	for _, a := range acts {
 		d.Propose(a, draft.SourceUser, text, 1)
 	}
 }
 
-func use(n string) intent.Action  { return intent.Action{Op: intent.OpUseProfile, Name: n} }
-func drop(n string) intent.Action { return intent.Action{Op: intent.OpDropProfile, Name: n} }
-func grant(p, a string) intent.Action {
-	return intent.Action{Op: intent.OpGrantPath, Path: p, Access: a}
+func use(n string) draft.Action  { return draft.Action{Op: draft.OpUseProfile, Name: n} }
+func drop(n string) draft.Action { return draft.Action{Op: draft.OpDropProfile, Name: n} }
+func grant(p, a string) draft.Action {
+	return draft.Action{Op: draft.OpGrantPath, Path: p, Access: a}
 }
 
 func netRO() *draft.Draft {
@@ -211,7 +210,7 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 	pathed := draft.New(h)
 	pathed.Name = "pathed"
 	say(pathed, "put the project's bin on PATH", grant("{target}/bin", "ro"),
-		intent.Action{Op: intent.OpSetEnv, Name: "PATH", Verb: "prepend", Value: "{target}/bin", HasValue: true})
+		draft.Action{Op: draft.OpSetEnv, Name: "PATH", Verb: "prepend", Value: "{target}/bin", HasValue: true})
 	if !strings.Contains(pathed.Render(), `PATH = ["{target}/bin"]`) {
 		t.Fatalf("the prepend did not land:\n%s", pathed.Render())
 	}

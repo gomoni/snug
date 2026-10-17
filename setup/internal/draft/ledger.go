@@ -7,8 +7,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 // Source is where an action came from. Precedence is user > host facts > file
@@ -35,7 +33,7 @@ type Entry struct {
 	// Origin is the human's request text for SourceUser, the file NAME for
 	// SourceFile. File content never reaches the ledger.
 	Origin string
-	Action intent.Action
+	Action Action
 	// Names identify the identity a human picked, for select_identity entries
 	// recorded by RecordIdentity: the first is what the ledger prints.
 	Names []string
@@ -105,18 +103,18 @@ func (d *Draft) HostPath(p string) string { return d.expand(p) }
 // (NotMine) is not. select_identity is not applied either: Propose only
 // checks it for a conflict, and the caller records the human's pick with
 // RecordIdentity.
-func (d *Draft) Propose(a intent.Action, src Source, origin string, turn int) (Outcome, *Pending) {
+func (d *Draft) Propose(a Action, src Source, origin string, turn int) (Outcome, *Pending) {
 	e := Entry{Turn: turn, Source: src, Origin: origin, Action: a, Confirmed: src == SourceIngest}
 	if src != SourceUser && src != SourceIngest {
 		if with, ok := d.conflict(e); ok {
 			return Outcome{}, &Pending{Entry: e, With: with, Question: d.question(e, with)}
 		}
 	}
-	if a.Op == intent.OpSelectIdentity {
+	if a.Op == OpSelectIdentity {
 		return Outcome{NotMine: true}, nil
 	}
 	o := d.Apply(a)
-	if o.Refused == "" && !o.NotMine && a.Op != intent.OpNameProfile {
+	if o.Refused == "" && !o.NotMine && a.Op != OpNameProfile {
 		d.ledger = append(d.ledger, e)
 	}
 	return o, nil
@@ -134,7 +132,7 @@ func (d *Draft) Decide(p Pending, accept bool) Outcome {
 		d.ledger = append(d.ledger, e)
 		return Outcome{Msg: "not applied: " + phrase(d, e) + "."}
 	}
-	if e.Action.Op == intent.OpSelectIdentity {
+	if e.Action.Op == OpSelectIdentity {
 		return Outcome{NotMine: true}
 	}
 	o := d.Apply(e.Action)
@@ -153,7 +151,7 @@ func (d *Draft) Decide(p Pending, accept bool) Outcome {
 func (d *Draft) RecordIdentity(kind string, names []string, src Source, origin string, turn int) {
 	d.ledger = append(d.ledger, Entry{
 		Turn: turn, Source: src, Origin: origin, Confirmed: true, Names: slices.Clone(names),
-		Action: intent.Action{Op: intent.OpSelectIdentity, Kind: kind, Account: names[0]},
+		Action: Action{Op: OpSelectIdentity, Kind: kind, Account: names[0]},
 	})
 }
 
@@ -191,15 +189,15 @@ func (d *Draft) conflict(next Entry) (Entry, bool) {
 
 // pathEffect is what an entry does to one host path: ro, rw, tmpfs, drop or
 // stage. ok is false for entries that do not name a path.
-func (d *Draft) pathEffect(a intent.Action) (path, effect string, ok bool) {
+func (d *Draft) pathEffect(a Action) (path, effect string, ok bool) {
 	switch a.Op {
-	case intent.OpGrantPath:
+	case OpGrantPath:
 		return d.expand(a.Path), a.Access, true
-	case intent.OpDropPath:
+	case OpDropPath:
 		return d.expand(a.Path), "drop", true
-	case intent.OpStageBinary:
+	case OpStageBinary:
 		return d.expand(a.Host), "stage", true
-	case intent.OpUseProfile:
+	case OpUseProfile:
 		if a.Name == "@target-rw" {
 			return filepath.Clean(d.Host.Target), "rw", true
 		}
@@ -223,8 +221,8 @@ func (d *Draft) pathEffect(a intent.Action) (path, effect string, ok bool) {
 //     picked one. An empty account names none and contradicts nothing.
 func (d *Draft) Contradicts(prior, next Entry) bool {
 	ap, an := prior.Action, next.Action
-	useDrop := func(use, drop intent.Action) bool {
-		return use.Op == intent.OpUseProfile && drop.Op == intent.OpDropProfile && slices.Contains(Closure(use.Name), drop.Name)
+	useDrop := func(use, drop Action) bool {
+		return use.Op == OpUseProfile && drop.Op == OpDropProfile && slices.Contains(Closure(use.Name), drop.Name)
 	}
 	if useDrop(ap, an) || useDrop(an, ap) {
 		return true
@@ -244,13 +242,13 @@ func (d *Draft) Contradicts(prior, next Entry) bool {
 			return false
 		}
 	}
-	if ap.Op == intent.OpSetEnv && an.Op == intent.OpSetEnv && ap.Name == an.Name {
+	if ap.Op == OpSetEnv && an.Op == OpSetEnv && ap.Name == an.Name {
 		if (ap.Verb == "set") != (an.Verb == "set") && (ap.Verb == "inherit" || an.Verb == "inherit") {
 			return true
 		}
 		return ap.Verb == "set" && an.Verb == "set" && ap.Value != an.Value
 	}
-	if ap.Op == intent.OpSelectIdentity && an.Op == intent.OpSelectIdentity && ap.Kind == an.Kind && len(prior.Names) > 0 {
+	if ap.Op == OpSelectIdentity && an.Op == OpSelectIdentity && ap.Kind == an.Kind && len(prior.Names) > 0 {
 		if len(next.Names) > 0 {
 			return next.Names[0] != prior.Names[0]
 		}
@@ -267,23 +265,23 @@ func phrase(d *Draft, e Entry) string { return clean(rawPhrase(d, e)) }
 func rawPhrase(d *Draft, e Entry) string {
 	a := e.Action
 	switch a.Op {
-	case intent.OpUseProfile:
+	case OpUseProfile:
 		return a.Name
-	case intent.OpDropProfile:
+	case OpDropProfile:
 		return "drop " + a.Name
-	case intent.OpIncludeProfile:
+	case OpIncludeProfile:
 		return "your profile " + a.Name
-	case intent.OpGrantPath:
+	case OpGrantPath:
 		return a.Access + " " + d.spell(a.Path)
-	case intent.OpDropPath:
+	case OpDropPath:
 		return "drop path " + d.spell(a.Path)
-	case intent.OpStageBinary:
+	case OpStageBinary:
 		return "stage " + a.Host + " as " + a.Name
-	case intent.OpSetEnv:
+	case OpSetEnv:
 		return "env " + a.Name + " (" + a.Verb + ")"
-	case intent.OpOpenDoor:
+	case OpOpenDoor:
 		return "door " + a.Name
-	case intent.OpSelectIdentity:
+	case OpSelectIdentity:
 		if a.Account == "" {
 			return a.Kind + " identity"
 		}
@@ -295,13 +293,13 @@ func rawPhrase(d *Draft, e Entry) string {
 func (d *Draft) question(e, with Entry) string {
 	verb := "apply it?"
 	switch e.Action.Op {
-	case intent.OpUseProfile, intent.OpIncludeProfile:
+	case OpUseProfile, OpIncludeProfile:
 		verb = "add it?"
-	case intent.OpDropProfile, intent.OpDropPath:
+	case OpDropProfile, OpDropPath:
 		verb = "drop it?"
-	case intent.OpGrantPath:
+	case OpGrantPath:
 		verb = "grant it?"
-	case intent.OpSelectIdentity:
+	case OpSelectIdentity:
 		verb = "choose one?"
 	}
 	var what string

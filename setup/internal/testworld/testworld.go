@@ -1,7 +1,6 @@
-// Package testworld is a fake host for tests of the session engine and its
-// front ends: a home with three ssh keys, an ssh-agent holding one, gh with two
-// logins and a GitHub that lists one key, a global git author, a model that
-// answers from a table, and a `snug --dry-run --json` that resolves the profile
+// Package testworld is a fake host for tests: a home with three ssh keys, an
+// ssh-agent holding one, gh with two logins and a GitHub that lists one key, a
+// global git author, and a `snug --dry-run --json` that resolves the profile
 // file it is handed. Nothing here touches the real host but t.TempDir.
 package testworld
 
@@ -14,16 +13,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/gomoni/snug/setup/internal/draft"
@@ -82,51 +77,12 @@ func SignCommit(seed byte, payload []byte) string {
 	return "-----BEGIN SSH SIGNATURE-----\n" + strings.Join(append(lines, enc), "\n") + "\n-----END SSH SIGNATURE-----"
 }
 
-// Model answers from a table keyed by the request text, with "|file" appended
-// when the prompt carries a file digest. Each reply is used once.
-type Model struct {
-	mu      sync.Mutex
-	replies map[string][]string
-	Prompts []string
-}
-
-// Complete implements llm.Completer.
-func (m *Model) Complete(_ context.Context, _, user string, _ float64) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.Prompts = append(m.Prompts, user)
-	lines := strings.Split(user, "\n")
-	key := strings.TrimPrefix(lines[len(lines)-1], "request: ")
-	if strings.Contains(user, "\nfile ") {
-		key += "|file"
-	}
-	q := m.replies[key]
-	if len(q) == 0 {
-		return "", fmt.Errorf("fake model: no reply left for %q", key)
-	}
-	m.replies[key] = q[1:]
-	return q[0], nil
-}
-
-// Requests returns the request line of every prompt, in order.
-func (m *Model) Requests() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []string
-	for _, p := range m.Prompts {
-		lines := strings.Split(p, "\n")
-		out = append(out, strings.TrimPrefix(lines[len(lines)-1], "request: "))
-	}
-	return out
-}
-
 // World is one fake host.
 type World struct {
 	t       *testing.T
 	Home    string
 	Target  string
 	ProfDir string
-	Model   *Model
 	Cmds    []string
 	Envs    [][]string
 
@@ -158,7 +114,6 @@ const GHTwo = `github.com
 func New(t *testing.T) *World {
 	w := &World{t: t, Home: t.TempDir(), Target: t.TempDir(), ProfDir: filepath.Join(t.TempDir(), "snug", "profiles.d"),
 		GHAccounts: GHTwo, APILogin: "account2", APIBlob: BlobOf(2)}
-	w.Model = &Model{replies: map[string][]string{}}
 	w.Key("id_account1", "account1@laptop", 1)
 	w.Key("id_account2", "account2@laptop", 2)
 	w.Key("id_other", "other@example.org", 3)
@@ -173,20 +128,6 @@ func (w *World) Key(stem, comment string, seed byte) {
 	if err := os.WriteFile(filepath.Join(dir, stem+".pub"), []byte(line), 0o644); err != nil {
 		w.t.Fatal(err)
 	}
-}
-
-// Reply queues the model's answer to request.
-func (w *World) Reply(request string, actions ...string) {
-	w.Model.mu.Lock()
-	defer w.Model.mu.Unlock()
-	w.Model.replies[request] = append(w.Model.replies[request], `{"actions":[`+strings.Join(actions, ",")+`]}`)
-}
-
-// RawReply queues a reply that is not built from actions.
-func (w *World) RawReply(request, reply string) {
-	w.Model.mu.Lock()
-	defer w.Model.mu.Unlock()
-	w.Model.replies[request] = append(w.Model.replies[request], reply)
 }
 
 // Profile writes NAME.toml with body into the world's profile directory, the
@@ -354,32 +295,4 @@ func (w *World) dryRun(env, args []string) (hostfacts.Result, error) {
 	}
 	out, err := json.Marshal(doc)
 	return hostfacts.Result{Stdout: out}, err
-}
-
-// LLMServer serves the world's Model as an OpenAI-compatible
-// /v1/chat/completions endpoint, for tests that go through llm.Remote.
-func (w *World) LLMServer() *httptest.Server {
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"messages"`
-			Temperature float64 `json:"temperature"`
-		}
-		if r.URL.Path != "/v1/chat/completions" || json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Messages) != 2 {
-			http.Error(rw, "bad request", http.StatusBadRequest)
-			return
-		}
-		reply, err := w.Model.Complete(r.Context(), req.Messages[0].Content, req.Messages[1].Content, req.Temperature)
-		if err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(rw).Encode(map[string]any{
-			"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": reply}}},
-		})
-	}))
-	w.t.Cleanup(srv.Close)
-	return srv
 }

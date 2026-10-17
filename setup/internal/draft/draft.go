@@ -16,12 +16,10 @@ import (
 	"slices"
 	"strings"
 	"unicode"
-
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-// Refusal codes Apply can return beyond intent.Refusals. They name rules that
-// Go enforces and the model has no code for.
+// Refusal codes Apply can return. They name rules that
+// Go enforces.
 const (
 	CodeKernelPath  = "kernel_path"
 	CodeReservedEnv = "reserved_env"
@@ -159,49 +157,6 @@ func (d *Draft) Empty() bool {
 		len(d.Doors) == 0 && !d.ReadOnlyTarget && d.SSH == nil && d.GH == nil && d.Git == nil
 }
 
-// Summary is the draft as the model sees it.
-func (d *Draft) Summary() intent.Draft {
-	s := intent.Draft{
-		Include: slices.Clone(d.Include),
-		RW:      slices.Clone(d.RW),
-		RO:      slices.Clone(d.RO),
-		Tmpfs:   slices.Clone(d.Tmpfs),
-	}
-	if d.ReadOnlyTarget {
-		s.RO = append([]string{"{target}"}, s.RO...)
-	}
-	if d.Name != "" {
-		n := d.Name
-		s.Name = &n
-	}
-	for _, p := range d.EnvSet {
-		s.Env = appendOnce(s.Env, p.K)
-	}
-	for _, n := range d.EnvInherit {
-		s.Env = appendOnce(s.Env, n)
-	}
-	for _, p := range d.EnvPrepend {
-		s.Env = appendOnce(s.Env, p.K)
-	}
-	if d.SSH != nil {
-		s.Identity = append(s.Identity, "ssh:"+d.SSH.Stem)
-	}
-	if d.GH != nil {
-		s.Identity = append(s.Identity, "github:"+d.GH.User)
-	}
-	if d.Git != nil {
-		s.Identity = append(s.Identity, "git:"+d.Git.Email)
-	}
-	return s
-}
-
-func appendOnce(xs []string, v string) []string {
-	if slices.Contains(xs, v) {
-		return xs
-	}
-	return append(xs, v)
-}
-
 func refuse(code, msg string) Outcome { return Outcome{Refused: code, Msg: msg} }
 
 func changed(msg string) Outcome { return Outcome{Msg: msg, Changed: true} }
@@ -210,30 +165,30 @@ func changed(msg string) Outcome { return Outcome{Msg: msg, Changed: true} }
 // what happened in Msg; refused ones leave it untouched and carry a refusal
 // code in Refused. Ops that are not the draft's business (identities, reading
 // files, session control, refuse, note, ask) return NotMine.
-func (d *Draft) Apply(a intent.Action) Outcome {
+func (d *Draft) Apply(a Action) Outcome {
 	switch a.Op {
-	case intent.OpUseProfile:
+	case OpUseProfile:
 		return d.use(a.Name)
-	case intent.OpDropProfile:
+	case OpDropProfile:
 		return d.drop(a.Name)
-	case intent.OpIncludeProfile:
+	case OpIncludeProfile:
 		return d.includeUser(a.Name)
-	case intent.OpGrantPath:
+	case OpGrantPath:
 		return d.grant(a.Path, a.Access)
-	case intent.OpDropPath:
+	case OpDropPath:
 		return d.dropPath(a.Path)
-	case intent.OpStageBinary:
+	case OpStageBinary:
 		return d.stage(a.Host, a.Name)
-	case intent.OpSetEnv:
+	case OpSetEnv:
 		return d.setEnv(a)
-	case intent.OpOpenDoor:
+	case OpOpenDoor:
 		if slices.Contains(d.Doors, a.Name) {
 			return Outcome{Msg: "door " + a.Name + " is already in the draft."}
 		}
 		d.Doors = append(d.Doors, a.Name)
 		return changed("added the door " + a.Name + " (listen_names). Your server must accept on the descriptor snug hands it (LISTEN_FDS, fd 3); `snug proxy DIR` opens it. Add @net if your server needs the network.")
-	case intent.OpNameProfile:
-		if !intent.ValidProfileName(a.Name) {
+	case OpNameProfile:
+		if !ValidProfileName(a.Name) {
 			return refuse(CodeBadValue, "profile names are [a-zA-Z0-9][a-zA-Z0-9-]*: no underscore, no dot, no leading @")
 		}
 		d.Name = a.Name
@@ -275,7 +230,7 @@ func (d *Draft) use(name string) Outcome {
 // profile of that name, and whether it resolves, is the caller's check and
 // snug's: the draft only refuses a name that cannot be a user profile.
 func (d *Draft) includeUser(name string) Outcome {
-	if !intent.ValidProfileName(name) {
+	if !ValidProfileName(name) {
 		return refuse(CodeBadValue, "profile names are [a-zA-Z0-9][a-zA-Z0-9-]*: no underscore, no dot, no leading @")
 	}
 	if slices.Contains(d.Include, name) {

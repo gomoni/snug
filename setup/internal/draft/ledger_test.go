@@ -8,34 +8,32 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
-func user(text string, a intent.Action) Entry {
+func user(text string, a Action) Entry {
 	return Entry{Source: SourceUser, Origin: text, Action: a}
 }
 
-func file(a intent.Action) Entry { return Entry{Source: SourceFile, Origin: "README.md", Action: a} }
+func file(a Action) Entry { return Entry{Source: SourceFile, Origin: "README.md", Action: a} }
 
 func picked(kind string, names ...string) Entry {
-	return Entry{Source: SourceUser, Confirmed: true, Names: names, Action: intent.Action{Op: intent.OpSelectIdentity, Kind: kind, Account: names[0]}}
+	return Entry{Source: SourceUser, Confirmed: true, Names: names, Action: Action{Op: OpSelectIdentity, Kind: kind, Account: names[0]}}
 }
 
 func TestContradicts(t *testing.T) {
-	use := func(n string) intent.Action { return act(intent.OpUseProfile, "name", n) }
-	drop := func(n string) intent.Action { return act(intent.OpDropProfile, "name", n) }
-	grant := func(p, a string) intent.Action { return act(intent.OpGrantPath, "path", p, "access", a) }
-	dropPath := func(p string) intent.Action { return act(intent.OpDropPath, "path", p) }
-	env := func(verb, v string) intent.Action {
-		a := act(intent.OpSetEnv, "name", "EDITOR", "verb", verb)
+	use := func(n string) Action { return act(OpUseProfile, "name", n) }
+	drop := func(n string) Action { return act(OpDropProfile, "name", n) }
+	grant := func(p, a string) Action { return act(OpGrantPath, "path", p, "access", a) }
+	dropPath := func(p string) Action { return act(OpDropPath, "path", p) }
+	env := func(verb, v string) Action {
+		a := act(OpSetEnv, "name", "EDITOR", "verb", verb)
 		if verb != "inherit" {
 			a.Value, a.HasValue = v, true
 		}
 		return a
 	}
-	ident := func(kind, acct string) intent.Action {
-		return act(intent.OpSelectIdentity, "kind", kind, "account", acct)
+	ident := func(kind, acct string) Action {
+		return act(OpSelectIdentity, "kind", kind, "account", acct)
 	}
 	cases := []struct {
 		name        string
@@ -60,7 +58,7 @@ func TestContradicts(t *testing.T) {
 		{"read-only target vs @target-rw", user("x", grant("{target}", "ro")), file(use("@target-rw")), true},
 		{"@target-rw vs read-only target", user("x", use("@target-rw")), file(grant("here", "ro")), false},
 		{"drop @target-rw vs @target-rw", user("x", drop("@target-rw")), file(use("@target-rw")), true},
-		{"staged vs drop_path", user("x", act(intent.OpStageBinary, "host", "/opt/x/bin/x", "name", "x")), file(dropPath("/opt/x/bin/x")), true},
+		{"staged vs drop_path", user("x", act(OpStageBinary, "host", "/opt/x/bin/x", "name", "x")), file(dropPath("/opt/x/bin/x")), true},
 		{"env set vs inherit", user("x", env("set", "vim")), file(env("inherit", "")), true},
 		{"env set vs other value", user("x", env("set", "vim")), file(env("set", "nano")), true},
 		{"env same value", user("x", env("set", "vim")), file(env("set", "vim")), false},
@@ -70,7 +68,7 @@ func TestContradicts(t *testing.T) {
 		{"identity, other kind", picked("github", "account2"), file(ident("ssh", "id_other")), false},
 		{"identity, two picks", picked("ssh", "id_a"), picked("ssh", "id_b"), true},
 		{"identity, unpicked prior", user("x", ident("github", "account2")), file(ident("github", "account1")), false},
-		{"door vs door", user("x", act(intent.OpOpenDoor, "name", "web")), file(act(intent.OpOpenDoor, "name", "web")), false},
+		{"door vs door", user("x", act(OpOpenDoor, "name", "web")), file(act(OpOpenDoor, "name", "web")), false},
 	}
 	d := New(testHost())
 	for _, c := range cases {
@@ -83,8 +81,8 @@ func TestContradicts(t *testing.T) {
 func TestFileConflictIsAQuestionNotAnEdit(t *testing.T) {
 	for _, accept := range []bool{false, true} {
 		d := New(testHost())
-		d.Propose(act(intent.OpDropProfile, "name", "@net"), SourceUser, "keep it offline", 1)
-		o, p := d.Propose(act(intent.OpUseProfile, "name", "@net"), SourceFile, "README.md", 2)
+		d.Propose(act(OpDropProfile, "name", "@net"), SourceUser, "keep it offline", 1)
+		o, p := d.Propose(act(OpUseProfile, "name", "@net"), SourceFile, "README.md", 2)
 		if p == nil {
 			t.Fatalf("no question: %+v", o)
 		}
@@ -105,7 +103,7 @@ func TestFileConflictIsAQuestionNotAnEdit(t *testing.T) {
 				t.Error(lines)
 			}
 			// The accepted file action now carries the human's authority.
-			if _, p := d.Propose(act(intent.OpDropProfile, "name", "@net"), SourceFile, "compose.yml", 3); p == nil {
+			if _, p := d.Propose(act(OpDropProfile, "name", "@net"), SourceFile, "compose.yml", 3); p == nil {
 				t.Error("a file undid what the human accepted without asking")
 			}
 		} else if !strings.Contains(lines, `# intent (README.md, declined): @net — conflicts with "keep it offline"`) {
@@ -116,15 +114,15 @@ func TestFileConflictIsAQuestionNotAnEdit(t *testing.T) {
 
 func TestNewestUserEntryWins(t *testing.T) {
 	d := New(testHost())
-	d.Propose(act(intent.OpDropProfile, "name", "@net"), SourceUser, "keep it offline", 1)
-	d.Propose(act(intent.OpUseProfile, "name", "@net"), SourceUser, "actually it needs internet", 2)
+	d.Propose(act(OpDropProfile, "name", "@net"), SourceUser, "keep it offline", 1)
+	d.Propose(act(OpUseProfile, "name", "@net"), SourceUser, "actually it needs internet", 2)
 	if !slices.Contains(d.Include, "@net") {
 		t.Fatal("a user's later request was not applied")
 	}
-	if _, p := d.Propose(act(intent.OpUseProfile, "name", "@net"), SourceFile, "README.md", 3); p != nil {
+	if _, p := d.Propose(act(OpUseProfile, "name", "@net"), SourceFile, "README.md", 3); p != nil {
 		t.Errorf("asked about what the human's newest request already says: %s", p.Question)
 	}
-	if _, p := d.Propose(act(intent.OpDropProfile, "name", "@net"), SourceFile, "README.md", 3); p == nil {
+	if _, p := d.Propose(act(OpDropProfile, "name", "@net"), SourceFile, "README.md", 3); p == nil {
 		t.Error("a file dropped what the human's newest request asked for")
 	}
 	lines := d.IntentLines()
@@ -132,15 +130,15 @@ func TestNewestUserEntryWins(t *testing.T) {
 		t.Errorf("the ledger must show both requests:\n%s", strings.Join(lines, "\n"))
 	}
 	eff := d.Effective()
-	if len(eff) != 2 || eff[0].Action.Op != intent.OpUseProfile || eff[0].Source != SourceUser {
+	if len(eff) != 2 || eff[0].Action.Op != OpUseProfile || eff[0].Source != SourceUser {
 		t.Errorf("effective: %+v", eff)
 	}
 }
 
 func TestUserSourceIsNeverAsked(t *testing.T) {
 	d := New(testHost())
-	d.Propose(act(intent.OpGrantPath, "path", "{target}", "access", "ro"), SourceUser, "read-only here", 1)
-	if _, p := d.Propose(act(intent.OpUseProfile, "name", "@target-rw"), SourceUser, "give me write access here", 2); p != nil {
+	d.Propose(act(OpGrantPath, "path", "{target}", "access", "ro"), SourceUser, "read-only here", 1)
+	if _, p := d.Propose(act(OpUseProfile, "name", "@target-rw"), SourceUser, "give me write access here", 2); p != nil {
 		t.Fatal("the human was asked to confirm their own request")
 	}
 	if d.ReadOnlyTarget {
@@ -150,9 +148,9 @@ func TestUserSourceIsNeverAsked(t *testing.T) {
 
 func TestRefusedActionsAreNotRecorded(t *testing.T) {
 	d := New(testHost())
-	d.Propose(act(intent.OpGrantPath, "path", "~/.ssh", "access", "ro"), SourceUser, "give it my ssh", 1)
-	d.Propose(act(intent.OpShow), SourceUser, "show", 2)
-	d.Propose(act(intent.OpNameProfile, "name", "work"), SourceUser, "call it work", 3)
+	d.Propose(act(OpGrantPath, "path", "~/.ssh", "access", "ro"), SourceUser, "give it my ssh", 1)
+	d.Propose(act(OpShow), SourceUser, "show", 2)
+	d.Propose(act(OpNameProfile, "name", "work"), SourceUser, "call it work", 3)
 	if l := d.Ledger(); len(l) != 0 {
 		t.Errorf("%+v", l)
 	}
@@ -160,12 +158,12 @@ func TestRefusedActionsAreNotRecorded(t *testing.T) {
 
 func TestTargetRWIsAlreadyADefault(t *testing.T) {
 	d := New(testHost())
-	o := d.Apply(act(intent.OpUseProfile, "name", "@target-rw"))
+	o := d.Apply(act(OpUseProfile, "name", "@target-rw"))
 	if !o.Default || o.Changed || o.Msg != "" || !d.Empty() || strings.Contains(d.Render(), `"@target-rw"`) {
 		t.Errorf("%+v\n%s", o, d.Render())
 	}
-	d.Apply(act(intent.OpGrantPath, "path", "{target}", "access", "ro"))
-	o = d.Apply(act(intent.OpUseProfile, "name", "@target-rw"))
+	d.Apply(act(OpGrantPath, "path", "{target}", "access", "ro"))
+	o = d.Apply(act(OpUseProfile, "name", "@target-rw"))
 	if !o.Changed || d.ReadOnlyTarget || slices.Contains(d.Include, "@target-rw") || !d.Empty() {
 		t.Errorf("%+v %+v", o, d)
 	}
@@ -175,7 +173,7 @@ func TestTargetRWIsAlreadyADefault(t *testing.T) {
 // characters are Cf too, and are invisible in the profile a human reads.
 func TestLedgerDropsEveryFormatCharacter(t *testing.T) {
 	d := New(testHost())
-	d.Propose(act(intent.OpUseProfile, "name", "@git"), SourceUser, "use\u200bgit\ufeff \U000E0041\U000E0001now\u2066", 1)
+	d.Propose(act(OpUseProfile, "name", "@git"), SourceUser, "use\u200bgit\ufeff \U000E0041\U000E0001now\u2066", 1)
 	l := d.IntentLines()[0]
 	for _, c := range l {
 		if unicode.Is(unicode.Cf, c) {
@@ -193,8 +191,8 @@ func TestRequestTextCannotWriteTOML(t *testing.T) {
 	evil := "keep it offline\n[profile.evil]\r\nrw = [\"/\"]\u2028x\u202ey\x1b[2J\x00\xff" + strings.Repeat("a", 200)
 	d := New(testHost())
 	d.Name = "work"
-	d.Propose(act(intent.OpDropProfile, "name", "@net"), SourceUser, evil, 1)
-	d.Propose(act(intent.OpUseProfile, "name", "@git"), SourceFile, "READ\nME\u202e.md", 2)
+	d.Propose(act(OpDropProfile, "name", "@net"), SourceUser, evil, 1)
+	d.Propose(act(OpUseProfile, "name", "@git"), SourceFile, "READ\nME\u202e.md", 2)
 	out := d.Render()
 	head, _, ok := strings.Cut(out, "[profile.work]")
 	if !ok {

@@ -21,7 +21,6 @@ import (
 
 	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 // Format is the dry-run document format this package reads.
@@ -78,15 +77,15 @@ func refusalFix(d *draft.Draft, msg string) string {
 	for _, e := range d.Effective() {
 		a := e.Action
 		switch a.Op {
-		case intent.OpGrantPath:
+		case draft.OpGrantPath:
 			if p := d.HostPath(a.Path); names(msg, p) {
 				named = append(named, fmt.Sprintf("%s was granted by %s: say \"remove %s\"", p, origin(e), p))
 			}
-		case intent.OpStageBinary:
+		case draft.OpStageBinary:
 			if p := d.HostPath(a.Host); names(msg, p) {
 				named = append(named, fmt.Sprintf("%s was staged by %s: say \"remove %s\"", p, origin(e), p))
 			}
-		case intent.OpUseProfile, intent.OpIncludeProfile:
+		case draft.OpUseProfile, draft.OpIncludeProfile:
 			if names(msg, a.Name) {
 				named = append(named, fmt.Sprintf("%s was added by %s: say \"drop %s\"", a.Name, origin(e), a.Name))
 			}
@@ -191,20 +190,20 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 		a := e.Action
 		why := origin(e)
 		switch a.Op {
-		case intent.OpUseProfile:
+		case draft.OpUseProfile:
 			for _, n := range draft.Closure(a.Name) {
 				allowed[n] = true
 			}
 			if !resolved[a.Name] {
 				add("%s asked for %s; snug's resolved selection does not have it", "ask for it again; if it persists, the draft lost it (a snug-setup bug)", why, a.Name)
 			}
-		case intent.OpIncludeProfile:
+		case draft.OpIncludeProfile:
 			userIncludes = true
 			allowed[a.Name] = true
 			if !resolved[a.Name] {
 				add("%s asked for your profile %s; snug's resolved selection does not have it", "check that the profile still exists in your profiles.d, then ask for it again", why, a.Name)
 			}
-		case intent.OpDropProfile:
+		case draft.OpDropProfile:
 			if resolved[a.Name] {
 				fix := "find what includes " + a.Name + " in the profile and drop that too"
 				if slices.Contains(base, a.Name) {
@@ -215,7 +214,7 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 				}
 				add("%s asked to drop %s; snug still selects it", fix, why, a.Name)
 			}
-		case intent.OpGrantPath:
+		case draft.OpGrantPath:
 			p := d.HostPath(a.Path)
 			g := grants[p]
 			if g == nil {
@@ -230,9 +229,9 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 				g.access = "rw"
 			}
 			g.by = append(g.by, why)
-		case intent.OpDropPath:
+		case draft.OpDropPath:
 			drops[d.HostPath(a.Path)] = why
-		case intent.OpStageBinary:
+		case draft.OpStageBinary:
 			stages["/snug/bin/"+a.Name] = why
 		}
 	}

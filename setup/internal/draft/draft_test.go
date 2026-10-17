@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -49,8 +47,8 @@ func testHost() Host {
 	}
 }
 
-func act(op string, kv ...string) intent.Action {
-	a := intent.Action{Op: op}
+func act(op string, kv ...string) Action {
+	a := Action{Op: op}
 	for i := 0; i < len(kv); i += 2 {
 		switch kv[i] {
 		case "name":
@@ -123,7 +121,7 @@ func TestSafetyRulesRefuse(t *testing.T) {
 	for _, c := range cases {
 		for _, access := range []string{"ro", "rw", "tmpfs"} {
 			d := New(testHost())
-			o := d.Apply(act(intent.OpGrantPath, "path", c.path, "access", access))
+			o := d.Apply(act(OpGrantPath, "path", c.path, "access", access))
 			if o.Refused != c.code {
 				t.Errorf("grant %s %s: refused=%q (%s), want %q", access, c.path, o.Refused, o.Msg, c.code)
 			}
@@ -143,12 +141,12 @@ func TestHostRunFilesNotWritable(t *testing.T) {
 		"~/.local/bin", "~/.local/bin/git", "~/.gitconfig", "~/.config/git/config", "~/.config/environment.d",
 		"~/.local/share/applications"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+		if o := d.Apply(act(OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
 			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
 		}
 		for _, access := range []string{"ro", "tmpfs"} {
 			d := New(testHost())
-			if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", access)); o.Refused != "" {
+			if o := d.Apply(act(OpGrantPath, "path", p, "access", access)); o.Refused != "" {
 				t.Errorf("grant %s %s refused: %+v", access, p, o)
 			}
 		}
@@ -156,7 +154,7 @@ func TestHostRunFilesNotWritable(t *testing.T) {
 	// A directory above one of them is just as writable.
 	for _, p := range []string{"~/.local", "~/.config/systemd", "~/link-to-bin"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+		if o := d.Apply(act(OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
 			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
 		}
 	}
@@ -171,7 +169,7 @@ func TestSnugConfigNotWritable(t *testing.T) {
 	h.ConfigHome = "/mnt/cfg"
 	for _, p := range []string{"~/.config/snug", "~/.config/snug/profiles.d", "~/.config", "/mnt/cfg/snug/profiles.d", "/mnt/cfg", "/mnt"} {
 		d := New(h)
-		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
+		if o := d.Apply(act(OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
 			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
 		}
 		if !d.Empty() {
@@ -180,11 +178,11 @@ func TestSnugConfigNotWritable(t *testing.T) {
 	}
 	for _, p := range []string{"~/.config/snug/profiles.d", "/mnt/cfg/snug"} {
 		d := New(h)
-		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "ro")); o.Refused != "" {
+		if o := d.Apply(act(OpGrantPath, "path", p, "access", "ro")); o.Refused != "" {
 			t.Errorf("grant ro %s refused: %+v", p, o)
 		}
 	}
-	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/mnt/other", "access", "rw")); o.Refused != "" {
+	if o := New(h).Apply(act(OpGrantPath, "path", "/mnt/other", "access", "rw")); o.Refused != "" {
 		t.Errorf("a sibling of the config home refused: %+v", o)
 	}
 }
@@ -199,7 +197,7 @@ func TestCredentialFilesRefused(t *testing.T) {
 		"~/.librewolf", "~/.config/google-chrome", "~/.config/chromium/Default", "~/.config/BraveSoftware"} {
 		for _, access := range []string{"ro", "rw", "tmpfs"} {
 			d := New(testHost())
-			if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", access)); o.Refused != "sensitive_home" {
+			if o := d.Apply(act(OpGrantPath, "path", p, "access", access)); o.Refused != "sensitive_home" {
 				t.Errorf("grant %s %s: refused=%q (%s), want sensitive_home", access, p, o.Refused, o.Msg)
 			}
 		}
@@ -242,7 +240,7 @@ func TestCheckTargetRefusesInvisibles(t *testing.T) {
 func TestSafetyRulesAllowOrdinary(t *testing.T) {
 	for _, p := range []string{"/mnt/data", "~/data", "~/src", "{target}/out", "/mnt/cache", "~/.cache/pip"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "" {
+		if o := d.Apply(act(OpGrantPath, "path", p, "access", "rw")); o.Refused != "" {
 			t.Errorf("%s refused: %+v", p, o)
 		}
 	}
@@ -250,16 +248,16 @@ func TestSafetyRulesAllowOrdinary(t *testing.T) {
 
 func TestStageBinaryChecksHostPath(t *testing.T) {
 	d := New(testHost())
-	if o := d.Apply(act(intent.OpStageBinary, "host", "~/.ssh/id_ed25519", "name", "ssh-key")); o.Refused != "sensitive_home" {
+	if o := d.Apply(act(OpStageBinary, "host", "~/.ssh/id_ed25519", "name", "ssh-key")); o.Refused != "sensitive_home" {
 		t.Errorf("%+v", o)
 	}
-	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/foo", "name", "..")); o.Refused != CodeBadValue {
+	if o := d.Apply(act(OpStageBinary, "host", "~/bin/foo", "name", "..")); o.Refused != CodeBadValue {
 		t.Errorf("%+v", o)
 	}
-	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/missing", "name", "foo")); o.Refused != CodeBadValue {
+	if o := d.Apply(act(OpStageBinary, "host", "~/bin/missing", "name", "foo")); o.Refused != CodeBadValue {
 		t.Errorf("missing file: %+v", o)
 	}
-	if o := d.Apply(act(intent.OpStageBinary, "host", "~/bin/foo", "name", "foo")); o.Refused != "" || !strings.Contains(d.Render(), `"~/bin/foo:/snug/bin/foo"`) {
+	if o := d.Apply(act(OpStageBinary, "host", "~/bin/foo", "name", "foo")); o.Refused != "" || !strings.Contains(d.Render(), `"~/bin/foo:/snug/bin/foo"`) {
 		t.Errorf("%+v\n%s", o, d.Render())
 	}
 }
@@ -282,7 +280,7 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 		"GITHUB_PAT", "GH_PAT", "PAT", "GITLAB_PAT_RO"} {
 		for _, verb := range []string{"inherit", "set"} {
 			d := New(testHost())
-			o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", verb, "value", "x"))
+			o := d.Apply(act(OpSetEnv, "name", name, "verb", verb, "value", "x"))
 			if o.Refused != "secret_in_env" {
 				t.Errorf("%s %s: refused=%q (%s), want secret_in_env", verb, name, o.Refused, o.Msg)
 			}
@@ -292,7 +290,7 @@ func TestSetEnvRefusesCredentialNames(t *testing.T) {
 		"PASSTHROUGH", "AUTHOR_NAME", "BASE_URL", "TOKENIZERS_PARALLELISM", "MAX_TOKENS", "NO_PROXY", "GOPROXY",
 		"KUBECONFIG", "PGPASSFILE", "VAULT_ADDR", "DOCKER_CONFIG", "KEYFILE", "PATTERN", "SPATIAL_DIR"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", "inherit")); o.Refused != "" {
+		if o := d.Apply(act(OpSetEnv, "name", name, "verb", "inherit")); o.Refused != "" {
 			t.Errorf("inherit %s refused: %+v", name, o)
 		}
 	}
@@ -310,7 +308,7 @@ func TestHostPointerEnvRefused(t *testing.T) {
 		}
 		for _, verb := range []string{"inherit", "set"} {
 			d := New(testHost())
-			o := d.Apply(act(intent.OpSetEnv, "name", name, "verb", verb, "value", "/x"))
+			o := d.Apply(act(OpSetEnv, "name", name, "verb", verb, "value", "/x"))
 			if o.Refused != CodeHostPointer || !strings.Contains(o.Msg, alt) || !d.Empty() {
 				t.Errorf("%s %s: %+v", verb, name, o)
 			}
@@ -324,13 +322,13 @@ func TestSetEnvRefusesCredentialValues(t *testing.T) {
 	for _, v := range []string{"postgres://u:pw@db/x", "https://user@host/x", "ghp_0123456789abcdef", "github_pat_11AB",
 		"glpat-xyz", "xoxb-123", "sk-abc123", "AKIAIOSFODNN7EXAMPLE", "id=AKIAIOSFODNN7EXAMPLE", "-----BEGIN OPENSSH PRIVATE KEY-----"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "secret_in_env" {
+		if o := d.Apply(act(OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "secret_in_env" {
 			t.Errorf("set MY_SETTING=%q: refused=%q (%s), want secret_in_env", v, o.Refused, o.Msg)
 		}
 	}
 	for _, v := range []string{"vim", "https://example.com/x", "{target}/sk-notes", "mailto:a@b", "less -R"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "" {
+		if o := d.Apply(act(OpSetEnv, "name", "MY_SETTING", "verb", "set", "value", v)); o.Refused != "" {
 			t.Errorf("set MY_SETTING=%q refused: %+v", v, o)
 		}
 	}
@@ -341,13 +339,13 @@ func TestSetEnvRefusesCredentialValues(t *testing.T) {
 // which it does not grant". The draft now refuses it at once, naming the fix.
 func TestPrependUnderTargetNeedsAGrant(t *testing.T) {
 	d := New(testHost())
-	if o := d.Apply(act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != CodeNotGranted {
+	if o := d.Apply(act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != CodeNotGranted {
 		t.Errorf("prepend without a grant: %+v", o)
 	}
-	if o := d.Apply(act(intent.OpGrantPath, "path", "{target}/bin", "access", "ro")); o.Refused != "" {
+	if o := d.Apply(act(OpGrantPath, "path", "{target}/bin", "access", "ro")); o.Refused != "" {
 		t.Fatalf("%+v", o)
 	}
-	if o := d.Apply(act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != "" {
+	if o := d.Apply(act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "{target}/bin")); o.Refused != "" {
 		t.Errorf("prepend after the grant: %+v", o)
 	}
 }
@@ -381,7 +379,7 @@ func TestWrittenBySnugMatchesPolicy(t *testing.T) {
 	}
 	for _, n := range append(want, "SNUG_TARGET") {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpSetEnv, "name", n, "verb", "set", "value", "x")); o.Refused != CodeReservedEnv {
+		if o := d.Apply(act(OpSetEnv, "name", n, "verb", "set", "value", "x")); o.Refused != CodeReservedEnv {
 			t.Errorf("set %s: %+v", n, o)
 		}
 	}
@@ -389,30 +387,30 @@ func TestWrittenBySnugMatchesPolicy(t *testing.T) {
 
 func TestEnvRules(t *testing.T) {
 	refused := []struct {
-		a    intent.Action
+		a    Action
 		code string
 	}{
-		{act(intent.OpSetEnv, "name", "GITHUB_TOKEN", "verb", "set", "value", "x"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "MY_PASSWORD", "verb", "inherit"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "aws_secret_access_key", "verb", "set", "value", "x"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "OPENAI_API_KEY", "verb", "inherit"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "APIKEY", "verb", "set", "value", "x"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "DB_CREDENTIALS", "verb", "set", "value", "x"), "secret_in_env"},
-		{act(intent.OpSetEnv, "name", "HOME", "verb", "set", "value", "/x"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "PATH", "verb", "set", "value", "/x"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "SHELL", "verb", "inherit"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "USER", "verb", "set", "value", "root"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "LOGNAME", "verb", "set", "value", "root"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "TMPDIR", "verb", "set", "value", "/x"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "PS1", "verb", "set", "value", "x"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "SNUG_TARGET", "verb", "set", "value", "/"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "SNUG", "verb", "inherit"), CodeReservedEnv},
-		{act(intent.OpSetEnv, "name", "LD_PRELOAD", "verb", "set", "value", "/x.so"), CodeNoVerb},
-		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "prepend", "value", "/x"), CodeUnknownList},
-		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "a\nb"), CodeBadValue},
-		{act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "{tmp}/x"), CodeBadValue},
-		{act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"), CodeNotGranted},
-		{act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "bin"), CodeBadValue},
+		{act(OpSetEnv, "name", "GITHUB_TOKEN", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(OpSetEnv, "name", "MY_PASSWORD", "verb", "inherit"), "secret_in_env"},
+		{act(OpSetEnv, "name", "aws_secret_access_key", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(OpSetEnv, "name", "OPENAI_API_KEY", "verb", "inherit"), "secret_in_env"},
+		{act(OpSetEnv, "name", "APIKEY", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(OpSetEnv, "name", "DB_CREDENTIALS", "verb", "set", "value", "x"), "secret_in_env"},
+		{act(OpSetEnv, "name", "HOME", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "PATH", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "SHELL", "verb", "inherit"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "USER", "verb", "set", "value", "root"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "LOGNAME", "verb", "set", "value", "root"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "TMPDIR", "verb", "set", "value", "/x"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "PS1", "verb", "set", "value", "x"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "SNUG_TARGET", "verb", "set", "value", "/"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "SNUG", "verb", "inherit"), CodeReservedEnv},
+		{act(OpSetEnv, "name", "LD_PRELOAD", "verb", "set", "value", "/x.so"), CodeNoVerb},
+		{act(OpSetEnv, "name", "EDITOR", "verb", "prepend", "value", "/x"), CodeUnknownList},
+		{act(OpSetEnv, "name", "EDITOR", "verb", "set", "value", "a\nb"), CodeBadValue},
+		{act(OpSetEnv, "name", "EDITOR", "verb", "set", "value", "{tmp}/x"), CodeBadValue},
+		{act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"), CodeNotGranted},
+		{act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "bin"), CodeBadValue},
 	}
 	for _, c := range refused {
 		d := New(testHost())
@@ -424,11 +422,11 @@ func TestEnvRules(t *testing.T) {
 		}
 	}
 	d := New(testHost())
-	for _, a := range []intent.Action{
-		act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
-		act(intent.OpSetEnv, "name", "PAGER", "verb", "inherit"),
-		act(intent.OpGrantPath, "path", "~/go/bin", "access", "ro"),
-		act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
+	for _, a := range []Action{
+		act(OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
+		act(OpSetEnv, "name", "PAGER", "verb", "inherit"),
+		act(OpGrantPath, "path", "~/go/bin", "access", "ro"),
+		act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
 	} {
 		if o := d.Apply(a); o.Refused != "" || !o.Changed {
 			t.Errorf("%+v: %+v", a, o)
@@ -439,13 +437,13 @@ func TestEnvRules(t *testing.T) {
 func TestRelativePathsResolveAgainstTarget(t *testing.T) {
 	for _, p := range []string{"here", ".", "", "./"} {
 		d := New(testHost())
-		d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw"))
+		d.Apply(act(OpGrantPath, "path", p, "access", "rw"))
 		if len(d.RW) != 1 || d.RW[0] != "{target}" {
 			t.Errorf("%q -> %v", p, d.RW)
 		}
 	}
 	d := New(testHost())
-	d.Apply(act(intent.OpGrantPath, "path", "out/cache", "access", "rw"))
+	d.Apply(act(OpGrantPath, "path", "out/cache", "access", "rw"))
 	if len(d.RW) != 1 || d.RW[0] != "/home/alice/src/webapp/out/cache" {
 		t.Errorf("%v", d.RW)
 	}
@@ -453,7 +451,7 @@ func TestRelativePathsResolveAgainstTarget(t *testing.T) {
 
 func TestReadonlyTarget(t *testing.T) {
 	d := New(testHost())
-	d.Apply(act(intent.OpGrantPath, "path", "{target}", "access", "ro"))
+	d.Apply(act(OpGrantPath, "path", "{target}", "access", "ro"))
 	if !d.ReadOnlyTarget {
 		t.Fatal("not readonly")
 	}
@@ -466,7 +464,7 @@ func TestReadonlyTarget(t *testing.T) {
 	if !strings.HasPrefix(d.RunLine("/p"), "snug --no-defaults -p NAME /p") {
 		t.Error(d.RunLine("/p"))
 	}
-	d.Apply(act(intent.OpUseProfile, "name", "@target-rw"))
+	d.Apply(act(OpUseProfile, "name", "@target-rw"))
 	if d.ReadOnlyTarget || strings.Contains(d.RunLine("/p"), "--no-defaults") {
 		t.Error("@target-rw should end the read-only target")
 	}
@@ -474,43 +472,43 @@ func TestReadonlyTarget(t *testing.T) {
 
 func TestLayering(t *testing.T) {
 	d := New(testHost())
-	d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "ro"))
-	d.Apply(act(intent.OpGrantPath, "path", "~/data/out", "access", "rw"))
+	d.Apply(act(OpGrantPath, "path", "~/data", "access", "ro"))
+	d.Apply(act(OpGrantPath, "path", "~/data/out", "access", "rw"))
 	if len(d.RO) != 1 || len(d.RW) != 1 {
 		t.Fatalf("%v %v", d.RO, d.RW)
 	}
-	d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "rw"))
+	d.Apply(act(OpGrantPath, "path", "~/data", "access", "rw"))
 	if len(d.RO) != 0 || len(d.RW) != 2 {
 		t.Fatalf("ro->rw: %v %v", d.RO, d.RW)
 	}
-	if o := d.Apply(act(intent.OpGrantPath, "path", "~/data", "access", "ro")); o.Changed {
+	if o := d.Apply(act(OpGrantPath, "path", "~/data", "access", "ro")); o.Changed {
 		t.Errorf("ro after rw should not narrow: %+v", o)
 	}
-	if o := d.Apply(act(intent.OpDropPath, "path", "~/data")); !o.Changed || len(d.RW) != 1 {
+	if o := d.Apply(act(OpDropPath, "path", "~/data")); !o.Changed || len(d.RW) != 1 {
 		t.Errorf("%+v %v", o, d.RW)
 	}
-	if o := d.Apply(act(intent.OpDropPath, "path", "~/nothing")); o.Refused != CodeNoSuchEntry {
+	if o := d.Apply(act(OpDropPath, "path", "~/nothing")); o.Refused != CodeNoSuchEntry {
 		t.Errorf("%+v", o)
 	}
 }
 
 func TestProfilesInteract(t *testing.T) {
 	d := New(testHost())
-	d.Apply(act(intent.OpUseProfile, "name", "@podman-socket"))
-	d.Apply(act(intent.OpUseProfile, "name", "@podman-build"))
+	d.Apply(act(OpUseProfile, "name", "@podman-socket"))
+	d.Apply(act(OpUseProfile, "name", "@podman-build"))
 	if len(d.Include) != 1 || d.Include[0] != "@podman-build" {
 		t.Errorf("%v", d.Include)
 	}
-	if o := d.Apply(act(intent.OpUseProfile, "name", "@podman-socket")); o.Changed {
+	if o := d.Apply(act(OpUseProfile, "name", "@podman-socket")); o.Changed {
 		t.Errorf("%+v", o)
 	}
-	d.Apply(act(intent.OpDropProfile, "name", "@podman-socket"))
-	d.Apply(act(intent.OpUseProfile, "name", "@net"))
-	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	d.Apply(act(OpDropProfile, "name", "@podman-socket"))
+	d.Apply(act(OpUseProfile, "name", "@net"))
+	d.Apply(act(OpUseProfile, "name", "@net"))
 	if len(d.Include) != 1 {
 		t.Errorf("%v", d.Include)
 	}
-	d.Apply(act(intent.OpDropProfile, "name", "@net"))
+	d.Apply(act(OpDropProfile, "name", "@net"))
 	if !d.Empty() {
 		t.Errorf("%+v", d)
 	}
@@ -520,49 +518,34 @@ func TestParentROInHomeRefused(t *testing.T) {
 	h := testHost()
 	h.Target = "/home/alice/webapp"
 	d := New(h)
-	if o := d.Apply(act(intent.OpUseProfile, "name", "@parent-ro")); o.Refused != "whole_home" {
+	if o := d.Apply(act(OpUseProfile, "name", "@parent-ro")); o.Refused != "whole_home" {
 		t.Errorf("%+v", o)
 	}
 }
 
 func TestNameProfile(t *testing.T) {
 	d := New(testHost())
-	if o := d.Apply(act(intent.OpNameProfile, "name", "my_work")); o.Refused == "" {
+	if o := d.Apply(act(OpNameProfile, "name", "my_work")); o.Refused == "" {
 		t.Error("underscore accepted")
 	}
-	if o := d.Apply(act(intent.OpNameProfile, "name", "work")); !o.Changed || d.Name != "work" {
+	if o := d.Apply(act(OpNameProfile, "name", "work")); !o.Changed || d.Name != "work" {
 		t.Error("name not set")
 	}
-	if !d.Apply(act(intent.OpShow)).NotMine {
+	if !d.Apply(act(OpShow)).NotMine {
 		t.Error("show is not the draft's")
 	}
 }
 
 func TestCloneIsDeep(t *testing.T) {
 	d := New(testHost())
-	d.Apply(act(intent.OpUseProfile, "name", "@net"))
+	d.Apply(act(OpUseProfile, "name", "@net"))
 	d.SetGit("A", "a@x")
 	c := d.Clone()
-	c.Apply(act(intent.OpUseProfile, "name", "@git"))
+	c.Apply(act(OpUseProfile, "name", "@git"))
 	c.Git.Name = "B"
 	c.Include[0] = "@claude"
 	if len(d.Include) != 1 || d.Include[0] != "@net" || d.Git.Name != "A" {
 		t.Errorf("clone shares state: %+v", d)
-	}
-}
-
-func TestSummary(t *testing.T) {
-	d := New(testHost())
-	d.Name = "webapp"
-	d.Apply(act(intent.OpUseProfile, "name", "@net"))
-	d.Apply(act(intent.OpUseProfile, "name", "@git"))
-	d.Apply(act(intent.OpGrantPath, "path", "/mnt/data", "access", "rw"))
-	d.SetSSH("/home/alice/.ssh/id_work.pub")
-	d.SetGH("github.com", "alice-corp")
-	_, user := intent.FormatPrompt(intent.Context{Target: d.Host.Target, Draft: d.Summary()}, "x")
-	want := "draft: name=webapp include=@net,@git rw=/mnt/data ro=- tmpfs=- env=- identity=ssh:id_work,github:alice-corp"
-	if !strings.Contains(user, want) {
-		t.Errorf("%s", user)
 	}
 }
 
@@ -610,7 +593,7 @@ func TestAbuseSentencesAreStillInBaseToml(t *testing.T) {
 			t.Errorf("the abuse sentence for %s is not in base.toml any more:\n%s", name, sentence)
 		}
 	}
-	for _, n := range append([]string{"@sys", "@home"}, intent.Builtins...) {
+	for _, n := range append([]string{"@sys", "@home"}, Builtins...) {
 		if Abuse[n] == "" {
 			t.Errorf("no abuse sentence for %s", n)
 		}
@@ -628,7 +611,7 @@ func TestDescriptionsAreStillInBaseToml(t *testing.T) {
 			t.Errorf("the description of %s is not in base.toml any more:\n%s", name, text)
 		}
 	}
-	for _, n := range append([]string{"@sys", "@home"}, intent.Builtins...) {
+	for _, n := range append([]string{"@sys", "@home"}, Builtins...) {
 		if Describe[n] == "" {
 			t.Errorf("no description for %s", n)
 		}
@@ -639,21 +622,21 @@ type scenario struct {
 	name string
 	// say is the human's request the steps are recorded under.
 	say   string
-	steps []intent.Action
+	steps []Action
 	setup func(*Draft)
 }
 
 func scenarios() []scenario {
 	return []scenario{
-		{name: "rw-target", say: "give me write access here", steps: []intent.Action{act(intent.OpNameProfile, "name", "webapp"), act(intent.OpUseProfile, "name", "@target-rw")}},
-		{name: "readonly-target", say: "read-only here", steps: []intent.Action{act(intent.OpNameProfile, "name", "review"), act(intent.OpGrantPath, "path", "{target}", "access", "ro")}},
-		{name: "net-git-identity", say: "needs internet and my git name", steps: []intent.Action{act(intent.OpNameProfile, "name", "work"), act(intent.OpUseProfile, "name", "@net"), act(intent.OpUseProfile, "name", "@git")},
+		{name: "rw-target", say: "give me write access here", steps: []Action{act(OpNameProfile, "name", "webapp"), act(OpUseProfile, "name", "@target-rw")}},
+		{name: "readonly-target", say: "read-only here", steps: []Action{act(OpNameProfile, "name", "review"), act(OpGrantPath, "path", "{target}", "access", "ro")}},
+		{name: "net-git-identity", say: "needs internet and my git name", steps: []Action{act(OpNameProfile, "name", "work"), act(OpUseProfile, "name", "@net"), act(OpUseProfile, "name", "@git")},
 			setup: func(d *Draft) {
 				d.SetSSH("/home/alice/.ssh/id_work.pub")
 				d.SetGH("github.com", "alice-corp")
 				d.SetGit("Alice Doe", "alice@corp.example")
 			}},
-		{name: "signing-key", say: "push and sign as alice", steps: []intent.Action{act(intent.OpNameProfile, "name", "signer"), act(intent.OpUseProfile, "name", "@net")},
+		{name: "signing-key", say: "push and sign as alice", steps: []Action{act(OpNameProfile, "name", "signer"), act(OpUseProfile, "name", "@net")},
 			setup: func(d *Draft) {
 				d.SetSSH("/home/alice/.ssh/id_auth.pub")
 				d.SetGit("Alice Doe", "alice@corp.example")
@@ -662,29 +645,29 @@ func scenarios() []scenario {
 				}
 				d.SetGH("github.com", "alice-corp")
 			}},
-		{name: "podman-build", say: "build images with podman, online", steps: []intent.Action{act(intent.OpNameProfile, "name", "images"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@podman-build"), act(intent.OpUseProfile, "name", "@net")}},
-		{name: "env-and-path", say: "add ~/go/bin to PATH, vim, my pager, scratch /work", steps: []intent.Action{
-			act(intent.OpNameProfile, "name", "tools"),
-			act(intent.OpGrantPath, "path", "~/go/bin", "access", "ro"),
-			act(intent.OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
-			act(intent.OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
-			act(intent.OpSetEnv, "name", "PAGER", "verb", "inherit"),
-			act(intent.OpGrantPath, "path", "/work", "access", "tmpfs"),
+		{name: "podman-build", say: "build images with podman, online", steps: []Action{act(OpNameProfile, "name", "images"), act(OpUseProfile, "name", "@podman-socket"), act(OpUseProfile, "name", "@podman-build"), act(OpUseProfile, "name", "@net")}},
+		{name: "env-and-path", say: "add ~/go/bin to PATH, vim, my pager, scratch /work", steps: []Action{
+			act(OpNameProfile, "name", "tools"),
+			act(OpGrantPath, "path", "~/go/bin", "access", "ro"),
+			act(OpSetEnv, "name", "PATH", "verb", "prepend", "value", "~/go/bin"),
+			act(OpSetEnv, "name", "EDITOR", "verb", "set", "value", "vim"),
+			act(OpSetEnv, "name", "PAGER", "verb", "inherit"),
+			act(OpGrantPath, "path", "/work", "access", "tmpfs"),
 		}},
-		{name: "door", say: "serve my web app", steps: []intent.Action{act(intent.OpNameProfile, "name", "serve"), act(intent.OpUseProfile, "name", "@net"), act(intent.OpOpenDoor, "name", "web")}},
-		{name: "layering", say: "~/data read-only but ~/data/out writable", steps: []intent.Action{act(intent.OpNameProfile, "name", "data"), act(intent.OpGrantPath, "path", "~/data", "access", "ro"), act(intent.OpGrantPath, "path", "~/data/out", "access", "rw")}},
-		{name: "claude-parent", say: "run claude, read the siblings, my gh", steps: []intent.Action{act(intent.OpNameProfile, "name", "agent"), act(intent.OpUseProfile, "name", "@claude"), act(intent.OpUseProfile, "name", "@parent-ro"),
-			act(intent.OpStageBinary, "host", "~/bin/gh", "name", "gh")}},
-		{name: "compose", say: "podman online with /mnt/pg and /mnt/uploads", steps: []intent.Action{act(intent.OpNameProfile, "name", "stack"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@net"),
-			act(intent.OpGrantPath, "path", "/mnt/pg", "access", "ro"), act(intent.OpGrantPath, "path", "/mnt/uploads", "access", "rw")}},
-		{name: "ledger-conflict", say: "keep it offline", steps: []intent.Action{act(intent.OpNameProfile, "name", "offline"), act(intent.OpDropProfile, "name", "@net"),
-			act(intent.OpGrantPath, "path", "/mnt/pg", "access", "ro")},
+		{name: "door", say: "serve my web app", steps: []Action{act(OpNameProfile, "name", "serve"), act(OpUseProfile, "name", "@net"), act(OpOpenDoor, "name", "web")}},
+		{name: "layering", say: "~/data read-only but ~/data/out writable", steps: []Action{act(OpNameProfile, "name", "data"), act(OpGrantPath, "path", "~/data", "access", "ro"), act(OpGrantPath, "path", "~/data/out", "access", "rw")}},
+		{name: "claude-parent", say: "run claude, read the siblings, my gh", steps: []Action{act(OpNameProfile, "name", "agent"), act(OpUseProfile, "name", "@claude"), act(OpUseProfile, "name", "@parent-ro"),
+			act(OpStageBinary, "host", "~/bin/gh", "name", "gh")}},
+		{name: "compose", say: "podman online with /mnt/pg and /mnt/uploads", steps: []Action{act(OpNameProfile, "name", "stack"), act(OpUseProfile, "name", "@podman-socket"), act(OpUseProfile, "name", "@net"),
+			act(OpGrantPath, "path", "/mnt/pg", "access", "ro"), act(OpGrantPath, "path", "/mnt/uploads", "access", "rw")}},
+		{name: "ledger-conflict", say: "keep it offline", steps: []Action{act(OpNameProfile, "name", "offline"), act(OpDropProfile, "name", "@net"),
+			act(OpGrantPath, "path", "/mnt/pg", "access", "ro")},
 			setup: func(d *Draft) {
-				d.Propose(act(intent.OpUseProfile, "name", "@podman-build"), SourceFile, "README.md", 2)
+				d.Propose(act(OpUseProfile, "name", "@podman-build"), SourceFile, "README.md", 2)
 				for _, accept := range []bool{false, true} {
-					a := act(intent.OpUseProfile, "name", "@net")
+					a := act(OpUseProfile, "name", "@net")
 					if accept {
-						a = act(intent.OpGrantPath, "path", "/mnt/pg", "access", "rw")
+						a = act(OpGrantPath, "path", "/mnt/pg", "access", "rw")
 					}
 					if _, p := d.Propose(a, SourceFile, "README.md", 2); p != nil {
 						d.Decide(*p, accept)
@@ -763,10 +746,10 @@ func TestGoldenParsesInSnug(t *testing.T) {
 func TestProfileTextCannotHideWhatItSays(t *testing.T) {
 	for _, bad := range []string{"\U0000202E", "\U00002066", "\U0000200B", "\U0000FEFF", "\U000E0041", "\U00002028", "\u009b"} {
 		d := New(testHost())
-		if o := d.Apply(act(intent.OpGrantPath, "path", "/srv/a"+bad+"b", "access", "ro")); o.Refused != CodeBadValue {
+		if o := d.Apply(act(OpGrantPath, "path", "/srv/a"+bad+"b", "access", "ro")); o.Refused != CodeBadValue {
 			t.Errorf("grant_path with %U: %+v", []rune(bad)[0], o)
 		}
-		if o := d.Apply(intent.Action{Op: intent.OpSetEnv, Name: "EDITOR", Verb: "set", Value: "vim" + bad, HasValue: true}); o.Refused != CodeBadValue {
+		if o := d.Apply(Action{Op: OpSetEnv, Name: "EDITOR", Verb: "set", Value: "vim" + bad, HasValue: true}); o.Refused != CodeBadValue {
 			t.Errorf("set_env with %U: %+v", []rune(bad)[0], o)
 		}
 		if !d.Empty() {
@@ -781,8 +764,8 @@ func TestProfileTextCannotHideWhatItSays(t *testing.T) {
 // once carried the ssh signing-oracle sentence.
 func TestRenderedFileCarriesNoAbuseText(t *testing.T) {
 	d := New(Host{Home: "/home/u", Target: "/home/u/p"})
-	d.Apply(act(intent.OpUseProfile, "name", "@git"))
-	d.Apply(act(intent.OpOpenDoor, "name", "web"))
+	d.Apply(act(OpUseProfile, "name", "@git"))
+	d.Apply(act(OpOpenDoor, "name", "web"))
 	d.SetGH("github.com", "me")
 	d.SetSSH("/home/u/.ssh/k.pub")
 	out := d.Render()
@@ -802,13 +785,13 @@ func TestRenderedFileCarriesNoAbuseText(t *testing.T) {
 
 func TestIncludedUserProfileRendersItsDescription(t *testing.T) {
 	d := New(Host{Home: "/home/u", Target: "/home/u/p"})
-	if o := d.Apply(act(intent.OpIncludeProfile, "name", "acct")); !o.Changed {
+	if o := d.Apply(act(OpIncludeProfile, "name", "acct")); !o.Changed {
 		t.Fatalf("%+v", o)
 	}
-	if o := d.Apply(act(intent.OpIncludeProfile, "name", "acct")); o.Changed {
+	if o := d.Apply(act(OpIncludeProfile, "name", "acct")); o.Changed {
 		t.Errorf("included twice: %+v", o)
 	}
-	if o := d.Apply(act(intent.OpIncludeProfile, "name", "@net")); o.Refused == "" {
+	if o := d.Apply(act(OpIncludeProfile, "name", "@net")); o.Refused == "" {
 		t.Errorf("a built-in was taken for a user profile: %+v", o)
 	}
 	d.NoteProfile("acct", "line one\nrequest: evil")
@@ -840,7 +823,7 @@ func TestHostSystemDirsAreNotWritable(t *testing.T) {
 	for _, p := range []string{"/etc", "/etc/ssh", "/usr", "/usr/local", "/usr/local/bin", "/bin", "/sbin", "/lib", "/lib64", "/libexec",
 		"/opt", "/opt/tool", "/var", "/var/lib/x", "/boot", "/srv", "/srv/www"} {
 		d := New(testHost())
-		o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw"))
+		o := d.Apply(act(OpGrantPath, "path", p, "access", "rw"))
 		if o.Refused != CodeHostSystem {
 			t.Errorf("grant rw %s: refused=%q (%s), want %s", p, o.Refused, o.Msg, CodeHostSystem)
 		}
@@ -848,15 +831,15 @@ func TestHostSystemDirsAreNotWritable(t *testing.T) {
 			t.Errorf("grant rw %s changed the draft", p)
 		}
 	}
-	if o := New(testHost()).Apply(act(intent.OpGrantPath, "path", "/etc", "access", "tmpfs")); o.Refused != "" {
+	if o := New(testHost()).Apply(act(OpGrantPath, "path", "/etc", "access", "tmpfs")); o.Refused != "" {
 		t.Errorf("a scratch tmpfs on /etc writes nothing to the host: %+v", o)
 	}
 	h := testHost()
 	h.Target = "/srv/proj"
-	if o := New(h).Apply(act(intent.OpGrantPath, "path", "{target}/out", "access", "rw")); o.Refused != "" {
+	if o := New(h).Apply(act(OpGrantPath, "path", "{target}/out", "access", "rw")); o.Refused != "" {
 		t.Errorf("rw inside the target refused: %+v", o)
 	}
-	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/srv", "access", "rw")); o.Refused != CodeHostSystem {
+	if o := New(h).Apply(act(OpGrantPath, "path", "/srv", "access", "rw")); o.Refused != CodeHostSystem {
 		t.Errorf("rw on a directory above the target: %+v", o)
 	}
 }
@@ -867,12 +850,12 @@ func TestHostSystemDirsAreNotWritable(t *testing.T) {
 func TestBaseReadOnlyNeedsNoCard(t *testing.T) {
 	for _, p := range []string{"/usr", "/usr/local", "/usr/share/doc", "/opt", "/opt/tool"} {
 		d := New(testHost())
-		o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "ro"))
+		o := d.Apply(act(OpGrantPath, "path", p, "access", "ro"))
 		if o.Changed || o.Refused != "" || !strings.Contains(o.Msg, "@sys") || !d.Empty() {
 			t.Errorf("ro %s: %+v, draft empty %v", p, o, d.Empty())
 		}
 	}
-	if o := New(testHost()).Apply(act(intent.OpGrantPath, "path", "/etc", "access", "ro")); !o.Changed {
+	if o := New(testHost()).Apply(act(OpGrantPath, "path", "/etc", "access", "ro")); !o.Changed {
 		t.Errorf("@sys binds only some /etc entries; ro /etc is still a grant: %+v", o)
 	}
 }

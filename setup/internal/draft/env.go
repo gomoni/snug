@@ -6,8 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"github.com/gomoni/snug/setup/internal/intent"
 )
 
 // secretName, secretWord, secretURL and secretProxy name the variables refused
@@ -65,7 +63,7 @@ var listVars = []string{
 
 var knownVar = regexp.MustCompile(`\{([^{}]*)\}`)
 
-func (d *Draft) setEnv(a intent.Action) Outcome {
+func (d *Draft) setEnv(a Action) Outcome {
 	name := a.Name
 	if strings.HasPrefix(name, "SNUG") {
 		return refuse(CodeReservedEnv, name+" is a snug variable, written by snug")
