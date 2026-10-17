@@ -156,7 +156,7 @@ symlink = [
 # (§2.5): without the tmpfs the variable would point at a directory that is not
 # inside, and every tool honouring XDG would fail on a path snug itself wrote.
 [profile.home]
-description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
+description = "The home directory (from getent passwd) is an empty tmpfs at the host path. Writable, ephemeral."
 tmpfs = [
   "{home}",
   "{home}/.cache",

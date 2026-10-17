@@ -50,7 +50,7 @@ NOT have, and `snug --dry-run` prints `ALL` the details of how a given sandbox
 will be constructed. Both page through `$PAGER` on a terminal.
 
  * `@sys`: read-only `/usr`, `/bin`, and 14 enumerated `/etc` entries.
- * `@home`: tmpfs `$HOME` plus `.cache`, `.config`, `.local/state`, `.local/share` and `XDG` env variables.
+ * `@home`: tmpfs home directory plus `.cache`, `.config`, `.local/state`, `.local/share` and `XDG` env variables.
  * `@target-rw`: the target directory is read-write.
 
 Not a default, and it has to be typed: `@parent-ro` grants the target's PARENT
@@ -138,7 +138,7 @@ description = "Allow proper ssh keys and gh account"
 Run `snug` again on the same directory and you get another sandbox, not another
 shell in the first one. The two share exactly the host-backed writable surface
 their profiles grant — the target directory, and the container store if a
-`@podman*` profile is selected — and nothing else: separate `$HOME` tmpfs,
+`@podman*` profile is selected — and nothing else: separate home-directory tmpfs,
 separate `/tmp`, separate pids, separate environment. `snug --dry-run` prints
 the whole shared list under `SHARED`.
 
@@ -251,7 +251,7 @@ $ snug profile dot | dot -Tpng -o profiles.png
 | profile | grants |
 |---|---|
 | `@sys` | `/usr` plus the dozen `/etc` entries things actually need. |
-| `@home` | `$HOME` as an empty tmpfs at the host path. Ephemeral. |
+| `@home` | The home directory (from `getent passwd`) as an empty tmpfs at the host path. Ephemeral. |
 | `@target-rw` | The target directory, writable and persistent. |
 | `@parent-ro` | The target's parent, read-only. |
 | `@git` | Your git name and email, extracted from the host config and regenerated. Never bound. |
@@ -533,7 +533,7 @@ Four rules to know before writing a profile:
   it: contributing is not replacing.
 - **`sanitise` copies the host, so it filters hard.** Element survives only if a
   grant covers it *and* the mount there really holds the host's content. An empty
-  tmpfs (`/tmp`, `$HOME`) and `/proc` do not; elements under them are dropped and
+  tmpfs (`/tmp`, the home directory) and `/proc` do not; elements under them are dropped and
   named on screen. Otherwise the payload creates the directory, drops a file
   called `git` in it, shadows the real one.
 
@@ -714,7 +714,7 @@ systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox e
 | your other projects | never mounted |
 | host services on `127.0.0.1` | private netns |
 | X11 keylogging, D-Bus, the desktop session | not mounted; netns-scoped |
-| host persistence (`.bashrc`, autostart, cron) | `$HOME` is an ephemeral tmpfs |
+| host persistence (`.bashrc`, autostart, cron) | the home directory is an ephemeral tmpfs |
 | one session's Claude credential from another session | private mount and pid namespaces; staged files are memfd-backed and have no path to name |
 
 A credential minted *inside* a session is covered too. `/login` writes a full
@@ -735,7 +735,7 @@ Your own profiles. snug's line runs between the sandbox and the host: inside is
 hostile by assumption, outside stands you, picking profiles. It does not
 second-guess you.
 
-`rw = ["{home}"]` really does hand over your real `$HOME`. `environ.set EDITOR =
+`rw = ["{home}"]` really does hand over your real home directory. `environ.set EDITOR =
 "/tmp/upload-everything"` really does give the next `git commit` a program you
 chose. All holes, all on screen in `--dry-run`, all yours. Unix tool, enough
 rope.
@@ -886,7 +886,7 @@ user namespaces are fine. `snug doctor` tells you where you stand, and names the
 exact sysctl when something is missing.
 
 **`getent` on the host, from glibc.** snug writes the sandbox's own one-line
-`/etc/passwd` and `/etc/group` so that the home directory there is `$HOME`, and
+`/etc/passwd` and `/etc/group` so that the home directory there is the sandbox's `HOME`, and
 takes the user name, group name and home directory from `getent passwd`/`getent group`.
 `getent` is snug's only source of host account data — the subuid owner `snug doctor`
 and the container engine look up too — and resolves through glibc NSS, so sssd
@@ -896,9 +896,8 @@ No fallback: no usable `getent` or no entry for your uid means snug refuses.
 Package: `glibc` (openSUSE), `libc-bin` (Debian/Ubuntu), `glibc-common` (Fedora),
 `musl-utils` (musl). `snug doctor` reports it only when missing.
 
-The home directory is the account's, not `$HOME`'s. A `$HOME` that names another
-directory is refused (exit 77) and snug says what to unset; an unset `$HOME` is
-taken from the account. Inside a snug sandbox there is no host `getent` to ask,
+snug takes the home directory from `getent passwd` (field 6); the `HOME` it is
+started with is not used. Inside a snug sandbox there is no host `getent` to ask,
 so snug reads the one-line `/etc/passwd` the outer snug generated — which needs
 a profile with `nss = true`, such as `@sys`.
 

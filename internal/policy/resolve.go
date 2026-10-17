@@ -79,7 +79,7 @@ func CanonicalTarget(env Environ, ctx Context) (string, error) {
 // refuseAuthorableLinkOnPath refuses asked when its path passes through a link
 // authorableLinks does not trust. real is the EvalSymlinks answer; the link walk
 // must reach the same place, or one of the two is not seeing the host the other
-// is. what is "target" or "$HOME" and fix is the sentence telling a human who
+// is. what is "target" or "home directory" and fix is the sentence telling a human who
 // made the link what to write instead.
 func refuseAuthorableLinkOnPath(env Environ, what, asked, real, fix string) error {
 	walked, links, err := authorableLinks(env, env.Uid(), asked)
@@ -121,7 +121,7 @@ func refuseAuthorableLinkOnPath(env Environ, what, asked, real, fix string) erro
 //   - a refusal of the ASSEMBLED policy — Validate, the one refuser of an
 //     assembled policy: returns (p, err). The non-nil policy is EXACTLY what
 //     was refused and why, for display. It must never be executed.
-//   - every other failure (bad profile name, bad target, bad $HOME, ...):
+//   - every other failure (bad profile name, bad target, bad home directory, ...):
 //     returns (nil, err), because no policy was ever assembled to show.
 //   - success: (p, nil).
 //
@@ -157,7 +157,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		return nil, unusableTarget{fmt.Errorf("target %q is not a directory", target)}
 	}
 
-	// Canonicalise $HOME for the same reason the target is canonicalised: grants
+	// Canonicalise the home directory for the same reason the target is canonicalised: grants
 	// are resolved against a real path, once, before the sandbox exists. Leaving
 	// it verbatim meant the HOST side of a {home}/... grant was canonicalised by
 	// add() while the GUEST side and anything derived from {home} were not.
@@ -172,10 +172,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 	home, err := env.EvalSymlinks(ctx.Home)
 	if err != nil {
-		return nil, fmt.Errorf("$HOME %q: %w", ctx.Home, err)
+		return nil, fmt.Errorf("home directory %q (from getent passwd): %w", ctx.Home, err)
 	}
-	if err := refuseAuthorableLinkOnPath(env, "$HOME", ctx.Home, home,
-		"set HOME to "+VisibleText(home)+" instead"); err != nil {
+	if err := refuseAuthorableLinkOnPath(env, "home directory", ctx.Home, home,
+		"make the account's home directory (getent passwd field 6) "+VisibleText(home)+
+			" itself (usermod -d)"); err != nil {
 		return nil, err
 	}
 	if slices.Contains(systemTrees, home) {

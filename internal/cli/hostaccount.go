@@ -10,7 +10,7 @@ import (
 // /etc/group, run before the sandbox exists the way probeSSHConfig runs
 // `ssh -G` before it. name and gname go into the generated /etc/passwd and
 // /etc/group (policy.Context.HostUserName, HostGroupName); pwHome is the
-// account's home directory, which policy.AccountHome checks $HOME against, and
+// account's home directory, which policy.AccountHome returns as the home, and
 // from names the source for the -v note.
 //
 // There is NO FALLBACK: a placeholder name or home here would be exactly the

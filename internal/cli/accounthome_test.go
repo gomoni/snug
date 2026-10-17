@@ -75,56 +75,66 @@ func TestAccountLookupFailureRefusesBeforeProfilesLoad(t *testing.T) {
 	}
 }
 
-// TestRunRefusesAHOMEThatIsNotTheAccounts fails if the run goes on with a $HOME
-// that names a directory other than the account's. That $HOME would decide
-// where every {home} grant points while the generated /etc/passwd vouched for
-// it. The controls: the same run with $HOME equal to the account's home
-// resolves, and so does one with $HOME unset, which takes the account's home
-// and exports it.
-func TestRunRefusesAHOMEThatIsNotTheAccounts(t *testing.T) {
+// TestRunIgnoresTheHostHOME fails if the HOME snug is started with changes the
+// run: a HOME naming another directory, a relative one and an unset one must
+// each produce the dry-run the account's own HOME produces, byte for byte, with
+// no refusal. Afterwards HOME is the account's, so later os.UserHomeDir()
+// readers agree with the policy. The comparison can fail: the control is that
+// a different ACCOUNT home changes the output.
+func TestRunIgnoresTheHostHOME(t *testing.T) {
 	home, proj := accountHomeFixture(t)
 	stubHostAccount(t, home)
 	run := func() (string, string, int) {
 		return captureRun(t, config{dryRun: true, target: proj})
 	}
 
-	t.Run("equal resolves", func(t *testing.T) {
-		t.Setenv("HOME", home)
-		stdout, stderr, code := run()
-		if code != 0 || !strings.Contains(stdout, "FILESYSTEM") {
-			t.Fatalf("control: HOME equal to the account's home was refused (exit %d):\n%s", code, stderr)
-		}
-	})
+	t.Setenv("HOME", home)
+	want, stderr, code := run()
+	if code != 0 || !strings.Contains(want, "FILESYSTEM") {
+		t.Fatalf("control: HOME equal to the account's home was refused (exit %d):\n%s", code, stderr)
+	}
 
-	t.Run("unset takes the account's home", func(t *testing.T) {
+	for name, host := range map[string]string{
+		"another directory": t.TempDir(),
+		"relative":          "u",
+		"missing":           filepath.Join(home, "nowhere"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", host)
+			got, stderr, code := run()
+			if code != 0 {
+				t.Fatalf("HOME=%q refused (exit %d):\n%s", host, code, stderr)
+			}
+			if got != want {
+				t.Errorf("HOME=%q changed the dry-run", host)
+			}
+			if h := os.Getenv("HOME"); h != home {
+				t.Errorf("HOME after the run is %q, want the account's %q", h, home)
+			}
+		})
+	}
+
+	t.Run("unset", func(t *testing.T) {
 		t.Setenv("HOME", "")
 		if err := os.Unsetenv("HOME"); err != nil {
 			t.Fatal(err)
 		}
-		_, stderr, code := run()
-		if code != 0 {
-			t.Fatalf("control: HOME unset was refused (exit %d):\n%s", code, stderr)
+		got, stderr, code := run()
+		if code != 0 || got != want {
+			t.Fatalf("HOME unset: exit %d, same output %v:\n%s", code, got == want, stderr)
 		}
-		if got := os.Getenv("HOME"); got != home {
-			t.Errorf("HOME after the run is %q, want the account's %q: later readers of "+
-				"os.UserHomeDir() would disagree with the policy", got, home)
+		if h := os.Getenv("HOME"); h != home {
+			t.Errorf("HOME after the run is %q, want the account's %q", h, home)
 		}
 	})
 
-	t.Run("elsewhere is refused", func(t *testing.T) {
-		other := t.TempDir()
+	t.Run("control: another account home changes the output", func(t *testing.T) {
+		other, otherProj := accountHomeFixture(t)
+		stubHostAccount(t, other)
 		t.Setenv("HOME", other)
-		stdout, stderr, code := run()
-		if code != exitPolicy {
-			t.Fatalf("exit %d, want %d:\n%s", code, exitPolicy, stderr)
-		}
-		for _, want := range []string{other, home, "Unset HOME, or set HOME=" + home} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("the refusal does not contain %q:\n%s", want, stderr)
-			}
-		}
-		if strings.Contains(stdout, "FILESYSTEM") {
-			t.Errorf("a policy was described for a refused HOME:\n%s", stdout)
+		got, _, code := captureRun(t, config{dryRun: true, target: otherProj})
+		if code != 0 || got == want {
+			t.Errorf("exit %d, output identical to the first account's: %v", code, got == want)
 		}
 	})
 }

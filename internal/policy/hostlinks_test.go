@@ -638,7 +638,7 @@ func TestUserLinkOnTheTargetPathIsRefused(t *testing.T) {
 	}
 }
 
-// TestUserLinkOnHomeIsRefused fails if a planted $HOME link is followed:
+// TestUserLinkOnHomeIsRefused fails if a planted home-directory link is followed:
 // {home} is the host side of every grant under it.
 func TestUserLinkOnHomeIsRefused(t *testing.T) {
 	env := newFakeEnv()
@@ -649,7 +649,7 @@ func TestUserLinkOnHomeIsRefused(t *testing.T) {
 	ctx := testCtx()
 	ctx.Target = "/data/u/proj/sub"
 	_, err := Resolve(hlRegistry(), testDefaults, ctx, env)
-	if err == nil || !strings.HasPrefix(err.Error(), "$HOME /home/u resolves through the link") {
+	if err == nil || !strings.HasPrefix(err.Error(), "home directory /home/u resolves through the link") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -807,14 +807,15 @@ func TestTargetLinkRefusalEscapesHostileSpelling(t *testing.T) {
 	}
 }
 
-// TestHomeThroughUserLinkIsRefused fails if $HOME is canonicalised without the
-// ownership rule while the target is not: here the target is clean and only
-// $HOME crosses the link, and the refusal tells the human what to set.
+// TestHomeThroughUserLinkIsRefused fails if the home directory is canonicalised without
+// the ownership rule while the target is not: here the target is clean and
+// only the home crosses the link, and the refusal tells the human what to
+// change.
 func TestHomeThroughUserLinkIsRefused(t *testing.T) {
 	err := refusalHomeThroughAuthorableLink(t)
 	if err == nil || errors.Is(err, ErrTargetUnusable) ||
 		!strings.Contains(err.Error(), "/home/h -> /data/u") ||
-		!strings.Contains(err.Error(), "set HOME to /data/u") {
+		!strings.Contains(err.Error(), "make the account's home directory (getent passwd field 6) /data/u itself") {
 		t.Fatalf("err = %v", err)
 	}
 }

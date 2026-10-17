@@ -291,9 +291,9 @@ type Context struct {
 	HostSSHConfig SSHValues
 
 	// HostPasswdHome is field 6 (pw_dir) of this account's passwd entry,
-	// exactly as the account database spells it. Home is the same directory,
-	// spelled as $HOME spells it when $HOME is set (AccountHome checked that
-	// they agree). systemSSHConfigCandidates filters on both spellings.
+	// exactly as the account database spells it. Home is the same
+	// directory, as AccountHome returned it. systemSSHConfigCandidates filters
+	// on both.
 	HostPasswdHome string
 
 	// HostUserName is field 1 (pw_name) of the same getent passwd line, and
