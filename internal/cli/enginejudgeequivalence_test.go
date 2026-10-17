@@ -327,3 +327,39 @@ func TestContainersScreenExistenceOnlyDowngradesAClearance(t *testing.T) {
 		}
 	})
 }
+
+// TestDryRunToolchainRootRefusedByChainIsNotNotJudged would catch the screen
+// reporting NOT JUDGED for a $SNUG_PODMAN_ROOT whose NAME the payload chooses:
+// the root is spelled through a host link into the rw target, and the target's
+// own podman entry is a link to a clean directory. The fake Stat does not
+// follow links, so the spelling is not a directory here and the NOT JUDGED
+// arm would take it if the refusal arm did not come first; the run refuses it
+// in JudgeEngineToolchain either way.
+func TestDryRunToolchainRootRefusedByChainIsNotNotJudged(t *testing.T) {
+	const root = "/srv/h/link/podman"
+	env := newEnvFakeEnv()
+	env.resolveParents = true
+	env.dirs["/srv/clean"] = true
+	env.links["/srv/h/link"] = "/home/u/proj/sub"
+	env.links["/home/u/proj/sub/podman"] = "/srv/clean"
+	env.env["SNUG_PODMAN_ROOT"] = root
+	p := engineJudgeFixture(t, env)
+
+	if _, err := p.JudgeEngineToolchain(env, root); err == nil {
+		t.Fatal("fixture: the run's own judge accepted this root, so the screen has nothing to agree with")
+	}
+	c := containersFor(env, p)
+	if c.ToolchainRootIsDir {
+		t.Fatal("fixture: the root is a directory here, so the NOT JUDGED arm is not the one this test guards")
+	}
+	if c.ToolchainRootRefusal == "" {
+		t.Fatal("the report carries no toolchain root refusal")
+	}
+	got := captureFile(t, func(f io.Writer) { describeContainers(f, p, c) })
+	if strings.Contains(got, "NOT JUDGED") {
+		t.Errorf("the screen did not judge a root the run refuses:\n%s", got)
+	}
+	if !strings.Contains(got, "resolving it goes through") {
+		t.Errorf("the screen lacks the run's chain sentence:\n%s", got)
+	}
+}

@@ -24,8 +24,12 @@ import (
 // scanned. snug's own engine grafts are not profile grants and never reach
 // this check.
 //
+// A grant that reaches a root only through a second mount of the same
+// filesystem (mt, see aliasOverlap) is refused with the same text plus
+// aliasNote, under the same ReadAllowed exemption.
+//
 // Empty roots disables the check.
-func refuseEngineDataRootGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, roots []EngineDataRoot, env Environ) error {
+func refuseEngineDataRootGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, roots []EngineDataRoot, env Environ, mt *mountTable) error {
 	if len(roots) == 0 {
 		return nil
 	}
@@ -57,6 +61,9 @@ func refuseEngineDataRootGrant(set map[ProfileName]*Profile, names []ProfileName
 								return engineDataRootRefusal(name, host, root, acc.ro)
 							}
 						}
+					}
+					if h, ok := mt.aliasOverlap(env, host, dir); ok {
+						return fmt.Errorf("%w%s", engineDataRootRefusal(name, host, root, acc.ro), aliasNote(h))
 					}
 				}
 			}

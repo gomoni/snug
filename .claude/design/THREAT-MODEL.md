@@ -269,7 +269,26 @@ one refusal that is a judgement rather than a conflict is a target sitting
 directly in `$HOME`, or in any directory a profile replaces with an empty
 tmpfs. The others guard snug's own state rather than judging a grant: a
 writable grant over a configuration root, and any grant over the runtime
-directory, the engine store or a per-run engine directory (§3.3).
+directory, the engine store or a per-run engine directory (§3.3). Those guards
+compare where a path sits in the mount table (device, path within the
+filesystem), not its spelling, so a bind alias, a bind of a subdirectory, a
+submount under a granted tree, `/proc/self/root/…` or distrobox's `/run/host`
+is refused like the direct path.
+
+**The host is trusted as it stands.** snug defends the host from what runs
+inside the sandbox, not from a host already arranged against it. The guards
+above see through every second mount that mountinfo can place, and through
+nothing else: an overlay that already exists on the host with snug's engine
+store as a layer is a new device whose layers appear only in superblock options
+(bwrap spells them `/proc/self/fd/N`), so `ro` on the merged directory reads
+the store and `rw` with the upper layer inside the store writes into it. A
+payload cannot create a mount that snug's resolve sees, so getting there takes
+a host somebody already set up that way, which is out of scope.
+
+The same guards find the runtime and per-run directories through this run's
+own `$XDG_RUNTIME_DIR` and `$TMPDIR`. A peer run started with different values
+keeps its directories where this run never looks, so a grant covering them is
+not refused; `--dry-run` says so on its sibling-sandbox screen.
 
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.

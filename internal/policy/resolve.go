@@ -260,15 +260,22 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// PERSISTS". Sandboxing ~/.config/snug is already refused, one level up, for
 	// an unrelated reason (it sits in @home's tmpfs), which is why nothing
 	// noticed.
-	if err := refuseWritableConfigRoot(set, names, vars, ctx.ConfigRoots, env); err != nil {
+	var mt *mountTable
+	if len(ctx.ConfigRoots) > 0 || len(ctx.RuntimeDirs) > 0 || len(ctx.EngineTmpPrefixes) > 0 || len(ctx.EngineDataRoots) > 0 {
+		var err error
+		if mt, err = newMountTable(env); err != nil {
+			return nil, mountTableUnreadable(err)
+		}
+	}
+	if err := refuseWritableConfigRoot(set, names, vars, ctx.ConfigRoots, env, mt); err != nil {
 		return nil, err
 	}
 
-	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, ctx.EngineTmpPrefixes, env); err != nil {
+	if err := refuseRuntimeDirGrant(set, names, vars, ctx.RuntimeDirs, ctx.EngineTmpPrefixes, env, mt); err != nil {
 		return nil, err
 	}
 
-	if err := refuseEngineDataRootGrant(set, names, vars, ctx.EngineDataRoots, env); err != nil {
+	if err := refuseEngineDataRootGrant(set, names, vars, ctx.EngineDataRoots, env, mt); err != nil {
 		return nil, err
 	}
 
@@ -478,6 +485,12 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if err != nil {
 					return nil, fmt.Errorf("profile %q: %w", name, err)
 				}
+				if !filepath.IsAbs(expanded) {
+					return nil, fmt.Errorf("profile %q: identity.%s %s: must be an absolute path. snug reads this file on the host,\n"+
+						"       and a relative path would be read against snug's own working directory, which nothing in\n"+
+						"       the profile or --dry-run shows. Write the full path, for example {home}/.ssh/id_ed25519.pub.",
+						name, f.Key, VisibleText(expanded))
+				}
 				// This path is READ, not mounted — sshproxy.New parses it for
 				// the blob the proxy answers REQUEST_IDENTITIES with — so a
 				// symlink AT it does not widen a grant, it selects WHICH host
@@ -525,7 +538,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 						VisibleText(dest))
 				}
 				for _, spelled := range []string{asked, dest} {
-					if err := refuseIdentityKeyEngineState(name, f.Key, spelled, ctx, env); err != nil {
+					if err := refuseIdentityKeyEngineState(name, f.Key, spelled, ctx, env, mt); err != nil {
 						return nil, err
 					}
 				}
@@ -1500,17 +1513,35 @@ func sortedKeys(m map[string]bool) []string {
 // too: loadDir reads *.toml at the top level, so a subdirectory is not loaded
 // today, and a refusal that depends on that stays correct only until someone
 // adds a walk.
-func refuseWritableConfigRoot(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs []string, env Environ) error {
+//
+// A grant that reaches a directory only through a second mount of the same
+// filesystem (mt, see aliasOverlap) is refused with the same text plus
+// aliasNote; a nil or unusable mt disables that arm only.
+func refuseWritableConfigRoot(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs []string, env Environ, mt *mountTable) error {
 	if len(dirs) == 0 {
 		return nil
 	}
+	sortedNames := append([]ProfileName(nil), names...)
+	sort.Slice(sortedNames, func(i, j int) bool { return sortedNames[i] < sortedNames[j] })
+	dirs = append([]string(nil), dirs...)
+	sort.Strings(dirs)
 	// Canonicalise BOTH sides, through the longest existing ancestor. Without
 	// this the check compares text, and a grant naming a symlink to the store —
 	// or a store reached through one, which is every distro where /home is a
 	// symlink — passes it. `covers` is a path-segment prefix test and has no
 	// opinion about links.
 	canon := func(p string) string { return canonExisting(env, p) }
-	for _, name := range names {
+	refusal := func(dir string, name ProfileName, host, note string) error {
+		return fmt.Errorf("refusing to grant WRITE access to %s: profile %q grants %s, "+
+			"and snug reads its trusted configuration (profiles.d, config.toml) from there.\n"+
+			"       A process inside could write a profile file or config.toml that a LATER run\n"+
+			"       loads, which is a sandbox granting itself permissions — the one thing\n"+
+			"       the profile set being outside the sandboxed material prevents. Edit\n"+
+			"       profiles on the host, or keep the copy you want to edit somewhere else\n"+
+			"       and install it with cp.%s",
+			VisibleText(dir), name, VisibleText(host), note)
+	}
+	for _, name := range sortedNames {
 		prof := set[name]
 		for _, raw := range prof.RW {
 			host, _, err := splitSpec(raw, vars)
@@ -1520,17 +1551,12 @@ func refuseWritableConfigRoot(set map[ProfileName]*Profile, names []ProfileName,
 			host = canon(host)
 			for _, dir := range dirs {
 				dir = canon(dir)
-				if !covers(host, dir) && !covers(dir, host) {
-					continue
+				if covers(host, dir) || covers(dir, host) {
+					return refusal(dir, name, host, "")
 				}
-				return fmt.Errorf("refusing to grant WRITE access to %s: profile %q grants %s, "+
-					"and snug reads its trusted configuration (profiles.d, config.toml) from there.\n"+
-					"       A process inside could write a profile file or config.toml that a LATER run\n"+
-					"       loads, which is a sandbox granting itself permissions — the one thing\n"+
-					"       the profile set being outside the sandboxed material prevents. Edit\n"+
-					"       profiles on the host, or keep the copy you want to edit somewhere else\n"+
-					"       and install it with cp.",
-					VisibleText(dir), name, VisibleText(host))
+				if h, ok := mt.aliasOverlap(env, host, dir); ok {
+					return refusal(dir, name, host, aliasNote(h))
+				}
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -102,6 +103,10 @@ func (OSEnviron) LookPath(f string) (string, error)     { return exec.LookPath(f
 type HostMount struct {
 	Path   string // the mount point
 	FSType string // as the kernel names it in mountinfo
+	ID     int    // mountinfo field 1, the mount's unique id
+	Parent int    // field 2, the id of the mount this one is mounted on
+	Dev    string // field 3, "major:minor" of the filesystem
+	Root   string // field 4, the directory of that filesystem this mount shows, unescaped
 }
 
 func (OSEnviron) HostMounts() ([]HostMount, error) {
@@ -109,10 +114,15 @@ func (OSEnviron) HostMounts() ([]HostMount, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseMountinfo(string(b)), nil
+	ms := parseMountinfo(string(b))
+	if len(ms) == 0 {
+		return nil, errors.New("/proc/self/mountinfo has no parseable entry")
+	}
+	return ms, nil
 }
 
-// parseMountinfo reads mount point and filesystem type out of mountinfo's
+// parseMountinfo reads mount point, filesystem type and the mount's identity
+// (id, parent id, device, root within the filesystem) out of mountinfo's
 // variable-width format: the optional fields between the mount source and the
 // type are terminated by a lone "-", so the type is the field after it rather
 // than at a fixed index.
@@ -130,7 +140,15 @@ func parseMountinfo(s string) []HostMount {
 		if sep < 5 || sep+1 >= len(f) {
 			continue
 		}
-		out = append(out, HostMount{Path: unescapeMountinfo(f[4]), FSType: f[sep+1]})
+		id, err1 := strconv.Atoi(f[0])
+		parent, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		out = append(out, HostMount{
+			Path: unescapeMountinfo(f[4]), FSType: f[sep+1],
+			ID: id, Parent: parent, Dev: f[2], Root: unescapeMountinfo(f[3]),
+		})
 	}
 	return out
 }

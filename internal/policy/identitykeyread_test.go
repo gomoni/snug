@@ -75,3 +75,28 @@ func TestIdentityKeyInOrdinaryDirectoryStillWorks(t *testing.T) {
 		t.Fatalf("refused keys under an ordinary directory: %v", err)
 	}
 }
+
+// TestIdentityKeyRelativeRefused would catch a relative key path being read
+// against snug's own working directory: the judged string and the string read
+// would agree, but nothing in the profile or --dry-run shows where that is.
+func TestIdentityKeyRelativeRefused(t *testing.T) {
+	for _, tc := range []struct{ name, ssh, signing, field string }{
+		{"ssh.key bare", "tmp/k.pub", "", "identity.ssh.key"},
+		{"ssh.key dot", "./k.pub", "", "identity.ssh.key"},
+		{"signing_key", "{home}/.ssh/id.pub", "k.pub", "identity.git.signing_key"},
+	} {
+		_, err := Resolve(identityKeyProfile(tc.ssh, tc.signing), append(testDefaults, "peek"), identityKeyCtx(), envWith("/home/u/.ssh/id.pub", "/home/u/proj/sub"))
+		if err == nil {
+			t.Errorf("%s: ACCEPTED a relative key", tc.name)
+			continue
+		}
+		for _, w := range []string{tc.field, "must be an absolute path", `"peek"`} {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: refusal lacks %q:\n%v", tc.name, w, err)
+			}
+		}
+	}
+	if _, err := Resolve(identityKeyProfile("{home}/.ssh/k.pub", ""), append(testDefaults, "peek"), identityKeyCtx(), envWith("/home/u/.ssh", "/home/u/proj/sub")); err != nil {
+		t.Errorf("control: {home}/.ssh/k.pub refused:\n%v", err)
+	}
+}
