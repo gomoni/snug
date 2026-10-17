@@ -1,22 +1,18 @@
 BIN := bin/snug
+SETUP_BIN := bin/snug-setup
 FIXTURE := bin/snug-fixture
 
 # Bidi and control characters that render as something other than what they say.
 FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
 
 
-.PHONY: all build setup fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
+.PHONY: all build fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
 
 all: build
 
 build:
-	go build -o $(BIN) ./cmd/snug
-
-# snug-setup, a separate module; it reads requests with fixed rules and needs a
-# model only behind --model or --openai-url. Built without cgo like everything
-# else.
-setup:
-	cd setup && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o ../bin/snug-setup ./cmd/snug-setup
+	CGO_ENABLED=0 go build -o $(BIN) ./cmd/snug
+	CGO_ENABLED=0 go build -C setup/ -o $(SETUP_BIN) ./cmd/snug-setup/
 
 # The integration suite's snug: the same program plus internal/cli's
 # accountfixture.go, which lets a test name the directory it reports as the
