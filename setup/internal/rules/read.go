@@ -335,6 +335,12 @@ func (r *reader) filler(c clause) bool {
 
 func (r *reader) draftHas(name string) bool { return slices.Contains(r.c.Draft.Include, name) }
 
+// wantsDropped reports whether a request to turn name off has something to
+// act on: the draft has it, or an open question proposes it.
+func (r *reader) wantsDropped(name string) bool {
+	return r.draftHas(name) || slices.Contains(r.c.Proposed, name)
+}
+
 func (r *reader) profile(raw string) string {
 	for _, p := range r.c.Profiles {
 		if strings.EqualFold(p, raw) {
@@ -854,14 +860,14 @@ func (r *reader) clause(c clause) []intent.Action {
 		}
 		switch {
 		case ni >= 0 && (neg || c.hasSet(offWords)):
-			if r.draftHas("@net") {
+			if r.wantsDropped("@net") {
 				h.add(ni, drop("@net"))
 			} else {
 				h.add(ni, note("net"))
 			}
 		case ni < 0 && c.hasSet(offWords):
 			i := c.findSet(offWords)
-			if r.draftHas("@net") {
+			if r.wantsDropped("@net") {
 				h.add(i, drop("@net"))
 			} else {
 				h.add(i, note("net"))

@@ -219,6 +219,16 @@ func (s *Session) context() intent.Context {
 		c.Git = append(c.Git, a.String())
 	}
 	c.Profiles = s.profileNames()
+	for _, p := range s.pending {
+		if p.Kind != Card {
+			continue
+		}
+		for _, i := range p.held {
+			if a := p.turn.Items[i].Action; a.Op == intent.OpUseProfile {
+				c.Proposed = append(c.Proposed, a.Name)
+			}
+		}
+	}
 	return c
 }
 

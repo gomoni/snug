@@ -22,6 +22,10 @@ type Context struct {
 	// Last is what the previous turn did, as LastItems renders it, so a
 	// follow-up ("undo that", "actually remove it") can name its target.
 	Last []string `json:"last"`
+	// Proposed are the profiles the human's open questions propose and have
+	// not applied. The rules read "no internet" as dropping @net while one
+	// does; the model is not shown it and the training format has no such key.
+	Proposed []string `json:"-"`
 }
 
 // Draft summarises the profile being built.

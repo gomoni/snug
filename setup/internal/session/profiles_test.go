@@ -202,3 +202,42 @@ func TestSystemDirsAreRefusedNotCarded(t *testing.T) {
 		t.Errorf("ro /usr: pending %v\n%s", numbers(s), out)
 	}
 }
+
+// TestNegatedNetDeclinesTheCardThatProposesIt fails if "no internet please"
+// while an open card proposes @net leaves the card open, applies @net, or
+// prints only the @net explainer. A card of several items is not declined as a
+// whole: that would also drop what the line never mentioned.
+func TestNegatedNetDeclinesTheCardThatProposesIt(t *testing.T) {
+	w := testworld.New(t)
+	s := openRules(w)
+	say(s, "needs internet")
+	if len(s.Pending()) != 1 {
+		t.Fatalf("positive control: no card for @net: %v", numbers(s))
+	}
+	out := say(s, "no internet please")
+	contains(t, out, "proposed @net; you said no to it", "not applied: your request \"needs internet\"")
+	if len(s.Pending()) != 0 || slices.Contains(s.Draft().Include, "@net") {
+		t.Errorf("card left open or @net applied: %v %v\n%s", numbers(s), s.Draft().Include, out)
+	}
+
+	s = openRules(w)
+	say(s, "needs internet and my git name")
+	open := numbers(s)
+	if len(open) != 1 {
+		t.Fatalf("positive control: %v", open)
+	}
+	out = say(s, "no internet please")
+	contains(t, out, "nothing was declined", `"only 2`)
+	if len(s.Pending()) != 1 || !s.Draft().Empty() {
+		t.Errorf("a card of two items was answered by a line about one: %v\n%s", numbers(s), out)
+	}
+}
+
+// TestNegatedNetWithNothingToDropSaysSo fails if "no internet please" with
+// @net neither in the draft nor on a card is answered by the explainer alone.
+func TestNegatedNetWithNothingToDropSaysSo(t *testing.T) {
+	w := testworld.New(t)
+	s := openRules(w)
+	out := say(s, "no internet please")
+	contains(t, out, "@net is not in the draft.", "offline unless the profile includes @net")
+}
