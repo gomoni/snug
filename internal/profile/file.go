@@ -755,20 +755,68 @@ func Load() (Registry, []BadFile, error) {
 	return reg, bad, nil
 }
 
+// systemConfigRoot is the system layer of snug's configuration directory.
+const systemConfigRoot = "/etc/snug"
+
+// userConfigRoot is the user's snug configuration directory as this process
+// sees it: $XDG_CONFIG_HOME/snug, or $HOME/.config/snug when the variable is
+// unset or empty. "" when neither is known. It is the one author of that
+// spelling: ConfigDirs, ConfigFile and TrustedConfigRoots all derive from it.
+func userConfigRoot() string {
+	// The XDG Base Directory spec makes a relative value invalid and says to
+	// ignore it. Honouring it would also root the store at the working
+	// directory, which TrustedConfigRoots could not name for the resolver.
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
+		return filepath.Join(xdg, "snug")
+	}
+	return homeConfigRoot()
+}
+
+// homeConfigRoot is $HOME/.config/snug whatever $XDG_CONFIG_HOME says, or ""
+// when the home directory is unknown.
+func homeConfigRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "snug")
+}
+
+// TrustedConfigRoots are every snug configuration directory a run of snug
+// could read its trusted configuration (profiles.d, config.toml) from,
+// deduplicated: /etc/snug, $XDG_CONFIG_HOME/snug when that is set, and always
+// $HOME/.config/snug. The last is included even when $XDG_CONFIG_HOME points
+// elsewhere, because a later run started without the variable reads it: the
+// set protects what the NEXT run loads, not only what this one did. An
+// $XDG_CONFIG_HOME that only some other shell sets cannot be known here.
+func TrustedConfigRoots() []string {
+	roots := []string{systemConfigRoot}
+	for _, r := range []string{userConfigRoot(), homeConfigRoot()} {
+		if r != "" && !slices.Contains(roots, r) {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
+
 // ConfigDirs are the directories snug reads profiles from, in precedence order.
 // Note what is not here: anything derived from the target directory.
 func ConfigDirs() []string {
-	dirs := []string{"/etc/snug/profiles.d"}
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			xdg = filepath.Join(home, ".config")
-		}
-	}
-	if xdg != "" {
-		dirs = append(dirs, filepath.Join(xdg, "snug", "profiles.d"))
+	dirs := []string{filepath.Join(systemConfigRoot, "profiles.d")}
+	if user := userConfigRoot(); user != "" {
+		dirs = append(dirs, filepath.Join(user, "profiles.d"))
 	}
 	return dirs
+}
+
+// ConfigFile is the user's config.toml, or "" when neither $XDG_CONFIG_HOME
+// nor the home directory is known.
+func ConfigFile() string {
+	user := userConfigRoot()
+	if user == "" {
+		return ""
+	}
+	return filepath.Join(user, "config.toml")
 }
 
 func loadDir(dir string, written map[string]policy.ProfileName) (Registry, []BadFile, error) {

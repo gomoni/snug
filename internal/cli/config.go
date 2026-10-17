@@ -152,17 +152,7 @@ func (c userConfig) tmpfsSizeBytes() uint64 {
 	return uint64(c.TmpfsSize.Size.RoundUpTo(policy.Size(os.Getpagesize())))
 }
 
-func configPath() string {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		xdg = filepath.Join(home, ".config")
-	}
-	return filepath.Join(xdg, "snug", "config.toml")
-}
+func configPath() string { return profile.ConfigFile() }
 
 // configDecodeMessage is the whole stderr screen for a config.toml that will
 // not decode, ending in a newline. Pure, and separate from loadUserConfig for

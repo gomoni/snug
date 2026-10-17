@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gomoni/snug/internal/engine"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sandbox"
@@ -672,13 +673,16 @@ func run(cfg config) int {
 		HostSSHConfig:  sshValues,
 		HostShims:      detectHostShims(),
 		TmpfsSizeBytes: tmpfsSizeBytes,
-		// The directories the registry above was loaded from, so Resolve can
-		// refuse a writable grant reaching them. Same call profile.Load makes,
-		// so the check cannot disagree with what was actually read.
-		ProfileDirs: profile.ConfigDirs(),
+		// Every snug configuration directory a run could read, so Resolve can
+		// refuse a writable grant reaching one. Derived from the same author
+		// as profile.ConfigDirs and configPath, so the check cannot disagree
+		// with what is actually read.
+		ConfigRoots: profile.TrustedConfigRoots(),
 		// Every place a run's endpoints can live, so a grant cannot reach a
 		// concurrent run's. See Context.RuntimeDirs.
-		RuntimeDirs: runtimeDirCandidates(),
+		RuntimeDirs:       runtimeDirCandidates(),
+		EngineTmpPrefixes: engine.TmpDirPrefixes(),
+		EngineDataRoots:   engineDataRoots(os.Getenv("SNUG_PODMAN_ROOT")),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
@@ -1053,4 +1057,20 @@ func defaultsLine() string {
 		out = append(out, string(n))
 	}
 	return strings.Join(out, " ")
+}
+
+// engineDataRoots is every engine-state directory Resolve refuses a grant
+// over: the stores engine.DataRoots names, and the toolchain root when
+// $SNUG_PODMAN_ROOT is set to an absolute path, read-only allowed. A relative
+// value names no directory a later run could use — preflightToolchainRoot
+// refuses it — so there is nothing to compare it against.
+func engineDataRoots(toolchainRoot string) []policy.EngineDataRoot {
+	var out []policy.EngineDataRoot
+	for _, r := range engine.DataRoots() {
+		out = append(out, policy.EngineDataRoot{Path: r})
+	}
+	if filepath.IsAbs(toolchainRoot) {
+		out = append(out, policy.EngineDataRoot{Path: toolchainRoot, ReadAllowed: true})
+	}
+	return out
 }

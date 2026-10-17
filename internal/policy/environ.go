@@ -158,6 +158,15 @@ func unescapeMountinfo(s string) string {
 func (OSEnviron) Uid() int { return os.Getuid() }
 func (OSEnviron) Gid() int { return os.Getgid() }
 
+// EngineDataRoot is one directory of snug's engine state Resolve refuses a
+// grant over. ReadAllowed exempts read-only grants: true for the toolchain
+// root, which holds program files, and false for a store, whose layers belong
+// to other targets.
+type EngineDataRoot struct {
+	Path        string
+	ReadAllowed bool
+}
+
 // Context is the per-invocation input to resolution: what the human asked for,
 // plus the host facts the variables expand against.
 type Context struct {
@@ -174,15 +183,20 @@ type Context struct {
 	// expressed none, and Resolve substitutes DefaultTmpfsSize.
 	TmpfsSizeBytes uint64
 
-	// ProfileDirs are the directories the trusted profile set was READ from,
-	// passed in rather than derived here so profile.ConfigDirs stays the single
-	// author of that path — a resolver recomputing it would be a second copy
-	// that drifts. Resolve refuses a writable grant covering any of them:
-	// invariant 3 says the trusted profile set comes from outside the sandboxed
-	// material, and a payload that can write a profile grants itself
-	// permissions for the NEXT run. Empty disables the check, which is what a
-	// unit test wanting to resolve without a host profile store gets.
-	ProfileDirs []string
+	// ConfigRoots are the snug configuration directories trusted configuration
+	// (profiles.d, config.toml) is read from, passed in rather than derived
+	// here so profile.TrustedConfigRoots stays the single author of those
+	// paths — a resolver recomputing them would be a second copy that drifts.
+	// Resolve refuses a writable grant covering any of them, or any ancestor:
+	// invariant 3 says the trusted profile set comes from outside the
+	// sandboxed material, and a payload that can write a profile or
+	// config.toml's defaults grants itself permissions for the NEXT run. The
+	// set includes $HOME/.config/snug even under a custom $XDG_CONFIG_HOME,
+	// because a run without that variable reads it; an $XDG_CONFIG_HOME only
+	// some other shell sets cannot be known and is not covered. Empty disables
+	// the check, which is what a unit test wanting to resolve without a host
+	// configuration gets.
+	ConfigRoots []string
 
 	// RuntimeDirs are the directories snug keeps a run's host-side endpoints
 	// in, this run's own first — every place runtimeDir could have put them,
@@ -192,6 +206,27 @@ type Context struct {
 	// that can see another run's socket or FIFO can use it. Empty disables the
 	// check.
 	RuntimeDirs []string
+
+	// EngineTmpPrefixes are the absolute name prefixes of the per-run engine
+	// directories under the temp directory (engine.TmpDirPrefixes): the final
+	// element of each is a NAME PREFIX, so "/tmp/snug-1000-" stands for every
+	// entry of /tmp whose name starts with "snug-1000-". Passed in so
+	// internal/engine stays the single author of those names. Resolve refuses
+	// any read-only or writable grant at or inside such an entry: it holds
+	// another run's podman socket and the containers.conf and storage.conf
+	// snug generated for it. A grant CONTAINING the temp directory is the
+	// RuntimeDirs rule's to refuse, through the "snug-<uid>" fallback listed
+	// there. Empty disables the check.
+	EngineTmpPrefixes []string
+
+	// EngineDataRoots are the directories snug keeps engine state in — every
+	// target's image store and podman's libpod database (engine.DataRoots) —
+	// plus the engine toolchain root $SNUG_PODMAN_ROOT names when this process
+	// sees it set. Resolve refuses a grant equal to, containing or inside one,
+	// read-only included unless the entry is ReadAllowed. A $SNUG_PODMAN_ROOT
+	// or $XDG_DATA_HOME set only in some other shell cannot be known here and
+	// is not covered. Empty disables the check.
+	EngineDataRoots []EngineDataRoot
 
 	// HostNameservers is the host's /etc/resolv.conf nameserver list, read by the
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.

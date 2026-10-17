@@ -43,15 +43,24 @@ func canonExisting(env Environ, p string) string {
 // Tmpfs grants and guest paths are not scanned — a tmpfs holds nothing of the
 // host's, and only the host side of a bind is what is reached.
 //
-// Empty dirs disables the check.
-func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs []string, env Environ) error {
-	if len(dirs) == 0 {
+// The same scan refuses a grant at or inside a per-run engine directory under
+// the temp directory (Context.EngineTmpPrefixes) — another run's podman socket
+// and its generated containers.conf and storage.conf, reached the same way. Those
+// names carry a pid or a target key, so they are matched by NAME PREFIX on the
+// entry directly under the parent rather than as fixed directories; a grant
+// containing the parent is left to the runtime-directory match above.
+//
+// Empty dirs and prefixes disable the check.
+func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, vars map[string]string, dirs, prefixes []string, env Environ) error {
+	if len(dirs) == 0 && len(prefixes) == 0 {
 		return nil
 	}
 	sortedNames := append([]ProfileName(nil), names...)
 	sort.Slice(sortedNames, func(i, j int) bool { return sortedNames[i] < sortedNames[j] })
 	sortedDirs := append([]string(nil), dirs...)
 	sort.Strings(sortedDirs)
+	sortedPrefixes := append([]string(nil), prefixes...)
+	sort.Strings(sortedPrefixes)
 
 	for _, name := range sortedNames {
 		prof := set[name]
@@ -74,10 +83,78 @@ func refuseRuntimeDirGrant(set map[ProfileName]*Profile, names []ProfileName, va
 						}
 					}
 				}
+				for _, prefix := range sortedPrefixes {
+					if entry, ok := underNamePrefix(env, grants, prefix); ok {
+						return engineTmpDirRefusal(name, host, entry)
+					}
+				}
+				if entry, ok := anyComponentNamePrefix(grants, sortedPrefixes); ok {
+					return engineTmpDirRefusal(name, host, entry)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// underNamePrefix reports whether any of grants is at or inside an entry of
+// prefix's parent directory whose name starts with prefix's final element, and
+// returns that entry. The parent is compared spelled as given and
+// canonicalised, like the grants.
+func underNamePrefix(env Environ, grants []string, prefix string) (string, bool) {
+	prefix = filepath.Clean(prefix)
+	parent, namePrefix := filepath.Dir(prefix), filepath.Base(prefix)
+	for _, d := range []string{parent, canonExisting(env, parent)} {
+		base := strings.TrimSuffix(d, "/") + "/"
+		for _, g := range grants {
+			rest, ok := strings.CutPrefix(g, base)
+			if !ok {
+				continue
+			}
+			first, _, _ := strings.Cut(rest, "/")
+			if strings.HasPrefix(first, namePrefix) {
+				return base + first, true
+			}
+		}
+	}
+	return "", false
+}
+
+// anyComponentNamePrefix reports whether any component of any of grants has a
+// name starting with the final element of one of prefixes, and returns the
+// grant's path up to and including that component.
+//
+// underNamePrefix is anchored to the temp directories this process can name,
+// but a concurrent run started with a different $TMPDIR keeps its per-run
+// engine directory under a parent this process never learns. The name is the
+// only part every run shares, so it is matched at any depth.
+func anyComponentNamePrefix(grants, prefixes []string) (string, bool) {
+	for _, prefix := range prefixes {
+		namePrefix := filepath.Base(filepath.Clean(prefix))
+		for _, g := range grants {
+			for i := 1; i < len(g); i++ {
+				if g[i-1] != '/' {
+					continue
+				}
+				comp, _, _ := strings.Cut(g[i:], "/")
+				if strings.HasPrefix(comp, namePrefix) {
+					return g[:i+len(comp)], true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func engineTmpDirRefusal(profile ProfileName, grant, entry string) error {
+	return fmt.Errorf("refusing to grant %s: profile %q grants it, and it reaches %s, a per-run directory\n"+
+		"       snug's container engine keeps under a temp directory (another run's may be under a\n"+
+		"       $TMPDIR this process cannot see): another run's podman socket,\n"+
+		"       and the containers.conf and storage.conf snug generated for it. A sandbox that can\n"+
+		"       see one can drive that run's engine or rewrite its configuration. A read-only grant\n"+
+		"       does not help: a read-only mount does not stop connect().\n"+
+		"       Grant a directory that does not contain it; snug hands a container run its own.",
+		VisibleText(grant), profile, VisibleText(entry))
 }
 
 func runtimeDirRefusal(profile ProfileName, grant, dir string) error {

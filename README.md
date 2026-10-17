@@ -637,6 +637,11 @@ and it is never garbage-collected today, so it grows (issue #308). What it does
 **not** touch is your host's own podman/docker store — that is separate and
 never mounted.
 
+No profile can grant snug's engine state: `ro` or `rw` over `~/.local/share/snug`
+(or `$XDG_DATA_HOME/snug`), or over `/tmp/snug-<uid>-*` and
+`/tmp/snug-engines-<uid>-*` (another run's engine socket and config), is refused.
+`rw` over `$SNUG_PODMAN_ROOT` is refused; `ro` is fine.
+
 The store is shared by every run on that directory, whatever profiles it
 selected. That has a cost: a run that pulls or builds a bad image leaves it
 there, and a later run on the same directory will use it without

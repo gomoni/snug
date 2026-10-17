@@ -1932,7 +1932,7 @@ ro = ["/etc:/snug"]
 		// The host source is {target}, NOT /tmp, and that is load-bearing rather
 		// than cosmetic: this harness puts XDG_CONFIG_HOME in a t.TempDir under
 		// /tmp, so `rw /tmp` COVERS the profile store, and
-		// refuseWritableProfileStore then refuses first — correctly, but with
+		// refuseWritableConfigRoot then refuses first — correctly, but with
 		// its own message, which made this subtest fail on the "does not name
 		// the staging directory" assertion below rather than on anything to do
 		// with #22. {target} is writable, exists, and is a sibling of the store,

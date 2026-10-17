@@ -1080,3 +1080,68 @@ echo "ALLOWED-SIGNERS-END"
 		t.Errorf("allowed_signers does not carry the staged signing key's public half: %q", line)
 	}
 }
+
+// TestIdentityKeyInsideEngineStateIsRefused: snug reads identity.ssh.key and
+// identity.git.signing_key and stages the bytes into $HOME, and the grant scans
+// never see those paths. A key named inside the engine store or a per-run
+// engine directory under the temp directory must refuse (exit 77) on --dry-run
+// and on a real run, naming the key and the path. The control is a key under an
+// ordinary directory.
+func TestIdentityKeyInsideEngineStateIsRefused(t *testing.T) {
+	pub, sock := sshAgentAndKey(t)
+	proj, _ := target(t)
+
+	data := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(data, "snug"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeKey := filepath.Join(data, "snug", "k.pub")
+	tmpDir, err := os.MkdirTemp("/tmp", fmt.Sprintf("snug-%d-", os.Getuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	tmpKey := filepath.Join(tmpDir, "sign.pub")
+	body, err := os.ReadFile(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{storeKey, tmpKey} {
+		if err := os.WriteFile(p, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	profileFor := func(sshKey, signing string) string {
+		s := "[profile.pinned]\ndescription = \"key placement\"\n" +
+			"[profile.pinned.identity.ssh]\nagent = \"proxy\"\nkey = \"" + sshKey + "\"\n"
+		if signing != "" {
+			s += "[profile.pinned.identity.git]\nname = \"N\"\nemail = \"n@example.com\"\nsigning_key = \"" + signing + "\"\n"
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		name, sshKey, signing, want string
+	}{
+		{"ssh key in engine store", storeKey, "", "identity.ssh.key"},
+		{"signing key in per-run tmp", pub, tmpKey, "identity.git.signing_key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := writeProfile(t, profileFor(tc.sshKey, tc.signing), "SSH_AUTH_SOCK="+sock, "XDG_DATA_HOME="+data)
+			out, code := cli(t, env, "--dry-run", "-p", "pinned", proj)
+			if code != 77 {
+				t.Fatalf("exit %d, want 77:\n%s", code, out)
+			}
+			if !strings.Contains(out, tc.want) || !strings.Contains(out, "name that path instead") {
+				t.Errorf("refusal does not name the key and the fix:\n%s", out)
+			}
+		})
+	}
+
+	t.Run("control", func(t *testing.T) {
+		env := writeProfile(t, profileFor(pub, ""), "SSH_AUTH_SOCK="+sock, "XDG_DATA_HOME="+data)
+		if out, code := cli(t, env, "--dry-run", "-p", "pinned", proj); code != 0 {
+			t.Fatalf("a key under an ordinary directory exited %d:\n%s", code, out)
+		}
+	})
+}

@@ -348,7 +348,7 @@ func verifyEngineRunroot(key string) (string, error) {
 	}
 	defer root.Close()
 
-	name := fmt.Sprintf("snug-engines-%d-%s", os.Getuid(), key)
+	name := RunrootBaseName(key)
 	base, _, err := vdir.SecureSubdir(root, tmpDir, name)
 	if err != nil {
 		return "", fmt.Errorf("engine runroot: %w", err)
