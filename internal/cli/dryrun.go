@@ -2967,7 +2967,7 @@ func notGranted(p *policy.Policy) []string {
 	var lines []string
 
 	candidates := []string{
-		".ssh", ".gnupg", ".aws", ".config/gh", ".kube", ".docker", ".netrc",
+		".ssh", ".gnupg", ".aws", ".azure", ".config/gh", ".kube", ".docker", ".netrc",
 		".claude", ".mozilla", ".local/share/keyrings",
 	}
 	var absent, partial []string

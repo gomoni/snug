@@ -107,3 +107,14 @@ func TestProfileShowNamesTheKubeCapability(t *testing.T) {
 		}
 	}
 }
+
+func TestNotGrantedListsAzure(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".azure"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Home: home, Target: filepath.Join(home, "proj"), Mounts: map[string]policy.Mount{}}
+	if got := strings.Join(notGranted(p), "\n"); !strings.Contains(got, ".azure") {
+		t.Errorf("not-granted does not name ~/.azure, which holds a tenant-wide refresh token:\n%s", got)
+	}
+}
