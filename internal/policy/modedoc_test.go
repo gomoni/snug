@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// The value lists for `network`, `podman` and `git` are written out in three
+// The value lists for `network` and `podman` are written out in three
 // places a profile author reads — the doc comment on each Profile field, and
 // the lattice table in INDEX.md §2.3 — and each drifted from the parser
 // independently: `network` was documented as `isolated < egress < host` in
@@ -52,9 +52,6 @@ var modeParsers = []modeParser{
 	{"podman",
 		func() []string { return enumerate(func(i uint8) string { return PodmanMode(i).String() }) },
 		func(s string) error { _, err := ParsePodmanMode(s); return err }},
-	{"git",
-		func() []string { return enumerate(func(i uint8) string { return GitMode(i).String() }) },
-		func(s string) error { _, err := ParseGitMode(s); return err }},
 }
 
 // sameSet grades a documented value list against a mode's constants. The first

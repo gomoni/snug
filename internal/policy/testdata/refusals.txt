@@ -678,7 +678,7 @@ environ.types names PWD, which bwrap sets to the sandbox's working directory aft
 environ.types names PATH, which snug writes itself. snug types its own names: a declaration there is either redundant (PATH is already a ':' list a profile may merge onto without one) or a way to reach a scalar snug owns with a list verb. Remove the line
 
 == env_types_conditional ==
-environ.types names DOCKER_HOST, which snug writes, or which outranks what snug writes, when a feature is on (podman, identity, git = "extract", listen_names). A declared list would reach it through environ.merge, and snug judges a profile's claim on these names only as the single value its own replaces. Remove the line; to point the tool elsewhere, environ.set it in a selection that leaves the feature off
+environ.types names DOCKER_HOST, which snug writes, or which outranks what snug writes, when a feature is on (podman, identity, listen_names). A declared list would reach it through environ.merge, and snug judges a profile's claim on these names only as the single value its own replaces. Remove the line; to point the tool elsewhere, environ.set it in a selection that leaves the feature off
 
 == env_types_contradicts_roster_list ==
 environ.types declares LD_PRELOAD path-list, and snug's roster already types it: a list separated by ":" or " ", whose elements snug does not compose. A declaration supplies a fact for a name snug has NOT measured; it never overrides one snug has. Remove the line — the row decides which verbs LD_PRELOAD takes

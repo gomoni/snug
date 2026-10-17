@@ -13,7 +13,7 @@ import (
 // ── the guard that stops issue #195 recurring ───────────────────────────────
 //
 // `profile show` rendered every key that names a PATH and silently dropped every
-// key that does not — network, dns, publish, address, gateway, mtu, podman, git,
+// key that does not — network, dns, publish, address, gateway, mtu, podman,
 // identity. A profile granting full internet egress and a host->sandbox port
 // forward read as a profile with ZERO grants, on the screen a human uses to
 // decide whether to select it.
@@ -52,7 +52,6 @@ var probes = map[string]string{
 	"MTU":         "1428",
 	"Podman":      "socket",
 	"Login":       "claude",
-	"Git":         "extract",
 	"Identity":    "probe-key",
 	"Environ":     "PROBE_ENV",
 	"Description": "probe description",
@@ -86,7 +85,6 @@ listen_names = ["probe-door"]
 mtu      = 1428
 podman   = "socket"
 login    = ["claude"]
-git      = "extract"
 
 [profile.probe.identity.ssh]
 key   = "probe-key"
@@ -182,9 +180,9 @@ func TestProfileShowRendersEveryProfileField(t *testing.T) {
 // row ever goes back to rendering a bare label and value with nothing under
 // it. Every other check on this screen — loaded, present, under 80 columns —
 // passes for a row shaped exactly like that: `mtu` rendered as `mtu  1428`
-// and nothing else until this test existed, one line away from `podman` and
-// `git`, whose whole point is that "socket" and "extract" are words and the
-// sentence below each is the thing being agreed to.
+// and nothing else until this test existed, one line away from `podman`,
+// whose whole point is that "socket" is a word and the sentence below it is
+// the thing being agreed to.
 func TestProfileShowCapabilityRowsCarryTheirConsequence(t *testing.T) {
 	got := showProbe(t)
 
@@ -258,7 +256,7 @@ func TestProfileShowCapabilityRowsFitAnEightyColumnScreen(t *testing.T) {
 
 var capabilityLabels = map[string]bool{
 	"network": true, "dns": true, "listen_names": true,
-	"mtu": true, "podman": true, "git": true, "identity": true,
+	"mtu": true, "podman": true, "identity": true,
 }
 
 // A profile that grants nothing beyond paths must not grow an empty capability

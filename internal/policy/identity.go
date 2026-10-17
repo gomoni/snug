@@ -278,13 +278,11 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 	return nil
 }
 
-// The generated ~/.gitconfig is rendered by GitConfigFrom in gitextract.go, not
-// here, and this is where (*Identity).GitConfig used to be.
+// The generated ~/.gitconfig is rendered by GitConfigFrom in gitconfig.go, not
+// here.
 //
 // One writer, one file. Two functions authoring the same path is how the last
-// silent displacement happened, and the merge rule — extracted values fill in,
-// a pinned identity overrides — has to live wherever the bytes are produced.
-// The insteadOf rule this used to carry moved with it: it rewrites
+// silent displacement happened. The insteadOf rule GitConfigFrom emits rewrites
 // https://<host>/ to the ssh form so a push goes over the pinned key rather than
 // hanging on a credential prompt no one can answer.
 

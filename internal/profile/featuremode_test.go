@@ -4,9 +4,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
-// #627 F1: an unknown `podman`, `git` or `network` value parsed, so `snug
+// #627 F1: an unknown `podman` or `network` value parsed, so `snug
 // profile show` exited 0 and rendered `podman  sockets` with the "starts a
 // container engine" row, while every run selecting it refused (exit 77). The
 // screen that decides whether to select a profile must refuse what a run
@@ -16,7 +18,6 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 	for _, tc := range []struct{ key, value, accepted string }{
 		{"podman", "sockets", "socket or build"},
 		{"podman", "Socket", "socket or build"},
-		{"git", "extracted", "extract"},
 		{"network", "host", "egress"},
 		{"network", "egress ", "egress"},
 	} {
@@ -57,7 +58,7 @@ func TestUnknownFeatureModeIsRefusedAtParseTime(t *testing.T) {
 	// every value. The floors are refused and graded by
 	// policy.TestProfileFloorValuesAreRefused.
 	for _, body := range []string{
-		"", `podman = "socket"`, `podman = "build"`, `git = "extract"`, `network = "egress"`,
+		"", `podman = "socket"`, `podman = "build"`, `network = "egress"`,
 		`login = []`, `login = ["claude"]`, `login = ["claude", "claude"]`,
 	} {
 		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err != nil {
@@ -75,5 +76,35 @@ func TestBrowserKeyIsNotAKey(t *testing.T) {
 			!strings.Contains(err.Error(), "unknown key") {
 			t.Errorf("%s: want an unknown-key refusal, got %v", body, err)
 		}
+	}
+}
+
+// TestGitKeyAndGitProfileAreGoneRegression651 holds #651: `git` is not a
+// profile key, so a profile file still carrying it is refused by strict
+// decoding like any other unknown key, and no `@git` profile exists to select.
+func TestGitKeyAndGitProfileAreGoneRegression651(t *testing.T) {
+	for _, body := range []string{`git = "extract"`, `git = "off"`} {
+		if _, err := parse([]byte("[profile.x]\n"+body+"\n"), "mine.toml", true); err == nil ||
+			!strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("%s: want an unknown-key refusal, got %v", body, err)
+		}
+	}
+
+	reg, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []policy.ProfileName{"@git", "git", "@git-ro"} {
+		if _, ok := reg[name]; ok {
+			t.Errorf("builtin %q exists", name)
+		}
+	}
+	err = policy.UnknownProfile(reg, "@git")
+	if err == nil || !strings.Contains(err.Error(), `unknown profile "@git"`) {
+		t.Errorf("selecting @git: want the plain unknown-profile error, got %v", err)
+	}
+	if _, rerr := policy.Resolve(reg, []policy.ProfileName{"@git"}, policy.Context{}, nil); rerr == nil ||
+		!strings.Contains(rerr.Error(), "unknown profile") {
+		t.Errorf("Resolve of @git: want an unknown-profile refusal, got %v", rerr)
 	}
 }

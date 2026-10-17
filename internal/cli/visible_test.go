@@ -552,8 +552,8 @@ func TestControlCharacterInAGuestPathIsRefused(t *testing.T) {
 // "No snug screen emits a raw control character" was asserted by a helper that
 // redirected os.Stdout only, so every warning snug writes to stderr was outside
 // the sweep by construction — and that is where the next raw sink was found:
-// `snug: git config extracted: …` renders the host's gitconfig VALUES, from a
-// call main makes before dryRun exists. The same gap shape as the ENVIRONMENT
+// a stderr line rendering host-derived VALUES, from a call main makes before
+// dryRun exists. The same gap shape as the ENVIRONMENT
 // block being fixed while the argv block four lines below it was not, one stream
 // over instead of one block over.
 //

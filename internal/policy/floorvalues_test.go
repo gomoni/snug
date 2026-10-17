@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestProfileFloorValuesAreRefused: git = "off", podman = "off" and
+// TestProfileFloorValuesAreRefused: podman = "off" and
 // network = "isolated" are the floor of a max-joined key. Written in a profile
 // they can have no effect, so the parser refuses them and the message names the
 // line to delete.
@@ -14,7 +14,6 @@ func TestProfileFloorValuesAreRefused(t *testing.T) {
 		key, value string
 		parse      func(string) error
 	}{
-		{"git", "off", func(s string) error { _, err := ParseGitMode(s); return err }},
 		{"podman", "off", func(s string) error { _, err := ParsePodmanMode(s); return err }},
 		{"network", "isolated", func(s string) error { _, err := ParseNetMode(s); return err }},
 	} {
@@ -32,8 +31,6 @@ func TestProfileFloorValuesAreRefused(t *testing.T) {
 		reg := testRegistry()
 		p := &Profile{Name: "writes-floor"}
 		switch tc.key {
-		case "git":
-			p.Git = tc.value
 		case "podman":
 			p.Podman = tc.value
 		case "network":
@@ -50,9 +47,6 @@ func TestProfileFloorValuesAreRefused(t *testing.T) {
 // TestAbsentModeKeyIsTheFloor: an empty key is not a value the parser refuses
 // or the join raises; Resolve lands on the floor word String() spells.
 func TestAbsentModeKeyIsTheFloor(t *testing.T) {
-	if m, err := ParseGitMode(""); err != nil || m != GitOff {
-		t.Errorf(`ParseGitMode("") = %v, %v; want the floor`, m, err)
-	}
 	if m, err := ParsePodmanMode(""); err != nil || m != PodmanOff {
 		t.Errorf(`ParsePodmanMode("") = %v, %v; want the floor`, m, err)
 	}
@@ -62,10 +56,10 @@ func TestAbsentModeKeyIsTheFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if p.Git != GitOff || p.Podman != PodmanOff || p.Net.Mode != NetIsolated {
-		t.Errorf("absent keys resolved to git=%v podman=%v network=%v; want the floors", p.Git, p.Podman, p.Net.Mode)
+	if p.Podman != PodmanOff || p.Net.Mode != NetIsolated {
+		t.Errorf("absent keys resolved to podman=%v network=%v; want the floors", p.Podman, p.Net.Mode)
 	}
-	if p.Git.String() != "off" || p.Podman.String() != "off" || p.Net.Mode.String() != "isolated" {
+	if p.Podman.String() != "off" || p.Net.Mode.String() != "isolated" {
 		t.Error("the floor words stopped being spelled by String()")
 	}
 }

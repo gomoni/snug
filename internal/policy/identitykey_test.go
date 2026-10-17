@@ -294,3 +294,50 @@ func TestRefuseUnprincipledSigningEmailCatchesEverySpelling(t *testing.T) {
 		t.Fatalf("an ordinary single-address identity.git.email was refused: %v", err)
 	}
 }
+
+// TestRefuseUnhostlikeHostCatchesSyntax holds refuseUnhostlikeHost (resolve.go),
+// found by hand during #651's red-team pass: identity.ssh.host is written
+// unquoted into git's [url "git@<host>:"] header, so `"]` closed it and authored
+// a core.sshCommand that git inside reported at global scope.
+func TestRefuseUnhostlikeHostCatchesSyntax(t *testing.T) {
+	resolve := func(ssh, gh string) error {
+		reg := testRegistry()
+		reg["pinned"] = &Profile{
+			Name: "pinned",
+			Identity: &Identity{
+				SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "~/.ssh/id_ed25519.pub", Host: ssh},
+				Gh:  IdentityGh{User: "some-one", Host: gh},
+			},
+		}
+		_, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"),
+			testCtx(), newFakeEnv())
+		return err
+	}
+	for _, h := range []string{
+		`a"] [core] sshCommand = id ["x`,
+		"a b",
+		"a]",
+		"-oProxyCommand=x",
+		"*",
+		"a/b",
+		"a:22",
+	} {
+		for _, key := range []string{"ssh", "gh"} {
+			t.Run(key+"/"+h, func(t *testing.T) {
+				err := resolve(h, h)
+				if err == nil {
+					t.Fatalf("identity.%s.host %q resolved; it is written unquoted into the "+
+						"generated git, ssh and gh configs", key, h)
+				}
+				if !strings.Contains(err.Error(), "is not a host name") {
+					t.Errorf("refused for another reason: %v", err)
+				}
+			})
+		}
+	}
+
+	// POSITIVE CONTROL: an ordinary forge name, in both blocks.
+	if err := resolve("ghe.corp-1.example", "ghe.corp-1.example"); err != nil {
+		t.Fatalf("an ordinary host name was refused: %v", err)
+	}
+}

@@ -956,11 +956,6 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
 				"it in YOUR browser only if it is exactly the Claude login page snug pins"))
 	}
-	if p.Git != "" {
-		show("git", capRows(p.Git,
-			"~/.gitconfig is REGENERATED from a whitelist, never bound - it names "+
-				"programs git would run"))
-	}
 	showIdentity(p.Identity, show)
 }
 

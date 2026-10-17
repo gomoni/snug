@@ -506,11 +506,6 @@ type Policy struct {
 	// decided rather than recomputing it (issue #43).
 	SystemSSHCarried []string
 
-	// Git says whether the sandbox's git config is reconstructed from the
-	// host's. See gitextract.go — the host's file is read as data and never
-	// mounted, because its keys name programs to run.
-	Git GitMode
-
 	// IdentityOwner names the profile that pinned Identity, so a mount staged
 	// AFTER resolution can carry the same `identity:<profile>` provenance as the
 	// ones Resolve stages itself. Without it the public key staged by
@@ -654,9 +649,9 @@ func (p *Policy) Implied() []ProfileName {
 // These writes deliberately bypass `join`: a generated file must win over a
 // profile's bind at the same path — a pinned git identity must not sit beside
 // the host's credential helpers, which is the whole point of generating it. But
-// the displacement must not be SILENT: selecting `@git` alongside an identity
-// profile used to make git's bind of ~/.gitconfig vanish from the policy with
-// no trace in --dry-run, so the provenance carries "replaces:<what it displaced>".
+// the displacement must not be SILENT: a profile that binds ~/.gitconfig
+// alongside an identity profile would otherwise vanish from the policy with no
+// trace in --dry-run, so the provenance carries "replaces:<what it displaced>".
 //
 // The invariant is unharmed — "adding a profile can never make a path stop being
 // visible" is a statement about PROFILES, and the path stays visible with
@@ -670,7 +665,7 @@ func (p *Policy) Replace(m Mount) {
 	m.Authored = true
 	// An ANCHOR is not recorded as displaced, and that is not tidying. This
 	// provenance exists so a human reading --dry-run sees that a GRANT of
-	// theirs was superseded rather than quietly ignored (@git's bind of
+	// theirs was superseded rather than quietly ignored (a profile's bind of
 	// ~/.gitconfig under an identity profile). An anchor is snug's own empty
 	// tmpfs at an ancestor (anchor.go), holds nothing, and nobody selected it —
 	// so "replaces:(snug anchor)" would attach a displacement notice to a

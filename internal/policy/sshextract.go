@@ -20,8 +20,8 @@ import (
 // command table into data; it supplies it (CLAUDE.md). So snug reads the
 // host's file as DATA and generates the sandbox's.
 //
-// WHAT IS DELIBERATELY ABSENT, and why, in the shape GitKeyWhitelist's
-// signing-key omission takes: anything whose value names something that has
+// WHAT IS DELIBERATELY ABSENT, and why, in the shape of the git
+// config's signing-key rule (GitConfigFrom): anything whose value names something that has
 // to EXIST inside the sandbox. `IdentityFile` is the ssh spelling of
 // `commit.gpgsign = true` — a key that is not inside turns every connection
 // into a failure, which is worse than a connection made with the compiled-in
