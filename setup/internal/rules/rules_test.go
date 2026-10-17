@@ -247,3 +247,17 @@ func TestNegatedNetDropsWhatACardProposes(t *testing.T) {
 		t.Errorf("not proposed: %+v %v", acts, err)
 	}
 }
+
+// TestDotDotIsAPathOnlyForWriting fails if "write to .." stops resolving to
+// the target's parent, or if "read .." stops meaning @parent-ro, which snug
+// already has for exactly that.
+func TestDotDotIsAPathOnlyForWriting(t *testing.T) {
+	acts, err := Read(intent.Context{}, "write to ..")
+	if err != nil || len(acts) != 1 || acts[0] != (intent.Action{Op: intent.OpGrantPath, Path: "{target_parent}", Access: "rw"}) {
+		t.Errorf("write to ..: %+v %v", acts, err)
+	}
+	acts, err = Read(intent.Context{}, "let it read ..")
+	if err != nil || !slices.Contains(acts, intent.Action{Op: intent.OpUseProfile, Name: "@parent-ro"}) {
+		t.Errorf("read ..: %+v %v", acts, err)
+	}
+}

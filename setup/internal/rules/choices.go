@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -42,6 +43,13 @@ var fallback = []int{0, 11, 16}
 // choice is those alone and every other choice adds to them. A choice is
 // offered, never applied: only the human's pick submits one.
 func choices(unknown string, understood []intent.Action) []intent.Choice {
+	if name := bareName(unknown); name != "" {
+		path := "{target}/" + name
+		return []intent.Choice{
+			{Actions: append(slices.Clone(understood), intent.Action{Op: intent.OpGrantPath, Path: path, Access: "rw"})},
+			{Actions: append(slices.Clone(understood), intent.Action{Op: intent.OpGrantPath, Path: path, Access: "ro"})},
+		}
+	}
 	var words []string
 	for _, cl := range split(unknown, func(string) bool { return false }) {
 		for _, t := range cl.toks {
@@ -132,3 +140,27 @@ func covered(acts, understood []intent.Action) bool {
 	}
 	return len(understood) > 0
 }
+
+var bareNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// bareName returns the name in a clause that asks to write or read something
+// by a bare word ("write to docs"): the last word after a write or read word
+// that is not a filler, a preposition or a word of the lexicon. A bare word is
+// too likely to be prose to be a path, so the request is not read as a grant;
+// the readings offered are the two grants it could mean, under the target.
+func bareName(unknown string) string {
+	for _, cl := range split(unknown, func(string) bool { return false }) {
+		verb := slices.IndexFunc(cl.toks, func(t tok) bool { return writeWords[t.w] || readWords[t.w] })
+		if verb < 0 {
+			continue
+		}
+		last := cl.toks[len(cl.toks)-1]
+		if len(cl.toks)-1 <= verb || fillers[last.w] || lexicon[last.w] || prepositions[last.w] || !bareNameRE.MatchString(last.raw) {
+			continue
+		}
+		return last.raw
+	}
+	return ""
+}
+
+var prepositions = set("to into in on for at of onto")
