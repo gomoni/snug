@@ -20,9 +20,9 @@ import (
 	"unicode/utf8"
 )
 
-// Schema is schema.json, the same bytes llama-server is handed to constrain
-// decoding. Parse enforces it independently, so a server that ignores the
-// constraint cannot widen what is accepted.
+// Schema is schema.json, the same bytes a server is sent as response_format.
+// Parse enforces it independently, so a server that ignores it cannot widen
+// what is accepted.
 //
 //go:embed schema.json
 var Schema []byte

@@ -10,19 +10,13 @@ import (
 )
 
 func TestBackendFlags(t *testing.T) {
-	for name, f := range map[string]backendFlags{
-		"binary with a url":  {URL: "http://x", ServerBin: "/bin/llama-server"},
-		"binary and no gguf": {ServerBin: "/bin/llama-server"},
-	} {
-		if err := f.check(); err == nil {
-			t.Errorf("%s accepted", name)
-		}
+	if err := (backendFlags{Model: "qwen2.5:1.5b"}).check(); err == nil || !strings.Contains(err.Error(), "--openai-url") {
+		t.Errorf("a model name with no server accepted: %v", err)
 	}
 	for name, f := range map[string]backendFlags{
 		"rules":          {},
-		"server":         {Model: "a.gguf", ServerBin: "/x"},
 		"url":            {URL: "http://127.0.0.1:1"},
-		"url with model": {URL: "http://127.0.0.1:1", Model: "snug-setup:latest"},
+		"url with model": {URL: "http://127.0.0.1:1", Model: "qwen2.5:1.5b"},
 	} {
 		if err := f.check(); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -32,10 +26,11 @@ func TestBackendFlags(t *testing.T) {
 
 func TestDescribeSaysWhatIsNotPromised(t *testing.T) {
 	var b strings.Builder
-	describe(llm.Caps{Constrained: true, Local: true, Where: "llama-server on a socket"}, &b)
-	if b.Len() != 0 {
-		t.Errorf("a local constrained backend needs no warning: %q", b.String())
+	describe(llm.Caps{Local: true, Where: "http://127.0.0.1:8080 (remote)"}, &b)
+	if strings.Contains(b.String(), "not on this machine") || !strings.Contains(b.String(), "not known to be constrained") {
+		t.Errorf("local server: %q", b.String())
 	}
+	b.Reset()
 	describe(llm.Caps{Where: "http://203.0.113.5:8080 (remote)"}, &b)
 	for _, want := range []string{"not on this machine", "not known to be constrained", "never guessed"} {
 		if !strings.Contains(b.String(), want) {
@@ -44,10 +39,9 @@ func TestDescribeSaysWhatIsNotPromised(t *testing.T) {
 	}
 }
 
-// TestNoFlagsIsTheRules: the default needs no model, starts nothing and
-// reaches no server.
+// TestNoFlagsIsTheRules: the default needs no model and reaches no server.
 func TestNoFlagsIsTheRules(t *testing.T) {
-	i, c, err := newInterpreter(context.Background(), backendFlags{}, t.TempDir())
+	i, c, err := newInterpreter(context.Background(), backendFlags{})
 	if err != nil {
 		t.Fatal(err)
 	}

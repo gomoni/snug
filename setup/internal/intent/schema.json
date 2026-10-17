@@ -1,5 +1,5 @@
 {
-  "$comment": "The one contract between the intent model and snug-setup. The model emits {\"actions\":[...]}; Go validates every action against this schema (and llama-server constrains decoding with it), then applies it to the draft profile. Nothing here is a grant by itself: Go renders TOML, asks the human, and snug parses the file like any other.",
+  "$comment": "The one contract between the intent model and snug-setup. The model emits {\"actions\":[...]}; Go validates every action against this schema, then applies it to the draft profile. Nothing here is a grant by itself: Go renders TOML, asks the human, and snug parses the file like any other.",
   "type": "object",
   "additionalProperties": false,
   "required": ["actions"],

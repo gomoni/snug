@@ -2,7 +2,7 @@ package main
 
 // End-to-end tests: the real snug-setup binary, driven through --plain by a
 // piped script, saving into a scratch config directory, and the real snug
-// binary reading the file back. No model, no llama-server, no network: the
+// binary reading the file back. No model, no server, no network: the
 // requests are read by the fixed rules and --offline stops the GitHub lookup.
 //
 // They run in `make gate` and in the setup.yml unit job, because they carry no

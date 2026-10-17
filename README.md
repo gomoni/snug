@@ -318,26 +318,23 @@ Requests: `needs internet and podman`, `sign commits with my key`, `use my acme
 profile`, `read-only on ~/data, but let it write ~/data/out`, `undo that`. A line
 it cannot read changes nothing and offers up to three numbered readings; it is
 never mapped to the action it merely resembles. Gold scores of the rules:
-`setup/model/reports/rules-*.json`.
+`SNUG_SETUP_GOLD_REPORT=DIR go test ./internal/rules` in `setup/`.
 
 #### Optional model
 
-A local model can read requests instead of the rules. Exactly one way per run:
+A model on a server you already run can read requests instead of the rules:
+anything speaking the OpenAI chat-completions API (llama-server, ollama, a
+hosted API). snug-setup runs no model, starts no server, downloads nothing.
 
 ```bash
-scripts/fetch-llama-server.sh                                 # once: tested llama.cpp release, sha256-checked
-bin/snug-setup --model F.gguf ~/src/proj                      # llama-server child on a private unix socket
-bin/snug-setup --openai-url http://127.0.0.1:8080 ~/src/proj  # a server you run, with its own model
+bin/snug-setup --openai-url http://127.0.0.1:8080 ~/src/proj                        # llama-server
+bin/snug-setup --openai-url http://127.0.0.1:11434 --model qwen2.5:1.5b ~/src/proj  # ollama: an installed model
 ```
 
-snug-setup never downloads anything: `--model` finds `llama-server` on `PATH`,
-then under `~/.cache/snug-setup/llama.cpp/`, or takes `--llama-server PATH`.
-`--openai-url` with ollama needs `--model NAME` (an installed model; the GGUF
-imported with a Modelfile that carries the Qwen chat template), llama-server
-ignores it. `--openai-url` output is not known to be schema-constrained:
+The action schema goes as `response_format`; a server may ignore it, so
 snug-setup says so, and a reply that is not an action list is refused, never
-guessed. No model ships: build one with `setup/model` (`gen_dataset.py`,
-`train.py`, `export_gguf.sh`).
+guessed. A server not on loopback gets a warning: every request carries ssh
+key comments, GitHub logins, git author.
 
 Own module (`setup/go.mod`); `snug` needs none of it.
 

@@ -1,9 +1,9 @@
 // Command snug-setup builds a snug profile from a conversation. It reads the
 // project and the host, proposes what they make plain, and reads what you say
 // with fixed rules into a list of actions; everything exact, and every
-// question about identities, is Go's. A model can read requests instead
-// (--model, --openai-url). It is a convenience: snug never needs it, and a
-// profile it writes is read by snug like any other file.
+// question about identities, is Go's. A model on an OpenAI-compatible server
+// can read requests instead (--openai-url). It is a convenience: snug never
+// needs it, and a profile it writes is read by snug like any other file.
 //
 // Exit status: 0 when the session ended with nothing to lose (a profile was
 // saved and nothing changed after it, or no change was ever accepted and no
@@ -32,18 +32,16 @@ import (
 	"github.com/gomoni/snug/setup/internal/session"
 )
 
-const usage = `usage: snug-setup [--model FILE.gguf | --openai-url URL [--model NAME]] [--llama-server PATH] [--offline] [--profile-dir DIR] [DIR]
+const usage = `usage: snug-setup [--openai-url URL [--model NAME]] [--offline] [--profile-dir DIR] [DIR]
 
-  Without --model or --openai-url, requests are read by fixed rules: no model, no server, nothing
+  Without --openai-url, requests are read by fixed rules: no model, no server, nothing
   leaves this machine but what --offline turns off.
 
-  --model FILE.gguf    read requests with a model: run llama-server on it, on a private unix socket
-  --openai-url URL     use a server that is already running and speaks the OpenAI chat-completions API
-                       (llama-server, ollama); --model NAME then names the model on it (ollama needs an
-                       installed model's name; llama-server ignores it). To use our GGUF in ollama, import
-                       it with a Modelfile that carries the Qwen chat template.
-  --llama-server PATH  llama-server binary for --model (default: PATH, then ~/.cache/snug-setup/llama.cpp/*/*/;
-                       scripts/fetch-llama-server.sh puts the tested release there)
+  --openai-url URL     read requests with a model on a server that is already running and speaks
+                       the OpenAI chat-completions API (llama-server, ollama, a hosted API).
+                       snug-setup runs no model and starts no server of its own.
+  --model NAME         the model on that server (ollama needs an installed model's name;
+                       llama-server ignores it)
   --offline            never ask GitHub whether an ssh key belongs to an account
   --plain              accepted for compatibility and changes nothing: snug-setup reads lines from stdin and
                        prints its questions as text. The question printed just before is answered with a
@@ -90,9 +88,8 @@ func run() (int, error) {
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {}
 	var bf backendFlags
-	fs.StringVar(&bf.Model, "model", "", "")
 	fs.StringVar(&bf.URL, "openai-url", "", "")
-	fs.StringVar(&bf.ServerBin, "llama-server", "", "")
+	fs.StringVar(&bf.Model, "model", "", "")
 	offline := fs.Bool("offline", false, "")
 	fs.Bool("plain", false, "")
 	profileDir := fs.String("profile-dir", "", "")
@@ -148,7 +145,7 @@ func run() (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	interp, closer, err := newInterpreter(ctx, bf, home)
+	interp, closer, err := newInterpreter(ctx, bf)
 	if err != nil {
 		return 1, err
 	}
