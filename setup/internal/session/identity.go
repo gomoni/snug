@@ -1,0 +1,513 @@
+package session
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/gomoni/snug/setup/internal/draft"
+	"github.com/gomoni/snug/setup/internal/hostfacts"
+	"github.com/gomoni/snug/setup/internal/ingest"
+	"github.com/gomoni/snug/setup/internal/safe"
+	"github.com/gomoni/snug/setup/internal/texts"
+)
+
+// Candidate is one identity of a kind found on this host. Key is the exact
+// value Pick takes for it; Label is how it is listed. Why is the reason the
+// ingest layer suggests it, "" for a candidate nothing singled out; idx is its
+// place in the host's own list.
+type Candidate struct {
+	Key   string
+	Label string
+	Why   string
+	names []string
+	idx   int
+}
+
+// Candidates lists the host's identities of kind ("ssh", "github", "git" or
+// "signing", whose candidates are the ssh keys). The one the facts point at, if
+// any, comes first with its reason; the rest keep the host's order. The order
+// never changes during a session.
+func (s *Session) Candidates(kind string) []Candidate {
+	var out []Candidate
+	switch kind {
+	case "ssh", "signing":
+		anyHeld := slices.ContainsFunc(s.keys, func(k hostfacts.SSHKey) bool { return k.InAgent })
+		for i, k := range s.keys {
+			label := safe.Inline(k.Stem) + "  " + dash(safe.Inline(k.Comment))
+			if anyHeld && !k.InAgent {
+				label += "  [not in the agent]"
+			}
+			out = append(out, Candidate{Key: k.Stem, Label: label + "  " + k.Fingerprint, names: []string{k.Stem, k.Stem + ".pub", k.Comment}, idx: i})
+		}
+	case "github":
+		for i, a := range s.gh {
+			key := a.User
+			if slices.ContainsFunc(s.gh, func(b hostfacts.GHAccount) bool { return b.User == a.User && b.Host != a.Host }) {
+				key = a.Host + "/" + a.User
+			}
+			label := safe.Inline(a.Host + "/" + a.User)
+			if a.Active {
+				label += "  (active)"
+			}
+			out = append(out, Candidate{Key: key, Label: label, names: []string{a.User, a.Host + "/" + a.User}, idx: i})
+		}
+	case "git":
+		for i, a := range s.authors {
+			out = append(out, Candidate{Key: a.Email, Label: safe.Inline(a.String()), names: []string{a.String(), a.Name, a.Email}, idx: i})
+		}
+	}
+	if r := s.suggested(kind); r.Value != "" {
+		if i := slices.IndexFunc(out, func(c Candidate) bool {
+			return c.names[len(c.names)-1] == r.Value || c.Key == r.Value || slices.Contains(c.names, r.Value)
+		}); i >= 0 {
+			out[i].Why = r.Why
+			out[i].Label += "  <- suggested: " + safe.Inline(r.Why)
+			c := out[i]
+			out = append(slices.Delete(out, i, i+1), Candidate{})
+			copy(out[1:], out)
+			out[0] = c
+		}
+	}
+	return out
+}
+
+// suggested is the ingest layer's pick for a kind, a zero Reason when it has
+// none. A suggestion only reorders and annotates: Pick still needs the human's
+// word.
+func (s *Session) suggested(kind string) ingest.Reason {
+	if s.pick == nil {
+		return ingest.Reason{}
+	}
+	switch kind {
+	case "ssh":
+		return s.pick.SSH
+	case "signing":
+		return s.pick.Signing
+	case "github":
+		return s.pick.GH
+	case "git":
+		return s.pick.Author
+	}
+	return ingest.Reason{}
+}
+
+// bestMatch returns the index of the candidate the account word most likely
+// meant, or -1: first an exact match against any name, then a
+// case-insensitive substring match. It only ever says whether the word names
+// something on this host; it never picks.
+func bestMatch(account string, cands []Candidate) int {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return -1
+	}
+	words := []string{account}
+	if b := strings.TrimSuffix(filepath.Base(account), ".pub"); b != account && b != "." && b != "/" {
+		words = append(words, b)
+	}
+	for _, w := range words {
+		for i, c := range cands {
+			if slices.Contains(c.names, w) {
+				return i
+			}
+		}
+	}
+	for _, w := range words {
+		lw := strings.ToLower(w)
+		for i, c := range cands {
+			for _, n := range c.names {
+				if n != "" && strings.Contains(strings.ToLower(n), lw) {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// slotFull reports whether the draft already pins an identity of this kind,
+// and its name.
+func (s *Session) slotFull(kind string) (string, bool) {
+	switch {
+	case kind == "ssh" && s.d.SSH != nil:
+		return s.d.SSH.Stem, true
+	case kind == "github" && s.d.GH != nil:
+		return s.d.GH.User, true
+	case kind == "git" && s.d.Git != nil:
+		return s.d.Git.Email, true
+	case kind == "signing" && s.d.Git != nil && s.d.Git.SigningKey != "":
+		return s.d.Git.SigningStem, true
+	}
+	return "", false
+}
+
+// pinnedNames are the spellings that name the identity the draft pins.
+func (s *Session) pinnedNames(kind string) []string {
+	switch kind {
+	case "signing":
+		return []string{s.d.Git.SigningStem, s.d.Git.SigningStem + ".pub"}
+	case "ssh":
+		for _, k := range s.keys {
+			if k.Stem == s.d.SSH.Stem {
+				return []string{k.Stem, k.Stem + ".pub", k.Comment}
+			}
+		}
+		return []string{s.d.SSH.Stem}
+	case "github":
+		return []string{s.d.GH.User, s.d.GH.Host + "/" + s.d.GH.User}
+	}
+	return []string{s.d.Git.Email, s.d.Git.Name}
+}
+
+// askIdentity opens the question for a select_identity. It never pins: even a
+// host with exactly one candidate gets the question, because an identity is
+// the human's to name. A kind the draft already pins gets the second-profile
+// question instead, unless the request names the pinned identity itself.
+func (s *Session) askIdentity(kind, hint, said string, at int) []Line {
+	if p, ok := s.includedPin(kind); ok {
+		return []Line{info("your profile %q, which the draft includes, already pins %s. A profile pins one %s; another account needs a second profile. Nothing changed.", p.Name, pins(p.Identity), kindName(kind))}
+	}
+	cands := s.Candidates(kind)
+	if len(cands) == 0 {
+		switch kind {
+		case "ssh":
+			return []Line{info("no ssh public keys (~/.ssh/*.pub) were found on this host, so there is nothing to pin. Nothing written.")}
+		case "github":
+			return []Line{info("no GitHub logins are known to gh on this host (gh auth login, or gh is not installed), so there is nothing to pin. Nothing written.")}
+		case "signing":
+			return []Line{info("no ssh public keys (~/.ssh/*.pub) were found on this host, so there is nothing to sign with. Nothing written.")}
+		}
+		return []Line{info("no global git author (git config --global user.name and user.email) was found, so there is nothing to pin. Nothing written.")}
+	}
+	for _, p := range s.pending {
+		if (p.Kind == Identity || p.Kind == SecondProfile) && p.kind == kind {
+			return []Line{info("the %s question is already open as #%d.", kindName(kind), p.N)}
+		}
+	}
+	if cur, full := s.slotFull(kind); full {
+		if hint == "" || slices.ContainsFunc(s.pinnedNames(kind), func(n string) bool { return n != "" && strings.EqualFold(n, hint) }) {
+			return []Line{info("the draft already pins the %s %q; nothing changed.", kindName(kind), safe.Inline(cur))}
+		}
+		e, _ := texts.Note("identity_one")
+		p := s.open(Pending{Kind: SecondProfile, kind: kind, hint: hint, said: said, at: at})
+		return []Line{info("%s", e), p.Line()}
+	}
+	p := s.open(Pending{Kind: Identity, kind: kind, hint: hint, said: said, at: at})
+	return []Line{p.Line()}
+}
+
+// Pick answers the open identity question of kind with the candidate whose
+// Key is value, or with "none", which pins nothing. Any other value is
+// refused with the list and the question stays open; nothing is matched
+// loosely.
+func (s *Session) Pick(ctx context.Context, kind, value string) []Line {
+	i := slices.IndexFunc(s.pending, func(p Pending) bool { return p.Kind == Identity && p.kind == kind })
+	if i < 0 {
+		return []Line{info("there is no open %s question; ask for one first (for example \"use my %s\"). Nothing written.", kind, kindName(kind))}
+	}
+	p := s.pending[i]
+	if value == "none" {
+		before := s.snapshot()
+		s.close(p.N)
+		s.commit(before, fmt.Sprintf("the answer to #%d", p.N))
+		return []Line{info("no %s pinned.", kindName(kind))}
+	}
+	if _, full := s.slotFull(kind); !full && kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
+		if slices.ContainsFunc(s.Candidates(kind), func(c Candidate) bool { return c.Key == value }) {
+			out := []Line{info("a signing key goes with an ssh key and a git author, and the draft pins %s. I opened the question for what is missing; answer it, then /pick signing %s again (#%d stays open). Nothing written.", missingForSigning(s.d), safe.Inline(value), p.N)}
+			if s.d.SSH == nil {
+				out = append(out, s.askIdentity("ssh", "", p.said, p.at)...)
+			}
+			if s.d.Git == nil {
+				out = append(out, s.askIdentity("git", "", p.said, p.at)...)
+			}
+			return out
+		}
+	}
+	cands := s.Candidates(kind)
+	if !slices.ContainsFunc(cands, func(c Candidate) bool { return c.Key == value }) {
+		keys := make([]string, len(cands))
+		for k, c := range cands {
+			keys[k] = safe.Inline(c.Key)
+		}
+		return []Line{info("%q is not a %s on this host: one of %s, or none. Nothing written; #%d stays open.",
+			safe.Inline(value), kindName(kind), strings.Join(keys, ", "), p.N)}
+	}
+	if cur, full := s.slotFull(kind); full {
+		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
+	}
+	before := s.snapshot()
+	s.close(p.N)
+	out := s.pinKey(kind, value, p.said, p.at, false)
+	out = append(out, s.checkIdentity(ctx)...)
+	s.commit(before, fmt.Sprintf("the answer to #%d", p.N))
+	return out
+}
+
+// pinKey pins the candidate of kind whose Key is value, or for git a typed
+// "Name <email>" that CheckAuthor accepts, recording said and at as where the
+// human named it. It pins nothing, and says why, when the draft already pins
+// that kind, when value is neither, or for a
+// signing key while the ssh key or the author is missing. The caller checks
+// the pinned ssh key against GitHub. proposed records the pin as the
+// analysis's proposal the human accepted, not as words of theirs.
+func (s *Session) pinKey(kind, value, said string, at int, proposed bool) []Line {
+	if cur, full := s.slotFull(kind); full {
+		return []Line{info("the draft already pins the %s %q; nothing written.", kindName(kind), safe.Inline(cur))}
+	}
+	if name, email, ok := draft.ParseAuthor(value); ok && kind == "git" {
+		// An author the human typed (typedAuthorItem): their words, not one
+		// of the host's candidates.
+		if err := draft.CheckAuthor(name, email); err != nil {
+			return []Line{info("not pinned: %s.", safe.Inline(err.Error()))}
+		}
+		s.d.SetGit(name, email)
+		s.recordPin("git", []string{value, name, email}, Pending{said: said, at: at, proposed: proposed})
+		return []Line{info("pinned git author %s.", safe.Inline(value))}
+	}
+	cands := s.Candidates(kind)
+	j := slices.IndexFunc(cands, func(c Candidate) bool { return c.Key == value })
+	if j < 0 {
+		return []Line{info("%q is not a %s on this host; nothing written.", safe.Inline(value), kindName(kind))}
+	}
+	if kind == "signing" && (s.d.SSH == nil || s.d.Git == nil) {
+		return []Line{info("not pinned: signing key %s goes with an ssh key and a git author, and the draft pins %s.", safe.Inline(value), missingForSigning(s.d))}
+	}
+	p := Pending{said: said, at: at, proposed: proposed}
+	idx := cands[j].idx
+	switch kind {
+	case "ssh":
+		return s.pinSSH(s.keys[idx], p)
+	case "signing":
+		return s.pinSigning(s.keys[idx], p)
+	case "github":
+		return s.pinGitHub(s.gh[idx], p)
+	}
+	a := s.authors[idx]
+	s.d.SetGit(a.Name, a.Email)
+	s.recordPin("git", nonEmpty(a.String(), a.Name, a.Email), p)
+	return []Line{info("pinned git author %s.", safe.Inline(a.String()))}
+}
+
+// recordPin records a pin in the ledger: as the human's pick, or, for one
+// accepted from the opening card, as the analysis's proposal they accepted.
+func (s *Session) recordPin(kind string, names []string, p Pending) {
+	if p.proposed {
+		s.d.RecordIdentity(kind, names, draft.SourceIngest, "the analysis", p.at)
+		return
+	}
+	s.d.RecordIdentity(kind, names, draft.SourceUser, p.said, p.at)
+}
+
+// netIncluded reports whether the draft reaches the internet.
+func (s *Session) netIncluded() bool {
+	return slices.ContainsFunc(s.d.Includes(), func(n string) bool { return slices.Contains(draft.Closure(n), "@net") })
+}
+
+func (s *Session) pinSSH(k hostfacts.SSHKey, p Pending) []Line {
+	s.d.SetSSH(k.Path)
+	s.recordPin("ssh", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p)
+	stem := safe.Inline(k.Stem)
+	out := []Line{info("pinned ssh key %s (the public half; the private key stays in your agent).", stem)}
+	if !k.InAgent {
+		out = append(out, warn("warning: the host ssh-agent does not hold this key. snug will refuse to start until `ssh-add` has loaded it."))
+	}
+	if s.netIncluded() {
+		out = append(out, info("(@net is in the draft, so git can push over ssh.)"))
+	} else {
+		out = append(out, info("Pushing needs @net: say \"needs internet\" to add it."))
+	}
+	return out
+}
+
+// pinSigning pins the key commits are signed with. Pick has already checked
+// that the ssh key and the author are pinned: snug signs through the same agent
+// proxy and as that author.
+func (s *Session) pinSigning(k hostfacts.SSHKey, p Pending) []Line {
+	s.d.SetSigningKey(k.Path)
+	s.recordPin("signing", nonEmpty(k.Stem, k.Stem+".pub", k.Comment), p)
+	out := []Line{info("pinned signing key %s (the public half; commits are signed through the agent proxy).", safe.Inline(k.Stem))}
+	if !k.InAgent {
+		out = append(out, warn("warning: the host ssh-agent does not hold this key. snug will refuse to start until `ssh-add` has loaded it."))
+	}
+	if s.d.SSH != nil && s.d.SSH.Stem == k.Stem {
+		out = append(out, info("note: this is also the ssh key the draft pushes with. A signing key that is not an authorized key keeps signing and pushing apart."))
+	}
+	return out
+}
+
+func missingForSigning(d *draft.Draft) string {
+	switch {
+	case d.SSH == nil && d.Git == nil:
+		return "neither"
+	case d.SSH == nil:
+		return "no ssh key"
+	}
+	return "no git author"
+}
+
+func (s *Session) pinGitHub(a hostfacts.GHAccount, p Pending) []Line {
+	s.d.SetGH(a.Host, a.User)
+	s.recordPin("github", nonEmpty(a.User, a.Host+"/"+a.User), p)
+	out := []Line{info("pinned GitHub login %s.", safe.Inline(a.Host+"/"+a.User))}
+	if path, err := s.cfg.LookPath("gh"); err == nil {
+		if !strings.HasPrefix(path, "/usr/") && !strings.HasPrefix(path, "/opt/") {
+			out = append(out, info("note: gh is at %s, outside /usr, so the sandbox will not have it. Say \"stage %s as gh\" to add it.", safe.Inline(path), safe.Inline(path)))
+		}
+	} else {
+		out = append(out, info("note: gh is not installed on this host; the sandbox needs a gh binary for the pinned login to be of use."))
+	}
+	if s.d.SSH == nil && len(s.keys) > 0 {
+		out = append(out, info("no ssh key is pinned, so git over ssh has none; ask for one (\"use my ssh key for %s\") if it should push.", safe.Inline(a.User)))
+	}
+	if s.d.Git == nil && len(s.authors) > 0 {
+		out = append(out, info("no git author is pinned; ask for one (\"commit as NAME <EMAIL>\") to pin identity.git too."))
+	}
+	return out
+}
+
+func nonEmpty(xs ...string) []string {
+	return slices.DeleteFunc(xs, func(s string) bool { return s == "" })
+}
+
+// checkIdentity compares the pinned ssh key with the pinned GitHub login's
+// keys on GitHub. It is the check snug itself cannot make: it needs the
+// network.
+func (s *Session) checkIdentity(ctx context.Context) []Line {
+	if s.d.GH == nil || s.d.SSH == nil {
+		return nil
+	}
+	var key *hostfacts.SSHKey
+	for i := range s.keys {
+		if s.keys[i].Stem == s.d.SSH.Stem {
+			key = &s.keys[i]
+		}
+	}
+	if key == nil {
+		return nil
+	}
+	gh := s.d.GH
+	stem, user := safe.Inline(key.Stem), safe.Inline(gh.User)
+	if s.cfg.Offline {
+		return []Line{info("offline: not checking that %s belongs to %s on GitHub.", stem, safe.Inline(gh.Host+"/"+gh.User))}
+	}
+	if !s.ghInstalled {
+		return []Line{warn("warning: gh is not installed, so whether %s belongs to %s on GitHub was not checked.", stem, user)}
+	}
+	res, err := hostfacts.CheckKeyOwnership(ctx, s.cfg.Run, gh.Host, gh.User, *key)
+	switch {
+	case err != nil:
+		return []Line{warn("warning: could not check whether %s belongs to %s on GitHub: %s\n  (this is not fatal; --offline skips the check)", stem, user, safe.Inline(err.Error()))}
+	case res.Match:
+		return []Line{info("checked: GitHub lists %s (%s) among %s's keys. The ssh key and the gh login are one account.", stem, safe.Inline(res.Detail), user)}
+	}
+	return []Line{warn("!!! SPLIT IDENTITY !!!\n"+
+		"!!! GitHub account %s does not list the ssh key %s (%s).\n"+
+		"!!! git over ssh would act as whoever owns that key, and gh as %s: the sandbox would push as one and comment as the other.\n"+
+		"!!! Pin a key GitHub lists for %s, or pin a different login (/undo takes this pick back).",
+		user, stem, safe.Inline(res.Detail), user, user)}
+}
+
+// acceptSecond saves the draft and starts an empty one, where the identity
+// question the second profile was for opens. A save that does not complete
+// leaves the question open.
+func (s *Session) acceptSecond(ctx context.Context, p Pending) []Line {
+	if s.d.Name == "" {
+		return []Line{info("this profile has no name yet: /save NAME first, then /accept %d.", p.N)}
+	}
+	ok, out := s.Save(ctx, "")
+	if !ok {
+		return append(out, info("the second profile was not started; #%d stays open.", p.N))
+	}
+	for _, q := range s.pending {
+		if q.N != p.N {
+			out = append(out, info("#%d is dropped: it was about the profile just saved.", q.N))
+		}
+	}
+	s.pending = nil
+	s.undo = nil
+	s.d = draft.New(s.cfg.Host)
+	s.lastSaved = ""
+	out = append(out, info("started a new, empty profile."))
+	return append(out, s.askIdentity(p.kind, p.hint, p.said, p.at)...)
+}
+
+// maxShown is how many ssh keys an identity question lists before it points at
+// /keys. A host with a dozen keys makes the question a wall in which the
+// suggestion is lost.
+const maxShown = 3
+
+// shortlist picks the candidates an identity question lists and how many it
+// leaves out. Only ssh and signing keys are cut: a host has a handful of
+// logins and authors. The suggestion comes first, then the one the request
+// named, then the keys whose names share a word with the suggestion, then the ones
+// the agent holds; Pick
+// still takes any candidate.
+func (s *Session) shortlist(kind, hint string, cands []Candidate) ([]Candidate, int) {
+	if (kind != "ssh" && kind != "signing") || len(cands) <= maxShown+1 {
+		return cands, 0
+	}
+	var picked []int
+	add := func(i int) {
+		if i >= 0 && len(picked) < maxShown && !slices.Contains(picked, i) {
+			picked = append(picked, i)
+		}
+	}
+	if cands[0].Why != "" {
+		add(0)
+	}
+	add(bestMatch(hint, cands))
+	if cands[0].Why != "" {
+		want := nameWords(cands[0].names)
+		type scored struct{ i, n int }
+		var rest []scored
+		for i := 1; i < len(cands); i++ {
+			n := 0
+			for w := range nameWords(cands[i].names) {
+				if want[w] {
+					n++
+				}
+			}
+			if n > 0 {
+				rest = append(rest, scored{i, n})
+			}
+		}
+		slices.SortStableFunc(rest, func(a, b scored) int { return b.n - a.n })
+		for _, r := range rest {
+			add(r.i)
+		}
+	}
+	for _, held := range []bool{true, false} {
+		for i := range cands {
+			if s.keys[cands[i].idx].InAgent == held {
+				add(i)
+			}
+		}
+	}
+	slices.Sort(picked)
+	out := make([]Candidate, len(picked))
+	for j, i := range picked {
+		out[j] = cands[i]
+	}
+	return out, len(cands) - len(out)
+}
+
+// nameWords are the words of a key's names that say something about it: its
+// file name and comment without the algorithm and the boilerplate.
+func nameWords(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		for _, w := range strings.FieldsFunc(strings.ToLower(n), func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) {
+			switch w {
+			case "id", "ed25519", "rsa", "key", "pub", "com", "org", "ecdsa", "sk":
+			default:
+				if len(w) > 2 {
+					out[w] = true
+				}
+			}
+		}
+	}
+	return out
+}

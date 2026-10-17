@@ -1,0 +1,4 @@
+{
+  "snug": {"format": 2, "outcome": "refused", "lossy": false, "exit_code": 77, "policy_resolved": false},
+  "refusal": {"message": "fixture refusal naming /srv/missing"}
+}

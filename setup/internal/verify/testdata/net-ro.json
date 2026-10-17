@@ -1,0 +1,13 @@
+{
+  "snug": {"format": 2, "outcome": "ok", "lossy": false, "exit_code": 0, "policy_resolved": true},
+  "target": "/home/alice/src/webapp",
+  "profiles": {"selected": ["@sys", "@home", "@target-rw", "work"], "implied": ["@net"]},
+  "mounts": [
+    {"guest": "/usr", "host": "/usr", "kind": "bind", "access": "ro", "from": ["@sys"], "optional": false},
+    {"guest": "/home/alice", "host": "", "kind": "tmpfs", "access": "rw", "from": ["@home"], "optional": false},
+    {"guest": "/home/alice/.gitconfig", "host": "", "kind": "data", "access": "ro", "from": ["identity:work"], "optional": false},
+    {"guest": "/srv/data", "host": "/srv/data", "kind": "bind", "access": "ro", "from": ["work"], "optional": false},
+    {"guest": "/home/alice/src/webapp", "host": "/home/alice/src/webapp", "kind": "bind", "access": "rw", "from": ["@target-rw"], "optional": false}
+  ],
+  "network": {"mode": "egress", "egress": true, "host_loopback": false}
+}

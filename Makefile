@@ -5,12 +5,18 @@ FIXTURE := bin/snug-fixture
 FORGING_RUNES := [\x{202A}-\x{202E}\x{2066}-\x{2069}\x{2028}\x{2029}\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]
 
 
-.PHONY: all build fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
+.PHONY: all build setup fixture test gate forging-pattern integration integration-sandbox integration-signals integration-hostless integration-engine verify golden clean install
 
 all: build
 
 build:
 	go build -o $(BIN) ./cmd/snug
+
+# snug-setup, a separate module; it reads requests with fixed rules and needs a
+# model only behind --model or --openai-url. Built without cgo like everything
+# else.
+setup:
+	cd setup && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o ../bin/snug-setup ./cmd/snug-setup
 
 # The integration suite's snug: the same program plus internal/cli's
 # accountfixture.go, which lets a test name the directory it reports as the
@@ -136,6 +142,11 @@ gate:
 	go vet ./test/integration/testdata/loginprobe
 	go vet ./test/integration/testdata/fakeopener
 	go test ./...
+	# setup/ is its own module, so every `./...` above stops at its go.mod and
+	# never vets or tests snug-setup. gofmt and the forging-rune check walk
+	# files, not modules, and already cover it. Run from inside setup/ so the
+	# root module never requires it.
+	cd setup && go vet ./... && go vet -tags integration ./... && go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This
 # is the automated half of the checklist; the by-hand half that survives in
