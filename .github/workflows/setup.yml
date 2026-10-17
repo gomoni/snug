@@ -1,13 +1,12 @@
 name: setup
 
 # snug-setup is its own Go module (setup/go.mod), so ci.yml's `make gate` runs
-# its vet and tests only through the last line of the gate target. Every test
-# of the module needs no model and no server: the optional model path
-# (--openai-url) is tested against an httptest server. The split lives here:
+# its vet and tests only through the last line of the gate target. The split
+# lives here:
 #
 #   ci.yml   `make gate` -> gofmt, vet and the tests of setup/ too
 #   setup.yml (this file) -> the same, in the module's own terms with CGO off,
-#            gold scores of the rules included, and the binary built
+#            and the binary built
 #
 # Not path-filtered. A workflow that does not run posts no check at all, and a
 # pull request requiring it would wait forever on "Expected" (see the draft
@@ -52,4 +51,4 @@ jobs:
       - name: test
         run: cd setup && go test ./...
       - name: Binary builds without cgo
-        run: make setup
+        run: cd setup && go build -o /dev/null ./cmd/snug-setup
