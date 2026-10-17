@@ -348,7 +348,9 @@ func (s Selection) netReasons() (string, []string) {
 		if p.hasVia && s.Pick[p.via] != 0 {
 			continue
 		}
-		whys = append(whys, p.why)
+		if !slices.Contains(whys, p.why) {
+			whys = append(whys, p.why)
+		}
 		claude = claude || p.via == Agent && p.hasVia
 	}
 	for _, w := range whys {

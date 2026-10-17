@@ -292,3 +292,11 @@ func TestDescFollowsIdentityUnlessEdited(t *testing.T) {
 		t.Errorf("RevertAll desc = %q", r.Text[Desc])
 	}
 }
+
+func TestNetworkReasonIsNotRepeatedForTwoMarkers(t *testing.T) {
+	f := ingest.Facts{Target: ingest.TargetFacts{Languages: []ingest.Lang{
+		{Name: "go", Marker: "go.mod"}, {Name: "go", Marker: "sub/go.mod"}}}}
+	if got := Suggest(f, home, "/home/alice/work/app").Current(Network).Why; got != "go mod download" {
+		t.Errorf("reason %q", got)
+	}
+}
