@@ -285,6 +285,11 @@ the store and `rw` with the upper layer inside the store writes into it. A
 payload cannot create a mount that snug's resolve sees, so getting there takes
 a host somebody already set up that way, which is out of scope.
 
+The same guards find the runtime and per-run directories through this run's
+own `$XDG_RUNTIME_DIR` and `$TMPDIR`. A peer run started with different values
+keeps its directories where this run never looks, so a grant covering them is
+not refused; `--dry-run` says so on its sibling-sandbox screen.
+
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.
 
