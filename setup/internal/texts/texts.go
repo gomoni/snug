@@ -221,6 +221,7 @@ const helpText = `snug-setup builds a snug profile from what you say. Examples:
   I need internet / podman / git       which ssh keys are loaded?
   assign github account2               read this docker-compose
   call it work                         show / save
-Each request stands alone: the model remembers nothing but the draft.
+Each request stands alone: nothing but the draft is remembered between them.
+Requests are read by fixed rules; with --model or --openai-url a model reads them instead.
 With --offline GitHub is not asked whether a key belongs to an account.
-Commands that skip the model: /include /analyze /why /keys /show /save /undo /help /quit`
+Commands start with / and are never read as requests: /include /analyze /why /keys /show /save /undo /help /quit`

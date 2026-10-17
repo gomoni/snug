@@ -30,7 +30,7 @@ type Config struct {
 	Echo bool
 }
 
-const answerHelp = `Answers to open questions (--plain asks nothing; it opens numbered questions):
+const answerHelp = `Answers to open questions (snug-setup prints numbered questions as text):
   yes | no | 2 | only 1 and 3  answer the question printed just before: all, none, or the items to keep
   /pending                  list the open questions and the line that answers each
   /accept N                 yes to question N
