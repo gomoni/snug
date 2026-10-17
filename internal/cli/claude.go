@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1300,11 +1301,22 @@ func claudeGuidance(pol *policy.Policy) []byte {
 
 	if id := pol.Identity; id != nil && id.SSH.Agent != policy.SSHNone {
 		b.WriteString("## Identity\n\n")
-		if id.Gh.User != "" {
+		// Identity joins one block at a time, so the ssh and gh blocks may come
+		// from different profiles and name different accounts. The sentence
+		// claims one account only when the same profiles own both.
+		if id.Gh.User != "" && slices.Equal(pol.IdentityOwners["ssh"], pol.IdentityOwners["gh"]) {
 			fmt.Fprintf(&b, "git, ssh and gh are scoped to the account `%s`.\n", id.Gh.User)
 		}
-		b.WriteString("Exactly one ssh key is available for signing. You cannot enumerate or use\n")
-		b.WriteString("any other key, and no key material is present in this sandbox.\n\n")
+		// The proxy serves the signing key too (startSSHIdentity), so a pinned
+		// signing key that is not the auth key is a second key in the agent.
+		if id.Git.SigningKey != "" && id.Git.SigningKey != id.SSH.Key {
+			b.WriteString("Exactly two ssh keys are available: one to authenticate, one to sign commits.\n")
+			b.WriteString("The agent cannot tell the purposes apart. You cannot enumerate or use any\n")
+			b.WriteString("other key, and no key material is present in this sandbox.\n\n")
+		} else {
+			b.WriteString("Exactly one ssh key is available for signing. You cannot enumerate or use\n")
+			b.WriteString("any other key, and no key material is present in this sandbox.\n\n")
+		}
 	}
 
 	b.WriteString("## If something is missing\n\n")

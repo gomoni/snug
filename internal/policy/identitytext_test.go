@@ -98,7 +98,7 @@ func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.IdentityOwners["ssh"] != "pinned" {
+	if p.IdentityOwner("ssh") != "pinned" {
 		t.Fatalf("IdentityOwners = %v, want ssh pinned by %q", p.IdentityOwners, "pinned")
 	}
 	for _, m := range p.Mounts {

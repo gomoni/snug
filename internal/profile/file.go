@@ -101,7 +101,8 @@ type rawEnviron struct {
 //
 // The inner blocks are VALUES, not pointers, which is the opposite of
 // rawProfile.Identity above. That pointer is load-bearing — p.Identity != nil is
-// what tells Resolve this profile takes part in the identity join — and inside it
+// what tells Resolve to look at this profile's blocks at all; each block then takes part
+// in the identity join only if it sets something — and inside it
 // there is no absent-vs-empty distinction left to preserve: an empty
 // [identity.ssh] and an absent one both yield empty strings, so pointers would buy
 // three nil guards and no behaviour. DisallowUnknownFields reaches a nested value

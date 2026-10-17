@@ -73,7 +73,7 @@ func TestIdentityDifferentBlocksCompose(t *testing.T) {
 	if *p.Identity != want {
 		t.Errorf("Identity = %+v, want %+v", *p.Identity, want)
 	}
-	wantOwners := map[string]ProfileName{"ssh": "acct-ssh", "git": "acct-git", "gh": "acct-gh"}
+	wantOwners := map[string][]ProfileName{"ssh": {"acct-ssh"}, "git": {"acct-git"}, "gh": {"acct-gh"}}
 	if !reflect.DeepEqual(p.IdentityOwners, wantOwners) {
 		t.Errorf("IdentityOwners = %v, want %v", p.IdentityOwners, wantOwners)
 	}
@@ -101,8 +101,8 @@ func TestIdentityNoneOnlySSHBlockDoesNotParticipate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an ssh block holding only agent = none refused beside a real one: %v", err)
 	}
-	if p.Identity.SSH != sshBlock || p.IdentityOwners["ssh"] != "with-agent" {
-		t.Errorf("ssh = %+v owned by %q, want the with-agent block", p.Identity.SSH, p.IdentityOwners["ssh"])
+	if p.Identity.SSH != sshBlock || p.IdentityOwner("ssh") != "with-agent" {
+		t.Errorf("ssh = %+v owned by %q, want the with-agent block", p.Identity.SSH, p.IdentityOwner("ssh"))
 	}
 }
 
@@ -162,17 +162,31 @@ func TestSigningKeyNeedsAgentAcrossProfiles(t *testing.T) {
 			t.Fatalf("err = %v, want it to name both profiles", err)
 		}
 	})
-	t.Run("agent in another profile resolves", func(t *testing.T) {
+	// Red-team finding on the per-block join: the signing key is served by the
+	// agent proxy, which cannot tell signing from authentication, so a git-only
+	// profile's signing_key beside another profile's agent added a login key to
+	// that agent (`ssh-add -L` listed both). It must refuse, naming both.
+	t.Run("agent in another profile refuses", func(t *testing.T) {
 		reg, sel := identityProfiles(map[ProfileName]Identity{
 			"signer": {Git: signing},
 			"agent":  {SSH: sshBlock},
+		})
+		_, err := Resolve(reg, sel, testCtx(), newFakeEnv())
+		if err == nil || !strings.Contains(err.Error(), `"signer"`) || !strings.Contains(err.Error(), `"agent"`) {
+			t.Fatalf("err = %v, want a refusal naming both profiles", err)
+		}
+	})
+	t.Run("signing key and agent from one profile resolve", func(t *testing.T) {
+		reg, sel := identityProfiles(map[ProfileName]Identity{
+			"both":  {Git: signing, SSH: sshBlock},
+			"again": {SSH: sshBlock},
 		})
 		p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(string(p.Mounts["/home/u/.gitconfig"].Content), "gpgsign = true") {
-			t.Error("signing key with the agent from another profile did not generate signing config")
+			t.Error("signing key with its own profile's agent did not generate signing config")
 		}
 	})
 }
@@ -258,4 +272,24 @@ func TestIdentityPartitionIsDerivedFromTheType(t *testing.T) {
 		Bare string      `snug:"bare"`
 	}
 	mustIdentityPins(reflect.TypeOf(bad{}))
+}
+
+// Red-team finding on the per-block join: two profiles setting one block
+// identically both own it, so provenance must name both — dropping either
+// leaves the pin in place.
+func TestIdentityEqualBlocksRecordEveryOwner(t *testing.T) {
+	reg, sel := identityProfiles(map[ProfileName]Identity{
+		"dup-a":    {SSH: sshBlock},
+		"acct-ssh": {SSH: sshBlock},
+	})
+	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.IdentityOwners["ssh"]; !reflect.DeepEqual(got, []ProfileName{"acct-ssh", "dup-a"}) {
+		t.Errorf("ssh owners = %v, want both, sorted", got)
+	}
+	if got := p.Mounts["/home/u/.ssh/config"].From; !reflect.DeepEqual(got, []string{"identity:acct-ssh+dup-a"}) {
+		t.Errorf("~/.ssh/config From = %v", got)
+	}
 }

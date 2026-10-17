@@ -121,7 +121,7 @@ func signingIdentityPolicy(t *testing.T, authPath, signPath string) *policy.Poli
 		Home:           "/home/u",
 		Mounts:         map[string]policy.Mount{},
 		Env:            map[string]policy.EnvVar{},
-		IdentityOwners: map[string]policy.ProfileName{"ssh": "pinned", "git": "pinned"},
+		IdentityOwners: map[string][]policy.ProfileName{"ssh": {"pinned"}, "git": {"pinned"}},
 		Identity: &policy.Identity{
 			SSH: policy.IdentitySSH{Agent: policy.SSHAgentProxy, Key: authPath},
 			Git: policy.IdentityGit{SigningKey: signPath, Email: "u@example.com"},

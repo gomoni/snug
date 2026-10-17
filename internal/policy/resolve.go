@@ -561,16 +561,19 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				}
 				if p.Identity == nil {
 					p.Identity = &Identity{}
-					p.IdentityOwners = map[string]ProfileName{}
+					p.IdentityOwners = map[string][]ProfileName{}
 				}
 				have := reflect.ValueOf(p.Identity).Elem()
 				if cur := have.Field(pin.Index); !cur.IsZero() && !cur.Equal(in) {
 					return nil, fmt.Errorf("profiles %q and %q pin different identity.%s; "+
 						"select only one of them, or make the two blocks identical",
-						p.IdentityOwners[pin.Key], name, pin.Key)
+						p.IdentityOwner(pin.Key), name, pin.Key)
 				}
 				have.Field(pin.Index).Set(in)
-				p.IdentityOwners[pin.Key] = name
+				if !slices.Contains(p.IdentityOwners[pin.Key], name) {
+					p.IdentityOwners[pin.Key] = append(p.IdentityOwners[pin.Key], name)
+					slices.Sort(p.IdentityOwners[pin.Key])
+				}
 			}
 		}
 
@@ -1883,27 +1886,51 @@ func isHostName(s string) bool {
 	return true
 }
 
-// refuseSigningWithoutAgent refuses identity.git.signing_key when no selected
-// profile turns the ssh agent proxy on. The private half stays in the host
-// agent by construction, so with no proxy there is nothing inside to sign with
-// — measured on git 2.55.0, that is `error: No private key found for public
-// key "…"` followed by `fatal: failed to write commit object`, on every commit.
-// Refuse the combination rather than generate it. The two keys live in two
-// blocks, so they may come from two profiles, and the refusal names both.
+// refuseSigningWithoutAgent refuses identity.git.signing_key unless the ssh
+// block that turns the agent proxy on comes from a profile that also set the git
+// block.
+//
+// The agent is the only signer: the private half stays in the host agent by
+// construction, so with no proxy there is nothing inside to sign with —
+// measured on git 2.55.0, that is `error: No private key found for public key
+// "…"` followed by `fatal: failed to write commit object`, on every commit.
+//
+// And the agent protocol carries no purpose, so a signing key the proxy serves
+// is a key the sandbox can AUTHENTICATE with too, to any host that trusts it.
+// That makes signing_key a grant on the ssh channel, and the one coupling
+// between blocks that is not an accident: were git and ssh allowed from two
+// profiles, a git-only profile would add its key to another profile's agent —
+// "ssh from work, git from personal" pushing as personal wherever the personal
+// key is also an auth key, which is the common setup. So the two blocks must
+// share an owner. Measured by the red team on the per-block join, before this
+// rule: `ssh-add -L` inside listed both profiles' keys.
 func refuseSigningWithoutAgent(p *Policy) error {
 	id := p.Identity
-	if id == nil || id.Git.SigningKey == "" || id.SSH.Agent != SSHNone {
+	if id == nil || id.Git.SigningKey == "" {
 		return nil
 	}
-	ssh := "no selected profile sets identity.ssh"
-	if o, ok := p.IdentityOwners["ssh"]; ok {
-		ssh = fmt.Sprintf("profile %q sets identity.ssh with no agent", o)
+	git := p.IdentityOwner("git")
+	if id.SSH.Agent == SSHNone {
+		ssh := "no selected profile sets identity.ssh"
+		if p.Identity.Pinned("ssh") {
+			ssh = fmt.Sprintf("profile %q sets identity.ssh with no agent", p.IdentityOwner("ssh"))
+		}
+		return fmt.Errorf("profile %q: identity.git.signing_key needs "+
+			"identity.ssh.agent = \"proxy\", and %s: the private half of a signing key never enters "+
+			"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
+			"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
+			"identity.git.signing_key", git, ssh)
 	}
-	return fmt.Errorf("profile %q: identity.git.signing_key needs "+
-		"identity.ssh.agent = \"proxy\", and %s: the private half of a signing key never enters "+
-		"the sandbox, so with no agent proxy there is nothing inside to sign with and "+
-		"every `git commit -S` would fail. Set identity.ssh.agent, or remove "+
-		"identity.git.signing_key", p.IdentityOwners["git"], ssh)
+	for _, o := range p.IdentityOwners["git"] {
+		if slices.Contains(p.IdentityOwners["ssh"], o) {
+			return nil
+		}
+	}
+	return fmt.Errorf("profiles %q and %q: identity.git.signing_key is served by the ssh agent proxy "+
+		"identity.ssh turns on, and the agent cannot tell signing from authentication — so the signing "+
+		"key would also be an ssh key the sandbox can log in with, added to an agent another profile "+
+		"pinned. Put identity.git.signing_key in the profile that sets identity.ssh, or remove it",
+		git, p.IdentityOwner("ssh"))
 }
 
 func refuseHalfNamedHost(p *Policy) error {
@@ -1915,10 +1942,10 @@ func refuseHalfNamedHost(p *Policy) error {
 	ghActive := id.Gh.User != "" || id.Gh.Host != ""
 	switch {
 	case id.Gh.Host != "" && id.SSH.Host == "" && sshActive:
-		return halfNamedHost(p.IdentityOwners["gh"], p.IdentityOwners["ssh"], "gh", id.Gh.Host, "ssh",
+		return halfNamedHost(p.IdentityOwner("gh"), p.IdentityOwner("ssh"), "gh", id.Gh.Host, "ssh",
 			"~/.ssh/config, ~/.ssh/known_hosts and git's insteadOf rule")
 	case id.SSH.Host != "" && id.Gh.Host == "" && ghActive:
-		return halfNamedHost(p.IdentityOwners["ssh"], p.IdentityOwners["gh"], "ssh", id.SSH.Host, "gh",
+		return halfNamedHost(p.IdentityOwner("ssh"), p.IdentityOwner("gh"), "ssh", id.SSH.Host, "gh",
 			"the gh token and GH_HOST")
 	}
 	return nil

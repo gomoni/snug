@@ -210,7 +210,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		// before this branch, not after. Everything below it starts
 		// something, which a dry run may not.
 		if dryRun {
-			pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
+			pol.BindSocket(sock, policy.AgentSocketGuest, identityProvenance(pol, "ssh", "git"))
 			break
 		}
 		audit := func(string) {}
@@ -251,7 +251,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		go p.Serve()
 		inner := cleanup
 		cleanup = func() { p.Close(); inner() }
-		pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
+		pol.BindSocket(sock, policy.AgentSocketGuest, identityProvenance(pol, "ssh", "git"))
 	}
 
 	// The pinned PUBLIC key, so the generated ~/.ssh/config's IdentityFile
@@ -472,7 +472,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool, mint to
 	perm := uint32(0o600)
 	pol.Replace(policy.Mount{
 		Guest: dir + "/hosts.yml", Kind: policy.KindData, Access: policy.AccessRW,
-		Content: hosts, Perms: &perm, From: []string{"(identity)"},
+		Content: hosts, Perms: &perm, From: []string{identityProvenance(pol, "gh")},
 	})
 	pol.AuthorEnv("GH_CONFIG_DIR", dir)
 	pol.AuthorEnv("GH_HOST", host)

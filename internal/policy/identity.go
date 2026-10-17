@@ -195,8 +195,10 @@ func mustIdentityPins(t reflect.Type) []identityPin {
 func (p *Policy) IdentityProvenance(blocks ...string) string {
 	var owners []string
 	for _, b := range blocks {
-		if o, ok := p.IdentityOwners[b]; ok && !slices.Contains(owners, string(o)) {
-			owners = append(owners, string(o))
+		for _, o := range p.IdentityOwners[b] {
+			if !slices.Contains(owners, string(o)) {
+				owners = append(owners, string(o))
+			}
 		}
 	}
 	if len(owners) == 0 {
@@ -204,6 +206,15 @@ func (p *Policy) IdentityProvenance(blocks ...string) string {
 	}
 	slices.Sort(owners)
 	return "identity:" + strings.Join(owners, "+")
+}
+
+// IdentityOwner is the first profile, in sorted order, that pinned block, for
+// a refusal that names one; "" when no profile did.
+func (p *Policy) IdentityOwner(block string) ProfileName {
+	if o := p.IdentityOwners[block]; len(o) > 0 {
+		return o[0]
+	}
+	return ""
 }
 
 // Pinned reports whether block key ("ssh", "git", "gh") is set. It is false

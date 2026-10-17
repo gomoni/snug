@@ -506,14 +506,15 @@ type Policy struct {
 	// decided rather than recomputing it (issue #43).
 	SystemSSHCarried []string
 
-	// IdentityOwners names, per identity block ("ssh", "git", "gh"), the
-	// profile that pinned it, so a mount staged AFTER resolution can carry the
+	// IdentityOwners names, per identity block ("ssh", "git", "gh"), every
+	// profile that pinned it, sorted — two profiles setting one block
+	// identically both own it, and dropping either leaves the pin — so a mount staged AFTER resolution can carry the
 	// same `identity:<profile>` provenance as the ones Resolve stages itself.
 	// Without it the public key staged by startIdentity read `(identity)` while
 	// its siblings on the same --dry-run screen read `identity:acct-a` — one
 	// file attributed to nobody, in the block whose entire job is saying who
 	// asked for what. A key is present only for a block some profile set.
-	IdentityOwners map[string]ProfileName
+	IdentityOwners map[string][]ProfileName
 
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
