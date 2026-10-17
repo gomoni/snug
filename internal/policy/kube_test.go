@@ -363,7 +363,8 @@ func TestGoldenKubeGeneratedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := "# ~/.kube/config inside the sandbox\n" + string(p.Kube.SandboxKubeconfig())
+	got := "# ~/.kube/config inside the sandbox\n" + string(p.Kube.SandboxKubeconfig()) +
+		"# the host-side mint's kubeconfig (fixture credential)\n" + string(p.Kube.MintKubeconfig())
 	const path = "testdata/identity-kube.txt"
 	if *update {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
@@ -388,5 +389,86 @@ func TestKubeIdentityPathRefusalsUseTheKubeconfigRole(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "PUBLIC key") {
 		t.Errorf("a kubeconfig refusal tells the human to copy a PUBLIC key: %v", err)
+	}
+}
+
+func TestKubeHostMintNeverReadsTheHostFile(t *testing.T) {
+	p, err := kubeResolve(t, kubeCase{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := p.Kube.MintArgv("/usr/bin/kubectl", "/run/snug/r/kube-mint.json", "/run/snug/r/kube-cache")
+	want := []string{"/usr/bin/kubectl", "--kubeconfig=/run/snug/r/kube-mint.json", "--context=snug",
+		"--cache-dir=/run/snug/r/kube-cache", "create", "token", "snug-agent", "--namespace=dev",
+		"--duration=1h0m0s", "-o", "json"}
+	if !slices.Equal(argv, want) {
+		t.Fatalf("argv = %q\nwant %q", argv, want)
+	}
+	for _, a := range argv {
+		if strings.Contains(a, p.Kube.Kubeconfig) {
+			t.Errorf("argv element %q names the host kubeconfig", a)
+		}
+	}
+	env := KubeMintEnv("/run/snug/r/kube-home")
+	if !slices.Equal(env, []string{"PATH=/usr/bin:/bin", "HOME=/run/snug/r/kube-home", "KUBERC=off"}) {
+		t.Errorf("env = %q", env)
+	}
+}
+
+func TestKubeMintKubeconfigCarriesOnlyTheAllowlist(t *testing.T) {
+	p, err := kubeResolve(t, kubeCase{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(p.Kube.MintKubeconfig())
+	for _, bad := range []string{"FIXTURETOKENVALUE", "aws", "kind-kind", "clusterUser_rg_aks-dev", "exec"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("mint kubeconfig carries %q", bad)
+		}
+	}
+	key := base64.StdEncoding.EncodeToString([]byte("FIXTUREKEYMATERIAL"))
+	if !strings.Contains(got, key) || !strings.Contains(got, `"name": "snug"`) {
+		t.Errorf("mint kubeconfig lacks the client key or the snug names:\n%s", got)
+	}
+	tokenOnly := strings.Replace(kubeFixture(t),
+		"    client-certificate-data: RklYVFVSRUNFUlQ=\n    client-key-data: RklYVFVSRUtFWU1BVEVSSUFM\n    token:",
+		"    token:", 1)
+	q, err := kubeResolve(t, kubeCase{file: tokenOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(q.Kube.MintKubeconfig()), "FIXTURETOKENVALUE") {
+		t.Error("a token-only user's mint kubeconfig lacks the token")
+	}
+}
+
+func TestKubeMintBinaryRefusesWritableOrRelative(t *testing.T) {
+	p, err := kubeResolve(t, kubeCase{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newFakeEnv()
+	env.files["/usr/bin/kubectl"] = true
+	if got, err := p.ResolveKubeMintBinary(env, "/usr/bin/kubectl"); err != nil || got != "/usr/bin/kubectl" {
+		t.Errorf("an ordinary kubectl: %q, %v", got, err)
+	}
+	if _, err := p.ResolveKubeMintBinary(env, "kubectl"); err == nil {
+		t.Error("a relative kubectl was accepted")
+	}
+	env.files["/home/u/proj/sub/bin/kubectl"] = true
+	if _, err := p.ResolveKubeMintBinary(env, "/home/u/proj/sub/bin/kubectl"); err == nil ||
+		!strings.Contains(err.Error(), "inside the target") {
+		t.Errorf("a kubectl in the target: %v", err)
+	}
+	w, err := kubeResolve(t, kubeCase{
+		profile: func(p *Profile) { p.RW = []string{"/opt/k"} },
+		env:     func(e *fakeEnv) { e.dirs["/opt/k"] = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.files["/opt/k/kubectl"] = true
+	if _, err := w.ResolveKubeMintBinary(env, "/opt/k/kubectl"); err == nil || !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("a kubectl under an rw grant: %v", err)
 	}
 }

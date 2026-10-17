@@ -463,3 +463,97 @@ func (k *KubeBinding) kubeconfig(name string, user any, namespace string) []byte
 	}
 	return buf.Bytes()
 }
+
+// KubeTokenDuration is the lifetime the mint REQUESTS. The cluster may cap or
+// extend it; the broker reads the expiry the cluster returned. It is not a
+// profile key: a knob on the credential's lifetime is precedent for every
+// other knob, and an hour bounds what a token taken from one run is worth.
+const KubeTokenDuration = "1h0m0s"
+
+// KubeMintBudget is how many mints one run may make, the preflight included.
+// The broker never mints before the cached token expires, so this only binds
+// when a cluster hands out very short tokens or the clock jumps.
+const KubeMintBudget = 64
+
+// KubeMintContext is the only cluster, user and context name in the host-side
+// file the mint reads, so the mint's argv carries no text from the host file.
+const KubeMintContext = "snug"
+
+// MintKubeconfig is the per-run HOST-SIDE kubeconfig the mint reads: the same
+// cluster as the sandbox's, all names "snug", and the host user's credential
+// re-encoded — client certificate and key when the entry had them, else the
+// static token. It is a Secret because it carries that credential, and the
+// host kubectl never reads the host kubeconfig itself: what it would read
+// there (other users, exec plugins, proxy settings) is not in this file.
+func (k *KubeBinding) MintKubeconfig() Secret {
+	type userOut struct {
+		ClientCertificateData []byte `json:"client-certificate-data,omitempty"`
+		ClientKeyData         []byte `json:"client-key-data,omitempty"`
+		Token                 string `json:"token,omitempty"`
+	}
+	u := userOut{ClientCertificateData: k.HostUser.ClientCertData, ClientKeyData: k.HostUser.ClientKeyData}
+	if len(u.ClientCertificateData) == 0 {
+		u.Token = string(k.HostUser.Token)
+	}
+	return Secret(k.kubeconfig(KubeMintContext, u, ""))
+}
+
+// MintArgv is the host command that mints one token, exactly. Every element is
+// snug's constant or a value Resolve validated: the ServiceAccount halves are
+// Kubernetes names, which cannot start with '-'.
+func (k *KubeBinding) MintArgv(kubectl, mintFile, cacheDir string) []string {
+	return []string{kubectl,
+		"--kubeconfig=" + mintFile, "--context=" + KubeMintContext, "--cache-dir=" + cacheDir,
+		"create", "token", k.SAName, "--namespace=" + k.SANamespace,
+		"--duration=" + KubeTokenDuration, "-o", "json"}
+}
+
+// KubeMintEnv is the mint's whole environment. Nothing is inherited: a proxy
+// variable, KUBECONFIG, AWS_* or AZURE_* in snug's own environment — a repo's
+// .envrc can put them there — would steer what the host kubectl does with the
+// credential. HOME is an empty per-run directory and KUBERC=off, so no
+// ~/.kube/kuberc alias or default flag applies.
+func KubeMintEnv(kubeHome string) []string {
+	return []string{"PATH=/usr/bin:/bin", "HOME=" + kubeHome, "KUBERC=off"}
+}
+
+// KubeMintEnvNames is the names KubeMintEnv sets, for the screen.
+func KubeMintEnvNames() []string { return []string{"PATH", "HOME", "KUBERC"} }
+
+// ResolveKubeMintBinary judges the host kubectl the mint will run, named as
+// exec.LookPath found it. It refuses a relative name, a binary inside the
+// target, and one a writable grant reaches by bytes, by a second mount, or by
+// a name on its resolution chain — the same three arms as ResolveEngineBinary,
+// because the mint runs it with a cluster credential. Whether the file is an
+// executable rather than a script is internal/cli's check: it needs a read.
+func (p *Policy) ResolveKubeMintBinary(env Environ, asGiven string) (string, error) {
+	if !filepath.IsAbs(asGiven) {
+		return "", fmt.Errorf("host kubectl %s is not an absolute path; snug runs it on the host with your "+
+			"cluster credential and judges it against this sandbox's grants, which a relative name matches "+
+			"none of", VisibleText(asGiven))
+	}
+	asGiven = filepath.Clean(asGiven)
+	resolved, err := ResolveExistingHostPath(env, asGiven)
+	if err != nil {
+		return "", fmt.Errorf("host kubectl %s: %s", VisibleText(asGiven), visibleErr(err))
+	}
+	const why = "snug runs it on the host with your cluster credential, so a kubectl the payload can " +
+		"write or choose is the payload holding that credential. Install kubectl where no grant of " +
+		"this sandbox reaches."
+	if _, in := under(p.Target, resolved); in {
+		return "", fmt.Errorf("host kubectl %s is inside the target %s. %s", VisibleText(resolved), VisibleText(p.Target), why)
+	}
+	if p.HostPathVisible(resolved, true) {
+		return "", fmt.Errorf("host kubectl %s: a grant of this sandbox makes it WRITABLE. %s", VisibleText(resolved), why)
+	}
+	if m, h, hit, err := p.writableAliasOf(env, resolved); err != nil {
+		return "", err
+	} else if hit {
+		return "", fmt.Errorf("host kubectl %s: the rw grant %s reaches it through a second mount of the same "+
+			"filesystem.%s %s", VisibleText(resolved), VisibleText(m.Host), aliasNote(h), why)
+	}
+	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
+		return "", fmt.Errorf("host kubectl %s: %s %s", VisibleText(asGiven), selectionClause(name, asked), why)
+	}
+	return resolved, nil
+}

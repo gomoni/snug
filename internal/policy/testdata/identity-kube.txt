@@ -37,3 +37,37 @@
   "current-context": "aks-dev",
   "preferences": {}
 }
+# the host-side mint's kubeconfig (fixture credential)
+{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "clusters": [
+    {
+      "name": "snug",
+      "cluster": {
+        "server": "https://aks-dev.example.azmk8s.io:443",
+        "certificate-authority-data": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClJrbFlWRlZTUlVOQgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+      }
+    }
+  ],
+  "users": [
+    {
+      "name": "snug",
+      "user": {
+        "client-certificate-data": "RklYVFVSRUNFUlQ=",
+        "client-key-data": "RklYVFVSRUtFWU1BVEVSSUFM"
+      }
+    }
+  ],
+  "contexts": [
+    {
+      "name": "snug",
+      "context": {
+        "cluster": "snug",
+        "user": "snug"
+      }
+    }
+  ],
+  "current-context": "snug",
+  "preferences": {}
+}
