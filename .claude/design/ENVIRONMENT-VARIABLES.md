@@ -96,16 +96,15 @@ conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES 
   host-independent verdict is the unconditional one.
 - **Conditional** (`conditionalEnvs`, eleven names): snug writes one only when a
   profile key turns its feature on — `podman`, `identity.ssh.agent = "proxy"`,
-  `identity.gh.user`, `git = "extract"` or an identity, `listen_names`,
+  `identity.gh.user`, an identity, `listen_names`,
   `login = ["claude"]`. In any
   other selection a profile may `set` or `inherit` it, annotated (§2.9). In a
   selection that turns the feature on, a profile's line on it is a **symmetric
   conflict** naming the profile's line and the profiles whose key made snug the
   author — the shape two `set`s of one scalar already have. Two rules make that
   verdict the same on every host: the predicate reads the **selection**, never
-  whether snug wrote the name (`git = "extract"` writes no `GIT_CONFIG_GLOBAL`
-  on a host with an empty git config; `identity.gh.user` writes no
-  `GH_CONFIG_DIR` on a dry run with no token), and the claim is the profile's
+  whether snug wrote the name (`identity.gh.user` writes no `GH_CONFIG_DIR` on a
+  dry run with no token), and the claim is the profile's
   **text**, never what the host held (an `inherit` the host cannot satisfy is
   still a claim). The same conflict covers the names a tool reads **in place
   of** snug's: `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
@@ -1316,8 +1315,8 @@ hands over never ships one of these inline-config names pre-installed
 (`policy.IsInlineConfigEnv`,
 `TestNoBuiltinHandsOverAnInlineConfigVariable`). See
 `.claude/design/GIT-CONFIG.md` §9 for the measurement and the threat model,
-and CLAUDE.md's "Generate, don't bind" bullet for the pointer-vs-inline-setting
-rule that came out of it.
+and `GENERATED-CONFIG.md` §7 for the pointer-vs-inline-setting rule that came
+out of it.
 
 ---
 

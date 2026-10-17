@@ -168,7 +168,6 @@ var humanOnlyFacts = map[string]string{
 	"writableBelow":          "pathAnnotation's `writable below` clause over mounts[]",
 
 	// ── gaps, named rather than silently absent ──────────────────────────
-	"policy.SortedGitKeys":             "#332 F1f: the host-derived GIT facts have no JSON representation yet",
 	"policy.SSHKeySpelling":            "#332 F1f: the host-derived SSH facts have no JSON representation yet",
 	"claudeStateMount":                 "#332 F1f: the CLAUDE facts have no JSON representation yet",
 	"claudeSettingsMount":              "#332 F1f, same block",

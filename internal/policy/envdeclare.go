@@ -149,7 +149,7 @@ func checkEnvTypes(g EnvGrants) error {
 		}
 		if slices.Contains(ConditionalEnvClaimed(), name) {
 			return fmt.Errorf("environ.types names %s, which snug writes, or which outranks what "+
-				"snug writes, when a feature is on (podman, identity, git = \"extract\", "+
+				"snug writes, when a feature is on (podman, identity, "+
 				"listen_names). A declared list would reach it through environ.merge, and snug "+
 				"judges a profile's claim on these names only as the single value its own "+
 				"replaces. Remove the line; to point the tool elsewhere, environ.set it in a "+

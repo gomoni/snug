@@ -971,14 +971,14 @@ func TestProfileFlagAddsToTheDefaultRatherThanReplacingIt(t *testing.T) {
 	requireSandbox(t)
 	proj, _ := target(t)
 
-	r := run(t, []string{"-p", "@git"}, proj,
+	r := run(t, []string{"-p", "@parent-ro"}, proj,
 		`ls /usr >/dev/null && echo SYS-PRESENT; touch ./x && echo TARGET-WRITABLE; echo "$SNUG_PROFILES"`).mustRun(t)
 	for _, want := range []string{"SYS-PRESENT", "TARGET-WRITABLE"} {
 		if !strings.Contains(r.out, want) {
-			t.Errorf("-p git appears to have REPLACED the default (%s missing):\n%s", want, r.out)
+			t.Errorf("-p @parent-ro appears to have REPLACED the default (%s missing):\n%s", want, r.out)
 		}
 	}
-	for _, want := range []string{"@git", "@sys", "@target-rw"} {
+	for _, want := range []string{"@parent-ro", "@sys", "@target-rw"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("SNUG_PROFILES should list %q:\n%s", want, r.out)
 		}

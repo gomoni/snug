@@ -247,43 +247,6 @@ rw = ["{target}"]
 description = "The target's parent directory is readable — every sibling project in it too."
 ro = ["{target_parent}"]
 
-# ── git identity, generated ──────────────────────────────────────────────────
-# ABUSE: the sandbox learns the name and email you commit under, and nothing
-# else from your git config. It is a name and an address, both of which are in
-# every commit you have ever pushed.
-#
-# THIS PROFILE USED TO BIND ~/.gitconfig READ-ONLY, AND THAT WAS THE WRONG SHAPE.
-# The file is not a data file with a name and an email in it — it is a COMMAND
-# TABLE. credential.helper, alias.x = !cmd, core.pager, core.sshCommand,
-# diff.*.textconv, filter.*.clean/smudge and core.fsmonitor all name programs for
-# git to run, and binding the file read-only does not stop any of them: it
-# SUPPLIES them. The old abuse sentence here called the hazard "secrets you
-# unwisely put in ~/.gitconfig", which reads as a user error and understates a
-# file whose keys are executable by design.
-#
-# So snug reads it as DATA and generates the config the sandbox sees, keeping
-# only keys that carry no execution: user.name, user.email, init.defaultBranch.
-# `includeIf "gitdir:"` is honoured — snug evaluates the condition itself against
-# the target — so a per-directory identity keeps working. `includeIf
-# "hasconfig:"` is refused and named on stderr, because that condition is decided
-# by the REPOSITORY's own config: measured, a repo whose only property was a
-# crafted remote URL pulled in a host file carrying credential.helper = !command.
-#
-# Not in `defaults`: it reads a host file, and reading a host file is a thing a
-# human should ask for. Combine with an [identity.git] block and the block wins —
-# a pin that a host value could override would not be a pin.
-#
-# The generated file bounds what the HOST's config can say inside the sandbox.
-# It does not bound what the SANDBOX can say: GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0
-# enter git above every file (measured — issue #26), so a process in here can
-# give itself core.sshCommand whatever this file holds. That costs an attacker
-# nothing it did not already have — it already runs code and already holds
-# SSH_AUTH_SOCK — but do not read the generated file as a restraint on the
-# sandbox. See .claude/design/GIT-CONFIG.md §9.
-[profile.git]
-description = "Your git name and email, extracted from the host config. Generated, never bound."
-git = "extract"
-
 # ── networking ───────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can reach the whole internet — exfiltrate anything it can
 # read, fetch and run anything it likes. It copies the host's addresses into
@@ -410,7 +373,7 @@ dns = true
 #
 # TEMPLATE-BEGIN
 #   [profile.work]
-#   include = ["@net", "@git"]   # the `defaults` are selected as well; -p adds
+#   include = ["@net"]   # the `defaults` are selected as well; -p adds
 #     [profile.work.identity.ssh]
 #     key   = "{home}/.ssh/id_ed25519.pub"              # the PUBLIC half
 #     agent = "proxy"
@@ -545,8 +508,8 @@ dns = true
 # which 9 hooks.json (each running bash/sh/python3) and 7 package.json scripts
 # name a program — 16 command tables the bind hands over — while 0 carry a
 # credential today. snug now REGENERATES installed_plugins.json from the
-# `plugins` allowlist below (the ~/.gitconfig precedent: extract a whitelist,
-# generate the file), so Claude Code loads only the plugins you named. The rest
+# `plugins` allowlist below (extract a whitelist, generate the
+# file), so Claude Code loads only the plugins you named. The rest
 # of the tree stays visible and inert. MEASURED (claude 2.1.238): a plugin hook
 # fires only when the plugin is BOTH in installed_plugins.json AND enabled in
 # settings.json — two gates, and snug closes both (this regeneration, plus the

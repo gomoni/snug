@@ -53,11 +53,12 @@ Everything in this design is a consequence of that sentence.
 
 The base state of a `snug` sandbox is *not* "the host filesystem with some things masked". It is **an empty tmpfs root, an empty network namespace, and an empty environment**. Nothing is inherited. A profile is a *named hole*. There is no such thing as a "deny rule" in `snug`, because there is nothing to deny — the thing you would deny was never there.
 
-This has three consequences that shape the whole system:
+This has four consequences that shape the whole system:
 
 1. **Monotonicity is free.** Since the base is empty, every operation a profile can express is additive. There is no syntax for removal, so composition cannot tighten. (§2.4)
 2. **"Hiding" is emergent, not implemented.** The `@parent-ro` profile does not hide your other projects; it simply never grants them. There is no masking pass, no `--tmpfs` overlay trick in the emitter, no ordering hazard from hiding. (§3)
 3. **A missing capability is a feature, and is stated as such.** No X11 socket, no Wayland socket, no D-Bus, no host loopback, no `~/.ssh` — not gaps to apologise for, but the default. Where a hole is worth opening it gets a named profile that documents what it costs; where it is not (GUI, audio, D-Bus) the absence is simply the answer — see [`host-bridge.md`](../agents/host-bridge.md), "Out of scope: GUI, audio, D-Bus".
+4. **A profile says what the sandbox can reach and who it acts as — never how a program inside is configured.** The TOML grants paths, network, environment and an identity pin; it grows no per-program settings. A setting a program wants is a file the human wrote for the sandbox, granted read-only like any other path (`ro = ["<stub>:<guest>"]`). snug generates a program's config only where snug itself holds the value — an identity pin, its own engine — and even then it authors the file rather than binding the host's ([`GENERATED-CONFIG.md`](GENERATED-CONFIG.md)). The worked case is git: `[identity.git]` pins `name`, `email`, `signing_key`, and `init.defaultBranch` is a stub at `/etc/gitconfig` ([`GIT-CONFIG.md`](GIT-CONFIG.md) §3–§4). Each convenience key is precedent for the next, and the core is already complicated enough.
 
 ---
 
@@ -132,7 +133,6 @@ The prior generation (`agent-sandbox`) let a profile *override* a scalar, with t
 | `listen_names` | name set | union (a SET) | more doors |
 | `podman` | `off < socket < build` | `max` | more engine surface |
 | `dns` | `bool` | `OR` | working DNS |
-| `git` | `off < extract` | `max` | more of the host's git config carried |
 | `login` | provider set (`claude`) | union (a SET) | more login bridges on |
 | `ro` / `rw` | path sets | union + `Access.Join` | more access |
 
@@ -151,7 +151,7 @@ Keys that would only ever *weaken* the sandbox in a way profiles must not contro
 Three properties together make "a profile can never tighten the sandbox" a *structural* fact rather than a review convention:
 
 1. **The base is empty, and the emitter has no removal operation.** `snug`'s bwrap emitter can produce `--bind`, `--ro-bind`, `--dev-bind`, `--tmpfs`, `--symlink`, `--proc`, `--dev`, `--file`, `--ro-bind-data`, `--dir`, `--setenv`. There is no `--mask`, no deny path, no "hide" verb, because nothing needs hiding — **VERIFIED**: `bwrap`'s new root is a fresh, empty tmpfs. With `--ro-bind /usr /usr` and a bind of one project directory, `ls /home/u/projects` lists exactly `work` and nothing else, with no `--tmpfs` anywhere in the command line. Siblings are invisible because they were never mounted.
-2. **The grant language cannot express negation.** TOML keys are `ro`, `rw`, `tmpfs`, `symlink`, `listen_names`, `include`, plus the scalars `network`, `podman`, `git`, `dns`, `mtu` and the `identity`/`environ` blocks. There is no `mask`, no `hide`, no `deny`, no `remove`, no `!`-prefix, no `unset`. This is enforced by strict decoding: an unknown key fails its file, and a run that selects or includes a profile from a file that did not load refuses, so a future key cannot be smuggled in by a config written for a different tool. A profile key never subtracts from a sibling. A narrower capability is a new VALUE of the granting key (`network = "egress"` stays full egress; host-limited egress would be another value), or a grant value that is invalid without its companion (`identity.ssh.agent = "proxy"` needs `identity.ssh.key`; `identity.gh.host` needs `identity.gh.user`). The one displacement is snug's own: a KindData file snug generates (`nss`, `identity`, `dns`) replaces a grant at its guest path, as invariant 1 already states. `TestKeyAbsenceNeverWidens` holds it.
+2. **The grant language cannot express negation.** TOML keys are `ro`, `rw`, `tmpfs`, `symlink`, `listen_names`, `include`, plus the scalars `network`, `podman`, `dns`, `mtu` and the `identity`/`environ` blocks. There is no `mask`, no `hide`, no `deny`, no `remove`, no `!`-prefix, no `unset`. This is enforced by strict decoding: an unknown key fails its file, and a run that selects or includes a profile from a file that did not load refuses, so a future key cannot be smuggled in by a config written for a different tool. A profile key never subtracts from a sibling. A narrower capability is a new VALUE of the granting key (`network = "egress"` stays full egress; host-limited egress would be another value), or a grant value that is invalid without its companion (`identity.ssh.agent = "proxy"` needs `identity.ssh.key`; `identity.gh.host` needs `identity.gh.user`). The one displacement is snug's own: a KindData file snug generates (`nss`, `identity`, `dns`) replaces a grant at its guest path, as invariant 1 already states. `TestKeyAbsenceNeverWidens` holds it.
 3. **Resolution is a join over semilattices.** For any profile sets *A* and *B*, `Resolve(A ∪ B) ⊒ Resolve(A)` and `⊒ Resolve(B)` — the result is above both in the grant lattice. Adding a profile can only move you up.
 
 The one place order matters is *emission*, and emission order is computed from the resolved set by a deterministic sort (§3.2), not from the order profiles were named. So the argv is a pure function of the resolved policy.
@@ -184,9 +184,9 @@ It runs in both directions, and both are load-bearing:
 |---|---|---|
 | `ro {parent}` + `rw {target}` | target is writable inside a read-only parent | `@target-rw` over `@parent-ro`, which is `snug -p @parent-ro <dir>` — the parent is not in the defaults |
 | `rw {target}` + `ro {target}/.git` | `.git` is read-only inside a writable target | the arrangement invariant 2 recommends for "X but not Y" |
-| tmpfs `$HOME` + a file at a path inside it | a file inside a writable ephemeral home | `@git`'s generated `.gitconfig`, `@claude`'s projected `settings.json`, every generated identity file — the generated ones are `KindData` that snug authors; `@claude`'s `ro ~/.claude/skills` and `ro ~/.claude/plugins` are profile-expressed binds at paths inside the same tmpfs |
+| tmpfs `$HOME` + a file at a path inside it | a file inside a writable ephemeral home | `@claude`'s projected `settings.json`, every generated identity file (`.gitconfig` among them) — the generated ones are `KindData` that snug authors; `@claude`'s `ro ~/.claude/skills` and `ro ~/.claude/plugins` are profile-expressed binds at paths inside the same tmpfs |
 
-So the second row — a profile *lowering* effective write access at a strict subpath — is not removable without breaking the third. Forbidding "a deeper grant may not be less permissive" would break `@git`, `@claude` and every pinned identity on the first invocation, because each puts a read-only node at a path inside a writable tmpfs.
+So the second row — a profile *lowering* effective write access at a strict subpath — is not removable without breaking the third. Forbidding "a deeper grant may not be less permissive" would break `@claude` and every pinned identity on the first invocation, because each puts a read-only node at a path inside a writable tmpfs.
 
 **What is and is not conceded by writing this down.** It is a subtraction verb with a spelling (`ro = ["{target}/.git"]` inside a writable target), and §2.5 deleted `--read-only` and `Clamp` precisely so no exception would exist. But the two are not the same act: the clamp moved *the whole policy* down the lattice after resolution, while this is one grant being *more specific* than another. Nothing becomes invisible; the path is still there, still readable, and `rejectMasking` still refuses anything that would hide content (§3.4). A profile that only lowers write access at a path it names is a **nuisance, not an escalation** — and unlike the clamp, it is visible: it is a line in `--dry-run`'s FILESYSTEM block with a profile name next to it, and `--dry-run`'s headline annotation walks the same deepest-mount rule so it cannot report `(writable)` over a demoted subtree, nor `(read-only)` over a writable one.
 
@@ -325,7 +325,7 @@ A grant *inside* another grant is only masking if the outer mount **has content 
 | `KindData` | **no** | a grant beneath a regular file is meaningless |
 | anything | **yes** if the inner is `snug`'s own authored replacement | RULE 3, below |
 
-The `KindTmpfs` row is not a convenience: every shipped profile that puts a file into the ephemeral `$HOME` puts it inside `@home`'s tmpfs — `@git`'s `.gitconfig`, `@claude`'s `settings.json`, every generated identity file — so treating a tmpfs as maskable breaks three profiles on the first invocation.
+The `KindTmpfs` row is not a convenience: every shipped profile that puts a file into the ephemeral `$HOME` puts it inside `@home`'s tmpfs — `@claude`'s `settings.json`, every generated identity file — so treating a tmpfs as maskable breaks every such profile on the first invocation.
 
 Only the **nearest** covering mount is consulted. It is the one that actually supplies content at that path, and anything further up was already judged when it was itself the inner mount, because the walk is depth-ascending.
 
@@ -333,7 +333,7 @@ Only the **nearest** covering mount is consulted. It is the one that actually su
 
 `Mount.Authored` marks a mount `snug` wrote itself rather than one a profile granted, and `rejectMasking` exempts on it. There are three production writers — `Policy.Replace`, `Policy.Graft` (which writes `p.Grafts`, judged separately by `checkGraft`) and `yieldTo` (which installs `/proc`, `/dev` and `/tmp` only when the guest is unclaimed) — so a profile can express none of them (`internal/policy/validate.go`).
 
-This is the distinction the whole masking rule turns on, restated: **a profile mounting over another profile's grant is masking and is refused; `snug` replacing a path with its own generated content is replacement and is allowed** — the sandbox still sees a node there, just a truthful one, and `Replace` records what it displaced (`identity:work+replaces:@git`) so `--dry-run` says so.
+This is the distinction the whole masking rule turns on, restated: **a profile mounting over another profile's grant is masking and is refused; `snug` replacing a path with its own generated content is replacement and is allowed** — the sandbox still sees a node there, just a truthful one, and `Replace` records what it displaced (`identity:work+replaces:prefs`, an identity's `.gitconfig` over a profile that granted one) so `--dry-run` says so.
 
 ---
 

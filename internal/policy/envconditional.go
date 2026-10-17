@@ -26,10 +26,9 @@ import (
 // selection where snug also fills it is refused, naming both claimants, exactly
 // as two profiles `set`ting one scalar to two values are.
 //
-// THE PREDICATE READS THE SELECTION, NEVER THE WRITE. Two writers are
-// conditional on more than their key: GIT_CONFIG_GLOBAL is not written when
-// `git = "extract"` finds an empty host git config, and GH_CONFIG_DIR/GH_HOST
-// are not written on a dry run that minted no token. A rule reading "refuse if
+// THE PREDICATE READS THE SELECTION, NEVER THE WRITE. A writer can be
+// conditional on more than its key: GH_CONFIG_DIR/GH_HOST are not written on a
+// dry run that minted no token. A rule reading "refuse if
 // snug authored it" would pass a profile on one host and refuse it on another
 // (§4.4), and let --dry-run admit a selection the run refuses. So `on` is a
 // predicate over resolved Policy fields that no host fact decides, and
@@ -94,18 +93,10 @@ var conditionalEnvs = []conditionalEnv{
 		writes:   "points gh at the config it generates for that one account",
 	},
 	{
-		names: []string{"GIT_CONFIG_GLOBAL"},
-		key: func(prof *Profile) string {
-			if prof.Identity != nil {
-				return "identity"
-			}
-			return `git = "extract"`
-		},
-		on: func(p *Policy) bool { return p.Git == GitExtract || p.Identity != nil },
-		by: func(prof *Profile) bool {
-			m, err := ParseGitMode(prof.Git)
-			return prof.Identity != nil || (err == nil && m == GitExtract)
-		},
+		names:  []string{"GIT_CONFIG_GLOBAL"},
+		key:    func(*Profile) string { return "identity" },
+		on:     func(p *Policy) bool { return p.Identity != nil },
+		by:     func(prof *Profile) bool { return prof.Identity != nil },
 		writes: "points git at the ~/.gitconfig it generates",
 	},
 	{

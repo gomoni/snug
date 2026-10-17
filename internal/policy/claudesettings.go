@@ -26,8 +26,8 @@ import (
 //
 // So: read the host's file as data, keep an ALLOWLIST of scalar keys that carry
 // no execution, and WRITE the file the sandbox sees. Deny-by-default applied to
-// configuration keys instead of paths — the same rule GitKeyWhitelist states for
-// ~/.gitconfig, in gitextract.go.
+// configuration keys instead of paths — the same rule SSHKeyWhitelist states for
+// the system ssh_config.
 
 // ClaudeSettingKind is the JSON kind an allowlisted value must decode to.
 //
@@ -62,10 +62,8 @@ const (
 //
 // Check is nil for ClaudeBool and ClaudeNumber. Neither kind has room to carry a
 // path, a URL or a directive: a bool is one bit and a number is a magnitude, so
-// there is nothing R-VALUE needs to weigh (git's own whitelist makes the same
-// distinction implicitly — `init.defaultbranch` gets no charset check beyond the
-// shared control-character sweep, because a value that can only ever be "true"
-// or "false" has no other shape to refuse).
+// there is nothing R-VALUE needs to weigh (a value that can only ever be "true" or
+// "false" has no other shape to refuse).
 type ClaudeSettingKey struct {
 	Name  string
 	Kind  ClaudeSettingKind
@@ -459,7 +457,7 @@ var ClaudeExecutingKeys = map[string]string{
 
 // stringRefusalReason is R-VALUE items 1 and 2 — no control character, and a
 // length cap — but returning WHY rather than a bool. Mirrors
-// policy.withoutControlCharacters (gitextract.go): the same rule, applied to
+// policy.withoutControlCharacters (gitconfig.go): the same rule, applied to
 // the same class of value, in a different container format. No allowlisted
 // string (a model alias, a theme name, an editor mode) has any use for a
 // control character or for a quarter of a kilobyte, so there is nothing to
@@ -709,7 +707,7 @@ type ClaudeSettings map[string]any
 //
 // R-VALUE is enforced AGAIN here, not only in FilterClaudeSettings, for the
 // same reason GitConfigFrom re-checks control characters even though the
-// extractor already dropped them (gitextract.go, internal/cli/gitconfig.go): the
+// identity block was validated at load (gitconfig.go): the
 // renderer is the LAST place a bad value can be caught, and the next caller of
 // this package — a test fixture building a ClaudeSettings by hand, an adapter
 // not written yet — has not gone through FilterClaudeSettings and cannot be

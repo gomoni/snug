@@ -250,13 +250,6 @@ type Context struct {
 	// caller. Resolve keeps only the routable ones; see NetPolicy.ResolvConf.
 	HostNameservers []string
 
-	// HostGit is the whitelisted subset of the host's RESOLVED git config,
-	// extracted by the caller because reading files is not the resolver's job.
-	// Only keys in GitKeyWhitelist ever appear here; nothing in it names a
-	// program, a file or a credential. Empty unless a profile asks for
-	// `git = "extract"`.
-	HostGit GitValues
-
 	// HostSSHConfigs are the system-wide ssh_config paths this host's ssh
 	// actually reads, discovered by the caller by asking ssh itself
 	// (`ssh -G -v`, whose debug output names every file in the chain) rather
@@ -267,14 +260,14 @@ type Context struct {
 	// (issue #42).
 	//
 	// Reading it is impure — it runs a host binary — so it lives here for the
-	// same reason HostGit and HostShims do, and Resolve stays a pure function
+	// same reason HostShims does, and Resolve stays a pure function
 	// of its inputs.
 	//
 	// Every entry is re-checked by systemSSHConfigCandidates before it can
 	// author anything: absolute, clean, named ssh_config, and not under Home.
 	// The caller filters too. That is deliberate belt-and-braces, exactly as
-	// GitConfigFrom re-drops control characters the extractor already dropped
-	// — this is the last place a path from a host file can be stopped before
+	// the SSH config renderer re-drops control characters the extractor already
+	// dropped — this is the last place a path from a host file can be stopped before
 	// it becomes a mount.
 	HostSSHConfigs []string
 

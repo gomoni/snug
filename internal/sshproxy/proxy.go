@@ -411,8 +411,8 @@ func (p *Proxy) handleSign(c net.Conn, msg []byte) {
 		// destination-constrained key (ssh-add -h) reads as `Permission denied
 		// (publickey)` inside, with the cause on the other side of a boundary
 		// the sandbox cannot see; for a signing key git says `agent refused
-		// operation?`, which gitextract.go's own comment describes as reading
-		// like a host keyring fault. snug had the answer in reply[0] and did
+		// operation?`, which GitConfigFrom's doc comment (gitconfig.go) describes
+		// as reading like a host keyring fault. snug had the answer in reply[0] and did
 		// not say it. Only MustSign keys are proven signable at startup; this
 		// is the line for the others.
 		p.audit("upstream agent refused to sign with " + field +

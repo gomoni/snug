@@ -185,6 +185,13 @@ with the tests passing:
   process inside the sandbox can use this to ___". It goes in the profile TOML as
   a comment. If you cannot write it, the grant is not ready.
 
+- **A profile is not a config file for the programs inside.** It grants paths,
+  network, environment and an identity pin — never per-program settings. A
+  setting a program wants is a stub the human writes and grants read-only
+  (`ro = ["<stub>:<guest>"]`); `identity.git` has no `default_branch` and gets
+  none. Every convenience key is precedent for the next, and the core is
+  complicated enough. `.claude/design/INDEX.md` §0, consequence 4.
+
 - **A CLI flag is not a bound. Never answer "this grant is too wide" with one.**
   A capability whose entire safety is a flag is a capability that will be used:
   people find flags, and agents find them faster, because a flag is documented,

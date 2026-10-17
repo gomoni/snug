@@ -13,7 +13,7 @@ import (
 //
 // allowedSignersLine renders the ONE line snug authors; startSSHIdentity is
 // what mounts it. These tests stay in internal/cli because both functions do:
-// internal/policy's gitextract_test.go already covers the [gpg "ssh"] directive
+// internal/policy's gitconfig_test.go already covers the [gpg "ssh"] directive
 // GitConfigFrom points at this file with.
 
 // TestAllowedSignersLine is a table over the line format `PRINCIPAL

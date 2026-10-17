@@ -39,8 +39,10 @@ command. It is a **command table** — `hooks`, `apiKeyHelper`, `statusLine`,
 lesser-known siblings all name a program to run, a credential to print, or code
 to fetch — so snug reads the host's file as data, keeps an **allowlist** of
 scalar keys that carry no execution, and **writes the file the sandbox sees**.
-It is `@git` one tool over, with two differences that matter: there is no
-`GIT_CONFIG_GLOBAL` equivalent, so snug authors the file at its canonical path
+It is [`GENERATED-CONFIG.md`](GENERATED-CONFIG.md)'s rule applied to a file
+whose values only the host holds — git's is authored from an identity pin, this
+one has no pin to author from — with two differences from git that matter: there
+is no `GIT_CONFIG_GLOBAL` equivalent, so snug authors the file at its canonical path
 rather than pointing the tool elsewhere; and the container is JSON, which closes
 git's value-injection route by construction and opens a different one.
 
@@ -863,7 +865,7 @@ carried string, in order:
    value reaches `--dry-run`'s `CLAUDE` block, which invariant 7 governs — a
    newline or an ESC there forges or erases a row in the artifact a human reads
    to decide whether to trust the sandbox. Mirrors
-   `policy.withoutControlCharacters` (`gitextract.go`) exactly: the same rule, in
+   `policy.withoutControlCharacters` (`gitconfig.go`) exactly: the same rule, in
    a different container format.
 3. **Per-key charset**, which is where R-NOPATH becomes mechanical:
    - `modelName`: `^[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,63}$`. Note the brackets —
@@ -953,8 +955,8 @@ out:     {"theme":"dark"}
 stderr:  (empty)
 ```
 
-That is invariant 5 exactly, it diverges from `GIT-CONFIG.md` §5a's own rule
-("dropped, named on stderr, not escaped"), and it directly contradicted §3.2's
+That is invariant 5 exactly, it diverges from `GENERATED-CONFIG.md` §6a's rule
+(every drop is named), and it directly contradicted §3.2's
 argument that the residual "fails loudly at the first message, which the human
 fixes with `--model`" — the human can only do that if they are **told**. The
 person it protects is the Bedrock/Vertex user whose `model` is an ARN. Found by

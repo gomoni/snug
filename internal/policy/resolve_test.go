@@ -408,12 +408,6 @@ func testRegistry() map[ProfileName]*Profile {
 		// than only by the one test that names it.
 		"dupe-path": {Name: "dupe-path", RO: []string{"/usr/bin"}, Environ: EnvGrants{
 			Merge: map[string][]string{"PATH": {"/usr/bin"}}}},
-		// Two profiles asking for the same git mode, so the commutativity and
-		// idempotence sweeps actually exercise the scalar. Rendering it in canon
-		// asserts nothing unless a fixture sets it — the same trap the canon
-		// comment records for the network scalars.
-		"gitty":     {Name: "gitty", Git: "extract"},
-		"gitty-too": {Name: "gitty-too", Git: "extract"},
 		// A pure composition point with a two-level include chain
 		// (combo -> @target-rw -> @home). The builtin `default` used to be one of
 		// these; it is now the `defaults` SETTING (internal/profile/defaults.go),
@@ -574,11 +568,7 @@ func canon(p *Policy) string {
 	fmt.Fprintf(&b, "net mode=%s dns=%v nameservers=%v mtu=%d\n",
 		p.Net.Mode, p.Net.DNS, p.Net.Nameservers, p.Net.MTU)
 	fmt.Fprintf(&b, "podman %s\n", p.Podman)
-	// Git joins by max like every other scalar, and it was added without this
-	// line — the exact omission this function's own comment warns about, three
-	// scalars later. A commutativity test that does not render a field does not
-	// test it.
-	fmt.Fprintf(&b, "git %s owner=%s\n", p.Git, p.IdentityOwner)
+	fmt.Fprintf(&b, "identity owner=%s\n", p.IdentityOwner)
 	fmt.Fprintf(&b, "topology %s\n", p.Topology)
 	fmt.Fprintf(&b, "identity %+v\n", p.Identity)
 	fmt.Fprintf(&b, "profiles %v\n", p.Profiles)
@@ -591,7 +581,7 @@ func canon(p *Policy) string {
 // changes what the sandbox grants, and "profiles only relax" becomes unprovable.
 func TestResolveIsCommutative(t *testing.T) {
 	all := []ProfileName{"@sys", "@home", "@target-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
-		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path", "gitty", "gitty-too",
+		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path",
 		"gems-a", "gems-b", "toolroot"}
 	want := canon(mustResolve(t, all...))
 
@@ -732,7 +722,6 @@ func maximalProfile() *Profile {
 		NSS:         true,
 		Podman:      "socket",
 		Login:       []string{"claude"},
-		Git:         "extract",
 		Identity: &Identity{
 			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
@@ -778,7 +767,6 @@ func keyDrops() []keyDrop {
 		{"nss", "NSS", func(p *Profile) { p.NSS = false }},
 		{"podman", "Podman", func(p *Profile) { p.Podman = "" }},
 		{"login", "Login", func(p *Profile) { p.Login = nil }},
-		{"git", "Git", func(p *Profile) { p.Git = "" }},
 		{"identity.ssh.host", "Identity.SSH.Host", func(p *Profile) { p.Identity.SSH.Host = "" }},
 		{"identity.ssh.key", "Identity.SSH.Key", func(p *Profile) { p.Identity.SSH.Key = "" }},
 		{"identity.ssh.agent", "Identity.SSH.Agent", func(p *Profile) { p.Identity.SSH.Agent = "" }},
@@ -941,9 +929,6 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 				}
 				if got.Login.Join(full.Login) != full.Login {
 					t.Errorf("dropping %s added login providers: %s to %s", d.key, full.Login, got.Login)
-				}
-				if got.Git.Join(full.Git) != full.Git {
-					t.Errorf("dropping %s raised git from %s to %s", d.key, full.Git, got.Git)
 				}
 				if got.Topology.Netns > full.Topology.Netns || got.Topology.Subuid > full.Topology.Subuid {
 					t.Errorf("dropping %s raised the topology from %s to %s", d.key, full.Topology, got.Topology)
@@ -1737,48 +1722,9 @@ func TestRetiredCwdRwNamesTargetRw(t *testing.T) {
 	}
 }
 
-// @git-ro was renamed to @git (#578). The suffix asserted a read-only bind and
-// the profile has none: it is `git = "extract"`, which generates ~/.gitconfig
-// from three whitelisted host keys. The old name is in README examples and in
-// user config files, so it has to name the new spelling rather than read as a
-// typo.
-func TestRetiredGitRoNamesGit(t *testing.T) {
-	_, err := Resolve(testRegistry(), append(append([]ProfileName{}, testDefaults...), "@git-ro"), testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("-p @git-ro was accepted; the profile is @git now")
-	}
-	if !strings.Contains(err.Error(), "@git") {
-		t.Errorf("the error should name the new spelling, got: %v", err)
-	}
-
-	err = UnknownProfile(testRegistry(), "@git-ro")
-	if err == nil || !strings.Contains(err.Error(), "@git") {
-		t.Errorf("UnknownProfile(@git-ro), the route `snug profile show @git-ro` takes, "+
-			"should name @git, got: %v", err)
-	}
-
-	// The message has to say the -ro was the wrong part, not just that the name
-	// moved: a reader who wanted a read-only bind of ~/.gitconfig is not getting
-	// one under the new name either, and nothing else tells them.
-	if !strings.Contains(err.Error(), "binds nothing") {
-		t.Errorf("the retirement notice should say the profile binds nothing, got: %v", err)
-	}
-
-	// CONTROL, same shape as the @cwd-rw and @null ones: `git-ro` is a legal name
-	// for a profile a USER defines, and the retired table must not preempt it.
-	reg := testRegistry()
-	reg["git-ro"] = &Profile{Name: "git-ro"}
-	if err := UnknownProfile(reg, "git-ro"); err == nil {
-		t.Error("a user's own git-ro resolved through UnknownProfile, which only " +
-			"runs on a miss — fixture wrong")
-	} else if strings.Contains(err.Error(), "binds nothing") {
-		t.Errorf("a user's OWN git-ro was answered with snug's retirement notice: %v", err)
-	}
-}
-
 // @tmp-shared allocated a per-project host directory under os.TempDir() and
 // bound it as the sandbox's /tmp (issue #399). It was removed with no
-// replacement — unlike @cwd-rw and @git-ro, there is no new name to point
+// replacement — unlike @cwd-rw, there is no new name to point
 // at — and until this test it was missing from retiredProfiles entirely, so
 // `-p @tmp-shared` fell through to the generic "unknown profile" while its
 // own variable, {host_tmpdir}, got a full retirement notice naming
@@ -1862,9 +1808,7 @@ func TestUnknownProfileSuggestsTheMarkedSpelling(t *testing.T) {
 // test that draft would have failed.
 //
 // No shipped profile is an example of this rule, and the comment may not claim
-// one is: @git binds nothing (it extracts and generates —
-// .claude/design/GIT-CONFIG.md), and @claude's remaining grants under $HOME are
-// directories, not files. The fixture below still uses a {home}/.gitconfig-shaped
+// one is: @claude's remaining grants under $HOME are directories, not files. The fixture below still uses a {home}/.gitconfig-shaped
 // guest path because the SHAPE is what RULE 2 is about.
 func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
 	reg := testRegistry()
@@ -1872,8 +1816,8 @@ func TestNestedBindInsideHomeTmpfsIsAllowed(t *testing.T) {
 
 	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "id-file"}, testCtx(), newFakeEnv())
 	if err != nil {
-		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @git and @claude depend on "+
-			"it for every identity and credential file they expose: %v", err)
+		t.Fatalf("a bind INSIDE @home's tmpfs must stay legal — @claude depends on "+
+			"it for every identity and credential file it exposes: %v", err)
 	}
 	m, ok := p.Mounts["/home/u/.gitconfig"]
 	if !ok || m.Kind != KindBind || m.Host != "/opt" {

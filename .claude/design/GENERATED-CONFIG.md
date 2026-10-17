@@ -1,7 +1,7 @@
 # Generating a tool's configuration inside the sandbox
 
 **Status: the rule.** Several files are generated under it today, four with a
-design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`@git`,
+design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`[identity.git]`,
 `~/.gitconfig`), [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
 `~/.claude/settings.json`), [`STORAGE-CONF.md`](STORAGE-CONF.md) and
 [`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) (the container engine's
@@ -21,9 +21,11 @@ enforcement posture and generating a permissive file over it would be snug
 deciding that verification does not apply here. Where it cannot reproduce, it
 refuses the run — a drop would be the silent downgrade.
 
-`npm`, `cargo`, `docker` and `pip` are queued
-behind them in CLAUDE.md's "Generate, don't bind" bullet. This document is what
-the next adapter starts from, so it does not rediscover any of this. The
+A generator is built only where snug itself holds the values — an identity
+pin, its own engine — or where a tool's host file must be read as data because
+nothing else knows them (`@claude`). A setting a human merely wants inside is a
+stub they write and grant read-only, not an adapter ([`INDEX.md`](INDEX.md) §0,
+consequence 4). This document is what the next adapter starts from, so it does not rediscover any of this. The
 measurements stay in the instance documents and are cited here; what is here is
 only what generalises.
 
@@ -76,12 +78,10 @@ the next `git config --global` writes one. So the question is never "does my
 file contain something dangerous", it is "**what can a key in this format make
 the tool DO**".
 
-Both profiles got the abuse sentence wrong in the same direction before they got
-it right. `@git`'s said *"any secrets you unwisely put in `~/.gitconfig`"* —
-the wrong noun (secrets, not commands) and the wrong owner (the user's
-carelessness, not the file's purpose). It was written once, at authoring time,
-was honest when written, and nothing re-read it as `GIT_CONFIG_GLOBAL`, identity
-pinning and credential staging grew around it. **A comment cannot fail**, which
+An abuse sentence gets this wrong in a predictable direction: *"any secrets you
+unwisely put in `~/.gitconfig`"* has the wrong noun (secrets, not commands) and
+the wrong owner (the user's carelessness, not the file's purpose), and is honest
+when written. **A comment cannot fail**, which
 is why the check is now mechanical:
 `TestNoBuiltinGrantsACredentialOrCommandTablePath` (`internal/profile`) refuses
 this class of path in any BUILTIN, with no allowlist and no flag. When a grant
@@ -142,7 +142,7 @@ the same file is ten rows.
 
 ### 2.4 It is the same rule the rest of snug is built from
 
-`policy.GitKeyWhitelist` is three keys. TOML parsing uses
+`policy.ClaudeSettingAllowlist` is a list of named keys. TOML parsing uses
 `DisallowUnknownFields()`, so an unknown key is a fatal parse error rather than
 a carried one. Invariant 2 is deny-by-default over **paths**; this is
 deny-by-default over **configuration keys**. A denylist here would be the one
@@ -171,9 +171,9 @@ applies again.
 
 ## 3. The value channel is per-container — and reconstruct, never edit
 
-**A whitelist of KEYS is half a rule.** The red team defeated the first version
-of `@git` through values, not keys, and it defeated the whole design rather
-than a corner of it.
+**A whitelist of KEYS is half a rule.** The red team defeated an earlier git
+config generator through values, not keys, and it defeated the whole design
+rather than a corner of it.
 
 ### 3.1 INI: the grammar is the hazard
 
@@ -191,10 +191,11 @@ worked as the carrier. The property that made it work is INI's: **the value's
 terminator is a byte that can legally appear in a value, and section structure
 is expressed by those same bytes.**
 
-The guard there is a **scan**: extracted values that carry a control character
-are dropped, named on stderr, and **not escaped** — escaping into git's
-`"…\n…"` form is one more quoting rule to get subtly wrong, and no name, email
-address or branch needs a control character (`GIT-CONFIG.md` §5a).
+The guard there is a **scan**, not an escape: a control character in an
+identity value is refused at load, naming the field, and the renderer drops it
+again as a backstop — escaping into git's `"…\n…"` form is one more quoting
+rule to get subtly wrong, and no name or email address needs a control
+character (`GIT-CONFIG.md` §5a).
 
 ### 3.2 JSON: the encoder is the guard, and that is a different reason
 
@@ -302,11 +303,10 @@ that can spell `bypassPermissions`.
 > and `{target}` is the untrusted material. **A path in a file snug generates is
 > authored by snug from the resolved policy, or it is not there.**
 
-This rule is new with the Claude adapter and neither older document has it,
-because git's three-key whitelist happens to carry no path — an accident of that
-whitelist's size, not a property of git. The one path in a generated
-`~/.gitconfig` is `safe.directory = *`, and snug writes it itself, from its own
-knowledge that the bind's owner and the sandbox uid differ.
+git's generated file shows the rule from the authoring side: every path in it —
+`user.signingkey`, `gpg.ssh.allowedSignersFile`, `safe.directory = *` — is one
+snug wrote from its own staging and its own knowledge that the bind's owner and
+the sandbox uid differ. None is carried.
 
 The sharp instance is `autoMemoryDirectory`: it names a directory Claude Code
 both **reads memory from and writes memory to**. Pointed at anything inside the
@@ -341,10 +341,10 @@ what happens?** Three answers, and only the first two can ever be carried:
 The worked instances, one per adapter:
 
 - **`commit.gpgsign = true`** with a signing key that is not inside makes
-  **every commit fail** — worse than an unsigned commit. The whitelist
-  deliberately omits `user.signingkey`, `gpg.format`, `commit.gpgsign` and
-  `tag.gpgsign` for that reason, and grows again only when signing has a design
-  (issue #453).
+  **every commit fail** — worse than an unsigned commit. So snug never carries
+  a signing key; it authors `user.signingkey`, `gpg.format` and
+  `commit.gpgsign` only from `identity.git.signing_key`, after the host agent
+  has signed once with that key (`GIT-CONFIG.md` §5).
 - **`apiKeyHelper`** is `credential.helper` one tool over, and it fails in
   *both* directions. A helper that resolves inside substitutes a credential; one
   that does not resolve leaves the sandbox with "Your apiKeyHelper script is
@@ -382,15 +382,9 @@ them:
 
 ## 6a. Every drop is named — a refusal the human is not told about is a silent downgrade
 
-Invariant 5 has no adapter-shaped exception. This project has now had to learn
-it twice on the same kind of code, so it is a section rather than a sentence.
+Invariant 5 has no adapter-shaped exception, and it was missed in code that was
+written, tested and green.
 
-**First time, git.** A value carrying a control character is dropped, **named on
-stderr**, not escaped; `includeIf "hasconfig:"` and `"onbranch:"` are ignored
-and **named**, because silence would leave a human whose config uses them
-wondering why the sandbox commits under a different identity from the host.
-
-**Second time, Claude Code, in code that was written, tested and green.**
 `FilterClaudeSettings` originally returned two values — the carried set, and the
 dropped keys that were in the catalogue. An **allowlisted** key whose value
 failed its charset or type check was dropped with **nothing on any screen**.
@@ -460,8 +454,7 @@ two kinds that must never be confused:
 The best case, and it buys more than tidiness. `GIT_CONFIG_GLOBAL` replaces
 **both** files git merges for global scope (`~/.gitconfig` *and*
 `$XDG_CONFIG_HOME/git/config`, measured both directions) — generating one of the
-two was not enough. It also stops a conditional include in the host's file from
-firing *inside* the sandbox.
+two was not enough.
 
 **Count the files the tool reads at that scope before you decide one generated
 file is sufficient.** git: two. Claude Code: one user-scope file, and that was
@@ -492,9 +485,9 @@ again:
   `{home}/.claude/settings.json`, which can only fire on a regression.
 
 The cost of this branch, stated because it is real: **there is no escape
-hatch.** A human who dislikes snug's generated gitconfig can unset
-`GIT_CONFIG_GLOBAL` in their own profile; where the file *is* the path, there is
-no such move. That puts more weight on §9's bound and is a reason to keep the
+hatch.** A human who wants more in git's config than the pin says grants a stub
+at a scope git reads beside the generated file (`GIT-CONFIG.md` §4); where the
+file *is* the path, there is no such scope. That puts more weight on §9's bound and is a reason to keep the
 allowlist small enough that a stale adapter is boring rather than broken.
 
 ---

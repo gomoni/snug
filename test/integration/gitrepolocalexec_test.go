@@ -10,15 +10,14 @@ import (
 // TestGitExecutesRepoLocalConfigWithGeneratedIdentity RE-MEASURES (rather than
 // assumes) that a payload-authored `.git/hooks/pre-push` AND a payload-set
 // `core.fsmonitor` both run inside the sandbox, and both see the identity
-// snug's own extractor generated.
+// snug generated from the [identity] pin.
 //
 // This is git working exactly as designed and is NOT a snug defect — the
 // target directory is granted read-write by @target-rw, and a hook or fsmonitor
 // program living inside it is no different in kind from `make` or `npm
 // install` running arbitrary code there (T3/T4 in the threat model). It is
-// pinned because it rules out argv/value filtering — the whitelist
-// extractGitConfig applies to ~/.gitconfig — as any kind of boundary for a
-// git-touching tool: the repository itself, which snug never filters at all,
+// pinned because it rules out filtering the values of ~/.gitconfig as any kind
+// of boundary for a git-touching tool: the repository itself, which snug never filters at all,
 // can run whatever it likes the moment `git status` or `git push` is invoked
 // against it, with the same git identity every other command in the sandbox
 // has.
@@ -26,14 +25,19 @@ func TestGitExecutesRepoLocalConfigWithGeneratedIdentity(t *testing.T) {
 	requireSandbox(t)
 	budget(t)
 
-	// gitFixture + gitExtractEnv (gitconfig_test.go) build a global config
-	// with a `gitdir:` include that fires only for `matching`, so the email
-	// visible inside the sandbox is snug's GENERATED identity, not something
-	// this test hardcodes into the repo.
-	globalFile, matching, _ := gitFixture(t)
-	env := gitExtractEnv(t, globalFile)
+	// The email visible inside the sandbox is snug's GENERATED identity, not
+	// something this test hardcodes into the repo.
+	matching, _ := target(t)
+	env := writeProfile(t, "[profile.pinned]\n"+
+		"description = \"git identity pin\"\n"+
+		"[profile.pinned.identity.ssh]\n"+
+		"agent = \"none\"\n"+
+		"[profile.pinned.identity.git]\n"+
+		"name = \"Pinned Name\"\n"+
+		"email = \"included@example.invalid\"\n")
 
 	script := `
+git init -q
 mkdir -p .git/hooks
 cat > .git/hooks/pre-push <<'HOOK'
 #!/bin/sh
@@ -59,11 +63,11 @@ git status >/dev/null 2>&1
 echo "FSM-MARKER: $(cat fsm-marker 2>&1)"
 git push -q ./remote.git HEAD:refs/heads/main
 `
-	r := runEnv(t, env, []string{"-p", "gitex"}, matching, script).mustRun(t)
+	r := runEnv(t, env, []string{"-p", "pinned"}, matching, script).mustRun(t)
 
 	// POSITIVE CONTROL: the generated identity really is what git sees inside
-	// the sandbox at all — the whitelist extraction worked and the gitdir
-	// condition fired. Without this, "the hook saw the generated email" would
+	// the sandbox at all — the pinned identity was generated into
+	// ~/.gitconfig. Without this, "the hook saw the generated email" would
 	// be equally true of a sandbox with no git identity and an empty
 	// substitution.
 	if !strings.Contains(r.out, "email=included@example.invalid") {

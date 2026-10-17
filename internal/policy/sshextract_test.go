@@ -147,7 +147,7 @@ func TestCarriedSSHKeysMatchesTheFile(t *testing.T) {
 //
 // The generated file's own prose names ProxyCommand, Match exec and Include to
 // explain why they are absent, so a test that grepped the bytes would fail on
-// the file's documentation — the trap gitextract_test.go's helper records
+// the file's documentation — the trap gitconfig_test.go's helper records
 // having sprung three times.
 func directiveLines(file string) []string {
 	var out []string

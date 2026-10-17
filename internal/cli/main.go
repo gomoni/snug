@@ -564,9 +564,9 @@ func run(cfg config) int {
 	}
 
 	// -p ADDS to the `defaults` setting rather than replacing it. `snug -p
-	// @git` means "the usual sandbox, plus my git config" — which is both what
+	// @claude` means "the usual sandbox, plus Claude Code" — which is both what
 	// the flag's help text says and the only reading consistent with the model,
-	// where naming a profile can never take anything away. (`snug -p @git`
+	// where naming a profile can never take anything away. (`snug -p @claude`
 	// once replaced the selection instead, producing a sandbox with no /usr that
 	// could not execute anything.) --no-defaults is how you start from nothing.
 	selected, _ := defaultProfiles()
@@ -636,14 +636,6 @@ func run(cfg config) int {
 		command = []string{shell}
 	}
 
-	// Reading the host's git config can fail in ways that must not be silent —
-	// no git installed, a file git refuses to parse — so it happens here, where
-	// the error can still be reported, rather than inside the pure resolver.
-	hostGit, err := hostGitValues(reg, selected, home, abs, notes, cfg.startsNothing())
-	if err != nil {
-		return refuse(cfg, exitPolicy, err)
-	}
-
 	sshConfigs, sshValues := probeSSHConfig(home, notes)
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
@@ -663,7 +655,6 @@ func run(cfg config) int {
 		HostPasswdHome:  pwHome,
 		HostUserName:    name,
 		HostGroupName:   gname,
-		HostGit:         hostGit,
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and
 		// why the fixed list is still the floor (issues #42, #43).

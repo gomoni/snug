@@ -108,36 +108,6 @@ func TestConditionalEnvInheritRefusedWhetherOrNotTheHostHasIt(t *testing.T) {
 	}
 }
 
-// Selection-keyed, not write-keyed: `git = "extract"` on a host with an empty
-// git config writes no GIT_CONFIG_GLOBAL, and a profile's GIT_CONFIG_GLOBAL is
-// refused all the same.
-func TestConditionalEnvGitExtractRefusedEvenWhenSnugWritesNothing(t *testing.T) {
-	reg := testRegistry()
-	reg["gitex"] = &Profile{Name: "gitex", Git: "extract"}
-	sel := []ProfileName{"@sys", "@target-rw", "gitex"}
-
-	// CONTROL: this host really makes snug write nothing.
-	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := p.Env["GIT_CONFIG_GLOBAL"]; ok {
-		t.Fatal("control: snug wrote GIT_CONFIG_GLOBAL with an empty host git config; " +
-			"this test no longer covers the write-less case")
-	}
-
-	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
-		Set: map[string]string{"GIT_CONFIG_GLOBAL": "{target}/gitconfig"}}}
-	_, err = Resolve(reg, append(sel, "ptr"), testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("GIT_CONFIG_GLOBAL beside git = \"extract\" resolved because this host's git " +
-			"config is empty; on a host with one the same selection is refused")
-	}
-	if !strings.Contains(err.Error(), `gitex sets git = "extract"`) {
-		t.Errorf("refusal does not name the key that made snug the author: %v", err)
-	}
-}
-
 // LISTEN_FDS is authored INSIDE Resolve, before the profile bands are applied,
 // so this is the case where a missing check would carry the profile's entry
 // beside snug's and use snug's.
