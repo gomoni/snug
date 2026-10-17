@@ -187,14 +187,6 @@ func (m Model) value(id suggest.RowID) string {
 		return safe.Inline(m.sel.Text[id])
 	}
 	r := m.sel.Rows[id]
-	if !r.Sure {
-		switch m.sel.Pick[id] {
-		case r.Cand:
-			return "● " + r.Choices[r.Cand].Label
-		case r.Suggested:
-			return "○ " + r.Choices[r.Cand].Label
-		}
-	}
 	return r.Choices[m.sel.Pick[id]].Label
 }
 
@@ -210,6 +202,10 @@ func (m Model) reason(id suggest.RowID, refused, notes map[suggest.RowID]string,
 		why := m.choice(id).Why
 		if id == suggest.Name || id == suggest.Desc {
 			why = m.sel.Rows[id].Choices[0].Why
+		}
+		if r := m.sel.Rows[id]; !r.Sure && m.sel.Pick[id] == r.Suggested {
+			// An unsure row sits at off; the reason names what space turns on.
+			why = "○ " + r.Choices[r.Cand].Label + "? " + why
 		}
 		if detail != "" {
 			why = detail
@@ -227,21 +223,14 @@ func (m Model) reason(id suggest.RowID, refused, notes map[suggest.RowID]string,
 	return clip(head, room-utf8.RuneCountInString(suffix)) + suffix
 }
 
-// word names what a changed row now says: on or off for a row with an off
-// choice, "changed" otherwise.
+// word names what a changed row now says: "off" when it sits at the off
+// choice, "changed" otherwise; the value column already shows which choice.
 func (m Model) word(id suggest.RowID) string {
 	r := m.sel.Rows[id]
-	hasOff := false
-	for _, c := range r.Choices {
-		hasOff = hasOff || c.Label == suggest.Off
-	}
-	if !hasOff {
-		return "changed"
-	}
-	if r.Choices[m.sel.Pick[id]].Label == suggest.Off {
+	if r.Choices[m.sel.Pick[id]].Label == suggest.Off && id != suggest.Name && id != suggest.Desc {
 		return "off"
 	}
-	return "on"
+	return "changed"
 }
 
 // renderIdentity is the IDENTITY submenu: every choice of the row, the pinned

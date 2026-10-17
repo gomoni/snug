@@ -6,7 +6,7 @@ snug-setup  ~/work/snug-setup
   IDENTITY   vyskocilm                        remote github.com:gomoni/snug
   AGENT      @claude                          CLAUDE.md found
   NETWORK    @net                             @claude, go mod download
-  CONTAINERS ○ @podman-build                  Containerfile
+  CONTAINERS —                                ○ @podman-build? Containerfile
   ENV        GOMODCACHE GOCACHE               go.mod
 
   ! accounts.toml: vyskocilm uses @cwd-rw, renamed @target-rw   f fix

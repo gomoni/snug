@@ -192,14 +192,27 @@ func TestCycleMarksChanged(t *testing.T) {
 	}
 }
 
-func TestUnsureToggleShowsCircle(t *testing.T) {
+func TestContainersCycleSocketBuildNone(t *testing.T) {
 	m := sized(New(config(facts())), 100)
-	m = press(m, "j", "j", "j", "j", "j", "j", "space", "space") // CONTAINERS: socket, build
-	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "● @podman-build") || !strings.Contains(l, "* on") {
-		t.Errorf("%q", l)
+	m = press(m, "j", "j", "j", "j", "j", "j") // CONTAINERS, suggested off with a Containerfile
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "CONTAINERS —") || !strings.Contains(l, "○ @podman-build?") {
+		t.Fatalf("suggested off: %q", l)
+	}
+	for _, want := range []string{"CONTAINERS @podman-socket", "CONTAINERS @podman-build", "CONTAINERS —"} {
+		m = press(m, "space")
+		if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, want) {
+			t.Errorf("after space want %q: %q", want, l)
+		}
+	}
+	if m.anyChanged() {
+		t.Errorf("a full cycle must end at the suggestion")
+	}
+	m = press(m, "space", "space") // build, changed
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "* changed   u revert") {
+		t.Errorf("changed: %q", l)
 	}
 	m = press(m, "u")
-	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "○ @podman-build") {
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "CONTAINERS —") || strings.Contains(l, "*") {
 		t.Errorf("%q", l)
 	}
 }
@@ -624,21 +637,6 @@ func TestIdentityGhWarnings(t *testing.T) {
 	}
 }
 
-func TestContainersCyclesSocketBuildNone(t *testing.T) {
-	m := sized(New(config(facts())), 100)
-	m = press(m, "j", "j", "j", "j", "j", "j") // CONTAINERS
-	want := []string{"@podman-socket", "@podman-build", "○ @podman-build"}
-	for i, w := range want {
-		m = press(m, "space")
-		if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, w) {
-			t.Errorf("space %d: want %q in %q", i+1, w, l)
-		}
-	}
-	if m.anyChanged() {
-		t.Errorf("a full cycle must end at the suggestion")
-	}
-}
-
 func TestContainersWithoutFileStillReachable(t *testing.T) {
 	f := facts()
 	f.Target.Containers = nil
@@ -648,7 +646,7 @@ func TestContainersWithoutFileStillReachable(t *testing.T) {
 		t.Fatalf("%q", l)
 	}
 	m = press(m, "space")
-	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "@podman-socket") || !strings.Contains(l, "* on") {
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "@podman-socket") || !strings.Contains(l, "* changed") {
 		t.Errorf("%q", l)
 	}
 }
