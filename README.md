@@ -740,6 +740,16 @@ second-guess you.
 chose. All holes, all on screen in `--dry-run`, all yours. Unix tool, enough
 rope.
 
+A host already set up against snug. Grants reaching snug's own state (engine
+store, runtime dirs, identity keys) are refused through any spelling the mount
+table shows: bind alias, submount, `/proc/self/root`, distrobox `/run/host`. An
+overlay already on your host with the store as a layer is not seen: `ro`/`rw`
+on the merged dir passes. Nothing inside the sandbox can create one.
+
+A peer run with a different `$XDG_RUNTIME_DIR` or `$TMPDIR`. Its per-run dirs
+sit where this run never looks, so a grant covering them is not refused.
+`--dry-run` says so.
+
 What snug does not offer is a command-line flag that hands over everything at
 once. A capability whose only bound is a flag is one that gets used — the flag is
 documented, greppable, and named in the error telling you what to type — so every

@@ -144,6 +144,10 @@ func (p *Policy) OwnEngineHostPath(env Environ, path string) error {
 // exact membership — a root recorded unresolved while a graft's Host is
 // resolved fails membership for a reason nobody wrote down (#55, F6 §2d).
 //
+// A writable bind that does not contain the root by name but reaches it
+// through a second mount of the same filesystem is refused too
+// (writableAliasOf), and so is a mount table that cannot be read.
+//
 // "" is a REFUSAL, not a no-op that clears the field, and the returned path is
 // "" on every error — a path beside a non-nil error is a value a careless
 // caller renders as though it had been approved.
@@ -201,6 +205,14 @@ func (p *Policy) JudgeEngineToolchain(env Environ, root string) (string, error) 
 	// unset-env path, is never attempted at all.
 	if err := p.CheckEngineToolchainTree(root); err != nil {
 		return "", err
+	}
+	if m, h, ok, err := p.writableAliasOf(env, root); err != nil {
+		return "", err
+	} else if ok {
+		return "", fmt.Errorf("%s cannot be this run's engine toolchain root: the rw grant %s does not contain it by name, but reaches it through a second mount of the same filesystem.%s\n"+
+			"       The payload writes the tree through that grant, and the engine executes conmon, crun and netavark out of it as uid 0 in this sandbox's user namespace.\n"+
+			"       Fix: drop the rw grant, or put the engine somewhere no mount of an rw grant reaches.",
+			root, VisibleText(m.Host), aliasNote(h))
 	}
 	// Issue #369's second door: this function used to judge the root only
 	// AFTER resolving it, so $SNUG_PODMAN_ROOT=$TARGET/bundle — a symlink the

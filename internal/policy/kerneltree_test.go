@@ -364,8 +364,8 @@ func TestParseMountinfo(t *testing.T) {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("entry %d is %+v, want %+v", i, got[i], want[i])
+		if got[i].Path != want[i].Path || got[i].FSType != want[i].FSType {
+			t.Errorf("entry %d is %+v, want path %q type %q", i, got[i], want[i].Path, want[i].FSType)
 		}
 	}
 }

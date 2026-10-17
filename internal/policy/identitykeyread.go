@@ -23,8 +23,10 @@ import (
 //
 // The paths are known at resolve, so this stays pure, with the same Context
 // fields and Environ the grant scans use. Empty dirs, prefixes and roots
-// disable it, as they do there.
-func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Context, env Environ) error {
+// disable it, as they do there. A path that reaches one of them only through a
+// second mount of the same filesystem (mt, see aliasOverlap) is refused with
+// the same text plus aliasNote; a nil or unusable mt disables that arm only.
+func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Context, env Environ, mt *mountTable) error {
 	grants := []string{path, canonExisting(env, path)}
 
 	dirs := append([]string(nil), ctx.RuntimeDirs...)
@@ -39,6 +41,10 @@ func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Contex
 				}
 			}
 		}
+		if h, ok := mt.aliasOverlap(env, path, dir); ok {
+			return fmt.Errorf("%w%s", identityKeyRefusal(name, key, path, "snug's runtime directory "+VisibleText(dir),
+				"Every concurrent snug run keeps its host-side endpoints there"), aliasNote(h))
+		}
 	}
 
 	prefixes := append([]string(nil), ctx.EngineTmpPrefixes...)
@@ -47,6 +53,10 @@ func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Contex
 		if entry, ok := underNamePrefix(env, grants, prefix); ok {
 			return identityKeyRefusal(name, key, path, "a per-run engine directory "+VisibleText(entry),
 				"It holds another run's podman socket and generated engine configuration")
+		}
+		if entry, h, ok := mt.aliasUnderNamePrefix(env, path, prefix); ok {
+			return fmt.Errorf("%w%s", identityKeyRefusal(name, key, path, "a per-run engine directory "+VisibleText(entry),
+				"It holds another run's podman socket and generated engine configuration"), aliasNote(h))
 		}
 	}
 
@@ -66,6 +76,10 @@ func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Contex
 						"It holds every target's container images and podman's container records")
 				}
 			}
+		}
+		if h, ok := mt.aliasOverlap(env, path, dir); ok {
+			return fmt.Errorf("%w%s", identityKeyRefusal(name, key, path, "snug's engine store "+VisibleText(dir),
+				"It holds every target's container images and podman's container records"), aliasNote(h))
 		}
 	}
 	return nil
