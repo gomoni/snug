@@ -42,7 +42,7 @@ func (m Model) whyLines(width int) []string {
 		}
 	}
 	switch id {
-	case suggest.Name, suggest.Desc, suggest.Tools:
+	case suggest.Name, suggest.Desc:
 	default:
 		var others []string
 		for i, ch := range m.sel.Rows[id].Choices {

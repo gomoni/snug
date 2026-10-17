@@ -17,7 +17,7 @@ const labelW = 11
 var rowName = map[suggest.RowID]string{
 	suggest.Name: "NAME", suggest.Desc: "DESC", suggest.Base: "BASE", suggest.Identity: "IDENTITY",
 	suggest.Agent: "AGENT", suggest.Network: "NETWORK", suggest.Containers: "CONTAINERS",
-	suggest.Tools: "TOOLS", suggest.Env: "ENV",
+	suggest.Env: "ENV",
 }
 
 // View implements tea.Model.
@@ -41,13 +41,17 @@ func (m Model) render() string {
 		return m.viewPager(*m.pg, " q back   j/k pgup/pgdn g/G scroll")
 	}
 
+	if m.idm != nil {
+		return m.renderIdentity(w)
+	}
+
 	var refused map[suggest.RowID]string
 	if m.cfg.Build != nil {
 		_, refused = m.cfg.Build(m.sel)
 	}
 	notes := m.sel.Notes()
 
-	var vals [9]string
+	vals := make([]string, len(m.sel.Rows))
 	valW := 0
 	for _, r := range m.sel.Rows {
 		vals[r.ID] = m.value(r.ID)
@@ -141,7 +145,14 @@ func (m Model) footer(w int) []string {
 	case m.edit != nil:
 		return []string{" enter accept  esc cancel"}
 	}
-	keys := []string{"j/k move", "space cycle", "u revert", "? why", "e edit"}
+	keys := []string{"j/k move", "space cycle"}
+	switch {
+	case m.cursor == int(suggest.Name) || m.cursor == int(suggest.Desc):
+		keys = append(keys, "enter edit text")
+	case m.cursor == int(suggest.Identity):
+		keys = append(keys, "enter open")
+	}
+	keys = append(keys, "u revert", "? why", "e edit")
 	if m.cfg.DryRun != nil {
 		keys = append(keys, "d dry-run")
 	}
@@ -170,16 +181,15 @@ func (m Model) value(id suggest.RowID) string {
 	switch id {
 	case suggest.Name, suggest.Desc:
 		return safe.Inline(m.sel.Text[id])
-	case suggest.Tools:
-		return m.sel.Tools().Label
 	}
 	r := m.sel.Rows[id]
 	if !r.Sure {
-		mark := "○"
-		if m.sel.Pick[id] == 0 {
-			mark = "●"
+		switch m.sel.Pick[id] {
+		case r.Cand:
+			return "● " + r.Choices[r.Cand].Label
+		case r.Suggested:
+			return "○ " + r.Choices[r.Cand].Label
 		}
-		return mark + " " + r.Choices[0].Label
 	}
 	return r.Choices[m.sel.Pick[id]].Label
 }
@@ -228,6 +238,70 @@ func (m Model) word(id suggest.RowID) string {
 		return "off"
 	}
 	return "on"
+}
+
+// renderIdentity is the IDENTITY submenu: every choice of the row, the pinned
+// values of the profile under it, and a window of those lines that keeps the
+// cursor visible.
+func (m Model) renderIdentity(w int) string {
+	r := m.sel.Rows[suggest.Identity]
+	var body []string
+	start := make([]int, len(r.Choices))
+	for i, c := range r.Choices {
+		start[i] = len(body)
+		cur := "  "
+		if m.idm.cursor == i {
+			cur = "▸ "
+		}
+		radio := "( )"
+		if m.sel.Pick[suggest.Identity] == i {
+			radio = "(•)"
+		}
+		head := radio + " " + safe.Inline(c.Label)
+		if i == r.Suggested {
+			head += "   suggested"
+		}
+		body = append(body, m.st("cursor", cur)+clip(head, w-2))
+		for _, l := range m.sel.IdentityDetail(i) {
+			body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
+		}
+		if m.idm.why && m.idm.cursor == i {
+			for _, l := range m.identityWhy(i, w-8) {
+				body = append(body, "      "+m.st("dim", l))
+			}
+		}
+	}
+	foot := []string{" j/k move  space pick  ? why  esc back"}
+	room := m.height - 3 - len(foot)
+	lo := 0
+	if room > 0 && len(body) > room {
+		lo = max(0, min(start[m.idm.cursor], len(body)-room))
+		body = body[lo:min(lo+room, len(body))]
+	}
+	lines := []string{m.st("head", clip("snug-setup  "+safe.Inline(m.cfg.Target)+"  IDENTITY", w)), ""}
+	lines = append(lines, body...)
+	lines = append(lines, "")
+	for _, l := range foot {
+		lines = append(lines, m.st("dim", l))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// identityWhy is the `?` text under choice i of the submenu: why it was
+// suggested, or the facts the row holds for it.
+func (m Model) identityWhy(i, width int) []string {
+	c := m.sel.Rows[suggest.Identity].Choices[i]
+	var out []string
+	if c.Why != "" {
+		out = append(out, wrap(safe.Inline(c.Why), width)...)
+	}
+	for _, f := range c.Facts {
+		out = append(out, wrap(safe.Inline(f), width)...)
+	}
+	if len(out) == 0 {
+		out = append(out, "nothing more to say about this one")
+	}
+	return out
 }
 
 // st styles s unless colour is off. The markers `▸ * ○ ● !` carry the meaning

@@ -181,7 +181,7 @@ func TestUnsureStartsOff(t *testing.T) {
 func TestUnsureContainersNeverOn(t *testing.T) {
 	s := Suggest(ingest.Facts{Target: ingest.TargetFacts{Containers: []string{"Containerfile"}}}, home, "/home/alice/work/app")
 	r := s.Rows[Containers]
-	if r.Sure || r.Choices[0].Label != "@podman-build" || label(s, Containers) != "—" {
+	if r.Sure || r.Choices[r.Cand].Label != "@podman-build" || label(s, Containers) != "—" {
 		t.Errorf("row %+v pick %d", r, s.Pick[Containers])
 	}
 }
@@ -211,24 +211,93 @@ func TestSuggestNeverInventsValues(t *testing.T) {
 	}
 }
 
-func TestToolsFollowIdentity(t *testing.T) {
-	f := ingest.Facts{
-		Profiles: []ingest.Profile{
-			profile("vyskocilm", "github.com", "m@example.org", "gh-cli", "@net"),
-			profile("plainsof", "github.com", "p@example.org"),
+func fullProfile() ingest.Profile {
+	return ingest.Profile{
+		Name: "vyskocilm", File: "accounts.toml", Dir: "/home/alice/.config/snug/profiles.d", Include: []string{"@net", "gh-cli"},
+		Identity: ingest.ProfileIdentity{
+			SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", SigningKey: "{home}/.ssh/github_sign.pub",
+			GitName: "Michal V", Email: "m@example.org", GHUser: "vyskocilm", GHHost: "github.com",
 		},
-		Repo: repoFacts("git@github.com:gomoni/snug.git", "m@example.org"),
+	}
+}
+
+func TestIdentityDetailListsWhatTheProfilePins(t *testing.T) {
+	f := ingest.Facts{
+		Profiles: []ingest.Profile{fullProfile(), profile("plainsof", "github.com", "p@example.org")},
+		SSH:      ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))},
+		Repo:     repoFacts("git@github.com:gomoni/snug.git", "m@example.org"),
 	}
 	s := Suggest(f, home, "/home/alice/work/snug")
-	if c := s.Tools(); c.Label != "gh-cli" || c.Why != "from vyskocilm" || !slices.ContainsFunc(c.Facts, func(l string) bool { return strings.Contains(l, "accounts.toml") }) {
-		t.Errorf("tools %+v", c)
+	i := slices.IndexFunc(s.Rows[Identity].Choices, func(c Choice) bool { return c.Label == "vyskocilm" })
+	got := strings.Join(s.IdentityDetail(i), "\n")
+	want := strings.Join([]string{
+		"ssh   github.com  github_auth",
+		"      ~/.ssh/config  Host github.com  → github_auth",
+		"sign  github_sign",
+		"git   Michal V <m@example.org>",
+		"gh    github.com/vyskocilm",
+		"also includes: gh-cli",
+	}, "\n")
+	if got != want {
+		t.Errorf("detail:\n%s\nwant:\n%s", got, want)
 	}
-	s.Pick[Identity] = slices.IndexFunc(s.Rows[Identity].Choices, func(c Choice) bool { return c.Label == "plainsof" })
-	if c := s.Tools(); c.Label != "—" {
-		t.Errorf("tools after switch %+v", c)
+	if d := s.IdentityDetail(0); len(d) != 1 || !strings.Contains(d[0], "@git") {
+		t.Errorf("none: %q", d)
 	}
-	if s.Changed(Tools) {
-		t.Errorf("Tools is never a change")
+}
+
+func TestIdentityDetailHostTextIsCleaned(t *testing.T) {
+	p := fullProfile()
+	p.Identity.SSHHost = "git\x1b[2Jhub.com"
+	p.Identity.Email = "m@\u202eexample.org"
+	s := Suggest(ingest.Facts{Profiles: []ingest.Profile{p}}, home, "/home/alice/work/snug")
+	for _, l := range s.IdentityDetail(1) {
+		if strings.ContainsAny(l, "\x1b\u202e") {
+			t.Errorf("forging rune in %q", l)
+		}
+	}
+}
+
+func TestToolsRowIsGone(t *testing.T) {
+	s := Suggest(ingest.Facts{Profiles: []ingest.Profile{fullProfile()}}, home, "/home/alice/work/snug")
+	if len(s.Rows) != int(Env)+1 || Env != 7 {
+		t.Errorf("%d rows, Env=%d", len(s.Rows), Env)
+	}
+}
+
+func TestContainersChoicesAndSuggestion(t *testing.T) {
+	cases := []struct {
+		name      string
+		files     []string
+		suggested string
+		cand      string
+		sure      bool
+	}{
+		{"containerfile", []string{"Containerfile"}, Off, "@podman-build", false},
+		{"compose only", []string{"compose.yaml"}, Off, "@podman-socket", false},
+		{"none", nil, Off, "", true},
+	}
+	for _, c := range cases {
+		s := Suggest(ingest.Facts{Target: ingest.TargetFacts{Containers: c.files}}, home, "/home/alice/work/app")
+		r := s.Rows[Containers]
+		var labels []string
+		for _, ch := range r.Choices {
+			labels = append(labels, ch.Label)
+		}
+		if !slices.Equal(labels, []string{"@podman-socket", "@podman-build", Off}) {
+			t.Errorf("%s: choices %v", c.name, labels)
+		}
+		if got := label(s, Containers); got != c.suggested || r.Sure != c.sure {
+			t.Errorf("%s: suggested %q sure=%v", c.name, got, r.Sure)
+		}
+		if !c.sure && r.Choices[r.Cand].Label != c.cand {
+			t.Errorf("%s: candidate %q", c.name, r.Choices[r.Cand].Label)
+		}
+		for i := range r.Choices {
+			if s.WithPick(Containers, i).Changed(Containers) != (i != 2) {
+				t.Errorf("%s: choice %d changed=%v", c.name, i, !(i != 2))
+			}
+		}
 	}
 }
 
@@ -241,7 +310,7 @@ func TestNetworkReasonsListOnlySourcesThatAreOn(t *testing.T) {
 	if got := why(s); got != "@claude, go mod download" {
 		t.Errorf("containers off: %q", got)
 	}
-	on := s.WithPick(Containers, 0)
+	on := s.WithPick(Containers, 1)
 	if got := why(on); got != "@claude, go mod download, container images" {
 		t.Errorf("containers on: %q", got)
 	}

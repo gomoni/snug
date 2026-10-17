@@ -1,0 +1,18 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ( ) none
+        no identity block; @git is added
+▸ (•) vyskocilm   suggested
+        ssh   github.com  github_auth
+              ~/.ssh/config  Host github.com  → github_auth
+        sign  github_sign
+        git   M V <m@example.org>
+        gh    github.com/vyskocilm
+        also includes: gh-cli
+  ( ) plainsof
+        ssh   github.com
+              ~/.ssh/config  Host github.com  → github_auth
+        git   <p@example.org>
+        gh    plainsof
+
+ j/k move  space pick  ? why  esc back

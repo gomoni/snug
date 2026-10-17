@@ -191,7 +191,7 @@ func TestCycleMarksChanged(t *testing.T) {
 
 func TestUnsureToggleShowsCircle(t *testing.T) {
 	m := sized(New(config(facts())), 100)
-	m = press(m, "j", "j", "j", "j", "j", "j", "space") // CONTAINERS
+	m = press(m, "j", "j", "j", "j", "j", "j", "space", "space") // CONTAINERS: socket, build
 	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "● @podman-build") || !strings.Contains(l, "* on") {
 		t.Errorf("%q", l)
 	}
@@ -230,7 +230,7 @@ func TestWhyPanelShowsAbuse(t *testing.T) {
 
 func TestWhyOnWarningShowsSnugsMessage(t *testing.T) {
 	m := sized(New(config(facts(), renameWarning)), 200)
-	for range 9 {
+	for range 8 {
 		m = press(m, "j")
 	}
 	m = press(m, "?")
@@ -274,7 +274,7 @@ func TestQuitDirectWhenUnchanged(t *testing.T) {
 func TestFixOnNonRenameSaysSo(t *testing.T) {
 	var l reviewLog
 	m := sized(New(withLog(config(facts(), otherWarning, renameWarning), &l)), 100)
-	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j", "j") // otherWarning
+	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j") // otherWarning
 	m = press(m, "f")
 	if m.pg != nil || !strings.Contains(screen(m), "no mechanical fix") || len(l.applied) != 0 {
 		t.Errorf("f on a non-rename:\n%s", screen(m))
@@ -284,7 +284,7 @@ func TestFixOnNonRenameSaysSo(t *testing.T) {
 func TestFixIsConfirmedInTheScreen(t *testing.T) {
 	var l reviewLog
 	m := sized(New(withLog(config(facts(), otherWarning, renameWarning), &l)), 100)
-	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j", "j", "j") // renameWarning
+	m = press(m, "j", "j", "j", "j", "j", "j", "j", "j", "j") // renameWarning
 	m = press(m, "f")
 	if !strings.Contains(screen(m), "fixes "+renameWarning.File) || !strings.Contains(screen(m), " y fix") {
 		t.Fatalf("no fix screen:\n%s", screen(m))
@@ -441,7 +441,7 @@ func TestWhyFileIsCleaned(t *testing.T) {
 	w := otherWarning
 	w.File = home + "/.config/snug/profiles.d/a\x1b[2Jb.toml"
 	m := sized(New(config(facts(), w)), 200)
-	for range 9 {
+	for range 8 {
 		m = press(m, "j")
 	}
 	m = press(m, "?")
@@ -450,29 +450,192 @@ func TestWhyFileIsCleaned(t *testing.T) {
 	}
 }
 
-func TestToolsFollowsIdentity(t *testing.T) {
+func toIdentity(m Model) Model { return press(m, "j", "j", "j") }
+
+func TestToolsRowIsGone(t *testing.T) {
 	m := sized(New(config(facts())), 100)
-	if l := lineWith(t, m, "TOOLS"); !strings.Contains(l, "gh-cli") || !strings.Contains(l, "from vyskocilm") {
-		t.Fatalf("%q", l)
-	}
-	m = press(m, "j", "j", "j", "space") // IDENTITY: vyskocilm -> plainsof
-	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "plainsof") {
-		t.Fatalf("%q", l)
-	}
-	l := lineWith(t, m, "TOOLS")
-	if strings.Contains(l, "gh-cli") || strings.Contains(l, "*") {
-		t.Errorf("tools after identity change: %q", l)
+	if strings.Contains(screen(m), "TOOLS") {
+		t.Errorf("TOOLS is on the screen:\n%s", screen(m))
 	}
 }
 
-func TestToolsWhyNamesTheFile(t *testing.T) {
-	m := sized(New(config(facts())), 200)
-	for range 7 {
-		m = press(m, "j")
+func TestEnterNeverCycles(t *testing.T) {
+	m := sized(New(config(facts())), 100)
+	for cursor := 0; cursor < len(m.sel.Rows); cursor++ {
+		m.cursor = cursor
+		next := press(m, "enter")
+		if next.edit != nil || next.idm != nil {
+			next = press(next, "esc")
+		}
+		if next.Outcome().Sel.Pick[suggest.RowID(cursor)] != m.sel.Pick[suggest.RowID(cursor)] || next.anyChanged() {
+			t.Errorf("enter on row %d changed the selection", cursor)
+		}
+	}
+}
+
+func TestEnterOpensOnlyNameDescIdentity(t *testing.T) {
+	m := sized(New(config(facts())), 100)
+	for cursor := 0; cursor < len(m.sel.Rows); cursor++ {
+		m.cursor = cursor
+		next := press(m, "enter")
+		wantEdit := cursor == int(suggest.Name) || cursor == int(suggest.Desc)
+		wantMenu := cursor == int(suggest.Identity)
+		if (next.edit != nil) != wantEdit || (next.idm != nil) != wantMenu {
+			t.Errorf("row %d: edit=%v menu=%v", cursor, next.edit != nil, next.idm != nil)
+		}
+	}
+}
+
+func TestSpaceStillCyclesIdentity(t *testing.T) {
+	m := toIdentity(sized(New(config(facts())), 100))
+	m = press(m, "space")
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "plainsof") {
+		t.Errorf("%q", l)
+	}
+}
+
+func TestIdentitySubmenuGolden(t *testing.T) {
+	f := facts()
+	f.Profiles[0].Identity = ingest.ProfileIdentity{
+		SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", SigningKey: "{home}/.ssh/github_sign.pub",
+		GitName: "M V", Email: "m@example.org", GHUser: "vyskocilm", GHHost: "github.com",
+	}
+	f.SSH = ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))}
+	m := toIdentity(sized(New(config(f)), 100))
+	m = press(m, "enter")
+	golden(t, "identity-menu", screen(m))
+}
+
+func TestIdentitySubmenuPicksAndGoesBack(t *testing.T) {
+	m := toIdentity(sized(New(config(facts())), 100))
+	m = press(m, "enter")
+	if m.idm == nil || m.idm.cursor != 1 {
+		t.Fatalf("menu not opened on the current pick: %+v", m.idm)
+	}
+	m = press(m, "j", "space")
+	if m.Outcome().Sel.Pick[suggest.Identity] != 2 {
+		t.Fatalf("space did not pick: %d", m.Outcome().Sel.Pick[suggest.Identity])
+	}
+	m = press(m, "enter")
+	if m.idm == nil || m.Outcome().Sel.Pick[suggest.Identity] != 2 {
+		t.Errorf("enter must do nothing in the menu")
+	}
+	m = press(m, "esc")
+	if m.idm != nil {
+		t.Fatalf("esc did not go back")
+	}
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "plainsof") || !strings.Contains(l, "* changed") || !strings.Contains(l, "u revert") {
+		t.Errorf("%q", l)
+	}
+	if l := lineWith(t, m, "DESC"); !strings.Contains(l, "plainsof") {
+		t.Errorf("DESC did not follow IDENTITY: %q", l)
+	}
+	m = press(m, "u")
+	if l := lineWith(t, m, "IDENTITY"); strings.Contains(l, "*") || !strings.Contains(l, "vyskocilm") {
+		t.Errorf("u: %q", l)
+	}
+	m = press(m, "enter", "q")
+	if m.idm != nil || m.askQuit {
+		t.Errorf("q in the menu must go back, not quit")
+	}
+}
+
+func TestIdentitySubmenuShowsDetailAndWhy(t *testing.T) {
+	f := facts()
+	f.Profiles[0].Identity = ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", GitName: "M V", Email: "m@example.org", GHUser: "vyskocilm"}
+	f.SSH = ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))}
+	m := toIdentity(sized(New(config(f)), 100))
+	m = press(m, "enter")
+	for _, want := range []string{"none", "vyskocilm   suggested", "ssh   github.com  github_auth", "~/.ssh/config  Host github.com  → github_auth", "git   M V <m@example.org>", "gh    vyskocilm", "also includes: gh-cli", "plainsof"} {
+		if !strings.Contains(screen(m), want) {
+			t.Errorf("no %q in:\n%s", want, screen(m))
+		}
+	}
+	if strings.Contains(screen(m), "it pins the remote") {
+		t.Errorf("why shown before ?")
 	}
 	m = press(m, "?")
-	if !strings.Contains(screen(m), "accounts.toml") {
-		t.Errorf("%s", screen(m))
+	if !strings.Contains(screen(m), "it pins the remote's host") {
+		t.Errorf("? shows no reason:\n%s", screen(m))
+	}
+}
+
+func TestIdentitySubmenuTextIsCleanedAndFits(t *testing.T) {
+	f := facts()
+	f.Profiles[0].Identity.GHUser = "evil\x1b[2J" + strings.Repeat("x", 200)
+	f.Profiles[0].Identity.GitName = "n\u202ex"
+	m := toIdentity(sized(New(config(f)), 60))
+	m = press(m, "enter")
+	if strings.ContainsAny(screen(m), "\x1b\u202e") {
+		t.Errorf("forging rune on the screen:\n%q", screen(m))
+	}
+	for _, l := range strings.Split(screen(m), "\n") {
+		if n := utf8.RuneCountInString(l); n > 60 {
+			t.Errorf("%d runes: %q", n, l)
+		}
+	}
+}
+
+func TestIdentitySubmenuScrollsToCursor(t *testing.T) {
+	f := facts()
+	for i := range 12 {
+		f.Profiles = append(f.Profiles, idProfile(fmt.Sprintf("acct%02d", i), "x@example.org"))
+	}
+	c := config(f)
+	m := toIdentity(New(c))
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = press(next.(Model), "enter")
+	for range 14 {
+		m = press(m, "j")
+	}
+	if !strings.Contains(screen(m), "▸ ( ) acct11") {
+		t.Errorf("cursor not visible:\n%s", screen(m))
+	}
+	if n := strings.Count(screen(m), "\n") + 1; n > 12 {
+		t.Errorf("%d lines on a 12 line terminal", n)
+	}
+}
+
+func TestContainersCyclesSocketBuildNone(t *testing.T) {
+	m := sized(New(config(facts())), 100)
+	m = press(m, "j", "j", "j", "j", "j", "j") // CONTAINERS
+	want := []string{"@podman-socket", "@podman-build", "○ @podman-build"}
+	for i, w := range want {
+		m = press(m, "space")
+		if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, w) {
+			t.Errorf("space %d: want %q in %q", i+1, w, l)
+		}
+	}
+	if m.anyChanged() {
+		t.Errorf("a full cycle must end at the suggestion")
+	}
+}
+
+func TestContainersWithoutFileStillReachable(t *testing.T) {
+	f := facts()
+	f.Target.Containers = nil
+	m := sized(New(config(f)), 100)
+	m = press(m, "j", "j", "j", "j", "j", "j")
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "—") {
+		t.Fatalf("%q", l)
+	}
+	m = press(m, "space")
+	if l := lineWith(t, m, "CONTAINERS"); !strings.Contains(l, "@podman-socket") || !strings.Contains(l, "* on") {
+		t.Errorf("%q", l)
+	}
+}
+
+func TestFooterNamesEnterOnlyWhereItOpens(t *testing.T) {
+	m := sized(New(config(facts())), 100)
+	has := func(m Model) bool { return strings.Contains(screen(m), "enter ") }
+	if !has(m) {
+		t.Errorf("NAME: no enter in footer")
+	}
+	if has(press(m, "j", "j")) {
+		t.Errorf("BASE: enter advertised")
+	}
+	if !has(toIdentity(m)) {
+		t.Errorf("IDENTITY: no enter in footer")
 	}
 }
 

@@ -89,7 +89,15 @@ type Model struct {
 	pg      *pager // `d` output or a review; nil on the main screen
 	rev     *reviewState
 	edit    *textinput.Model
+	idm     *identityMenu // the IDENTITY submenu; nil on the main screen
 	out     Outcome
+}
+
+// identityMenu is the IDENTITY submenu: cursor is an index into the Identity
+// row's choices.
+type identityMenu struct {
+	cursor int
+	why    bool
 }
 
 type reviewState struct {

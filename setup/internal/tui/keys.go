@@ -19,6 +19,8 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.dryKey(k)
 	case m.edit != nil:
 		return m.editKey(msg, k)
+	case m.idm != nil:
+		return m.identityKey(k)
 	case m.askQuit:
 		switch k {
 		case "y":
@@ -42,10 +44,12 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "space":
 		m.cycle()
 	case "enter":
-		if m.cursor < rows && (m.cursor == int(suggest.Name) || m.cursor == int(suggest.Desc)) {
+		switch {
+		case m.cursor == int(suggest.Name) || m.cursor == int(suggest.Desc):
 			return m.startEdit()
+		case m.cursor == int(suggest.Identity):
+			m.idm = &identityMenu{cursor: m.sel.Pick[suggest.Identity]}
 		}
-		m.cycle()
 	case "?":
 		m.why = !m.why
 	case "u":
@@ -150,7 +154,33 @@ func (m Model) dryKey(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cycle moves the current row to its next choice. Name, Desc and Tools have no
+// identityKey: j/k move, space picks, ? shows why, esc and q go back. Enter
+// does nothing: the menu is read-only apart from the pick.
+func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
+	menu := *m.idm
+	n := len(m.sel.Rows[suggest.Identity].Choices)
+	switch k {
+	case "j", "down":
+		if menu.cursor < n-1 {
+			menu.cursor++
+		}
+	case "k", "up":
+		if menu.cursor > 0 {
+			menu.cursor--
+		}
+	case "space":
+		m.sel = m.sel.WithPick(suggest.Identity, menu.cursor)
+	case "?":
+		menu.why = !menu.why
+	case "esc", "q", "ctrl+c":
+		m.idm = nil
+		return m, nil
+	}
+	m.idm = &menu
+	return m, nil
+}
+
+// cycle moves the current row to its next choice. Name and Desc have no
 // alternatives to cycle through.
 func (m *Model) cycle() {
 	if m.cursor >= len(m.sel.Rows) {
@@ -158,7 +188,7 @@ func (m *Model) cycle() {
 	}
 	id := suggest.RowID(m.cursor)
 	switch id {
-	case suggest.Name, suggest.Desc, suggest.Tools:
+	case suggest.Name, suggest.Desc:
 		return
 	}
 	m.sel = m.sel.WithPick(id, (m.sel.Pick[id]+1)%len(m.sel.Rows[id].Choices))

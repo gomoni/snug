@@ -432,7 +432,7 @@ func (s *setup) rowToken(row suggest.RowID) string {
 	switch row {
 	case suggest.Desc:
 		return "description"
-	case suggest.Identity, suggest.Tools:
+	case suggest.Identity:
 		if l := identityOf(s.sel); l != "" {
 			return `"` + l + `"`
 		}

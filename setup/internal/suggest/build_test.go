@@ -87,10 +87,22 @@ func TestBuildUnsureStartsOffAndTurnsOn(t *testing.T) {
 	if slices.Contains(d.Includes(), "@podman-build") {
 		t.Errorf("unsure pick on by default: %v", d.Includes())
 	}
-	s.Pick[Containers] = 0
+	s.Pick[Containers] = 1
 	d, _ = Build(s, hostFor(target), nil)
 	if !slices.Contains(d.Includes(), "@podman-build") {
 		t.Errorf("includes %v", d.Includes())
+	}
+}
+
+func TestBuildContainersOnlyTheCycledPick(t *testing.T) {
+	const target = "/home/alice/work/app"
+	s := Suggest(ingest.Facts{Target: ingest.TargetFacts{Containers: []string{"Containerfile"}}}, home, target)
+	for i, want := range []string{"@podman-socket", "@podman-build"} {
+		d, _ := Build(s.WithPick(Containers, i), hostFor(target), nil)
+		other := []string{"@podman-socket", "@podman-build"}[1-i]
+		if !slices.Contains(d.Includes(), want) || slices.Contains(d.Includes(), other) {
+			t.Errorf("pick %d: includes %v", i, d.Includes())
+		}
 	}
 }
 

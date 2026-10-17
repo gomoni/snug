@@ -7,9 +7,8 @@ snug-setup  ~/work/snug-setup
   AGENT      @claude                          CLAUDE.md found
   NETWORK    @net                             @claude, go mod download
   CONTAINERS ○ @podman-build                  Containerfile
-  TOOLS      gh-cli                           from vyskocilm
   ENV        GOMODCACHE GOCACHE               go.mod
 
   ! accounts.toml: vyskocilm uses @cwd-rw, renamed @target-rw   f fix
 
- j/k move  space cycle  u revert  ? why  e edit  d dry-run  w write  q quit
+ j/k move  space cycle  enter edit text  u revert  ? why  e edit  d dry-run  w write  q quit

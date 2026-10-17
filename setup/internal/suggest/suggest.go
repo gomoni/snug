@@ -29,7 +29,6 @@ const (
 	Agent
 	Network
 	Containers
-	Tools
 	Env
 )
 
@@ -60,6 +59,9 @@ type Row struct {
 	// (a toggle shown as an unfilled or filled circle); Suggested is then its
 	// "off" choice.
 	Sure bool
+	// Cand is the choice an unsure row offers: shown as ○ while it is not
+	// picked and ● when it is. Meaningful only when Sure is false.
+	Cand int
 }
 
 // Selection is the person's current state; Rows hold the suggestions it is
@@ -74,6 +76,7 @@ type Selection struct {
 	env          []ingest.EnvHint
 	parentIsHome bool
 	netParts     []netPart
+	sshHosts     []ingest.SSHHost
 	descName     string
 }
 
@@ -101,6 +104,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		Text:         map[RowID]string{},
 		profiles:     slices.Clone(f.Profiles),
 		parentIsHome: filepath.Dir(target) == home,
+		sshHosts:     f.SSH.Hosts,
 	}
 	prop := ingest.Propose(f.Target)
 	s.env = prop.Env
@@ -119,7 +123,6 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		agent,
 		networkRow(len(prop.NetReasons) > 0, agent.Suggested == 0),
 		containersRow(prop),
-		{},
 		envRow(prop),
 	}
 	s.descName = descName(f.Target, target)
@@ -131,7 +134,6 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 	}
 	s.Text[Name] = rows[Name].Choices[0].Label
 	s.Text[Desc] = rows[Desc].Choices[0].Label
-	s.Rows[Tools] = Row{ID: Tools, Sure: true, Choices: []Choice{s.Tools()}}
 	return s
 }
 
@@ -255,15 +257,18 @@ func networkRow(fetches, agentOn bool) Row {
 }
 
 func containersRow(p ingest.Proposal) Row {
+	r := Row{Sure: true, Suggested: 2, Choices: []Choice{{Label: "@podman-socket"}, {Label: "@podman-build"}, {Label: Off}}}
 	for _, pk := range p.Include {
-		if pk.Name == "@podman-build" || pk.Name == "@podman-socket" {
-			return Row{Sure: false, Suggested: 1, Choices: []Choice{
-				{Label: pk.Name, Why: safe.Inline(pk.Why), Facts: []string{"found " + safe.Inline(pk.Why) + " in the target"}},
-				{Label: Off},
-			}}
+		i := slices.IndexFunc(r.Choices, func(c Choice) bool { return c.Label == pk.Name })
+		if i < 0 || i == 2 {
+			continue
 		}
+		r.Sure, r.Cand = false, i
+		r.Choices[i].Why = safe.Inline(pk.Why)
+		r.Choices[i].Facts = []string{"found " + safe.Inline(pk.Why) + " in the target"}
+		break
 	}
-	return Row{Sure: true, Choices: []Choice{{Label: Off}}}
+	return r
 }
 
 func envRow(p ingest.Proposal) Row {
@@ -285,46 +290,13 @@ func envRow(p ingest.Proposal) Row {
 	}}
 }
 
-// Tools returns the TOOLS row's only choice for the current Identity pick: the
-// profiles that identity profile already includes, other than built-ins. It is
-// not a suggestion and is never stored in Pick; changing it means editing the
-// identity profile's file, which the Facts name.
-func (s Selection) Tools() Choice {
-	id := s.Rows[Identity].Choices[s.Pick[Identity]]
-	if id.Label == NoIdentity {
-		return Choice{Label: Off}
-	}
-	for _, p := range s.profiles {
-		if p.Name != id.Label {
-			continue
-		}
-		var tools []string
-		for _, inc := range p.Include {
-			if !strings.HasPrefix(inc, "@") {
-				tools = append(tools, inc)
-			}
-		}
-		if len(tools) == 0 {
-			return Choice{Label: Off, Facts: []string{"edit " + safe.Inline(filepath.Join(p.Dir, p.File)) + " to change what " + p.Name + " includes"}}
-		}
-		return Choice{
-			Label: strings.Join(tools, " "),
-			Why:   "from " + p.Name,
-			Facts: []string{"included by " + p.Name + " in " + safe.Inline(filepath.Join(p.Dir, p.File)) + "; edit that file to change it"},
-		}
-	}
-	return Choice{Label: Off}
-}
-
-// Current returns the Choice row id shows now: its picked Choice, or for a row
-// that starts off its "on" Choice, with the text of Name and Desc and the
-// Tools of the current Identity filled in. The Network choice names only the
+// Current returns the Choice row id shows now: its picked Choice, or, for an
+// unsure row still at its suggestion, the candidate it offers, with the text
+// of Name and Desc filled in. The Network choice names only the
 // reasons whose source is on at the moment: no "container images" while
 // Containers is off.
 func (s Selection) Current(id RowID) Choice {
 	switch id {
-	case Tools:
-		return s.Tools()
 	case Name, Desc:
 		c := s.Rows[id].Choices[0]
 		c.Label = s.Text[id]
@@ -332,8 +304,8 @@ func (s Selection) Current(id RowID) Choice {
 	}
 	r := s.Rows[id]
 	c := r.Choices[s.Pick[id]]
-	if !r.Sure {
-		c = r.Choices[0]
+	if !r.Sure && s.Pick[id] == r.Suggested {
+		c = r.Choices[r.Cand]
 	}
 	if id == Network && c.Label == "@net" {
 		c.Why, c.Facts = s.netReasons()
@@ -345,7 +317,7 @@ func (s Selection) netReasons() (string, []string) {
 	var whys, facts []string
 	claude := false
 	for _, p := range s.netParts {
-		if p.hasVia && s.Pick[p.via] != 0 {
+		if p.hasVia && s.Rows[p.via].Choices[s.Pick[p.via]].Label == Off {
 			continue
 		}
 		if !slices.Contains(whys, p.why) {
@@ -387,8 +359,7 @@ func (s Selection) WithText(id RowID, text string) Selection {
 	return s
 }
 
-// Changed reports whether row id differs from its suggestion. Tools never
-// does: it follows Identity. Desc differs from the text derived from the
+// Changed reports whether row id differs from its suggestion. Desc differs from the text derived from the
 // current Identity pick, not from the one at the start.
 func (s Selection) Changed(id RowID) bool {
 	switch id {
@@ -396,8 +367,6 @@ func (s Selection) Changed(id RowID) bool {
 		return s.Text[id] != s.Rows[id].Choices[0].Label
 	case Desc:
 		return s.Text[id] != s.derivedDesc()
-	case Tools:
-		return false
 	}
 	return s.Pick[id] != s.Rows[id].Suggested
 }
@@ -434,4 +403,75 @@ func (s Selection) Notes() map[RowID]string {
 		n[Base] = "parent is your home"
 	}
 	return n
+}
+
+// IdentityDetail returns the read-only lines the IDENTITY submenu shows under
+// choice i of the Identity row: what that profile pins, as written in its
+// file, then the ~/.ssh/config Host block that gives the pinned host its key,
+// then the profiles it includes other than built-ins. Nothing is opened; a
+// hostile value cannot reach the screen except through safe.Inline.
+func (s Selection) IdentityDetail(i int) []string {
+	name := s.Rows[Identity].Choices[i].Label
+	if name == NoIdentity {
+		return []string{"no identity block; @git is added"}
+	}
+	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name && p.Identity.Pins() })
+	if pi < 0 {
+		return nil
+	}
+	p := s.profiles[pi]
+	id := p.Identity
+	var out []string
+	if id.SSHHost != "" || id.SSHKey != "" {
+		var parts []string
+		if id.SSHHost != "" {
+			parts = append(parts, id.SSHHost)
+		}
+		if id.SSHKey != "" {
+			parts = append(parts, keyStem(id.SSHKey))
+		}
+		out = append(out, "ssh   "+safe.Inline(strings.Join(parts, "  ")))
+		host := id.SSHHost
+		if host == "" {
+			host = "github.com"
+		}
+		if stem, pats := ingest.MatchHost(s.sshHosts, host); stem != "" {
+			cfg := "      ~/.ssh/config  Host "
+			if pats != "" {
+				cfg += safe.Inline(pats) + "  "
+			}
+			out = append(out, cfg+"→ "+safe.Inline(stem))
+		}
+	}
+	if id.SigningKey != "" {
+		out = append(out, "sign  "+safe.Inline(keyStem(id.SigningKey)))
+	}
+	if id.GitName != "" || id.Email != "" {
+		who := id.GitName
+		if id.Email != "" {
+			who = strings.TrimSpace(who + " <" + id.Email + ">")
+		}
+		out = append(out, "git   "+safe.Inline(who))
+	}
+	if id.GHUser != "" {
+		gh := id.GHUser
+		if id.GHHost != "" {
+			gh = id.GHHost + "/" + gh
+		}
+		out = append(out, "gh    "+safe.Inline(gh))
+	}
+	var tools []string
+	for _, inc := range p.Include {
+		if !strings.HasPrefix(inc, "@") {
+			tools = append(tools, inc)
+		}
+	}
+	if len(tools) > 0 {
+		out = append(out, "also includes: "+safe.Inline(strings.Join(tools, " ")))
+	}
+	return out
+}
+
+func keyStem(p string) string {
+	return strings.TrimSuffix(path.Base(p), ".pub")
 }

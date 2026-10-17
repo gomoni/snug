@@ -168,6 +168,12 @@ func stemFor(hosts []SSHHost, host string) (stem, patterns string) {
 	return stems[0], ""
 }
 
+// MatchHost returns the key stem the ssh config gives host and the patterns of
+// the Host line it came from, as the config spells them. Both are empty when
+// no block gives host a key; patterns alone is empty when the Host line
+// cannot be found again.
+func MatchHost(hosts []SSHHost, host string) (stem, patterns string) { return stemFor(hosts, host) }
+
 // matchesPatterns applies ssh's Host rule: a name matches when some positive
 // pattern matches and no `!` pattern does.
 func matchesPatterns(pats []string, host string) bool {
