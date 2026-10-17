@@ -18,7 +18,7 @@ import (
 func newDraft(w *testworld.World, name string) *draft.Draft {
 	d := draft.New(w.Host())
 	d.Name = name
-	d.Propose(draft.Action{Op: draft.OpUseProfile, Name: "@net"}, draft.SourceIngest, "test", 0)
+	d.Propose(draft.Action{Op: draft.OpUseProfile, Name: "@net"}, "test")
 	return d
 }
 
@@ -109,7 +109,7 @@ func TestPrepareVerifyMismatchBlocks(t *testing.T) {
 	w := testworld.New(t)
 	d := newDraft(w, "x")
 	data := t.TempDir()
-	if o, _ := d.Propose(draft.Action{Op: draft.OpGrantPath, Path: data, Access: "rw"}, draft.SourceIngest, "test", 0); o.Refused != "" {
+	if o := d.Propose(draft.Action{Op: draft.OpGrantPath, Path: data, Access: "rw"}, "test"); o.Refused != "" {
 		t.Fatal(o.Msg)
 	}
 	w.DryRunDoc = `{"snug":{"format":2,"outcome":"ok","policy_resolved":true},"profiles":{"selected":["@sys","@home","@target-rw","x","@net"],"implied":[]},"network":{"mode":"egress","egress":true}}`
@@ -131,7 +131,7 @@ func TestPrepareVerifyMismatchBlocks(t *testing.T) {
 func TestPrepareIdentityRefusalIsNote(t *testing.T) {
 	w := testworld.New(t)
 	d := newDraft(w, "x")
-	d.Propose(draft.Action{Op: draft.OpIncludeProfile, Name: "vyskocilm"}, draft.SourceIngest, "test", 0)
+	d.Propose(draft.Action{Op: draft.OpIncludeProfile, Name: "vyskocilm"}, "test")
 	w.DryRunDoc = `{"snug":{"format":2,"outcome":"refused","policy_resolved":false},"refusal":{"message":"profile \"vyskocilm\" includes \"@cwd-rw\", which is now \"@target-rw\""}}`
 	warn := &probe.Warning{Profiles: []string{"vyskocilm"}}
 	p, err := Prepare(context.Background(), d, w.ProfDir, "/fake/snug", w.Run, nil, nil, warn)

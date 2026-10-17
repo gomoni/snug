@@ -311,7 +311,7 @@ func tomlName(table string) func(io.Reader) string {
 
 // Propose computes the proposal for t. Sure picks and env hints are what the
 // target's own files make plain; the unsure picks are listed so the human can
-// ask for them, and never go on a card.
+// turn them on, and none starts on.
 func Propose(t TargetFacts) Proposal {
 	var p Proposal
 	if t.Git {

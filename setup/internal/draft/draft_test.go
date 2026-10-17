@@ -620,7 +620,7 @@ func TestDescriptionsAreStillInBaseToml(t *testing.T) {
 
 type scenario struct {
 	name string
-	// say is the human's request the steps are recorded under.
+	// say is the origin the steps are recorded under.
 	say   string
 	steps []Action
 	setup func(*Draft)
@@ -660,27 +660,13 @@ func scenarios() []scenario {
 			act(OpStageBinary, "host", "~/bin/gh", "name", "gh")}},
 		{name: "compose", say: "podman online with /mnt/pg and /mnt/uploads", steps: []Action{act(OpNameProfile, "name", "stack"), act(OpUseProfile, "name", "@podman-socket"), act(OpUseProfile, "name", "@net"),
 			act(OpGrantPath, "path", "/mnt/pg", "access", "ro"), act(OpGrantPath, "path", "/mnt/uploads", "access", "rw")}},
-		{name: "ledger-conflict", say: "keep it offline", steps: []Action{act(OpNameProfile, "name", "offline"), act(OpDropProfile, "name", "@net"),
-			act(OpGrantPath, "path", "/mnt/pg", "access", "ro")},
-			setup: func(d *Draft) {
-				d.Propose(act(OpUseProfile, "name", "@podman-build"), SourceFile, "README.md", 2)
-				for _, accept := range []bool{false, true} {
-					a := act(OpUseProfile, "name", "@net")
-					if accept {
-						a = act(OpGrantPath, "path", "/mnt/pg", "access", "rw")
-					}
-					if _, p := d.Propose(a, SourceFile, "README.md", 2); p != nil {
-						d.Decide(*p, accept)
-					}
-				}
-			}},
 	}
 }
 
 func build(t *testing.T, s scenario) *Draft {
 	d := New(testHost())
 	for _, a := range s.steps {
-		if o, _ := d.Propose(a, SourceUser, s.say, 1); o.Refused != "" {
+		if o := d.Propose(a, s.say); o.Refused != "" {
 			t.Fatalf("%s: %+v refused: %+v", s.name, a, o)
 		}
 	}

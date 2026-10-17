@@ -1,7 +1,6 @@
 package draft
 
 import (
-	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -9,54 +8,12 @@ import (
 	"unicode/utf8"
 )
 
-// Source is where an action came from. Precedence is user > host facts > file
-// > default: host facts are not a ledger source because they are enforced
-// absolutely, by Apply's refusals and by identity candidates being only what
-// the host has.
-type Source int
-
-const (
-	SourceUser Source = iota
-	SourceFile
-	SourceDefault
-	// SourceIngest is a proposal snug-setup computed from what it found on the
-	// host or in the project, applied because the human accepted its card.
-	// Origin is what it was computed from (".git", "go.mod"); the entry is
-	// Confirmed, because the human answered for it.
-	SourceIngest
-)
-
-// Entry is one action in the intent ledger.
+// Entry is one action the draft accepted, with what it was computed from.
 type Entry struct {
-	Turn   int
-	Source Source
-	// Origin is the human's request text for SourceUser, the file NAME for
-	// SourceFile. File content never reaches the ledger.
+	// Origin is what snug-setup computed the action from, as a row's reason
+	// line words it.
 	Origin string
 	Action Action
-	// Names identify the identity a human picked, for select_identity entries
-	// recorded by RecordIdentity: the first is what the ledger prints.
-	Names []string
-	// Confirmed is true when the human answered a question for this entry: an
-	// identity pick, or a file action accepted over a conflicting request.
-	Confirmed bool
-	// Declined is true for a file or default action the human refused because
-	// it contradicted Over. A declined entry was never applied.
-	Declined bool
-	// Over is the Origin of the user entry this one contradicted.
-	Over string
-}
-
-// userRank reports whether the entry carries the human's authority.
-func (e Entry) userRank() bool { return e.Source == SourceUser || e.Confirmed }
-
-// Pending is a file or default action that contradicts what the human asked
-// for. It has not been applied; Decide applies or declines it once the human
-// has answered Question.
-type Pending struct {
-	Entry    Entry
-	With     Entry
-	Question string
 }
 
 // BuiltinIncludes is the include list of each built-in, with the @ every
@@ -89,83 +46,31 @@ func Closure(name string) []string {
 	return out
 }
 
-// Ledger returns the intent ledger, oldest first.
+// Ledger returns the actions the draft accepted, oldest first.
 func (d *Draft) Ledger() []Entry { return slices.Clone(d.ledger) }
 
 // HostPath is the absolute host path a spelling in the draft stands for.
 func (d *Draft) HostPath(p string) string { return d.expand(p) }
 
-// Propose applies a, unless it comes from a file or a default and contradicts
-// what the human asked for (a SourceIngest action is applied without that
-// check: the human accepted its card, which outranks an earlier request): then nothing is applied and the returned Pending
-// is the question to put to them. An accepted action is recorded in the
-// ledger; a refused one, name_profile, or one that is not the draft's
-// (NotMine) is not. select_identity is not applied either: Propose only
-// checks it for a conflict, and the caller records the human's pick with
-// RecordIdentity.
-func (d *Draft) Propose(a Action, src Source, origin string, turn int) (Outcome, *Pending) {
-	e := Entry{Turn: turn, Source: src, Origin: origin, Action: a, Confirmed: src == SourceIngest}
-	if src != SourceUser && src != SourceIngest {
-		if with, ok := d.conflict(e); ok {
-			return Outcome{}, &Pending{Entry: e, With: with, Question: d.question(e, with)}
-		}
-	}
-	if a.Op == OpSelectIdentity {
-		return Outcome{NotMine: true}, nil
-	}
+// Propose applies a and, when the draft accepts it, records it with origin.
+// A refused action, name_profile, and one that is not the draft's (NotMine)
+// are applied or reported by Apply as usual and are not recorded.
+func (d *Draft) Propose(a Action, origin string) Outcome {
 	o := d.Apply(a)
 	if o.Refused == "" && !o.NotMine && a.Op != OpNameProfile {
-		d.ledger = append(d.ledger, e)
-	}
-	return o, nil
-}
-
-// Decide applies p.Entry when accept is true and records it as confirmed;
-// otherwise it records it as declined and changes nothing else. For a
-// select_identity entry an accept returns NotMine and records nothing: the
-// caller asks which identity, and RecordIdentity records the pick.
-func (d *Draft) Decide(p Pending, accept bool) Outcome {
-	e := p.Entry
-	e.Over = p.With.Origin
-	if !accept {
-		e.Declined = true
-		d.ledger = append(d.ledger, e)
-		return Outcome{Msg: "not applied: " + phrase(d, e) + "."}
-	}
-	if e.Action.Op == OpSelectIdentity {
-		return Outcome{NotMine: true}
-	}
-	o := d.Apply(e.Action)
-	if o.Refused == "" && !o.NotMine {
-		e.Confirmed = true
-		d.ledger = append(d.ledger, e)
+		d.ledger = append(d.ledger, Entry{Origin: origin, Action: a})
 	}
 	return o
 }
 
-// RecordIdentity records an identity the human picked: src is SourceUser
-// for one they named or picked from a question, with origin their request,
-// and SourceIngest for one the analysis proposed and they accepted, with
-// origin what proposed it. names[0] is what the ledger prints; the rest are
-// other spellings a later request may use for the same identity.
-func (d *Draft) RecordIdentity(kind string, names []string, src Source, origin string, turn int) {
-	d.ledger = append(d.ledger, Entry{
-		Turn: turn, Source: src, Origin: origin, Confirmed: true, Names: slices.Clone(names),
-		Action: Action{Op: OpSelectIdentity, Kind: kind, Account: names[0]},
-	})
-}
-
 // Effective returns the applied entries no later applied entry contradicts:
-// what the draft should now be the sum of. Declined entries are never in it.
+// what the draft should now be the sum of.
 func (d *Draft) Effective() []Entry {
 	var out []Entry
 	for i, e := range d.ledger {
-		if e.Declined {
-			continue
-		}
 		superseded := false
 		for _, later := range d.ledger[i+1:] {
-			if !later.Declined && d.Contradicts(e, later) {
+			if d.Contradicts(e, later) {
 				superseded = true
 				break
 			}
@@ -175,16 +80,6 @@ func (d *Draft) Effective() []Entry {
 		}
 	}
 	return out
-}
-
-func (d *Draft) conflict(next Entry) (Entry, bool) {
-	eff := d.Effective()
-	for i := len(eff) - 1; i >= 0; i-- {
-		if eff[i].userRank() && d.Contradicts(eff[i], next) {
-			return eff[i], true
-		}
-	}
-	return Entry{}, false
 }
 
 // pathEffect is what an entry does to one host path: ro, rw, tmpfs, drop or
@@ -216,9 +111,7 @@ func (d *Draft) pathEffect(a Action) (path, effect string, ok bool) {
 //     ro or rw grant, in either order. use_profile @target-rw is an rw grant
 //     of the target here, so it contradicts a read-only target;
 //   - set_env of the same name, set against inherit, or set to a different
-//     value;
-//   - select_identity of the same kind naming a different identity than a
-//     picked one. An empty account names none and contradicts nothing.
+//     value.
 func (d *Draft) Contradicts(prior, next Entry) bool {
 	ap, an := prior.Action, next.Action
 	useDrop := func(use, drop Action) bool {
@@ -248,83 +141,13 @@ func (d *Draft) Contradicts(prior, next Entry) bool {
 		}
 		return ap.Verb == "set" && an.Verb == "set" && ap.Value != an.Value
 	}
-	if ap.Op == OpSelectIdentity && an.Op == OpSelectIdentity && ap.Kind == an.Kind && len(prior.Names) > 0 {
-		if len(next.Names) > 0 {
-			return next.Names[0] != prior.Names[0]
-		}
-		return an.Account != "" && !slices.ContainsFunc(prior.Names, func(n string) bool { return strings.EqualFold(n, an.Account) })
-	}
 	return false
 }
 
-// phrase is an entry's action in a few words, for the ledger and questions,
-// passed through clean: a declined entry was never checked by Apply, so its
-// path or name is whatever the model wrote.
-func phrase(d *Draft, e Entry) string { return clean(rawPhrase(d, e)) }
-
-func rawPhrase(d *Draft, e Entry) string {
-	a := e.Action
-	switch a.Op {
-	case OpUseProfile:
-		return a.Name
-	case OpDropProfile:
-		return "drop " + a.Name
-	case OpIncludeProfile:
-		return "your profile " + a.Name
-	case OpGrantPath:
-		return a.Access + " " + d.spell(a.Path)
-	case OpDropPath:
-		return "drop path " + d.spell(a.Path)
-	case OpStageBinary:
-		return "stage " + a.Host + " as " + a.Name
-	case OpSetEnv:
-		return "env " + a.Name + " (" + a.Verb + ")"
-	case OpOpenDoor:
-		return "door " + a.Name
-	case OpSelectIdentity:
-		if a.Account == "" {
-			return a.Kind + " identity"
-		}
-		return a.Kind + " identity " + a.Account
-	}
-	return a.Op
-}
-
-func (d *Draft) question(e, with Entry) string {
-	verb := "apply it?"
-	switch e.Action.Op {
-	case OpUseProfile, OpIncludeProfile:
-		verb = "add it?"
-	case OpDropProfile, OpDropPath:
-		verb = "drop it?"
-	case OpGrantPath:
-		verb = "grant it?"
-	case OpSelectIdentity:
-		verb = "choose one?"
-	}
-	var what string
-	if with.Source == SourceUser {
-		what = "you said " + quote(with.Origin)
-	} else {
-		what = "you accepted " + phrase(d, with) + " from " + Comment(with.Origin)
-	}
-	return fmt.Sprintf("%s asks for %s, but %s (%s) — %s", sourceLabel(e), phrase(d, e), what, phrase(d, with), verb)
-}
-
-func sourceLabel(e Entry) string {
-	switch e.Source {
-	case SourceUser:
-		return "you"
-	case SourceDefault:
-		return "default"
-	}
-	return Comment(e.Origin)
-}
-
-// commentMax is how many runes of a request the ledger keeps.
+// commentMax is how many runes of a comment Comment keeps.
 const commentMax = 60
 
-// Comment is clean cut to commentMax runes, for request text and file names.
+// Comment is clean cut to commentMax runes, for descriptions and origins.
 func Comment(s string) string {
 	s = clean(s)
 	if utf8.RuneCountInString(s) > commentMax {
@@ -338,8 +161,7 @@ func Comment(s string) string {
 // every Unicode format character (Cf: the bidi runes that render as text they
 // do not contain, zero-width characters, U+FEFF, tag characters) and the line
 // and paragraph separators become a space, runs of spaces collapse, and a
-// double quote becomes a single one so the quoting in the ledger stays
-// unambiguous.
+// double quote becomes a single one.
 func clean(s string) string {
 	s = strings.ToValidUTF8(s, " ")
 	s = strings.Map(func(c rune) rune {
@@ -352,53 +174,4 @@ func clean(s string) string {
 		return c
 	}, s)
 	return strings.Join(strings.Fields(s), " ")
-}
-
-func quote(s string) string { return `"` + Comment(s) + `"` }
-
-// IntentLines renders the ledger as TOML comment lines, oldest first.
-// Consecutive applied entries of one request share a line.
-func (d *Draft) IntentLines() []string {
-	var out []string
-	for i := 0; i < len(d.ledger); {
-		e := d.ledger[i]
-		if e.Declined {
-			out = append(out, fmt.Sprintf("# intent (%s, declined): %s — conflicts with %s", sourceLabel(e), phrase(d, e), quote(e.Over)))
-			i++
-			continue
-		}
-		j := i + 1
-		for j < len(d.ledger) {
-			n := d.ledger[j]
-			if n.Declined || n.Turn != e.Turn || n.Source != e.Source || n.Origin != e.Origin || n.Confirmed != e.Confirmed || n.Over != e.Over {
-				break
-			}
-			j++
-		}
-		var acts []string
-		for _, x := range d.ledger[i:j] {
-			acts = append(acts, phrase(d, x))
-		}
-		if e.Source == SourceIngest {
-			out = append(out, fmt.Sprintf("# proposed from %s, accepted: %s", Comment(e.Origin), strings.Join(acts, ", ")))
-			i = j
-			continue
-		}
-		label := sourceLabel(e)
-		switch {
-		case e.Source == SourceUser && e.Confirmed:
-			label += ", confirmed"
-		case e.Source != SourceUser && e.Over != "":
-			label += ", accepted over " + quote(e.Over)
-		case e.Source != SourceUser:
-			label += ", accepted"
-		}
-		text := ""
-		if e.Source == SourceUser {
-			text = quote(e.Origin) + " "
-		}
-		out = append(out, fmt.Sprintf("# intent (%s): %s-> %s", label, text, strings.Join(acts, ", ")))
-		i = j
-	}
-	return out
 }

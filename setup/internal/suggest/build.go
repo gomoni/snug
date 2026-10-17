@@ -27,7 +27,7 @@ func Build(s Selection, host draft.Host, profiles []ingest.Profile) (*draft.Draf
 		if origin == "" {
 			origin = "snug-setup default"
 		}
-		if o, _ := d.Propose(a, draft.SourceIngest, origin, 0); o.Refused != "" {
+		if o := d.Propose(a, origin); o.Refused != "" {
 			refused[row] = o.Msg
 		}
 	}

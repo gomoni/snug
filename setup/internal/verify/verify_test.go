@@ -42,7 +42,7 @@ func fixture(t *testing.T, name string) Doc {
 
 func say(d *draft.Draft, text string, acts ...draft.Action) {
 	for _, a := range acts {
-		d.Propose(a, draft.SourceUser, text, 1)
+		d.Propose(a, text)
 	}
 }
 
@@ -95,26 +95,26 @@ func TestCompareFindsEachDifference(t *testing.T) {
 		{"requested profile missing", netRO, func(doc *Doc) {
 			doc.Profiles.Implied = nil
 			doc.Network.Egress, doc.Network.Mode = false, "isolated"
-		}, []string{`"needs internet" asked for @net; snug's resolved selection does not have it`}},
+		}, []string{`@net is in the draft (needs internet); snug's resolved selection does not have it`}},
 		{"profile nobody asked for", netRO, func(doc *Doc) { doc.Profiles.Implied = append(doc.Profiles.Implied, "@claude") },
-			[]string{"snug selects @claude, which nothing in the intent ledger asked for\n    fix: say \"drop @claude\""}},
+			[]string{"snug selects @claude, which the draft does not hold"}},
 		{"egress without @net", netRO, func(doc *Doc) { doc.Profiles.Implied = nil }, []string{
-			`asked for @net; snug's resolved selection does not have it`, "snug's network is egress (egress true) while @net is not selected"}},
+			`@net is in the draft (needs internet); snug's resolved selection does not have it`, "snug's network is egress (egress true) while @net is not selected"}},
 		{"access widened", netRO, func(doc *Doc) { doc.Mounts[3].Access = "rw" },
-			[]string{`"let it read /srv/data" asked for ro on /srv/data; snug mounts it rw`}},
+			[]string{`ro on /srv/data is in the draft (let it read /srv/data); snug mounts it rw`}},
 		{"grant missing", netRO, func(doc *Doc) { doc.Mounts = doc.Mounts[:3] },
-			[]string{"asked for ro on /srv/data; snug mounts nothing there from work"}},
+			[]string{"ro on /srv/data is in the draft (let it read /srv/data); snug mounts nothing there from work"}},
 		{"mount nobody asked for", netRO, func(doc *Doc) {
 			doc.Mounts = append(doc.Mounts, doc.Mounts[3])
 			doc.Mounts[len(doc.Mounts)-1].Guest = "/srv/other"
-		}, []string{"snug mounts /srv/other (ro) from work, which nothing in the intent ledger asked for"}},
+		}, []string{"snug mounts /srv/other (ro) from work, which the draft does not hold"}},
 		{"profile not selected", netRO, func(doc *Doc) { doc.Profiles.Selected = doc.Profiles.Selected[:3] },
 			[]string{"snug did not select the profile work"}},
 		{"dropping a default", func() *draft.Draft {
 			d := netRO()
 			say(d, "no write access", drop("@target-rw"))
 			return d
-		}, func(*Doc) {}, []string{"\"no write access\" asked to drop @target-rw; snug still selects it\n    fix: @target-rw comes with a bare `snug DIR`, so dropping it from the profile removes nothing; say \"read-only here\""}},
+		}, func(*Doc) {}, []string{"@target-rw is dropped in the draft (no write access); snug still selects it: @target-rw comes with a bare `snug DIR`, so dropping it from the profile removes nothing"}},
 		{"dropped @net still there", func() *draft.Draft {
 			d := draft.New(host())
 			d.Name = "work"
@@ -122,8 +122,8 @@ func TestCompareFindsEachDifference(t *testing.T) {
 			say(d, "keep it offline", drop("@net"))
 			return d
 		}, func(*Doc) {}, []string{
-			`"keep it offline" asked to drop @net; snug still selects it`,
-			"snug selects @net, which nothing in the intent ledger asked for"}},
+			`@net is dropped in the draft (keep it offline); snug still selects it`,
+			"snug selects @net, which the draft does not hold"}},
 		{"read-only target resolved writable", func() *draft.Draft {
 			d := draft.New(host())
 			d.Name = "review"
@@ -133,8 +133,8 @@ func TestCompareFindsEachDifference(t *testing.T) {
 			doc.Profiles.Implied = append(doc.Profiles.Implied, "@target-rw")
 			doc.Mounts[1].Access = "rw"
 		}, []string{
-			"snug selects @target-rw, which nothing in the intent ledger asked for",
-			`"read-only here" asked for ro on /home/alice/src/webapp; snug mounts it rw`}},
+			"snug selects @target-rw, which the draft does not hold",
+			`ro on /home/alice/src/webapp is in the draft (read-only here); snug mounts it rw`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestCheckAgainstRealSnug(t *testing.T) {
 		{ok, nil},
 		{ro, nil},
 		{pathed, nil},
-		{dropped, []string{"asked to drop @target-rw; snug still selects it"}},
+		{dropped, []string{"@target-rw is dropped in the draft (no write access); snug still selects it"}},
 	} {
 		doc, err := Run(ctx, hostfacts.ExecRunner, bin, c.d, nil)
 		if err != nil {
@@ -262,45 +262,5 @@ func TestDefaultsMatchSnug(t *testing.T) {
 	}
 	if !slices.Equal(Defaults, want) {
 		t.Errorf("Defaults = %v, snug's BuiltinDefaults = %v", Defaults, want)
-	}
-}
-
-// TestRefusalFixNamesTheGrant fails if a refusal by snug names a path or
-// profile of the draft and the fix does not say which request granted it and
-// what to say to take it out. The unrelated grant (/srv/data) must not be
-// blamed, and a message that names nothing of the draft gets the fallback.
-func TestRefusalFixNamesTheGrant(t *testing.T) {
-	d := draft.New(host())
-	d.Name = "work"
-	say(d, "needs internet", use("@net"))
-	say(d, "let it read /srv/data", grant("/srv/data", "ro"))
-	say(d, "write to /mnt/cache", grant("/mnt/cache", "rw"))
-	refuse := func(msg string) []Diff {
-		doc := Doc{}
-		doc.Refusal = &struct {
-			Message string `json:"message"`
-		}{msg}
-		return Compare(d, doc)
-	}
-	got := refuse("/mnt/cache/snug is reserved")
-	if len(got) != 1 {
-		t.Fatalf("%v", got)
-	}
-	fix := got[0].String()
-	for _, want := range []string{`/mnt/cache was granted by "write to /mnt/cache": say "remove /mnt/cache"`, "/undo"} {
-		if !strings.Contains(fix, want) {
-			t.Errorf("fix lacks %q:\n%s", want, fix)
-		}
-	}
-	for _, bad := range []string{"/srv/data was", "@net was"} {
-		if strings.Contains(fix, bad) {
-			t.Errorf("fix blames %q:\n%s", bad, fix)
-		}
-	}
-	if f := refuse("@net is not allowed here")[0].String(); !strings.Contains(f, `@net was added by "needs internet": say "drop @net"`) {
-		t.Errorf("profile not named:\n%s", f)
-	}
-	if f := refuse("/mnt/cached is reserved")[0].String(); !strings.Contains(f, "does not name a grant of the draft") {
-		t.Errorf("a longer name was taken for the grant:\n%s", f)
 	}
 }

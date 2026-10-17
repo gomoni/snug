@@ -1,6 +1,6 @@
 // Package verify has the real snug resolve a draft and compares the result
-// with the draft's intent ledger. A draft whose resolved policy differs from
-// what the human asked for is not saved.
+// with the draft's ledger. A draft whose resolved policy differs from what the
+// screen shows is not saved.
 //
 // The dry-run document is decoded here field by field rather than by
 // importing snug's packages: setup/ is a separate module so that snug never
@@ -60,67 +60,12 @@ type Doc struct {
 	} `json:"network"`
 }
 
-// Diff is one way the resolved policy differs from the ledger.
+// Diff is one way the resolved policy differs from the draft.
 type Diff struct {
-	What string // what snug resolved, against what was asked
-	Fix  string // what the human can say or change
+	What string // what snug resolved, against what the draft holds
 }
 
-func (d Diff) String() string { return d.What + "\n    fix: " + d.Fix }
-
-// refusalFix says how to change a draft snug refused: the grants and profiles
-// in the draft that snug's message names, each with the request it came from
-// and the sentence that takes it out, then the fallback that always works. It
-// is pure.
-func refusalFix(d *draft.Draft, msg string) string {
-	var named []string
-	for _, e := range d.Effective() {
-		a := e.Action
-		switch a.Op {
-		case draft.OpGrantPath:
-			if p := d.HostPath(a.Path); names(msg, p) {
-				named = append(named, fmt.Sprintf("%s was granted by %s: say \"remove %s\"", p, origin(e), p))
-			}
-		case draft.OpStageBinary:
-			if p := d.HostPath(a.Host); names(msg, p) {
-				named = append(named, fmt.Sprintf("%s was staged by %s: say \"remove %s\"", p, origin(e), p))
-			}
-		case draft.OpUseProfile, draft.OpIncludeProfile:
-			if names(msg, a.Name) {
-				named = append(named, fmt.Sprintf("%s was added by %s: say \"drop %s\"", a.Name, origin(e), a.Name))
-			}
-		}
-	}
-	rest := "/show lists the draft; /undo takes back the last step only"
-	if len(named) == 0 {
-		return "snug's message does not name a grant of the draft; " + rest
-	}
-	return strings.Join(named, "\n    fix: ") + "\n    (" + rest + ")"
-}
-
-// names reports whether msg mentions p as a whole path or as a directory
-// above something: the characters on both sides of it are not part of a
-// name, so /etc is in "/etc/snug" and not in "/etcd" or "/usr/etc".
-func names(msg, p string) bool {
-	if p == "" {
-		return false
-	}
-	isName := func(b byte) bool {
-		return b == '.' || b == '-' || b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
-	}
-	for from := 0; ; {
-		i := strings.Index(msg[from:], p)
-		if i < 0 {
-			return false
-		}
-		i += from
-		end := i + len(p)
-		if (i == 0 || !isName(msg[i-1])) && (end == len(msg) || !isName(msg[end])) {
-			return true
-		}
-		from = i + 1
-	}
-}
+func (d Diff) String() string { return d.What }
 
 // Parse decodes a dry-run document. It returns an error for a document that
 // is not JSON, whose format is not Format, or that is lossy (a path that is
@@ -147,14 +92,14 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 		if doc.Refusal != nil {
 			msg = doc.Refusal.Message
 		}
-		return []Diff{{What: "snug refused the draft: " + msg, Fix: refusalFix(d, msg)}}
+		return []Diff{{What: "snug refused the draft: " + msg}}
 	}
 	name := d.Name
 	var diffs []Diff
-	add := func(what, fix string, a ...any) { diffs = append(diffs, Diff{What: fmt.Sprintf(what, a...), Fix: fix}) }
+	add := func(what string, a ...any) { diffs = append(diffs, Diff{What: fmt.Sprintf(what, a...)}) }
 
 	if !slices.Contains(doc.Profiles.Selected, name) {
-		add("snug did not select the profile %s at all (selected: %s)", "this is a snug-setup bug: the dry run was given the wrong name", name, strings.Join(doc.Profiles.Selected, " "))
+		add("snug did not select the profile %s at all (selected: %s); this is a snug-setup bug: the dry run was given the wrong name", name, strings.Join(doc.Profiles.Selected, " "))
 	}
 	resolved := map[string]bool{}
 	for _, n := range append(slices.Clone(doc.Profiles.Selected), doc.Profiles.Implied...) {
@@ -195,24 +140,21 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 				allowed[n] = true
 			}
 			if !resolved[a.Name] {
-				add("%s asked for %s; snug's resolved selection does not have it", "ask for it again; if it persists, the draft lost it (a snug-setup bug)", why, a.Name)
+				add("%s is in the draft (%s); snug's resolved selection does not have it", a.Name, why)
 			}
 		case draft.OpIncludeProfile:
 			userIncludes = true
 			allowed[a.Name] = true
 			if !resolved[a.Name] {
-				add("%s asked for your profile %s; snug's resolved selection does not have it", "check that the profile still exists in your profiles.d, then ask for it again", why, a.Name)
+				add("your profile %s is in the draft (%s); snug's resolved selection does not have it; check that it still exists in your profiles.d", a.Name, why)
 			}
 		case draft.OpDropProfile:
 			if resolved[a.Name] {
-				fix := "find what includes " + a.Name + " in the profile and drop that too"
+				fix := "something else in the profile includes " + a.Name
 				if slices.Contains(base, a.Name) {
 					fix = a.Name + " comes with a bare `snug DIR`, so dropping it from the profile removes nothing"
-					if a.Name == "@target-rw" {
-						fix += "; say \"read-only here\" to run with --no-defaults and a read-only target"
-					}
 				}
-				add("%s asked to drop %s; snug still selects it", fix, why, a.Name)
+				add("%s is dropped in the draft (%s); snug still selects it: %s", a.Name, why, fix)
 			}
 		case draft.OpGrantPath:
 			p := d.HostPath(a.Path)
@@ -251,11 +193,11 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 	}
 	slices.Sort(extra)
 	for _, n := range extra {
-		add("snug selects %s, which nothing in the intent ledger asked for", "say \"drop "+n+"\", or ask for it in your own words if you want it", n)
+		add("snug selects %s, which the draft does not hold", n)
 	}
 
 	if doc.Network.Egress != resolved["@net"] {
-		add("snug's network is %s (egress %v) while @net is %s", "this is a snug-setup or snug bug: report it with the profile file", doc.Network.Mode, doc.Network.Egress, map[bool]string{true: "selected", false: "not selected"}[resolved["@net"]])
+		add("snug's network is %s (egress %v) while @net is %s; this is a snug-setup or snug bug", doc.Network.Mode, doc.Network.Egress, map[bool]string{true: "selected", false: "not selected"}[resolved["@net"]])
 	}
 
 	mine := func(from []string) bool { return slices.Contains(from, name) }
@@ -274,11 +216,11 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 				got = "tmpfs"
 			}
 			if got != g.access {
-				add("%s asked for %s on %s; snug mounts it %s", "a grant the profile shares with another grant joins by the widest; drop the path and grant it once, as you want it", strings.Join(g.by, ", "), g.access, p, got)
+				add("%s on %s is in the draft (%s); snug mounts it %s, because grants of one path join by the widest", g.access, p, strings.Join(g.by, ", "), got)
 			}
 		}
 		if !found {
-			add("%s asked for %s on %s; snug mounts nothing there from %s", "check the path exists on this host, then grant it again", strings.Join(g.by, ", "), g.access, p, name)
+			add("%s on %s is in the draft (%s); snug mounts nothing there from %s; check the path exists on this host", g.access, p, strings.Join(g.by, ", "), name)
 		}
 	}
 	guests := slices.Sorted(maps.Keys(stages))
@@ -291,7 +233,7 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 			}
 		}
 		if !found {
-			add("%s staged %s; snug mounts nothing there", "stage the binary again", why, guest)
+			add("%s is staged in the draft (%s); snug mounts nothing there", guest, why)
 		}
 	}
 	for i, m := range doc.Mounts {
@@ -299,23 +241,15 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 			continue
 		}
 		if why, ok := drops[m.Guest]; ok {
-			add("%s dropped %s; snug still mounts it from %s", "drop the path again; if it persists, the draft kept it (a snug-setup bug)", why, m.Guest, name)
+			add("%s is dropped in the draft (%s); snug still mounts it from %s", m.Guest, why, name)
 			continue
 		}
-		add("snug mounts %s (%s) from %s, which nothing in the intent ledger asked for", "say \"drop path "+m.Guest+"\"", m.Guest, m.Access, name)
+		add("snug mounts %s (%s) from %s, which the draft does not hold", m.Guest, m.Access, name)
 	}
 	return diffs
 }
 
-func origin(e draft.Entry) string {
-	switch {
-	case e.Source == draft.SourceUser:
-		return "\"" + draft.Comment(e.Origin) + "\""
-	case e.Source == draft.SourceDefault:
-		return "a default"
-	}
-	return draft.Comment(e.Origin)
-}
+func origin(e draft.Entry) string { return draft.Comment(e.Origin) }
 
 // File is a profile file of the human's, copied into the check's scratch
 // configuration so a draft that includes one of their profiles can resolve.

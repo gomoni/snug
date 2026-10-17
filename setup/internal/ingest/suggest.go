@@ -59,8 +59,8 @@ type SuggestInput struct {
 // steering is bounded by what Suggest can return: only values that exist among
 // the human's own keys, gh logins, profiles and git authors, matched byte for
 // byte, never a value taken from the repo; and by what happens next: the pick
-// is shown with its reason on the opening card, and nothing is pinned until the
-// human answers that card or an identity question.
+// is shown with its reason on the IDENTITY row, and nothing is written until
+// the human has seen the diff.
 func Suggest(in SuggestInput) *IdentityPick {
 	if in.Repo == nil {
 		return nil

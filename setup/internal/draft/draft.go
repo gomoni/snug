@@ -124,7 +124,7 @@ type Draft struct {
 // New returns an empty draft for host.
 func New(host Host) *Draft { return &Draft{Host: host} }
 
-// Clone returns a deep copy, for /undo.
+// Clone returns a deep copy.
 func (d *Draft) Clone() *Draft {
 	c := *d
 	c.Include = slices.Clone(d.Include)
