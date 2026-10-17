@@ -882,6 +882,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// nothing to do with pinning an account, and gating it on identity left ssh
 	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
 	// for the coverage rule this depends on.
+	if err := resolveKube(p, ctx, env, target, home); err != nil {
+		return nil, err
+	}
+
 	replaceSystemSSHConfig(p, ctx, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may

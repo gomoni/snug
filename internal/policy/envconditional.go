@@ -100,6 +100,13 @@ var conditionalEnvs = []conditionalEnv{
 		writes: "points git at the ~/.gitconfig it generates",
 	},
 	{
+		names:  []string{"KUBECONFIG"},
+		key:    func(*Profile) string { return "identity.kube" },
+		on:     func(p *Policy) bool { return p.Kube != nil },
+		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "kube") },
+		writes: "points kubectl at the one-context kubeconfig it generates",
+	},
+	{
 		names:  []string{"LISTEN_FDNAMES", "LISTEN_FDS", "LISTEN_PID"},
 		key:    func(*Profile) string { return "listen_names" },
 		on:     func(p *Policy) bool { return len(p.ListenNames) > 0 },

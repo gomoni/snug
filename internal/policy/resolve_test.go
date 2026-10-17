@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"maps"
 	"math/rand"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -108,13 +109,20 @@ type fakeEnv struct {
 }
 
 func newFakeEnv() *fakeEnv {
+	kubeFixture, err := os.ReadFile("testdata/kubeconfig.yaml")
+	if err != nil {
+		panic(err)
+	}
 	return &fakeEnv{
+		kube: map[string][]byte{"/home/u/.kube/config": kubeFixture},
 		// The procfs entries snug replaces (issue #29). Present here so the
 		// GOLDENS carry those mounts: they are the review artifact for this
 		// change, and a fixture host that published none of them would hide
 		// every line of it.
 		files: map[string]bool{
 			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+			// testCtx's SnugExecutable, the host side of identity.kube's shim bind.
+			"/usr/bin/snug": true,
 			// The generated files whose DESTINATION exists on every real host.
 			// rejectGeneratedOntoHost stats the destination of a generated mount
 			// that lands inside a read-only bind, because where nothing is there
@@ -504,7 +512,7 @@ var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 // common run the one nothing pins.
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
-		Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Shell: "/bin/sh", Command: []string{"/bin/sh"}, SnugExecutable: "/usr/bin/snug",
 		HostUserName: "u", HostGroupName: "users",
 		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
@@ -877,6 +885,10 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 	withoutLogin := func() *Profile {
 		p := maximalProfile()
 		p.Login = nil
+		// identity.kube needs egress too, so it is cleared for the same
+		// reason login is: otherwise the network drop only ever reaches a
+		// refusal on this base as well.
+		p.Identity.Kube = IdentityKube{}
 		return p
 	}
 	for _, base := range []struct {

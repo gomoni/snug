@@ -1,0 +1,39 @@
+# ~/.kube/config inside the sandbox
+{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "clusters": [
+    {
+      "name": "aks-dev",
+      "cluster": {
+        "server": "https://aks-dev.example.azmk8s.io:443",
+        "certificate-authority-data": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClJrbFlWRlZTUlVOQgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+      }
+    }
+  ],
+  "users": [
+    {
+      "name": "aks-dev",
+      "user": {
+        "exec": {
+          "apiVersion": "client.authentication.k8s.io/v1",
+          "command": "/snug/bin/snug-kube-token",
+          "interactiveMode": "Never",
+          "provideClusterInfo": false
+        }
+      }
+    }
+  ],
+  "contexts": [
+    {
+      "name": "aks-dev",
+      "context": {
+        "cluster": "aks-dev",
+        "user": "aks-dev",
+        "namespace": "dev"
+      }
+    }
+  ],
+  "current-context": "aks-dev",
+  "preferences": {}
+}

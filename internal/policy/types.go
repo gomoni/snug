@@ -516,6 +516,10 @@ type Policy struct {
 	// asked for what. A key is present only for a block some profile set.
 	IdentityOwners map[string][]ProfileName
 
+	// Kube is what Resolve made of identity.kube; nil when no kube block is
+	// pinned. See KubeBinding.
+	Kube *KubeBinding
+
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
 	// key or a CLI flag. See topology.go.

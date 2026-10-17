@@ -1180,8 +1180,15 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     owes this function nothing; do not "fix" it by resolving its argument
 //     first — that is precisely the defect it exists to close.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a SEVENTH caller
-// appears. Adding one means writing its resolution obligation (or its reason
+//   - policy.resolveKube (kube.go, issue #664) — asks about
+//     identity.kube.kubeconfig as the identity path loop stored it: the
+//     link-free destination authorableLinks resolved, which is the spelling the
+//     file is later opened by (RESOLVE_NO_SYMLINKS). The obligation is
+//     discharged at write time, as for EngineTargetGraft; writableNameOnChain
+//     beside it asks the unresolved-name question.
+//
+// TestHostPathVisibleCallersAreInventoried fails when a caller not in this
+// list appears. Adding one means writing its resolution obligation (or its reason
 // for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be
 // checked at the call itself.

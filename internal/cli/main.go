@@ -672,6 +672,8 @@ func run(cfg config) int {
 		RuntimeDirs:       runtimeDirCandidates(),
 		EngineTmpPrefixes: engine.TmpDirPrefixes(),
 		EngineDataRoots:   engineDataRoots(os.Getenv("SNUG_PODMAN_ROOT")),
+		SnugExecutable:    snugExecutable(),
+		HostAddresses:     hostAddressesForResolve(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
