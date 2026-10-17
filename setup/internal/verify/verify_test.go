@@ -265,3 +265,43 @@ func TestDefaultsMatchSnug(t *testing.T) {
 		t.Errorf("Defaults = %v, snug's BuiltinDefaults = %v", Defaults, want)
 	}
 }
+
+// TestRefusalFixNamesTheGrant fails if a refusal by snug names a path or
+// profile of the draft and the fix does not say which request granted it and
+// what to say to take it out. The unrelated grant (/srv/data) must not be
+// blamed, and a message that names nothing of the draft gets the fallback.
+func TestRefusalFixNamesTheGrant(t *testing.T) {
+	d := draft.New(host())
+	d.Name = "work"
+	say(d, "needs internet", use("@net"))
+	say(d, "let it read /srv/data", grant("/srv/data", "ro"))
+	say(d, "write to /mnt/cache", grant("/mnt/cache", "rw"))
+	refuse := func(msg string) []Diff {
+		doc := Doc{}
+		doc.Refusal = &struct {
+			Message string `json:"message"`
+		}{msg}
+		return Compare(d, doc)
+	}
+	got := refuse("/mnt/cache/snug is reserved")
+	if len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+	fix := got[0].String()
+	for _, want := range []string{`/mnt/cache was granted by "write to /mnt/cache": say "remove /mnt/cache"`, "/undo"} {
+		if !strings.Contains(fix, want) {
+			t.Errorf("fix lacks %q:\n%s", want, fix)
+		}
+	}
+	for _, bad := range []string{"/srv/data was", "@net was"} {
+		if strings.Contains(fix, bad) {
+			t.Errorf("fix blames %q:\n%s", bad, fix)
+		}
+	}
+	if f := refuse("@net is not allowed here")[0].String(); !strings.Contains(f, `@net was added by "needs internet": say "drop @net"`) {
+		t.Errorf("profile not named:\n%s", f)
+	}
+	if f := refuse("/mnt/cached is reserved")[0].String(); !strings.Contains(f, "does not name a grant of the draft") {
+		t.Errorf("a longer name was taken for the grant:\n%s", f)
+	}
+}

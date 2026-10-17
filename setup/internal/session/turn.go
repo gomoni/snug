@@ -229,6 +229,9 @@ func (s *Session) classify(ctx context.Context, n int, said string, acts []inten
 			if widening(a) && !o.Changed && !o.Default && o.Refused == "" {
 				// It changes nothing, so it is said, not put on a card.
 				it.Class, it.Msg = ClassInfo, it.Sentence+"."
+				if o.Msg != "" {
+					it.Msg = o.Msg
+				}
 			}
 			if widening(a) && o.Changed {
 				it.Class, it.Ticked, it.Abuse = ClassGrant, true, s.abuseOf(a)

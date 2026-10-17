@@ -31,6 +31,7 @@ const (
 	CodeNoVerb      = "no_verb"
 	CodeNoSuchEntry = "no_such_entry"
 	CodeHostPointer = "host_pointer"
+	CodeHostSystem  = "host_system"
 )
 
 // Host is what path decisions need to know about the machine. FS functions
@@ -417,6 +418,24 @@ var hostRunHome = []string{
 	".cache/snug-setup",
 }
 
+// hostSystemTops are the first path components of the host's system
+// directories, and "lib" stands for lib, lib32, lib64 and libexec. A rw grant
+// on one, or on anything under it, is refused unless it is inside the
+// target or $HOME: a change there outlives the sandbox as a change to the
+// system itself. Read-only is a different question, answered by baseReadOnly.
+var hostSystemTops = []string{"etc", "usr", "bin", "sbin", "opt", "var", "boot", "srv"}
+
+func hostSystemPath(q string) bool {
+	top, _, _ := strings.Cut(strings.TrimPrefix(q, "/"), "/")
+	return slices.Contains(hostSystemTops, top) || strings.HasPrefix(top, "lib")
+}
+
+// baseReadOnly lists directories snug's @sys already binds read-only
+// ([profile.sys] ro in base.toml; TestBaseReadOnlyIsStillInBaseToml holds it).
+// Granting one again adds nothing. The /etc entries @sys lists are
+// individual files and directories and are not repeated here.
+var baseReadOnly = []string{"/usr", "/opt"}
+
 var kernelPaths = []string{"/proc", "/dev", "/sys", "/snug"}
 
 var socketTrees = []string{"/tmp/.X11-unix", "/tmp/.ICE-unix", "/run/user", "/var/run/user", "/run/dbus", "/var/run/dbus"}
@@ -499,6 +518,10 @@ func (d *Draft) checkHostPath(p, access string) *Outcome {
 			o := refuse("desktop_socket", fmt.Sprintf("%s%s is a unix socket", q, via))
 			return &o
 		}
+		if access == "rw" && hostSystemPath(q) && !under(q, filepath.Clean(d.Host.Target)) && !under(q, home) {
+			o := refuse(CodeHostSystem, fmt.Sprintf("%s%s is a host system directory, and a change there persists on the host", q, via))
+			return &o
+		}
 	}
 	return nil
 }
@@ -528,6 +551,9 @@ func (d *Draft) grant(path, access string) Outcome {
 		if has(d.RO) || (isTarget && d.ReadOnlyTarget) {
 			return Outcome{Msg: exp + " is already read-only in the draft."}
 		}
+		if dir := d.baseGranted(exp); dir != "" {
+			return Outcome{Msg: exp + " is already read-only in every sandbox: snug's @sys binds " + dir + " read-only. Nothing to add."}
+		}
 		if isTarget {
 			d.ReadOnlyTarget = true
 			return changed("the target " + exp + " is read-only." + note)
@@ -555,6 +581,23 @@ func (d *Draft) grant(path, access string) Outcome {
 		d.Tmpfs = append(d.Tmpfs, spelled)
 		return changed("scratch tmpfs at " + exp + ": writable, empty, in memory, gone when the sandbox exits.")
 	}
+}
+
+// baseGranted returns the directory of baseReadOnly that holds p, as spelled
+// or as it resolves, "" when none does.
+func (d *Draft) baseGranted(p string) string {
+	cands := []string{p}
+	if r, err := d.Host.evalSymlinks(p); err == nil && r != p {
+		cands = append(cands, r)
+	}
+	for _, q := range cands {
+		for _, b := range baseReadOnly {
+			if under(q, b) {
+				return b
+			}
+		}
+	}
+	return ""
 }
 
 func (d *Draft) dropPath(path string) Outcome {
