@@ -1,0 +1,83 @@
+CONTAINERS  a per-sandbox engine behind a filtering proxy at /snug/podman.sock
+         engine      binary resolved from PATH when the run starts — preflight
+                     P1 refuses a host-escape shim there; --dry-run does not
+                     probe PATH, so it names the source, not the binary
+                     the run also refuses it if any grant of this sandbox makes it
+                     WRITABLE — snug execs it as uid 0, pid 1 of the engine's own
+                     pid namespace (issue #405). Not checkable here: that needs
+                     the resolved binary, and this screen has only the source
+                     toolchain root /srv/bundle ($SNUG_PODMAN_ROOT) — named, not
+                     derived from the binary path, and must contain it
+                     THIS RUN WILL REFUSE:
+                     /home/u/proj/sub/tools cannot be this run's engine toolchain root: a grant of this sandbox makes it
+                     WRITABLE.
+                     Grafting it read-only does not help, because read-only restrains the wrong
+                     party: it stops the ENGINE writing and does nothing about the payload, which
+                     writes the same host directory through its own rw grant so the new bytes
+                     appear under the engine's read-only graft. The engine resolves conmon, crun
+                     and netavark out of that directory as root in this sandbox's user namespace,
+                     so a directory the payload can write is the payload choosing what the engine
+                     executes as root.
+                     Fix: put the engine somewhere no rw grant covers, or drop the rw grant.
+                     judged by the functions the run judges with, against this
+                     host as it is NOW: snug resolves each path above and checks
+                     the first and last name on its symlink chain, never a name
+                     strictly between them, so a symlink rewritten after this
+                     screen is judged again — and refused again where that
+                     changes the verdict — when the run starts
+         Containers run in THIS sandbox's own network namespace: with no
+         '@net', a container has no egress either; with '@net', full egress
+         via the sandbox's pasta, exactly as the NETWORK block above states.
+         A container has the sandbox's own network with NO port mapping:
+         'docker run -p N:80' is not supported — the engine holds no
+         CAP_NET_ADMIN, so it cannot reconfigure this namespace to publish one.
+         A container may not ask for a network namespace of its own:
+         'docker run --network=bridge', a named network, 'pasta',
+         'slirp4netns' and '--network=none' are refused at the proxy,
+         for the same reason: crun brings 'lo' up in any namespace it
+         creates, and that needs CAP_NET_ADMIN in that namespace.
+         A container gets its own pid namespace and may not join another:
+         'docker run --pid=host' is refused. Inside the sandbox 'host' would
+         mean the ENGINE, and /proc/<pid>/root in a shared pid namespace
+         reaches that process's entire filesystem view.
+         A container may mount only a path the sandbox can already see,
+         enforced by the proxy's bind filter, which reads this same resolved
+         policy — and the engine's own mount namespace is DERIVED from the
+         sandbox's view rather than being a copy of the host tree, so the
+         filter now refuses by name what the namespace does not contain
+         anyway (see the TOPOLOGY and ENGINE VIEW blocks).
+         Where this host's cgroup delegation is unusable, containers run with
+         cgroups disabled, and only crun implements that mode: the run REFUSES
+         before starting the engine if crun is absent, rather than serving a
+         container API that fails at 'create'.
+         When the PAYLOAD exits normally, the stage — the process that
+         reaped it, and whose own exit is what collapses the engine — asks
+         the engine to stop this run's containers BEFORE it reports the
+         exit, bounded at 1s: a container that handles its stop signal gets
+         to flush, and snug's own exit waits for that second.
+         "Exits normally" now INCLUDES a payload that handled Ctrl-C and
+         exited inside the second snug gives it for that (see the payload
+         grace below) — so holding Ctrl-C on a container run can cost both
+         budgets, up to ~2s.
+         On any other exit it does not: a payload that ignores the signal
+         has its grace expire and snug SIGKILLs the stage before it can
+         ask, and snug SIGKILLed runs no code at all. In both of those the
+         kernel fells every container with the engine's pid namespace,
+         unsignalled.
+IMAGES   provenance is snug's, not this host's (issue #137)
+         search      docker.io and nothing else — no mirror, no rewrite, no
+                     insecure registry. A generated registries.conf, pointed
+                     at by CONTAINERS_REGISTRIES_CONF
+         signatures  NOT verified, and that is snug's decision, not your
+                     host's: this host has no policy.json where podman looks,
+                     so a podman here refuses every pull outright and snug
+                     generates an accept-anything one so the sandbox can pull
+                     at all. Nothing you configured was weakened — you
+                     configured nothing — but the sandbox verifies LESS than
+                     the bare host. Write ~/.config/containers/policy.json and
+                     snug projects it
+         logins      NONE. REGISTRY_AUTH_FILE points at an empty file, so the
+                     host's ~/.docker/config.json and auth.json are not read,
+                     and no private image can be pulled (issue #142)
+         home        the engine gets a HOME of its own for the same reason —
+                     everything podman reads out of one is snug's or absent
