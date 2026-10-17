@@ -597,10 +597,10 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 // does not exist; the likelier cause is keys written under the wrong table.
 func emptyIdentityBlock(source, name string) error {
 	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
-		"       An empty block is not inert: it makes the generated ~/.gitconfig's provenance\n"+
-		"       read \"identity:%s\" on --dry-run and on `snug profile show`, so the screen a\n"+
-		"       human reads to decide whether to trust the sandbox claims a pin that does not\n"+
-		"       exist. Write at least one key, or remove the block", source, name, name)
+		"       It pins nothing, and a reader of this file would believe it pins something;\n"+
+		"       the likelier cause is keys written under the wrong table. Write at least one\n"+
+		"       key under [identity.ssh], [identity.git] or [identity.gh], or remove the block",
+		source, name)
 }
 
 func asStrict(err error, target **toml.StrictMissingError) bool {
