@@ -249,3 +249,15 @@ func TestNeverMindKeepsADeclinedCardClosed(t *testing.T) {
 		t.Errorf("/undo: %v %s", numbers(s), s.Draft().Render())
 	}
 }
+
+// TestUnnamedProjectLabelsDoNotRepeatAWord fails if the opening text calls a
+// project whose marker file names nothing "Python project project" (or "Node
+// package project", "Rust crate project").
+func TestUnnamedProjectLabelsDoNotRepeatAWord(t *testing.T) {
+	for _, lang := range []string{"go", "node", "python", "rust"} {
+		got := describeTarget("/t", ingest.TargetFacts{Languages: []ingest.Lang{{Name: lang, Marker: "marker"}}})
+		if strings.Contains(got, "project project") || strings.Contains(got, "package project") || strings.Contains(got, "crate project") || !strings.Contains(got, " project (marker)") {
+			t.Errorf("%s: %s", lang, got)
+		}
+	}
+}
