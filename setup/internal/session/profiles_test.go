@@ -164,3 +164,19 @@ func TestIdenticalCostIsSaidOnce(t *testing.T) {
 		t.Errorf("%s", got)
 	}
 }
+
+// TestPathGrantCardsStateTheirCost fails if a read-only or writable path
+// grant is offered without a cost line, or if two of one access repeat it.
+// The two cards use different words, so a rw cost cannot stand in for a ro one.
+func TestPathGrantCardsStateTheirCost(t *testing.T) {
+	w := testworld.New(t)
+	s := openRules(w)
+	out := say(s, "write to ~/Documents and ~/Notes")
+	contains(t, out, "writable: "+w.Home+"/Documents (persists)", "cost: the sandbox can read, change and delete everything under this path")
+	if n := strings.Count(out, "change and delete"); n != 1 {
+		t.Errorf("rw cost said %d times, want once:\n%s", n, out)
+	}
+	out = say(s, "read-only ~/Downloads")
+	contains(t, out, "read-only: "+w.Home+"/Downloads", "cost: the sandbox can read everything under this path")
+	lacks(t, out, "change and delete")
+}
