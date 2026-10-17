@@ -23,7 +23,7 @@ func Build(s Selection, host draft.Host, profiles []ingest.Profile) (*draft.Draf
 	d := draft.New(host)
 	refused := map[RowID]string{}
 	propose := func(row RowID, a draft.Action) {
-		origin := s.Rows[row].Choices[s.Pick[row]].Why
+		origin := s.Current(row).Why
 		if origin == "" {
 			origin = "snug-setup default"
 		}

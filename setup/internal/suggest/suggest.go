@@ -73,6 +73,17 @@ type Selection struct {
 	profiles     []ingest.Profile
 	env          []ingest.EnvHint
 	parentIsHome bool
+	netParts     []netPart
+	descName     string
+}
+
+// netPart is one reason for @net and the row it depends on: it counts only
+// while that row is on. hasVia is false for a reason the target's files give
+// on their own.
+type netPart struct {
+	why    string
+	via    RowID
+	hasVia bool
 }
 
 // Suggest computes the Selection for the facts. home and target are the
@@ -96,18 +107,23 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 
 	id := identityRow(f)
 	agent := agentRow(f.Target)
+	s.netParts = []netPart{{why: "@claude", via: Agent, hasVia: true}}
+	for _, r := range prop.NetReasons {
+		s.netParts = append(s.netParts, netPart{why: safe.Inline(r.Why), via: Containers, hasVia: r.Via != ""})
+	}
 	rows := []Row{
 		nameRow(f.Profiles, target),
 		{},
 		baseRow(s.parentIsHome),
 		id,
 		agent,
-		networkRow(prop, agent.Suggested == 0),
+		networkRow(len(prop.NetReasons) > 0, agent.Suggested == 0),
 		containersRow(prop),
 		{},
 		envRow(prop),
 	}
-	rows[Desc] = descRow(f.Target, target, id)
+	s.descName = descName(f.Target, target)
+	rows[Desc] = Row{Choices: []Choice{{Label: s.descFor(id.Choices[id.Suggested].Label), Why: "from project and identity"}}, Sure: true}
 	s.Rows = rows
 	for i := range s.Rows {
 		s.Rows[i].ID = RowID(i)
@@ -152,7 +168,7 @@ func profileName(base string) string {
 	return n
 }
 
-func descRow(t ingest.TargetFacts, target string, id Row) Row {
+func descName(t ingest.TargetFacts, target string) string {
 	name := filepath.Base(target)
 	for _, l := range t.Languages {
 		if l.Project != "" {
@@ -160,11 +176,19 @@ func descRow(t ingest.TargetFacts, target string, id Row) Row {
 			break
 		}
 	}
-	d := safe.Inline(name)
-	if c := id.Choices[id.Suggested]; c.Label != NoIdentity {
-		d += ", " + c.Label
+	return safe.Inline(name)
+}
+
+func (s Selection) descFor(identity string) string {
+	if identity == NoIdentity {
+		return s.descName
 	}
-	return Row{Choices: []Choice{{Label: d, Why: "from project and identity"}}, Sure: true}
+	return s.descName + ", " + identity
+}
+
+// derivedDesc is the DESC text for the current IDENTITY pick.
+func (s Selection) derivedDesc() string {
+	return s.descFor(s.Rows[Identity].Choices[s.Pick[Identity]].Label)
 }
 
 func baseRow(parentIsHome bool) Row {
@@ -219,27 +243,13 @@ func agentRow(t ingest.TargetFacts) Row {
 	return r
 }
 
-func networkRow(p ingest.Proposal, agentOn bool) Row {
+func networkRow(fetches, agentOn bool) Row {
 	r := Row{Sure: true, Choices: []Choice{{Label: "@net"}, {Label: Off}}, Suggested: 1}
-	pickWhy := ""
-	for _, pk := range p.Include {
-		if pk.Name == "@net" {
-			pickWhy = safe.Inline(pk.Why)
-		}
-	}
 	switch {
 	case agentOn:
 		r.Suggested = 0
-		r.Choices[0].Why = "@claude"
-		r.Choices[0].Facts = []string{"@claude cannot work offline"}
-		if pickWhy != "" {
-			r.Choices[0].Why += ", " + pickWhy
-			r.Choices[0].Facts = append(r.Choices[0].Facts, "also: "+pickWhy)
-		}
-	case pickWhy != "":
+	case fetches:
 		r.Sure = false
-		r.Choices[0].Why = pickWhy
-		r.Choices[0].Facts = []string{"the target's files suggest fetching: " + pickWhy + "; only you know if the sandbox needs the internet"}
 	}
 	return r
 }
@@ -306,12 +316,84 @@ func (s Selection) Tools() Choice {
 	return Choice{Label: Off}
 }
 
+// Current returns the Choice row id shows now: its picked Choice, or for a row
+// that starts off its "on" Choice, with the text of Name and Desc and the
+// Tools of the current Identity filled in. The Network choice names only the
+// reasons whose source is on at the moment: no "container images" while
+// Containers is off.
+func (s Selection) Current(id RowID) Choice {
+	switch id {
+	case Tools:
+		return s.Tools()
+	case Name, Desc:
+		c := s.Rows[id].Choices[0]
+		c.Label = s.Text[id]
+		return c
+	}
+	r := s.Rows[id]
+	c := r.Choices[s.Pick[id]]
+	if !r.Sure {
+		c = r.Choices[0]
+	}
+	if id == Network && c.Label == "@net" {
+		c.Why, c.Facts = s.netReasons()
+	}
+	return c
+}
+
+func (s Selection) netReasons() (string, []string) {
+	var whys, facts []string
+	claude := false
+	for _, p := range s.netParts {
+		if p.hasVia && s.Pick[p.via] != 0 {
+			continue
+		}
+		whys = append(whys, p.why)
+		claude = claude || p.via == Agent && p.hasVia
+	}
+	for _, w := range whys {
+		switch {
+		case w == "@claude" && claude:
+			facts = append(facts, "@claude cannot work offline")
+		case claude:
+			facts = append(facts, "also: "+w)
+		default:
+			facts = append(facts, "the target's files suggest fetching: "+w+"; only you know if the sandbox needs the internet")
+		}
+	}
+	return strings.Join(whys, ", "), facts
+}
+
+// WithPick returns a copy of s with row id at choice i. DESC follows an
+// IDENTITY change as long as its text is still the one derived from the
+// IDENTITY pick it had. s is not modified.
+func (s Selection) WithPick(id RowID, i int) Selection {
+	follow := s.Text[Desc] == s.derivedDesc()
+	s.Pick, s.Text = maps.Clone(s.Pick), maps.Clone(s.Text)
+	s.Pick[id] = i
+	if follow {
+		s.Text[Desc] = s.derivedDesc()
+	}
+	return s
+}
+
+// WithText returns a copy of s with the text of row id (Name or Desc) set. s
+// is not modified.
+func (s Selection) WithText(id RowID, text string) Selection {
+	s.Text = maps.Clone(s.Text)
+	s.Text[id] = text
+	return s
+}
+
 // Changed reports whether row id differs from its suggestion. Tools never
-// does: it follows Identity.
+// does: it follows Identity. Desc differs from the text derived from the
+// current Identity pick, not from the one at the start.
 func (s Selection) Changed(id RowID) bool {
 	switch id {
-	case Name, Desc:
+	case Name:
 		return s.Text[id] != s.Rows[id].Choices[0].Label
+	case Desc:
+		return s.Text[id] != s.derivedDesc()
 	case Tools:
 		return false
 	}
@@ -321,14 +403,13 @@ func (s Selection) Changed(id RowID) bool {
 // Revert returns a copy of s with row id back at its suggestion. s is not
 // modified.
 func (s Selection) Revert(id RowID) Selection {
-	s.Pick, s.Text = maps.Clone(s.Pick), maps.Clone(s.Text)
 	switch id {
-	case Name, Desc:
-		s.Text[id] = s.Rows[id].Choices[0].Label
-	default:
-		s.Pick[id] = s.Rows[id].Suggested
+	case Name:
+		return s.WithText(id, s.Rows[id].Choices[0].Label)
+	case Desc:
+		return s.WithText(id, s.derivedDesc())
 	}
-	return s
+	return s.WithPick(id, s.Rows[id].Suggested)
 }
 
 // RevertAll returns a copy of s with every row back at its suggestion. s is

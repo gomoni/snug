@@ -45,8 +45,8 @@ func TestSuggestClaudeImpliesNet(t *testing.T) {
 	if got := label(s, Network); got != "@net" || !s.Rows[Network].Sure {
 		t.Errorf("network %q sure=%v", got, s.Rows[Network].Sure)
 	}
-	if !strings.Contains(s.Rows[Network].Choices[0].Why, "@claude") {
-		t.Errorf("why %q", s.Rows[Network].Choices[0].Why)
+	if !strings.Contains(s.Current(Network).Why, "@claude") {
+		t.Errorf("why %q", s.Current(Network).Why)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestUnsureStartsOff(t *testing.T) {
 		t.Errorf("network %q", got)
 	}
 	r := s.Rows[Network]
-	if r.Sure || r.Choices[0].Label != "@net" || !strings.Contains(r.Choices[0].Why, "go mod download") {
+	if r.Sure || r.Choices[0].Label != "@net" || !strings.Contains(s.Current(Network).Why, "go mod download") {
 		t.Errorf("row %+v", r)
 	}
 	if s.Changed(Network) {
@@ -229,5 +229,66 @@ func TestToolsFollowIdentity(t *testing.T) {
 	}
 	if s.Changed(Tools) {
 		t.Errorf("Tools is never a change")
+	}
+}
+
+func TestNetworkReasonsListOnlySourcesThatAreOn(t *testing.T) {
+	f := ingest.Facts{Target: goFacts()}
+	f.Target.Claude = true
+	f.Target.Containers = []string{"Containerfile"}
+	s := Suggest(f, home, "/home/alice/work/app")
+	why := func(s Selection) string { return s.Current(Network).Why }
+	if got := why(s); got != "@claude, go mod download" {
+		t.Errorf("containers off: %q", got)
+	}
+	on := s.WithPick(Containers, 0)
+	if got := why(on); got != "@claude, go mod download, container images" {
+		t.Errorf("containers on: %q", got)
+	}
+	noAgent := on.WithPick(Agent, 1)
+	if got := why(noAgent); got != "go mod download, container images" {
+		t.Errorf("agent off: %q", got)
+	}
+	if facts := strings.Join(s.Current(Network).Facts, "|"); strings.Contains(facts, "container images") {
+		t.Errorf("facts name a source that is off: %q", facts)
+	}
+}
+
+func TestContainerOnlyNetReasonIsEmptyWhileContainersAreOff(t *testing.T) {
+	s := Suggest(ingest.Facts{Target: ingest.TargetFacts{Containers: []string{"Containerfile"}}}, home, "/home/alice/work/app")
+	if got := s.Current(Network).Why; got != "" {
+		t.Errorf("reason %q with containers off", got)
+	}
+	if got := s.WithPick(Containers, 0).Current(Network).Why; got != "container images" {
+		t.Errorf("reason %q with containers on", got)
+	}
+}
+
+func TestDescFollowsIdentityUnlessEdited(t *testing.T) {
+	f := claudeGoFacts()
+	s := Suggest(f, home, "/home/alice/work/app")
+	if s.Text[Desc] != "app, vyskocilm" {
+		t.Fatalf("desc %q", s.Text[Desc])
+	}
+	none := s.WithPick(Identity, 0)
+	if none.Text[Desc] != "app" || none.Changed(Desc) {
+		t.Errorf("identity none: desc %q changed %v", none.Text[Desc], none.Changed(Desc))
+	}
+	if s.Text[Desc] != "app, vyskocilm" {
+		t.Errorf("WithPick modified its receiver")
+	}
+	back := none.WithPick(Identity, s.Pick[Identity])
+	if back.Text[Desc] != "app, vyskocilm" {
+		t.Errorf("identity back: %q", back.Text[Desc])
+	}
+	mine := s.WithText(Desc, "my own words").WithPick(Identity, 0)
+	if mine.Text[Desc] != "my own words" || !mine.Changed(Desc) {
+		t.Errorf("an edited desc was overwritten: %q", mine.Text[Desc])
+	}
+	if r := mine.Revert(Desc); r.Text[Desc] != "app" || r.Changed(Desc) {
+		t.Errorf("Revert(Desc) = %q", r.Text[Desc])
+	}
+	if r := mine.RevertAll(); r.Text[Desc] != "app, vyskocilm" || r.Changed(Desc) {
+		t.Errorf("RevertAll desc = %q", r.Text[Desc])
 	}
 }

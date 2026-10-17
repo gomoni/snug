@@ -5,7 +5,7 @@ snug-setup  ~/work/snug-setup
   BASE       @sys @home @target-rw @parent-ro
   IDENTITY   vyskocilm                        remote github.com:gomoni/snug
   AGENT      @claude                          CLAUDE.md found
-  NETWORK    @net                             @claude, go mod download, container images
+  NETWORK    @net                             @claude, go mod download
   CONTAINERS ○ @podman-build                  Containerfile
   TOOLS      gh-cli                           from vyskocilm
   ENV        GOMODCACHE GOCACHE               go.mod

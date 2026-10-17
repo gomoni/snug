@@ -83,6 +83,16 @@ type Pick struct {
 type Proposal struct {
 	Include []Pick
 	Env     []EnvHint
+	// NetReasons are the reasons behind the merged @net pick, one per source,
+	// so a caller can drop the ones whose source it has switched off.
+	NetReasons []NetReason
+}
+
+// NetReason is one reason for @net. Via is the name of the include pick it
+// depends on ("@podman-build"), or "" when the target's files give it alone.
+type NetReason struct {
+	Why string
+	Via string
 }
 
 // AnalyzeTarget looks at the top level of target, and one level into a few
@@ -331,28 +341,32 @@ func Propose(t TargetFacts) Proposal {
 			hint("GOMODCACHE", "{target}/.cache/go-mod", m)
 			hint("GOCACHE", "{target}/.cache/go-build", m)
 			p.Include = append(p.Include, Pick{"@net", "go mod download", false})
+			p.NetReasons = append(p.NetReasons, NetReason{Why: "go mod download"})
 		case "node":
 			hint("NPM_CONFIG_CACHE", "{target}/.cache/npm", m)
 			p.Include = append(p.Include, Pick{"@net", "npm install", false})
+			p.NetReasons = append(p.NetReasons, NetReason{Why: "npm install"})
 		case "python":
 			hint("PIP_CACHE_DIR", "{target}/.cache/pip", m)
 			if m == "uv.lock" {
 				hint("UV_CACHE_DIR", "{target}/.cache/uv", m)
 			}
 			p.Include = append(p.Include, Pick{"@net", "pip install", false})
+			p.NetReasons = append(p.NetReasons, NetReason{Why: "pip install"})
 		case "rust":
 			hint("CARGO_HOME", "{target}/.cache/cargo", m)
 			p.Include = append(p.Include, Pick{"@net", "cargo fetch", false})
+			p.NetReasons = append(p.NetReasons, NetReason{Why: "cargo fetch"})
 		}
 	}
 	if len(t.Containers) > 0 {
-		build := slices.ContainsFunc(t.Containers, func(n string) bool { return !isComposeName(strings.ToLower(path.Base(n))) })
-		if build {
-			p.Include = append(p.Include, Pick{"@podman-build", path.Base(t.Containers[0]), false})
-		} else {
-			p.Include = append(p.Include, Pick{"@podman-socket", path.Base(t.Containers[0]), false})
+		via := "@podman-socket"
+		if slices.ContainsFunc(t.Containers, func(n string) bool { return !isComposeName(strings.ToLower(path.Base(n))) }) {
+			via = "@podman-build"
 		}
+		p.Include = append(p.Include, Pick{via, path.Base(t.Containers[0]), false})
 		p.Include = append(p.Include, Pick{"@net", "container images", false})
+		p.NetReasons = append(p.NetReasons, NetReason{Why: "container images", Via: via})
 	}
 	p.Include = mergePicks(p.Include)
 	return p
