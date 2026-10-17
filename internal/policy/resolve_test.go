@@ -728,6 +728,8 @@ func maximalProfile() *Profile {
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
 				SigningKey: "/home/u/.ssh/sign.pub"},
 			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
+			Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
+				ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"},
 		},
 		Environ: EnvGrants{
 			Set:      map[string]string{"MY_TOOL_ROOT": "/opt/tool"},
@@ -776,11 +778,16 @@ func keyDrops() []keyDrop {
 		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
+		{"identity.kube.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
+		{"identity.kube.token", "Identity.Kube.Token", func(p *Profile) { p.Identity.Kube.Token = "" }},
+		{"identity.kube.service_account", "Identity.Kube.ServiceAccount", func(p *Profile) { p.Identity.Kube.ServiceAccount = "" }},
+		{"identity.kube.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},
 		// Whole blocks, because identity joins one block at a time: removing a
 		// block removes one pin, and must widen nothing the others grant.
 		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},
 		{"identity.git", "Identity.Git", func(p *Profile) { p.Identity.Git = IdentityGit{} }},
 		{"identity.gh", "Identity.Gh", func(p *Profile) { p.Identity.Gh = IdentityGh{} }},
+		{"identity.kube", "Identity.Kube", func(p *Profile) { p.Identity.Kube = IdentityKube{} }},
 		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},
 		{"environ.merge", "Environ.Merge", func(p *Profile) { p.Environ.Merge = nil }},
 		{"environ.prepend", "Environ.Prepend", func(p *Profile) { p.Environ.Prepend = nil }},
