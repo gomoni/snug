@@ -138,3 +138,26 @@ func TestProposeFromFacts(t *testing.T) {
 		t.Errorf("Dockerfile: %+v", p.Include)
 	}
 }
+
+func TestAnalyzeTargetClaude(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(d string)
+		want  bool
+	}{
+		{"CLAUDE.md", func(d string) { write(t, d, "CLAUDE.md", "x") }, true},
+		{".claude dir", func(d string) { os.Mkdir(filepath.Join(d, ".claude"), 0o755) }, true},
+		{".claude file", func(d string) { write(t, d, ".claude", "x") }, false},
+		{".claude symlink", func(d string) { os.Symlink(t.TempDir(), filepath.Join(d, ".claude")) }, false},
+		{"nothing", func(string) {}, false},
+		{"only in a subdirectory", func(d string) { write(t, d, "sub/CLAUDE.md", "x") }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			tc.setup(d)
+			if got := AnalyzeTarget(d).Claude; got != tc.want {
+				t.Errorf("Claude = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

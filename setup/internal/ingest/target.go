@@ -52,6 +52,9 @@ type TargetFacts struct {
 	// Git is true when .git exists in the target, as a directory or as the
 	// file a worktree or submodule has. Nothing inside it is read here.
 	Git bool
+	// Claude is true when the target's top level has CLAUDE.md or a .claude
+	// directory. Only the names are looked at; nothing in them is read.
+	Claude bool
 	// RepoProfile is true when the target ships .snug or snug.toml. It is
 	// reported and never read: profiles come from the human's own config.
 	RepoProfile bool
@@ -177,6 +180,12 @@ func scan(root *os.Root, prefix string, names []string, f *TargetFacts) {
 		switch {
 		case n == ".git":
 			f.Git = true
+		case n == "CLAUDE.md":
+			f.Claude = true
+		case n == ".claude":
+			if fi, err := root.Lstat(n); err == nil && fi.IsDir() {
+				f.Claude = true
+			}
 		case n == ".snug" || n == "snug.toml":
 			f.RepoProfile = true
 		case low == ".env" || strings.HasPrefix(low, ".env.") && low != ".env.example" && low != ".env.sample" && low != ".env.template",
