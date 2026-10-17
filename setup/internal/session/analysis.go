@@ -14,8 +14,13 @@ import (
 	"github.com/gomoni/snug/setup/internal/safe"
 )
 
-// langWords says how a language is named in the opening text.
-var langWords = map[string]string{"go": "Go module", "node": "Node package", "python": "Python project", "rust": "Rust crate"}
+// langWords says how a language's project is named in the opening text, with
+// the project's name after it; langUnnamed says it when the marker file gives
+// no name.
+var (
+	langWords   = map[string]string{"go": "Go module", "node": "Node package", "python": "Python project", "rust": "Rust crate"}
+	langUnnamed = map[string]string{"go": "Go project", "node": "Node project", "python": "Python project", "rust": "Rust project"}
+)
 
 // describeTarget is the first thing the human reads about the project, in
 // Go's words. Names from the project pass through safe.Inline; ingest has
@@ -23,14 +28,9 @@ var langWords = map[string]string{"go": "Go module", "node": "Node package", "py
 func describeTarget(target string, t ingest.TargetFacts) string {
 	var parts []string
 	for _, l := range t.Languages {
-		w := langWords[l.Name]
+		w := langUnnamed[l.Name]
 		if l.Project != "" {
-			w += " " + safe.Inline(l.Project)
-		} else {
-			w = strings.TrimSuffix(w, " module") + " project"
-			if l.Name == "go" {
-				w = "Go project"
-			}
+			w = langWords[l.Name] + " " + safe.Inline(l.Project)
 		}
 		parts = append(parts, w+" ("+safe.Inline(l.Marker)+")")
 	}
