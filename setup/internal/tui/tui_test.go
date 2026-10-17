@@ -811,3 +811,25 @@ func TestNoControlBytesWithoutColor(t *testing.T) {
 		t.Errorf("NoColor output has escapes")
 	}
 }
+
+func TestEditConfirmSaysItEndsTheProgram(t *testing.T) {
+	var l reviewLog
+	m := sized(New(withLog(config(facts()), &l)), 200)
+	m = press(m, "e")
+	if m.rev == nil || m.rev.r.Title != EditTitle || !strings.HasPrefix(screen(m), "e writes the profile, opens $EDITOR, and ends snug-setup — the screen does not come back. y/n") {
+		t.Errorf("title:\n%s", screen(m))
+	}
+	if !strings.Contains(screen(m), "writes snug-setup.toml (new file)") {
+		t.Errorf("the file line is gone:\n%s", screen(m))
+	}
+	if w := press(sized(New(withLog(config(facts()), &l)), 200), "w"); strings.Contains(screen(w), "ends snug-setup") {
+		t.Errorf("w must not claim to end the program")
+	}
+}
+
+func TestFooterEditIsLast(t *testing.T) {
+	m := sized(New(config(facts())), 200)
+	if !strings.HasSuffix(strings.TrimRight(screen(m), " \n"), "q quit  e edit & exit") {
+		t.Errorf("footer:\n%s", screen(m))
+	}
+}

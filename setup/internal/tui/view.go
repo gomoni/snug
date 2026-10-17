@@ -155,7 +155,7 @@ func (m Model) footer(w int) []string {
 	case m.cursor == int(suggest.Identity):
 		keys = append(keys, "enter open")
 	}
-	keys = append(keys, "u revert", "? why", "e edit")
+	keys = append(keys, "u revert", "? why")
 	if m.cfg.DryRun != nil {
 		keys = append(keys, "d dry-run")
 	}
@@ -163,6 +163,7 @@ func (m Model) footer(w int) []string {
 	if wn, ok := m.warningAt(); ok && wn.Old != "" {
 		keys = append([]string{"f fix"}, keys...)
 	}
+	keys = append(keys, "e edit & exit")
 	var out []string
 	cur := ""
 	for _, k := range keys {

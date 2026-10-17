@@ -82,6 +82,10 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		r, err := m.cfg.Plan(m.sel)
+		if kind == Edit && err == nil {
+			r.Body = r.Title + "\n\n" + r.Body
+			r.Title = EditTitle
+		}
 		return m.openReview(kind, r, err)
 	case "q", "ctrl+c":
 		if m.anyChanged() {
@@ -92,6 +96,10 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// EditTitle heads the confirmation screen of `e`, which unlike `w` does not
+// return to the rows.
+const EditTitle = "e writes the profile, opens $EDITOR, and ends snug-setup — the screen does not come back. y/n"
 
 func (m Model) finish(r Result) (tea.Model, tea.Cmd) {
 	m.out.Result = r
