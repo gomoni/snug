@@ -472,3 +472,14 @@ func TestKubeMintBinaryRefusesWritableOrRelative(t *testing.T) {
 		t.Errorf("a kubectl under an rw grant: %v", err)
 	}
 }
+
+func TestAzureFamilyIsInlineConfigAndItsPointersAreNot(t *testing.T) {
+	for name, want := range map[string]bool{
+		"AZURE_CORE_OUTPUT": true, "AZURE_CLIENT_SECRET": true,
+		"AZURE_CONFIG_DIR": false, "KUBECONFIG": false,
+	} {
+		if got := IsInlineConfigEnv(name); got != want {
+			t.Errorf("IsInlineConfigEnv(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
