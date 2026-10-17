@@ -69,6 +69,60 @@ type Diff struct {
 
 func (d Diff) String() string { return d.What + "\n    fix: " + d.Fix }
 
+// refusalFix says how to change a draft snug refused: the grants and profiles
+// in the draft that snug's message names, each with the request it came from
+// and the sentence that takes it out, then the fallback that always works. It
+// is pure.
+func refusalFix(d *draft.Draft, msg string) string {
+	var named []string
+	for _, e := range d.Effective() {
+		a := e.Action
+		switch a.Op {
+		case intent.OpGrantPath:
+			if p := d.HostPath(a.Path); names(msg, p) {
+				named = append(named, fmt.Sprintf("%s was granted by %s: say \"remove %s\"", p, origin(e), p))
+			}
+		case intent.OpStageBinary:
+			if p := d.HostPath(a.Host); names(msg, p) {
+				named = append(named, fmt.Sprintf("%s was staged by %s: say \"remove %s\"", p, origin(e), p))
+			}
+		case intent.OpUseProfile, intent.OpIncludeProfile:
+			if names(msg, a.Name) {
+				named = append(named, fmt.Sprintf("%s was added by %s: say \"drop %s\"", a.Name, origin(e), a.Name))
+			}
+		}
+	}
+	rest := "/show lists the draft; /undo takes back the last step only"
+	if len(named) == 0 {
+		return "snug's message does not name a grant of the draft; " + rest
+	}
+	return strings.Join(named, "\n    fix: ") + "\n    (" + rest + ")"
+}
+
+// names reports whether msg mentions p as a whole path or as a directory
+// above something: the characters on both sides of it are not part of a
+// name, so /etc is in "/etc/snug" and not in "/etcd" or "/usr/etc".
+func names(msg, p string) bool {
+	if p == "" {
+		return false
+	}
+	isName := func(b byte) bool {
+		return b == '.' || b == '-' || b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+	}
+	for from := 0; ; {
+		i := strings.Index(msg[from:], p)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(p)
+		if (i == 0 || !isName(msg[i-1])) && (end == len(msg) || !isName(msg[end])) {
+			return true
+		}
+		from = i + 1
+	}
+}
+
 // Parse decodes a dry-run document. It returns an error for a document that
 // is not JSON, whose format is not Format, or that is lossy (a path that is
 // not valid UTF-8 cannot be compared exactly).
@@ -94,7 +148,7 @@ func Compare(d *draft.Draft, doc Doc) []Diff {
 		if doc.Refusal != nil {
 			msg = doc.Refusal.Message
 		}
-		return []Diff{{What: "snug refused the draft: " + msg, Fix: "change what snug names above; the draft as it stands cannot run"}}
+		return []Diff{{What: "snug refused the draft: " + msg, Fix: refusalFix(d, msg)}}
 	}
 	name := d.Name
 	var diffs []Diff

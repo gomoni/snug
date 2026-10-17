@@ -180,3 +180,25 @@ func TestPathGrantCardsStateTheirCost(t *testing.T) {
 	contains(t, out, "read-only: "+w.Home+"/Downloads", "cost: the sandbox can read everything under this path")
 	lacks(t, out, "change and delete")
 }
+
+// TestSystemDirsAreRefusedNotCarded fails if "write to /etc" or
+// "/usr/local" reaches a card or the draft, or if "read-only /usr" becomes a
+// card instead of a sentence saying @sys already has it. Without this the only
+// stop was the /save dry-run, and only for /etc.
+func TestSystemDirsAreRefusedNotCarded(t *testing.T) {
+	w := testworld.New(t)
+	for _, req := range []string{"write to /etc", "let it write to /usr/local", "write to /var/lib/x", "write to /opt"} {
+		s := openRules(w)
+		out := say(s, req)
+		contains(t, out, "refused (host_system)", "grant a project directory")
+		if len(s.Pending()) != 0 || !s.Draft().Empty() {
+			t.Errorf("%q: pending %v, draft %+v\n%s", req, numbers(s), s.Draft(), out)
+		}
+	}
+	s := openRules(w)
+	out := say(s, "read-only /usr")
+	contains(t, out, "snug's @sys binds /usr read-only")
+	if len(s.Pending()) != 0 || !s.Draft().Empty() {
+		t.Errorf("ro /usr: pending %v\n%s", numbers(s), out)
+	}
+}

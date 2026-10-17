@@ -63,7 +63,7 @@ func TestQuotesAreStillInSnugSources(t *testing.T) {
 func TestEveryCodeAndTopicHasText(t *testing.T) {
 	for _, c := range append(append([]string{}, intent.Refusals...),
 		draft.CodeKernelPath, draft.CodeReservedEnv, draft.CodeBadValue, draft.CodeNotGranted,
-		draft.CodeUnknownList, draft.CodeNoVerb, draft.CodeNoSuchEntry, draft.CodeHostPointer) {
+		draft.CodeUnknownList, draft.CodeNoVerb, draft.CodeNoSuchEntry, draft.CodeHostPointer, draft.CodeHostSystem) {
 		if e, ok := Refusal(c); !ok || e.String() == "" {
 			t.Errorf("no text for refusal %s", c)
 		}

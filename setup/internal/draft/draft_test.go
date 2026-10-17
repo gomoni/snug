@@ -190,8 +190,8 @@ func TestDraftRefusesWritableGrantOnSnugSetupCache(t *testing.T) {
 // and for $XDG_CONFIG_HOME/snug outside the home; ro stays allowed.
 func TestSnugConfigNotWritable(t *testing.T) {
 	h := testHost()
-	h.ConfigHome = "/srv/cfg"
-	for _, p := range []string{"~/.config/snug", "~/.config/snug/profiles.d", "~/.config", "/srv/cfg/snug/profiles.d", "/srv/cfg", "/srv"} {
+	h.ConfigHome = "/mnt/cfg"
+	for _, p := range []string{"~/.config/snug", "~/.config/snug/profiles.d", "~/.config", "/mnt/cfg/snug/profiles.d", "/mnt/cfg", "/mnt"} {
 		d := New(h)
 		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "sensitive_home" {
 			t.Errorf("grant rw %s: refused=%q (%s), want sensitive_home", p, o.Refused, o.Msg)
@@ -200,13 +200,13 @@ func TestSnugConfigNotWritable(t *testing.T) {
 			t.Errorf("grant rw %s changed the draft", p)
 		}
 	}
-	for _, p := range []string{"~/.config/snug/profiles.d", "/srv/cfg/snug"} {
+	for _, p := range []string{"~/.config/snug/profiles.d", "/mnt/cfg/snug"} {
 		d := New(h)
 		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "ro")); o.Refused != "" {
 			t.Errorf("grant ro %s refused: %+v", p, o)
 		}
 	}
-	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/srv/other", "access", "rw")); o.Refused != "" {
+	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/mnt/other", "access", "rw")); o.Refused != "" {
 		t.Errorf("a sibling of the config home refused: %+v", o)
 	}
 }
@@ -262,7 +262,7 @@ func TestCheckTargetRefusesInvisibles(t *testing.T) {
 }
 
 func TestSafetyRulesAllowOrdinary(t *testing.T) {
-	for _, p := range []string{"/srv/data", "~/data", "~/src", "{target}/out", "/opt/cache", "~/.cache/pip"} {
+	for _, p := range []string{"/mnt/data", "~/data", "~/src", "{target}/out", "/mnt/cache", "~/.cache/pip"} {
 		d := New(testHost())
 		if o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw")); o.Refused != "" {
 			t.Errorf("%s refused: %+v", p, o)
@@ -578,11 +578,11 @@ func TestSummary(t *testing.T) {
 	d.Name = "webapp"
 	d.Apply(act(intent.OpUseProfile, "name", "@net"))
 	d.Apply(act(intent.OpUseProfile, "name", "@git"))
-	d.Apply(act(intent.OpGrantPath, "path", "/srv/data", "access", "rw"))
+	d.Apply(act(intent.OpGrantPath, "path", "/mnt/data", "access", "rw"))
 	d.SetSSH("/home/alice/.ssh/id_work.pub")
 	d.SetGH("github.com", "alice-corp")
 	_, user := intent.FormatPrompt(intent.Context{Target: d.Host.Target, Draft: d.Summary()}, "x")
-	want := "draft: name=webapp include=@net,@git rw=/srv/data ro=- tmpfs=- env=- identity=ssh:id_work,github:alice-corp"
+	want := "draft: name=webapp include=@net,@git rw=/mnt/data ro=- tmpfs=- env=- identity=ssh:id_work,github:alice-corp"
 	if !strings.Contains(user, want) {
 		t.Errorf("%s", user)
 	}
@@ -697,16 +697,16 @@ func scenarios() []scenario {
 		{name: "layering", say: "~/data read-only but ~/data/out writable", steps: []intent.Action{act(intent.OpNameProfile, "name", "data"), act(intent.OpGrantPath, "path", "~/data", "access", "ro"), act(intent.OpGrantPath, "path", "~/data/out", "access", "rw")}},
 		{name: "claude-parent", say: "run claude, read the siblings, my gh", steps: []intent.Action{act(intent.OpNameProfile, "name", "agent"), act(intent.OpUseProfile, "name", "@claude"), act(intent.OpUseProfile, "name", "@parent-ro"),
 			act(intent.OpStageBinary, "host", "~/bin/gh", "name", "gh")}},
-		{name: "compose", say: "podman online with /srv/pg and /srv/uploads", steps: []intent.Action{act(intent.OpNameProfile, "name", "stack"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@net"),
-			act(intent.OpGrantPath, "path", "/srv/pg", "access", "ro"), act(intent.OpGrantPath, "path", "/srv/uploads", "access", "rw")}},
+		{name: "compose", say: "podman online with /mnt/pg and /mnt/uploads", steps: []intent.Action{act(intent.OpNameProfile, "name", "stack"), act(intent.OpUseProfile, "name", "@podman-socket"), act(intent.OpUseProfile, "name", "@net"),
+			act(intent.OpGrantPath, "path", "/mnt/pg", "access", "ro"), act(intent.OpGrantPath, "path", "/mnt/uploads", "access", "rw")}},
 		{name: "ledger-conflict", say: "keep it offline", steps: []intent.Action{act(intent.OpNameProfile, "name", "offline"), act(intent.OpDropProfile, "name", "@net"),
-			act(intent.OpGrantPath, "path", "/srv/pg", "access", "ro")},
+			act(intent.OpGrantPath, "path", "/mnt/pg", "access", "ro")},
 			setup: func(d *Draft) {
 				d.Propose(act(intent.OpUseProfile, "name", "@podman-build"), SourceFile, "README.md", 2)
 				for _, accept := range []bool{false, true} {
 					a := act(intent.OpUseProfile, "name", "@net")
 					if accept {
-						a = act(intent.OpGrantPath, "path", "/srv/pg", "access", "rw")
+						a = act(intent.OpGrantPath, "path", "/mnt/pg", "access", "rw")
 					}
 					if _, p := d.Propose(a, SourceFile, "README.md", 2); p != nil {
 						d.Decide(*p, accept)
@@ -851,5 +851,68 @@ func TestSigningKeyNeedsSSHAndGit(t *testing.T) {
 	d.SetSSH("/home/u/.ssh/k.pub")
 	if d.SetSigningKey("/home/u/.ssh/s.pub") {
 		t.Error("signing key pinned without a git author")
+	}
+}
+
+// TestHostSystemDirsAreNotWritable fails if a rw grant on a system directory
+// of the host, or on anything under one, is accepted. Read-only on the same
+// paths is not refused here, and a path inside the target is not a system
+// directory even when the target itself sits under /srv.
+func TestHostSystemDirsAreNotWritable(t *testing.T) {
+	for _, p := range []string{"/etc", "/etc/ssh", "/usr", "/usr/local", "/usr/local/bin", "/bin", "/sbin", "/lib", "/lib64", "/libexec",
+		"/opt", "/opt/tool", "/var", "/var/lib/x", "/boot", "/srv", "/srv/www"} {
+		d := New(testHost())
+		o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "rw"))
+		if o.Refused != CodeHostSystem {
+			t.Errorf("grant rw %s: refused=%q (%s), want %s", p, o.Refused, o.Msg, CodeHostSystem)
+		}
+		if !d.Empty() {
+			t.Errorf("grant rw %s changed the draft", p)
+		}
+	}
+	if o := New(testHost()).Apply(act(intent.OpGrantPath, "path", "/etc", "access", "tmpfs")); o.Refused != "" {
+		t.Errorf("a scratch tmpfs on /etc writes nothing to the host: %+v", o)
+	}
+	h := testHost()
+	h.Target = "/srv/proj"
+	if o := New(h).Apply(act(intent.OpGrantPath, "path", "{target}/out", "access", "rw")); o.Refused != "" {
+		t.Errorf("rw inside the target refused: %+v", o)
+	}
+	if o := New(h).Apply(act(intent.OpGrantPath, "path", "/srv", "access", "rw")); o.Refused != CodeHostSystem {
+		t.Errorf("rw on a directory above the target: %+v", o)
+	}
+}
+
+// TestBaseReadOnlyNeedsNoCard fails if a read-only grant on what @sys already
+// binds is recorded in the draft instead of being said, or if the sentence
+// stops naming @sys.
+func TestBaseReadOnlyNeedsNoCard(t *testing.T) {
+	for _, p := range []string{"/usr", "/usr/local", "/usr/share/doc", "/opt", "/opt/tool"} {
+		d := New(testHost())
+		o := d.Apply(act(intent.OpGrantPath, "path", p, "access", "ro"))
+		if o.Changed || o.Refused != "" || !strings.Contains(o.Msg, "@sys") || !d.Empty() {
+			t.Errorf("ro %s: %+v, draft empty %v", p, o, d.Empty())
+		}
+	}
+	if o := New(testHost()).Apply(act(intent.OpGrantPath, "path", "/etc", "access", "ro")); !o.Changed {
+		t.Errorf("@sys binds only some /etc entries; ro /etc is still a grant: %+v", o)
+	}
+}
+
+func TestBaseReadOnlyIsStillInBaseToml(t *testing.T) {
+	raw, err := os.ReadFile("../../../internal/profile/profiles/base.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(string(raw), "[profile.sys]")
+	if !ok {
+		t.Fatal("no [profile.sys] in base.toml")
+	}
+	_, ro, _ := strings.Cut(after, "ro = [")
+	ro, _, _ = strings.Cut(ro, "]")
+	for _, b := range baseReadOnly {
+		if !strings.Contains(ro, `"`+b+`"`) {
+			t.Errorf("@sys no longer binds %s read-only", b)
+		}
 	}
 }

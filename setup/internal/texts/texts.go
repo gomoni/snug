@@ -135,6 +135,10 @@ var refusals = map[string]Entry{
 		Say: "I only edit snug profiles. Try \"help\".",
 	},
 
+	"host_system": {
+		Say: "Refused. A writable host system directory (/, /etc, /usr, /bin, /sbin, /lib*, /opt, /var, /boot, /srv, or anything under one) is never granted: a change there persists on the host as a change to the system.\n" +
+			"  The sandbox already reads /usr and /opt, and the few /etc files things need, read-only (@sys). To write, grant a project directory you own, for example ~/src/proj.",
+	},
 	"kernel_path":      {Say: "Refused. /proc, /dev, /sys and /snug are snug's own inside the sandbox and cannot be granted."},
 	"reserved_env":     {Say: "Refused. snug writes this variable itself (HOME, PATH, SHELL, USER, LOGNAME, TMPDIR, PS1, TERM, LANG, TZ, PWD and SNUG*); a profile cannot set or inherit it."},
 	"bad_value":        {Say: "Refused. That value cannot be written into a profile."},
