@@ -365,12 +365,14 @@ type jsonDoc struct {
 	Network    jsonNetwork    `json:"network"`
 	// BrowserBridge is absent when the policy's login set lacks claude.
 	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
-	Topology      jsonTopology       `json:"topology"`
-	Containers    *jsonContainers    `json:"containers"`
-	Environment   []jsonEnvVar       `json:"environment"`
-	Seccomp       jsonSeccomp        `json:"seccomp"`
-	TTY           jsonTTY            `json:"tty"`
-	Bwrap         jsonBwrap          `json:"bwrap"`
+	// Kube is absent when no identity.kube block is pinned.
+	Kube        *jsonKube       `json:"kube,omitempty"`
+	Topology    jsonTopology    `json:"topology"`
+	Containers  *jsonContainers `json:"containers"`
+	Environment []jsonEnvVar    `json:"environment"`
+	Seccomp     jsonSeccomp     `json:"seccomp"`
+	TTY         jsonTTY         `json:"tty"`
+	Bwrap       jsonBwrap       `json:"bwrap"`
 	// Pasta is nil when this policy starts no pasta process
 	// (network.mode != "egress"). Refs #332 F1e.
 	Pasta *jsonPasta `json:"pasta"`
@@ -565,6 +567,27 @@ type jsonBrowserBridge struct {
 	FIFO        string   `json:"fifo"`
 	MaxOpens    int      `json:"max_opens"`
 	MaxRelays   int      `json:"max_relays"`
+}
+
+// jsonKube is reportKube. Kubectl is empty and KubectlProblem set when a real
+// run would refuse for want of a host kubectl.
+type jsonKube struct {
+	Context        string   `json:"context"`
+	Server         string   `json:"server"`
+	ServiceAccount string   `json:"service_account"`
+	Kubectl        string   `json:"kubectl"`
+	KubectlProblem string   `json:"kubectl_problem,omitempty"`
+	MintArgv       []string `json:"mint_argv"`
+	MintEnv        []string `json:"mint_env"`
+	MintBudget     int      `json:"mint_budget"`
+	Requested      string   `json:"requested_lifetime"`
+	Credential     string   `json:"host_credential"`
+	// StaticTokenUnused: the host user also holds a static token, never sent.
+	StaticTokenUnused bool     `json:"static_token_unused"`
+	Absent            []string `json:"absent"`
+	Visible           []string `json:"visible,omitempty"`
+	Shim              string   `json:"shim"`
+	Socket            string   `json:"socket"`
 }
 
 type jsonTopology struct {
@@ -851,6 +874,24 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		doc.BrowserBridge = &jsonBrowserBridge{
 			Login: b.Login, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
 			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
+		}
+	}
+	if k := rep.Kube; k != nil {
+		text := func(s string) string { v, _ := e.text(s); return v }
+		texts := func(in []string) []string {
+			out := make([]string, len(in))
+			for i, s := range in {
+				out[i] = text(s)
+			}
+			return out
+		}
+		doc.Kube = &jsonKube{
+			Context: text(k.Context), Server: text(k.Server), ServiceAccount: text(k.ServiceAccount),
+			Kubectl: text(k.Kubectl), KubectlProblem: text(k.KubectlProblem),
+			MintArgv: texts(k.MintArgv), MintEnv: k.MintEnv, MintBudget: k.MintBudget,
+			Requested: k.Requested, Credential: k.Credential, StaticTokenUnused: k.StaticTokenUnused,
+			Absent: texts(k.Absent), Visible: texts(k.Visible),
+			Shim: k.Shim, Socket: k.Socket,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

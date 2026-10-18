@@ -1069,6 +1069,15 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"anything inside can add an SSH key to the account, an effect that "+
 				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
+	if id.Kube.Context != "" {
+		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as "+visibleValue(id.Kube.ServiceAccount),
+			"THE SANDBOX CAN ACT AS THIS SERVICEACCOUNT on this one cluster: snug mints "+
+				"short-lived tokens for it on the host, with your own kubectl and credential, "+
+				"and anything inside can spend them on whatever the account's RoleBinding "+
+				"allows — for the run and up to one token lifetime after. pods/exec, "+
+				"pods/portforward and services/proxy reach the cluster's private network. "+
+				"Your kubeconfig, its other contexts and your credential do not enter.")...)
+	}
 	show("identity", rows)
 }
 

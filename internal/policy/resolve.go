@@ -445,6 +445,16 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			id := *prof.Identity
 			id.SSH.Agent = mode
+			if _, err := ParseKubeTokenMode(string(id.Kube.Token)); err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			// The default is filled in BEFORE the path loop, so an omitted
+			// kubeconfig, "{home}/.kube/config" and "~/.kube/config" are
+			// expanded, link-walked and compared as one value (#559's lesson,
+			// the comparison is normalised against normalised).
+			if id.Kube != (IdentityKube{}) && id.Kube.Kubeconfig == "" {
+				id.Kube.Kubeconfig = DefaultKubeconfig
+			}
 			if err := refuseUnprincipledSigningEmail(name, id); err != nil {
 				return nil, err
 			}
@@ -475,8 +485,8 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if !filepath.IsAbs(expanded) {
 					return nil, fmt.Errorf("profile %q: identity.%s %s: must be an absolute path. snug reads this file on the host,\n"+
 						"       and a relative path would be read against snug's own working directory, which nothing in\n"+
-						"       the profile or --dry-run shows. Write the full path, for example {home}/.ssh/id_ed25519.pub.",
-						name, f.Key, VisibleText(expanded))
+						"       the profile or --dry-run shows. Write the full path, for example %s.",
+						name, f.Key, VisibleText(expanded), identityPathRoles[f.Key].example)
 				}
 				// This path is READ, not mounted — sshproxy.New parses it for
 				// the blob the proxy answers REQUEST_IDENTITIES with — so a
@@ -519,10 +529,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				if len(links) > 0 {
 					l := links[0]
 					return nil, fmt.Errorf("profile %q: identity.%s %s resolves through the link %s (%s); "+
-						"a sandbox run could have planted it to choose which host key the sandbox can sign with. "+
+						"a sandbox run could have planted it to choose %s. "+
 						"If you made it, write the destination %s instead; if you did not, delete it.",
 						name, f.Key, VisibleText(asked), VisibleText(l.At), ownerPhrase(l, env.Uid()),
-						VisibleText(dest))
+						identityPathRoles[f.Key].chooses, VisibleText(dest))
 				}
 				for _, spelled := range []string{asked, dest} {
 					if err := refuseIdentityKeyEngineState(name, f.Key, spelled, ctx, env, mt); err != nil {
@@ -872,6 +882,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// nothing to do with pinning an account, and gating it on identity left ssh
 	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
 	// for the coverage rule this depends on.
+	if err := resolveKube(p, ctx, env, target, home); err != nil {
+		return nil, err
+	}
+
 	replaceSystemSSHConfig(p, ctx, env)
 
 	// /etc/resolv.conf is GENERATED, never bound from the host. The host's may

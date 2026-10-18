@@ -314,8 +314,15 @@ var envTypes = map[string]envType{
 	"XDG_RUNTIME_DIR": {path: true},
 	// "generate, don't bind": the value is a path to a config snug or a profile
 	// produced, never a credential.
-	"CARGO_HOME":            {path: true},
-	"DOCKER_CONFIG":         {path: true},
+	"CARGO_HOME":       {path: true},
+	"DOCKER_CONFIG":    {path: true},
+	"AZURE_CONFIG_DIR": {path: true},
+	// KUBECONFIG is a colon list to kubectl, which MERGES every file in it,
+	// and it is typed as one path anyway: identity.kube authors exactly one
+	// file, a profile `set` names one, and a list type would refuse the
+	// `inherit` that the conflict with identity.kube has to see to name both
+	// claimants. Taking the host's value whole is annotated, not refused.
+	"KUBECONFIG":            {path: true},
 	"NPM_CONFIG_USERCONFIG": {path: true},
 	"PIP_CONFIG_FILE":       {path: true},
 	// PYTHONUSERBASE is PATH-VALUED and was absent from this table entirely for a
@@ -349,6 +356,7 @@ var envTypes = map[string]envType{
 	// /etc/manpath.config"), measured in §3.3.
 	"MANPATH": {list: true, sep: ":", path: true, empty: emptyOperator, mergeable: true},
 	"CDPATH":  {list: true, sep: ":", path: true, empty: emptyCWD},
+
 	"PKG_CONFIG_PATH": {list: true, sep: ":", path: true, empty: emptyIgnored,
 		mergeable: true, sanitisable: true},
 	"PYTHONPATH": {list: true, sep: ":", path: true, empty: emptyCWD, mergeable: true},
@@ -1551,6 +1559,25 @@ var envNotes = map[string]envNote{
 	//
 	//	GH_CONFIG_DIR=d  gh probe  -> GH-ALIAS-RAN
 	//	GH_CONFIG_DIR=d2 gh probe  -> unknown command "probe" for "gh"   (control)
+	// Tried: kubectl is not installed in the container this was written in,
+	// so the merge and exec behaviour are client-go's documentation, not a
+	// measurement.
+	"KUBECONFIG": {shape: shapePath,
+		authored: "kubectl merges every file in this list; a user entry's `exec:` names a program kubectl " +
+			"runs for a credential, and a cluster's server and proxy-url decide where the credential is " +
+			"sent (documented by client-go; not measured here)",
+		host: "taking the host's value points kubectl at every cluster and credential the host's " +
+			"kubeconfig files name; identity.kube generates one context for one cluster instead",
+	},
+	// Tried: az is not installed in the container this was written in, so
+	// nothing here is measured; the sentence is azure-cli's documentation.
+	"AZURE_CONFIG_DIR": {shape: shapePath,
+		authored: "az reads its login from this directory — msal_token_cache.json can hold a refresh " +
+			"token for the whole tenant — and its config file selects extensions az installs and runs " +
+			"(documented by azure-cli; not measured here)",
+		host: "taking the host's value points az at the host's login, refresh token included; snug " +
+			"generates no az directory (#660)",
+	},
 	"GH_CONFIG_DIR": {shape: shapePath,
 		authored: "gh reads its tokens from hosts.yml in this directory, and a `!` alias in its " +
 			"config.yml is a shell command gh runs (measured, gh 2.96.0)",
@@ -1735,6 +1762,10 @@ var prefixCaseFold = map[string]bool{
 	// to the file value). getenv(3) is case-sensitive on Linux and git does
 	// no folding of its own — consistent across every GIT_CONFIG_* name.
 	"GIT_CONFIG_": false,
+	// Unmeasured: az is not installed on the measuring host. Case-sensitive
+	// is the conservative reading — getenv(3) is, and a folded spelling then
+	// renders no sentence rather than a wrong one.
+	"AZURE_": false,
 	// MEASURED, pip 26.1.2 — redteam host round 2, inside a sandbox, with pip
 	// from `python3 -m venv` because neither `pip` nor `python3 -m pip` exists
 	// on this host. Both directions, which is what makes it a case rule and
@@ -1900,6 +1931,12 @@ var envNotePrefixes = []struct {
 	{"npm_config_", both(shapeFamily, "outranks .npmrc, and the script_shell/node_gyp keys name a program npm "+
 		"RUNS (measured, issue #26, in every case spelling)"),
 		[]string{"NPM_CONFIG_USERCONFIG"}},
+	// Tried: az is not installed in the container this was written in, so the
+	// family is not measured. The sentence is what azure-cli and the Azure SDKs
+	// document, and it says so.
+	{"AZURE_", both(shapeFamily, "az reads AZURE_<SECTION>_<OPTION> in place of its config file, and the Azure "+
+		"SDKs read AZURE_CLIENT_SECRET as a credential (documented; not measured here)"),
+		[]string{"AZURE_CONFIG_DIR"}},
 }
 
 // inlineConfigPrefixes is the prefix half of IsInlineConfigEnv's table: every
@@ -1913,6 +1950,7 @@ var inlineConfigPrefixes = []string{
 	"PIP_",
 	"npm_config_",
 	"CARGO_",
+	"AZURE_",
 }
 
 // inlineConfigPointer is one entry of inlineConfigPointers: a name whose value
@@ -1952,6 +1990,8 @@ var inlineConfigPointers = []inlineConfigPointer{
 	{"NPM_CONFIG_USERCONFIG", "npm_config_"},
 	{"PIP_CONFIG_FILE", "PIP_"},
 	{"CARGO_HOME", "CARGO_"},
+	{"AZURE_CONFIG_DIR", "AZURE_"},
+	{"KUBECONFIG", ""},
 	// No family — and the two differ in a way worth reading, because assuming
 	// they were the same is how DOCKER_CONFIG would have been skipped again.
 	// GH_CONFIG_DIR has no roster row and a profile may write it only in a

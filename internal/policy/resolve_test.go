@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"maps"
 	"math/rand"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/gomoni/snug/internal/kubecfg"
 )
 
 // ── a fake host, so these tests need no privileges and no real filesystem ────
@@ -41,6 +44,8 @@ func (f fakeInfo) Sys() any           { return f.sys }
 
 type fakeEnv struct {
 	dirs map[string]bool
+	// kube is host kubeconfig bytes by path, for Environ.KubeConfig.
+	kube map[string][]byte
 	// files is dirs' non-directory half. It exists for issue #29: the procfs
 	// entries snug replaces are FILES, and installProcfsReplacements asks
 	// Environ.Stat whether this host publishes each one (a kernel without
@@ -104,13 +109,20 @@ type fakeEnv struct {
 }
 
 func newFakeEnv() *fakeEnv {
+	kubeFixture, err := os.ReadFile("testdata/kubeconfig.yaml")
+	if err != nil {
+		panic(err)
+	}
 	return &fakeEnv{
+		kube: map[string][]byte{"/home/u/.kube/config": kubeFixture, "/home/u/.kube/maximal": kubeFixture},
 		// The procfs entries snug replaces (issue #29). Present here so the
 		// GOLDENS carry those mounts: they are the review artifact for this
 		// change, and a fixture host that published none of them would hide
 		// every line of it.
 		files: map[string]bool{
 			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
+			// testCtx's SnugExecutable, the host side of identity.kube's shim bind.
+			"/usr/bin/snug": true,
 			// The generated files whose DESTINATION exists on every real host.
 			// rejectGeneratedOntoHost stats the destination of a generated mount
 			// that lands inside a read-only bind, because where nothing is there
@@ -175,6 +187,16 @@ func newFakeEnv() *fakeEnv {
 }
 
 func (f *fakeEnv) HostMounts() ([]HostMount, error) { return f.mounts, nil }
+
+// KubeConfig decodes a fixture through the real decoder, so policy tests
+// exercise kubecfg rather than a stand-in for it.
+func (f *fakeEnv) KubeConfig(p string) (kubecfg.File, error) {
+	data, ok := f.kube[p]
+	if !ok {
+		return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+	}
+	return kubecfg.Parse(data)
+}
 
 func (f *fakeEnv) EvalSymlinks(p string) (string, error) {
 	if err, ok := f.symlinkErrs[p]; ok {
@@ -490,7 +512,7 @@ var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 // common run the one nothing pins.
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
-		Shell: "/bin/sh", Command: []string{"/bin/sh"},
+		Shell: "/bin/sh", Command: []string{"/bin/sh"}, SnugExecutable: "/usr/bin/snug",
 		HostUserName: "u", HostGroupName: "users",
 		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
@@ -728,6 +750,10 @@ func maximalProfile() *Profile {
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
 				SigningKey: "/home/u/.ssh/sign.pub"},
 			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
+			// NOT the default path, so dropping identity.kube.kubeconfig really
+			// changes which file is read (the fixture serves both).
+			Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
+				Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/maximal"},
 		},
 		Environ: EnvGrants{
 			Set:      map[string]string{"MY_TOOL_ROOT": "/opt/tool"},
@@ -750,6 +776,10 @@ type keyDrop struct {
 	zeroes string
 	apply  func(*Profile)
 }
+
+// droppedLeafDefault is the value an identity leaf resolves to when a profile
+// omits it, expanded against testCtx's home.
+var droppedLeafDefault = map[string]string{"kube.kubeconfig": "/home/u/.kube/config"}
 
 func keyDrops() []keyDrop {
 	return []keyDrop{
@@ -776,11 +806,17 @@ func keyDrops() []keyDrop {
 		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
+		{"identity.kube.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
+		{"identity.kube.server", "Identity.Kube.Server", func(p *Profile) { p.Identity.Kube.Server = "" }},
+		{"identity.kube.token", "Identity.Kube.Token", func(p *Profile) { p.Identity.Kube.Token = "" }},
+		{"identity.kube.service_account", "Identity.Kube.ServiceAccount", func(p *Profile) { p.Identity.Kube.ServiceAccount = "" }},
+		{"identity.kube.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},
 		// Whole blocks, because identity joins one block at a time: removing a
 		// block removes one pin, and must widen nothing the others grant.
 		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},
 		{"identity.git", "Identity.Git", func(p *Profile) { p.Identity.Git = IdentityGit{} }},
 		{"identity.gh", "Identity.Gh", func(p *Profile) { p.Identity.Gh = IdentityGh{} }},
+		{"identity.kube", "Identity.Kube", func(p *Profile) { p.Identity.Kube = IdentityKube{} }},
 		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},
 		{"environ.merge", "Environ.Merge", func(p *Profile) { p.Environ.Merge = nil }},
 		{"environ.prepend", "Environ.Prepend", func(p *Profile) { p.Environ.Prepend = nil }},
@@ -856,6 +892,10 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 	withoutLogin := func() *Profile {
 		p := maximalProfile()
 		p.Login = nil
+		// identity.kube needs egress too, so it is cleared for the same
+		// reason login is: otherwise the network drop only ever reaches a
+		// refusal on this base as well.
+		p.Identity.Kube = IdentityKube{}
 		return p
 	}
 	for _, base := range []struct {
@@ -958,6 +998,13 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 					for _, f := range identityFields {
 						g := gv.FieldByIndex(f.Index).String()
 						if g == "" {
+							continue
+						}
+						// A dropped leaf with a documented default takes the
+						// default: the same value a profile could have written,
+						// and every mount and variable it leads to is still held
+						// to the subset checks above.
+						if "identity."+f.Key == d.key && g == droppedLeafDefault[f.Key] {
 							continue
 						}
 						if !fv.IsValid() || fv.FieldByIndex(f.Index).String() != g {

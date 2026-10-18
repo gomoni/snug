@@ -135,6 +135,10 @@ gate:
 	# Same fix, same reasoning as the thirteen above.
 	go vet ./test/integration/testdata/loginprobe
 	go vet ./test/integration/testdata/fakeopener
+	# testdata/stubkubectl (identity.kube) is the sixteenth: a host kubectl
+	# that answers `create token -o json` from a mode file beside itself.
+	# Built lazily by kube_test.go. Same fix, same reasoning as above.
+	go vet ./test/integration/testdata/stubkubectl
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

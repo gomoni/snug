@@ -109,9 +109,18 @@ type rawEnviron struct {
 // struct identically, which is what makes identity.ssh.kee an error one level down
 // for free — the same property rawEnviron relies on for environ.deny.
 type rawIdentity struct {
-	SSH rawIdentitySSH `toml:"ssh"`
-	Git rawIdentityGit `toml:"git"`
-	Gh  rawIdentityGh  `toml:"gh"`
+	SSH  rawIdentitySSH  `toml:"ssh"`
+	Git  rawIdentityGit  `toml:"git"`
+	Gh   rawIdentityGh   `toml:"gh"`
+	Kube rawIdentityKube `toml:"kube"`
+}
+
+type rawIdentityKube struct {
+	Context        string `toml:"context"`
+	Server         string `toml:"server"`
+	Token          string `toml:"token"`
+	ServiceAccount string `toml:"service_account"`
+	Kubeconfig     string `toml:"kubeconfig"`
 }
 
 type rawIdentitySSH struct {
@@ -567,6 +576,9 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if _, err := policy.ParseSSHMode(r.SSH.Agent); err != nil {
 		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 	}
+	if _, err := policy.ParseKubeTokenMode(r.Kube.Token); err != nil {
+		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+	}
 	id := &policy.Identity{
 		SSH: policy.IdentitySSH{
 			Host:  r.SSH.Host,
@@ -581,6 +593,13 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 		Gh: policy.IdentityGh{
 			Host: r.Gh.Host,
 			User: r.Gh.User,
+		},
+		Kube: policy.IdentityKube{
+			Context:        r.Kube.Context,
+			Server:         r.Kube.Server,
+			Token:          policy.KubeTokenMode(r.Kube.Token),
+			ServiceAccount: r.Kube.ServiceAccount,
+			Kubeconfig:     r.Kube.Kubeconfig,
 		},
 	}
 	if *id == (policy.Identity{}) {
@@ -600,7 +619,8 @@ func emptyIdentityBlock(source, name string) error {
 	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
 		"       It pins nothing, and a reader of this file would believe it pins something;\n"+
 		"       the likelier cause is keys written under the wrong table. Write at least one\n"+
-		"       key under [identity.ssh], [identity.git] or [identity.gh], or remove the block",
+		"       key under [identity.ssh], [identity.git], [identity.gh] or [identity.kube],\n"+
+		"       or remove the block",
 		source, name)
 }
 
