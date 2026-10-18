@@ -594,6 +594,7 @@ type jsonKube struct {
 	PluginProblem     string   `json:"plugin_problem,omitempty"`
 	PluginArgv        []string `json:"plugin_argv,omitempty"`
 	PluginEnv         []string `json:"plugin_env,omitempty"`
+	PluginHelpers     []string `json:"plugin_helpers,omitempty"`
 	PluginReach       string   `json:"plugin_reach,omitempty"`
 }
 
@@ -900,7 +901,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Absent: texts(k.Absent), Visible: texts(k.Visible),
 			Proxy: k.Proxy, Refused: k.Refused, TokenMode: k.Mode,
 			Plugin: k.PluginRow, PluginBinary: k.Plugin, PluginProblem: k.PluginProblem,
-			PluginArgv: k.PluginArgv, PluginEnv: k.PluginEnv, PluginReach: k.PluginReach,
+			PluginArgv: k.PluginArgv, PluginEnv: k.PluginEnv, PluginHelpers: k.PluginHelpers, PluginReach: k.PluginReach,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

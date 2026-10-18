@@ -115,9 +115,12 @@ func lookPluginPATH(env policy.Environ, cmd string) (string, error) {
 	if filepath.IsAbs(cmd) {
 		return cmd, nil
 	}
+	// Stat, not ResolveExistingHostPath: that resolves the longest existing
+	// prefix and succeeds for a file that is not there, which returned the
+	// first PATH entry for every name (red team, measured).
 	for _, dir := range strings.Split(policy.KubePluginPATH, ":") {
 		c := dir + "/" + cmd
-		if _, err := policy.ResolveExistingHostPath(env, c); err == nil {
+		if fi, err := env.Stat(c); err == nil && fi.Mode().IsRegular() {
 			return c, nil
 		}
 	}

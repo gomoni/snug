@@ -158,8 +158,12 @@ flag, or a wrong shape refuses.
   chain) and must be a one-link ELF (aws CLI v1, a Python script, refuses).
   Helpers the plugin runs off that PATH (`az` for kubelogin) are judged for
   writability only: az is a script everywhere.
-- **Environment.** Exactly `PATH=KubePluginPATH HOME=<host home>`, plus
-  `AWS_PROFILE` from `identity.kube.aws_profile` for an aws row. `exec.env`
+- **Environment.** Exactly `PATH=KubePluginPATH HOME=<host home>
+  PYTHONNOUSERSITE=1`, plus `AWS_PROFILE` from `identity.kube.aws_profile`
+  for an aws row. `PYTHONNOUSERSITE` because az is Python started without
+  `-s`, so it would load `.pth` files from `~/.local/lib/python3.*/site-packages`
+  in the host home — a directory a grant can make writable
+  (`TestKubePluginEnvKeepsPythonUserSiteOff`). `exec.env`
   is never used: a file naming `AWS_PROFILE` there refuses until the profile
   names it, any other name refuses outright. HOME is the host home because
   these are the host's own tools reading the host's own configuration — so

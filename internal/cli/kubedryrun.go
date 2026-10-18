@@ -37,7 +37,8 @@ type reportKube struct {
 	Plugin        string // the judged binary, empty when there is none
 	PluginProblem string // why there is none; a real run refuses on it
 	PluginArgv    []string
-	PluginEnv     []string // names only
+	PluginEnv     []string // NAME=value, exactly what the plugin gets
+	PluginHelpers []string // programs the plugin runs, judged for writability
 	PluginReach   string
 }
 
@@ -77,7 +78,8 @@ func buildKubeReport(p *policy.Policy) *reportKube {
 			bin = pl.Command
 		}
 		r.PluginRow, r.Plugin, r.PluginProblem = pl.Row, p.KubePluginBinary, p.KubePluginProblem
-		r.PluginArgv, r.PluginEnv, r.PluginReach = pl.KubeExecArgv(bin), pl.EnvNames(), pl.Reach
+		r.PluginArgv, r.PluginEnv, r.PluginReach = pl.KubeExecArgv(bin), pl.KubePluginEnv(p.Home), pl.Reach
+		r.PluginHelpers = pl.Helpers
 	}
 	absent := append(append([]string{}, k.OtherContexts...), "the host user entry ("+strings.Join(k.HostUserShape, ", ")+")")
 	var visible []string
@@ -158,10 +160,16 @@ func describeKube(out io.Writer, k *reportKube) {
 			fmt.Fprintf(out, "         plugin     NONE — a real run would REFUSE to start: %s\n", visibleValue(k.PluginProblem))
 		}
 		describeArgv(out, "plugin    ", k.PluginArgv, k.PluginProblem != "")
-		fmt.Fprintf(out, "                    env %s, cwd /, own user+pid namespace, %s timeout;\n",
-			strings.Join(k.PluginEnv, " "), kubeMintTimeout)
-		fmt.Fprintf(out, "                    the file's exec.env is never used. Only the token and its expiry\n")
+		for _, e := range k.PluginEnv {
+			fmt.Fprintf(out, "                    env %s\n", visibleValue(e))
+		}
+		fmt.Fprintf(out, "                    and nothing else; cwd /, own user+pid namespace, %s timeout.\n", kubeMintTimeout)
+		fmt.Fprintf(out, "                    The file's exec.env is never used. Only the token and its expiry\n")
 		fmt.Fprintf(out, "                    are read from its answer\n")
+		if len(k.PluginHelpers) > 0 {
+			fmt.Fprintf(out, "                    it runs %s off that PATH, judged unwritable like the plugin\n",
+				strings.Join(k.PluginHelpers, ", "))
+		}
 		for i, line := range wrapWords(k.PluginReach+"; snug sends it to "+k.Server+" only", 62) {
 			label := "plugin token"
 			if i > 0 {

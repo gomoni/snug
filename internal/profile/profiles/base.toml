@@ -469,7 +469,9 @@ dns = true
 # host — kubelogin with --login azurecli, `aws eks get-token`, or
 # aws-iam-authenticator — with an argv snug BUILDS from a fixed per-plugin
 # grammar (anything else in the file's args refuses), an environment of
-# exactly PATH=/usr/local/bin:/usr/bin:/bin and HOME (plus AWS_PROFILE from
+# exactly PATH=/usr/local/bin:/usr/bin:/bin, HOME and PYTHONNOUSERSITE=1 —
+# az is Python, and a writable ~/.local user site would otherwise run code on
+# the host — (plus AWS_PROFILE from
 # identity.kube.aws_profile — the file's exec.env is never used), and takes
 # only the token and its expiry from the answer. A bare command is looked up
 # on that PATH only. The sandbox then acts as YOU, not as a ServiceAccount.

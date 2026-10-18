@@ -111,8 +111,8 @@ func (f kubeExecFixture) pluginCalls(t *testing.T) string {
 // The plugin's token reaches the pinned server as the bearer and nothing
 // else of its answer — not the extra field, not the refresh-token-shaped
 // value, not its stderr — reaches the sandbox. Its argv is snug's (no
-// --client-id, flags in snug's order) and its environment is exactly PATH and
-// HOME.
+// --client-id, flags in snug's order) and its environment is exactly PATH,
+// HOME and PYTHONNOUSERSITE=1.
 func TestKubeHostExecForwardsOnlyTheToken(t *testing.T) {
 	f := newKubeExecFixture(t, "ok", "host-exec")
 	budget(t)
@@ -137,7 +137,7 @@ func TestKubeHostExecForwardsOnlyTheToken(t *testing.T) {
 		if env, ok := strings.CutPrefix(line, "ENV "); ok {
 			for _, kv := range strings.Fields(env) {
 				name, _, _ := strings.Cut(kv, "=")
-				if name != "PATH" && name != "HOME" {
+				if name != "PATH" && name != "HOME" && kv != "PYTHONNOUSERSITE=1" {
 					t.Errorf("the plugin's environment carries %s", name)
 				}
 			}

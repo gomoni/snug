@@ -190,7 +190,8 @@ func TestGoldenKubeHostExecDryRunBlock(t *testing.T) {
 	got := b.String()
 	for _, want := range []string{"YOU — the user of context aks-entra, through its kubelogin plugin",
 		"--login azurecli", "valid as you at EVERY", "exec.env is never used",
-		"env PATH HOME,", "YOUR RBAC allows", "a real run would REFUSE"} {
+		"env PATH=/usr/local/bin:/usr/bin:/bin\n", "env PYTHONNOUSERSITE=1\n", "it runs az off that PATH",
+		"YOUR RBAC allows", "a real run would REFUSE", "not found on /usr/local/bin:/usr/bin:/bin"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("KUBE block lacks %q:\n%s", want, got)
 		}

@@ -48,11 +48,18 @@ const KubePluginPATH = "/usr/local/bin:/usr/bin:/bin"
 
 // KubePluginEnv is a plugin's whole environment: PATH, HOME — the host home,
 // because these are the host's own tools reading the host's own ~/.azure and
-// ~/.aws — and AWS_PROFILE for an aws row with identity.kube.aws_profile set.
-// Nothing is inherited: KUBECONFIG, a proxy variable, AWS_* or AZURE_* in
-// snug's environment would steer what the plugin authenticates as.
+// ~/.aws — PYTHONNOUSERSITE=1, and AWS_PROFILE for an aws row with
+// identity.kube.aws_profile set. Nothing is inherited: KUBECONFIG, a proxy
+// variable, AWS_* or AZURE_* in snug's environment would steer what the
+// plugin authenticates as.
+//
+// PYTHONNOUSERSITE because az, which kubelogin runs, is a Python program
+// started without -s: it loads ~/.local/lib/python3.*/site-packages/*.pth
+// from the host home, and a grant that makes that directory writable would
+// let a payload plant code the host runs (red team, measured on the
+// azure-cli package's /usr/bin/az; with the variable set it did not load).
 func (k *KubePlugin) KubePluginEnv(home string) []string {
-	env := []string{"PATH=" + KubePluginPATH, "HOME=" + home}
+	env := []string{"PATH=" + KubePluginPATH, "HOME=" + home, "PYTHONNOUSERSITE=1"}
 	if k.AWSProfile != "" {
 		env = append(env, "AWS_PROFILE="+k.AWSProfile)
 	}
@@ -61,7 +68,7 @@ func (k *KubePlugin) KubePluginEnv(home string) []string {
 
 // EnvNames is the names KubePluginEnv sets, for the screen.
 func (k *KubePlugin) EnvNames() []string {
-	n := []string{"PATH", "HOME"}
+	n := []string{"PATH", "HOME", "PYTHONNOUSERSITE"}
 	if k.AWSProfile != "" {
 		n = append(n, "AWS_PROFILE")
 	}

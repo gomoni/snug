@@ -314,8 +314,57 @@ func TestKubePluginIsLookedUpOnTheMintPATHOnly(t *testing.T) {
 	if got, err := lookPluginPATH(policy.OSEnviron{}, "kubelogin"); err == nil && strings.HasPrefix(got, dir) {
 		t.Errorf("found %s on the inherited PATH", got)
 	}
+	// A name on no PATH entry is not found — the lookup once returned the
+	// first entry for every name (red team KH-2) — and one that exists is
+	// found where it is, not in /usr/local/bin.
+	if got, err := lookPluginPATH(policy.OSEnviron{}, "snug-no-such-plugin-x9"); err == nil {
+		t.Errorf("a missing plugin was found at %s", got)
+	}
+	if _, err := os.Stat("/usr/local/bin/sh"); err != nil {
+		if got, err := lookPluginPATH(policy.OSEnviron{}, "sh"); err != nil || got == "/usr/local/bin/sh" {
+			t.Errorf("sh found at %q, %v; want its real directory", got, err)
+		}
+	}
 	if err := checkHostBinaryIsELF("kube exec plugin", "kubelogin", filepath.Join(dir, "kubelogin")); err == nil ||
 		!strings.Contains(err.Error(), "it is a script") {
 		t.Errorf("a script plugin: %v", err)
+	}
+}
+
+// az, which kubelogin runs, is Python started without -s; the plugin's env
+// must keep a .pth planted in the host home's user site from running (red
+// team KH-1, measured against the azure-cli package's az).
+func TestKubePluginEnvKeepsPythonUserSiteOff(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3 on this host")
+	}
+	home := t.TempDir()
+	ver, err := exec.Command(py, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := filepath.Join(home, ".local/lib/python"+strings.TrimSpace(string(ver))+"/site-packages")
+	if err := os.MkdirAll(site, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(home, "ran")
+	if err := os.WriteFile(filepath.Join(site, "x.pth"), []byte("import os; open("+strconv.Quote(marker)+", 'w')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pl := &policy.KubePlugin{Row: "kubelogin"}
+	run := func(env []string) bool {
+		os.Remove(marker)
+		cmd := exec.Command(py, "-c", "pass")
+		cmd.Env = env
+		_ = cmd.Run()
+		_, err := os.Stat(marker)
+		return err == nil
+	}
+	if !run([]string{"PATH=" + policy.KubePluginPATH, "HOME=" + home}) {
+		t.Skip("this python3 does not load the user site even without the variable")
+	}
+	if run(pl.KubePluginEnv(home)) {
+		t.Error("a .pth in the host home's user site ran under the plugin's environment")
 	}
 }
