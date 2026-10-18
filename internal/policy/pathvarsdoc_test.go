@@ -4,12 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -26,17 +22,15 @@ import (
 // says "requires X", grep for X before believing it.
 //
 // Deleting the mentions would have closed the ticket and left nothing to
-// stop the next one. So README.md and the code are now checked against each
-// other: the variables README.md advertises must be exactly the ones
-// `Resolve` builds.
+// stop the next one. So the book and the code are checked against each other:
+// TestBookListsExactlyThePathVariablesResolveBuilds requires the variables
+// docs/src/filesystem.md lists to be exactly the ones `Resolve` builds.
 //
 // WHAT THIS DELIBERATELY DOES NOT DO: assert that no document MENTIONS an
 // unbuilt variable — a reader who finds no trace of `{target_ancestor:N}`
 // anywhere will design it twice. What must not happen is it being listed as
 // though it were live. So the check is on the ADVERTISED LIST, and prose
 // about a variable that does not exist is fine as long as it says so.
-
-var pathVarLine = regexp.MustCompile(`(?m)^- Path variables: (.*)$`)
 
 // resolvePathVars reads the keys of the `vars` map literal in Resolve. Parsed
 // rather than duplicated, because a hand-copied list here would be the same
@@ -97,51 +91,4 @@ func resolvePathVars(t *testing.T) []string {
 	}
 	sort.Strings(got)
 	return got
-}
-
-func TestREADMEAdvertisesExactlyThePathVariablesResolveBuilds(t *testing.T) {
-	built := resolvePathVars(t)
-
-	readme := filepath.Join("..", "..", "README.md")
-	body, err := os.ReadFile(readme)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", readme, err)
-	}
-	m := pathVarLine.FindSubmatch(body)
-	if m == nil {
-		t.Fatalf("no \"- Path variables:\" line in %s. It is the list this test grades; if it "+
-			"was renamed, update pathVarLine rather than deleting the check", readme)
-	}
-	// Everything in `backticks` on that line, minus the tilde, which is a
-	// spelling rather than a named variable.
-	advertised := map[string]bool{}
-	for _, q := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(string(m[1]), -1) {
-		name := strings.Trim(q[1], "{}")
-		if name == "~" {
-			continue
-		}
-		advertised[name] = true
-	}
-
-	for _, b := range built {
-		if !advertised[b] {
-			t.Errorf("Resolve builds {%s} and README.md's path-variable list does not advertise "+
-				"it. A profile author reading the README would not know it exists", b)
-		}
-	}
-	for a := range advertised {
-		found := false
-		for _, b := range built {
-			if a == b {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("README.md advertises {%s} as a live path variable and Resolve does not "+
-				"build it. This is issue #224 happening again: `{target_ancestor:N}` was listed "+
-				"as live for the life of the project and never existed, so a profile writing it "+
-				"got the literal string as a path. Either build it, or move it out of the "+
-				"advertised list and say it was never built", a)
-		}
-	}
 }

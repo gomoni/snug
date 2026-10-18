@@ -98,7 +98,6 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeContainers(out, p, rep.Containers)
 	describeCommitSigning(out, p)
 	describeSSH(out, p)
-	describeKube(out, rep.Kube)
 	describeCommands(out, p, env)
 	describeClaude(out, p)
 	describeTTY(out, rep)
@@ -2967,7 +2966,7 @@ func notGranted(p *policy.Policy) []string {
 	var lines []string
 
 	candidates := []string{
-		".ssh", ".gnupg", ".aws", ".azure", ".config/gh", ".kube", ".docker", ".netrc",
+		".ssh", ".gnupg", ".aws", ".config/gh", ".kube", ".docker", ".netrc",
 		".claude", ".mozilla", ".local/share/keyrings",
 	}
 	var absent, partial []string

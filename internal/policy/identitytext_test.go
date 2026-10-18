@@ -120,7 +120,6 @@ var wantIdentityLeaves = []string{
 	"ssh.host", "ssh.key", "ssh.agent",
 	"git.name", "git.email", "git.signing_key",
 	"gh.host", "gh.user",
-	"kube.context", "kube.server", "kube.token", "kube.service_account", "kube.kubeconfig",
 }
 
 // TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf replaces the hand-written
@@ -283,14 +282,14 @@ func TestIdentityHasNoReferenceKindedField(t *testing.T) {
 // The negative half is the point as much as the positive: git.name is a
 // leaf too, and it must NOT be expanded against {home}/{target} or checked
 // against a symlink escape, because it is a human's name, not a path.
-func TestIdentityFieldsEnumeratesExactlyThePathLeaves(t *testing.T) {
+func TestIdentityFieldsEnumeratesExactlyTwoPaths(t *testing.T) {
 	var got []string
 	for _, f := range identityFields {
 		if f.Path {
 			got = append(got, f.Key)
 		}
 	}
-	want := []string{"ssh.key", "git.signing_key", "kube.kubeconfig"}
+	want := []string{"ssh.key", "git.signing_key"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("identity leaves carrying `path` = %v, want exactly %v", got, want)
 	}

@@ -1141,9 +1141,9 @@ func existsInSandbox(p *Policy, guest string) bool {
 // Every caller therefore owes it a path already put through
 // ResolveExistingHostPath, and must USE the resolved path afterwards rather than
 // the one it asked about — resolving and then passing the literal onward moves
-// the hole instead of closing it. These are the non-test callers, and every
-// one either discharges the obligation immediately before calling, or is
-// reading a value some OTHER caller already discharged it for:
+// the hole instead of closing it. There are exactly SIX non-test callers,
+// and every one either discharges the obligation immediately before calling,
+// or is reading a value some OTHER caller already discharged it for:
 //
 //   - dockerproxy.(*Proxy).checkOne — resolves, audits a divergence, and
 //     forwards the RESOLVED Source to the engine (create.go).
@@ -1179,15 +1179,9 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     answer BEFORE resolution, not "can the sandbox see this object", so it
 //     owes this function nothing; do not "fix" it by resolving its argument
 //     first — that is precisely the defect it exists to close.
-//   - policy.resolveKube (kube.go, issue #664) — asks about
-//     identity.kube.kubeconfig as the identity path loop stored it: the
-//     link-free destination authorableLinks resolved, which is the spelling the
-//     file is later opened by (RESOLVE_NO_SYMLINKS). The obligation is
-//     discharged at write time, as for EngineTargetGraft; writableNameOnChain
-//     beside it asks the unresolved-name question.
 //
-// TestHostPathVisibleCallersAreInventoried fails when a caller not in this
-// list appears. Adding one means writing its resolution obligation (or its reason
+// TestHostPathVisibleCallersAreInventoried fails when a SEVENTH caller
+// appears. Adding one means writing its resolution obligation (or its reason
 // for owing none, as describeGrafts's entry does) into this list: a tripwire
 // on the SET is the only enforceable form of an obligation that cannot be
 // checked at the call itself.

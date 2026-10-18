@@ -57,3 +57,6 @@ snug-dryrun-fixture-*/
 # directory, which is this checkout whenever the target is the repository
 # itself — the one place a payload can write that the host side can also read.
 BWRAP_PID
+
+# mdBook output: `mdbook build docs`.
+docs/book/

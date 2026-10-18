@@ -122,13 +122,11 @@ type Report struct {
 	Network reportNetwork
 	// BrowserBridge is nil when the policy's login set lacks claude.
 	BrowserBridge *reportBrowserBridge
-	// Kube is nil when no identity.kube block is pinned.
-	Kube        *reportKube
-	Topology    reportTopology
-	Containers  *reportContainers // nil when no engine runs
-	Environment []reportEnvVar
-	Seccomp     reportSeccomp
-	NewSession  bool
+	Topology      reportTopology
+	Containers    *reportContainers // nil when no engine runs
+	Environment   []reportEnvVar
+	Seccomp       reportSeccomp
+	NewSession    bool
 	// NewSessionWhy is the reason set behind NewSession — rendered, never
 	// summarised, because "the sandbox is out of your terminal" is true for
 	// two different reasons that cost different things.
@@ -520,7 +518,6 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 			"document."
 	}
 	rep.BrowserBridge = buildBrowserBridgeReport(env, p)
-	rep.Kube = buildKubeReport(p)
 	rep.BwrapExec = execResolution("bwrap")
 	rep.Pasta = buildPastaReport(p)
 	for _, name := range p.EnvNames() {

@@ -516,18 +516,6 @@ type Policy struct {
 	// asked for what. A key is present only for a block some profile set.
 	IdentityOwners map[string][]ProfileName
 
-	// Kube is what Resolve made of identity.kube; nil when no kube block is
-	// pinned. See KubeBinding.
-	Kube *KubeBinding
-
-	// KubeMintBinary is the host kubectl the mint runs, and KubeMintProblem
-	// why there is none — written by internal/cli after Resolve, from a PATH
-	// lookup and a file read the resolver may not do, for the --dry-run row
-	// only. Inert reporting data of ClaudeSettingsUnknown's kind: a real run
-	// refuses on the problem rather than reading it back from here.
-	KubeMintBinary  string
-	KubeMintProblem string
-
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
 	// key or a CLI flag. See topology.go.

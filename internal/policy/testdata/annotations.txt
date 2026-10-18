@@ -22,8 +22,6 @@ ANTHROPIC_AUTH_TOKEN     set       ← the value IS an API credential — named 
 ANTHROPIC_AUTH_TOKEN     inherit   ← the value IS an API credential — named beside apiKeyHelper in the client's own credential-selection strings — and every process in the sandbox reads it out of /proc/self/environ
 ANTHROPIC_BASE_URL       set       ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
 ANTHROPIC_BASE_URL       inherit   ← every request the agent makes, conversation included, goes to this endpoint instead of Anthropic's (documented, not measured on this host)
-AZURE_CONFIG_DIR         set       ← az reads its login from this directory — msal_token_cache.json can hold a refresh token for the whole tenant — and its config file selects extensions az installs and runs (documented by azure-cli; not measured here)
-AZURE_CONFIG_DIR         inherit   ← taking the host's value points az at the host's login, refresh token included; snug generates no az directory (#660)
 BASH_ENV                 set       ← every non-interactive bash SOURCES this file at startup; the value must be an absolute path, and one this profile does not grant names a file the sandbox will not have
 BASH_ENV                 inherit   ← every non-interactive bash SOURCES this file at startup, and the file is chosen on the host, outside any profile
 BROWSER                  set       ← Claude Code execs this program with the URL it wants opened as its one argument (measured, LOGIN-BRIDGE.md section 12); login = ["claude"] points it at snug's login bridge instead
@@ -107,8 +105,6 @@ JAVA_TOOL_OPTIONS        set       ← every JVM in the sandbox parses these fla
 JAVA_TOOL_OPTIONS        inherit   ← every JVM in the sandbox parses these flags before main(), and they can load an agent from a path — measured, temurin 21, in a container: the agent's premain ran before main
 JDK_JAVA_OPTIONS         set       ← the `java` launcher parses these flags before main(), agents included (measured, temurin 21, in a container)
 JDK_JAVA_OPTIONS         inherit   ← the `java` launcher parses these flags before main(), agents included (measured, temurin 21, in a container)
-KUBECONFIG               set       ← kubectl merges every file in this list; a user entry's `exec:` names a program kubectl runs for a credential, and a cluster's server and proxy-url decide where the credential is sent (documented by client-go; not measured here)
-KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kube generates one context for one cluster instead
 LD_AUDIT                 set       ← the loader runs this auditing library inside every process it starts (measured, glibc 2.43, with the control)
 LD_AUDIT                 inherit   ← the loader runs this auditing library inside every process it starts (measured, glibc 2.43, with the control)
 LESSOPEN                 set       ← less runs this program over every file it opens; the value is a command line, not a path — the '|' form pipes the file through it (measured)
@@ -229,10 +225,6 @@ PIP_CONFIG_FILE          set       ← index-url in this file decides where ever
 PIP_CONFIG_FILE          inherit   ← taking the host's value points pip back at the host's config, index credentials included; `set` it to a path a profile authored
 CARGO_HOME               set       ← the config.toml under this path names a program cargo runs — build.rustc-wrapper ran in place of rustc, as the sandbox's own uid (measured, cargo 1.97.1)
 CARGO_HOME               inherit   ← taking the host's value points cargo back at the host's config, which is the file "generate, don't bind" exists to avoid; `set` it to a path a profile authored
-AZURE_CONFIG_DIR         set       ← az reads its login from this directory — msal_token_cache.json can hold a refresh token for the whole tenant — and its config file selects extensions az installs and runs (documented by azure-cli; not measured here)
-AZURE_CONFIG_DIR         inherit   ← taking the host's value points az at the host's login, refresh token included; snug generates no az directory (#660)
-KUBECONFIG               set       ← kubectl merges every file in this list; a user entry's `exec:` names a program kubectl runs for a credential, and a cluster's server and proxy-url decide where the credential is sent (documented by client-go; not measured here)
-KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kube generates one context for one cluster instead
 DOCKER_CONFIG            set       ← credsStore in this directory's config.json is a program docker executes, and it runs before docker reaches a daemon (measured, docker 29.4)
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 GH_CONFIG_DIR            set       ← gh reads its tokens from hosts.yml in this directory, and a `!` alias in its config.yml is a shell command gh runs (measured, gh 2.96.0)
@@ -250,7 +242,6 @@ GH_CONFIG_DIR            inherit   ← taking the host's value points gh back at
 ANTHROPIC_API_KEY        opaque    (no row)     accepted
 ANTHROPIC_AUTH_TOKEN     opaque    (no row)     accepted
 ANTHROPIC_BASE_URL       opaque    -            accepted
-AZURE_CONFIG_DIR         path      path         REFUSED
 BASH_ENV                 path      pathNoGrant  REFUSED
 BROWSER                  program   -            accepted
 CARGO_HOME               path      path         REFUSED
@@ -296,7 +287,6 @@ HOSTALIASES              path      (no row)     REFUSED
 INFOPATH                 -         path         REFUSED
 JAVA_TOOL_OPTIONS        opaque    (no row)     accepted
 JDK_JAVA_OPTIONS         opaque    (no row)     accepted
-KUBECONFIG               path      path         REFUSED
 LD_AUDIT                 path      (no row)     REFUSED
 LD_LIBRARY_PATH          path      path         REFUSED
 LD_PRELOAD               path      path         REFUSED
