@@ -217,14 +217,15 @@ func TestDocumentedExampleProfilesParse(t *testing.T) {
 	all = append(all, extractProfileExamples(t, "../../scripts/README.md")...)
 
 	// NON-VACUITY CONTROL. the repository README and scripts/README.md between them write
-	// ten in-scope profile examples today — measured, six and four; if the extraction
+	// four in-scope profile examples today — measured, none and four, since the
+	// README's examples moved to the book (TestBookExampleProfilesParse); if the extraction
 	// rule ever stops matching — a doc reformatted to use tildes instead of
 	// backticks, a language-tag change that this rule does not in fact
 	// depend on but a future edit might make it start depending on, or
 	// simply every example rewritten as printf — this is what turns that
 	// into a failure instead of a sweep that silently checks nothing, the
 	// exact shape CLAUDE.md's "pasta" vs "pasta.avx2" scar describes.
-	const floor = 8
+	const floor = 4
 	if len(all) < floor {
 		t.Fatalf("found only %d in-scope profile example(s) across README.md and "+
 			"scripts/README.md, want at least %d; the extraction rule stopped matching "+
