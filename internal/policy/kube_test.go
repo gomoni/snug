@@ -19,7 +19,7 @@ func TestKubeUnknownCredentialValueNamesTheSet(t *testing.T) {
 		"k": {Kube: IdentityKube{Context: "aks-dev", Credential: "serviceaccount", Server: "https://aks-dev.example.azmk8s.io:443"}},
 	})
 	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
-	if err == nil || p != nil || !strings.Contains(err.Error(), "(want client-certificate, token or exec)") ||
+	if err == nil || p != nil || !strings.Contains(err.Error(), "(want client-certificate or token)") ||
 		!strings.Contains(err.Error(), `"k"`) {
 		t.Fatalf("p = %v, err = %v; want a nil policy and the unknown-token refusal naming the profile", p, err)
 	}
@@ -234,13 +234,6 @@ func TestKubeCredentialRefusesAnAmbiguousEntryWithoutTheKey(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Server: "https://aks-dev.example.azmk8s.io:443"}},
 		"holds a client certificate and a static token", "different identities", "will not choose",
 		`identity.kubectl.credential = "client-certificate" or "token"`)
-	execBeside := strings.Replace(kubeExecFixture(t), "    exec:\n      apiVersion: client.authentication.k8s.io/v1\n",
-		"    token: FIXTURETOKENVALUE\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n", 1)
-	if execBeside == kubeExecFixture(t) {
-		t.Fatal("fixture edit did not apply")
-	}
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks-iam", Server: "https://iam.example.com"}, file: execBeside},
-		"holds a static token and an exec plugin", `"token" or "exec"`)
 }
 
 func TestKubeCredentialRefusesAShapeTheEntryLacks(t *testing.T) {
@@ -249,7 +242,6 @@ func TestKubeCredentialRefusesAShapeTheEntryLacks(t *testing.T) {
 		cred KubeCredential
 		want string
 	}{
-		{"aks-dev", KubeCredentialExec, "holds a client certificate and a static token"},
 		{"aks-cert", KubeCredentialToken, "holds a client certificate"},
 		{"aks-token", KubeCredentialClientCert, "holds a static token"},
 	} {
@@ -421,10 +413,10 @@ func TestKubeIdentityUnknownContextNamesTheKnownOnes(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-prod", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"}}, `"aks-prod"`, "contexts: aks-cert, aks-dev, aks-token, eks, kind-kind")
 }
 
-// The fixture's eks user runs `aws eks get-token` with no --cluster-name:
-// outside the grammar, so refused before anything could run it.
-func TestKubeExecUserOutsideTheGrammarRefuses(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Server: "https://eks.example.com"}}, "aws eks get-token without --cluster-name")
+// The fixture's eks user authenticates with an exec plugin: snug runs none
+// (#674), so the entry refuses before anything could run it.
+func TestKubeExecUserRefuses(t *testing.T) {
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Server: "https://eks.example.com"}}, "exec plugin", "does not run", "#674")
 	userField := func(line string) string {
 		return strings.Replace(kubeFixture(t), "    token: FIXTURETOKENVALUE\n", "    token: FIXTURETOKENVALUE\n    "+line+"\n", 1)
 	}
@@ -521,37 +513,6 @@ func TestKubeIdentityPathRefusalsUseTheKubeconfigRole(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "PUBLIC key") {
 		t.Errorf("a kubeconfig refusal tells the human to copy a PUBLIC key: %v", err)
-	}
-}
-
-func TestKubeHostBinaryRefusesWritableOrRelative(t *testing.T) {
-	p, err := kubeResolve(t, kubeCase{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := newFakeEnv()
-	env.files["/usr/bin/kubelogin"] = true
-	if got, err := p.ResolveKubeHostBinary(env, "plugin", "/usr/bin/kubelogin"); err != nil || got != "/usr/bin/kubelogin" {
-		t.Errorf("an ordinary plugin: %q, %v", got, err)
-	}
-	if _, err := p.ResolveKubeHostBinary(env, "plugin", "kubelogin"); err == nil {
-		t.Error("a relative plugin was accepted")
-	}
-	env.files["/home/u/proj/sub/bin/kubelogin"] = true
-	if _, err := p.ResolveKubeHostBinary(env, "plugin", "/home/u/proj/sub/bin/kubelogin"); err == nil ||
-		!strings.Contains(err.Error(), "inside the target") {
-		t.Errorf("a plugin in the target: %v", err)
-	}
-	w, err := kubeResolve(t, kubeCase{
-		profile: func(p *Profile) { p.RW = []string{"/opt/k"} },
-		env:     func(e *fakeEnv) { e.dirs["/opt/k"] = true },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env.files["/opt/k/kubelogin"] = true
-	if _, err := w.ResolveKubeHostBinary(env, "plugin", "/opt/k/kubelogin"); err == nil || !strings.Contains(err.Error(), "WRITABLE") {
-		t.Errorf("a plugin under an rw grant: %v", err)
 	}
 }
 

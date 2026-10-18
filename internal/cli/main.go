@@ -785,7 +785,7 @@ func run(cfg config) int {
 	}
 	defer idCleanup()
 
-	kube, err := startKubeIdentity(pol, env, cfg.verbose, cfg.startsNothing())
+	kube, err := startKubeIdentity(pol, cfg.verbose, cfg.startsNothing())
 	if err != nil {
 		return refuse(cfg, exitPolicy, err)
 	}

@@ -429,31 +429,22 @@ dns = true
 # the pinned server and nowhere else. snug protects the HOST — your credential
 # stays out and goes to one server — and not the cluster: what that credential
 # may do there is the cluster's RBAC, and every request kubectl sends is
-# forwarded as sent, `--as` included.
+# forwarded as sent, `--as` included. A server on this host (kind, k3s,
+# minikube: loopback or an address the host owns, after resolving its name) is
+# refused before the sandbox starts, because those nodes run on this host.
 #
 # credential picks the ONE credential of the context's user entry the proxy
 # presents:
 #   "client-certificate"  client-certificate-data + client-key-data, as the
 #                         TLS client certificate
 #   "token"               the static token, as the bearer
-#   "exec"                the entry's exec plugin, run on the host (below)
 # Leave it out when the entry holds one credential. An entry holding two is
 # refused without it: on AKS local accounts the certificate is masterclient
 # (system:masters) and the token is clusterUser — two identities, and snug
 # does not choose between them. Neither needs anything created on the cluster.
 #
-# credential = "exec" runs kubelogin with --login azurecli, `aws eks
-# get-token`, or aws-iam-authenticator on the host, with an argv snug BUILDS
-# from a fixed per-plugin grammar (anything else in the file's args refuses),
-# an environment of exactly PATH=/usr/local/bin:/usr/bin:/bin, HOME and
-# PYTHONNOUSERSITE=1 — az is Python, and a writable ~/.local user site would
-# otherwise run code on the host — (plus AWS_PROFILE from
-# identity.kubectl.aws_profile — the file's exec.env is never used), and takes
-# only the token and its expiry from the answer. A bare command is looked up
-# on that PATH only. Refused while ~/.azure, ~/.kube/cache or ~/.aws is
-# writable through a grant: the plugin reads its configuration there, on the
-# host, and a writable ~/.aws/config is a credential_process the host would
-# run.
+# A user entry that authenticates with an exec plugin (kubelogin, aws,
+# gke-gcloud-auth-plugin) is refused: snug runs no plugin on the host (#674).
 #
 # kubectl must be inside to be useful — the same one-file bind as gh above.
 # It needs no @net: the proxy dials from the host.
@@ -468,12 +459,7 @@ dns = true
 # API server, so a kubectl profile WITHOUT @net is still not an offline
 # sandbox. It never holds the credential: it cannot act after the run, on any
 # other server, on a host-local service or a cloud metadata address, and it
-# cannot make the host run anything but the one exec plugin snug runs. The
-# credential's own reach is its issuer's: a kubelogin token is valid as you at
-# EVERY AKS cluster in your tenant where you hold RBAC for its 60-90 minutes
-# (Entra documentation, not measured), an aws token is a presigned STS token
-# for one EKS cluster for about 15 minutes — and that is what leaks if the
-# HOST leaks it, not the sandbox.
+# cannot make the host run anything.
 #
 # KUBE-TEMPLATE-BEGIN
 #   [profile.aks-dev]
@@ -481,9 +467,8 @@ dns = true
 #     [profile.aks-dev.identity.kubectl]
 #     context    = "aks-dev"               # a context in the host kubeconfig
 #     server     = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
-#     credential = "client-certificate"    # or "token", or "exec"
-#     # kubeconfig  = "{home}/.kube/config"
-#     # aws_profile = "work"               # exec with an aws plugin only
+#     credential = "client-certificate"    # or "token"
+#     # kubeconfig = "{home}/.kube/config"
 # KUBE-TEMPLATE-END
 
 # ── Claude Code ──────────────────────────────────────────────────────────────

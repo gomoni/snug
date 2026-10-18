@@ -520,12 +520,6 @@ type Policy struct {
 	// pinned. See KubeBinding.
 	Kube *KubeBinding
 
-	// KubePluginBinary is the host context's exec plugin as judged, when
-	// Kube.Plugin is set, and KubePluginProblem why a real run would refuse
-	// it; both are recorded for the --dry-run row.
-	KubePluginBinary  string
-	KubePluginProblem string
-
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML
 	// key or a CLI flag. See topology.go.

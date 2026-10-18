@@ -72,19 +72,14 @@ const KubeCredentialClientCert KubeCredential = "client-certificate"
 // KubeCredentialToken presents the entry's static token as the proxy's bearer.
 const KubeCredentialToken KubeCredential = "token"
 
-// KubeCredentialExec runs the entry's exec plugin — kubelogin, aws eks
-// get-token, aws-iam-authenticator — on the host, with an argv snug builds
-// from a fixed per-plugin grammar, and presents the token it returns.
-const KubeCredentialExec KubeCredential = "exec"
-
 // ParseKubeCredential is the door into KubeCredential, with the same rule as
 // ParseSSHMode: a named set, and anything else unknown, quoting the set.
 func ParseKubeCredential(s string) (KubeCredential, error) {
 	switch KubeCredential(s) {
-	case KubeCredentialClientCert, KubeCredentialToken, KubeCredentialExec, "":
+	case KubeCredentialClientCert, KubeCredentialToken, "":
 		return KubeCredential(s), nil
 	default:
-		return "", fmt.Errorf("unknown identity.kubectl.credential %q (want client-certificate, token or exec)", s)
+		return "", fmt.Errorf("unknown identity.kubectl.credential %q (want client-certificate or token)", s)
 	}
 }
 
@@ -181,11 +176,6 @@ type IdentityKube struct {
 	Server     string         `snug:"server"`
 	Credential KubeCredential `snug:"credential"`
 	Kubeconfig string         `snug:"kubeconfig,path"`
-	// AWSProfile is the AWS_PROFILE an aws exec plugin runs with. It is an
-	// identity — which AWS account — not program configuration, and it is
-	// here because the file's own exec.env is never used. Valid only with a
-	// plugin row that names AWS_PROFILE.
-	AWSProfile string `snug:"aws_profile"`
 }
 
 // DefaultKubeconfig is identity.kubectl.kubeconfig when a kube block omits it.

@@ -113,9 +113,7 @@ func New(cfg Config) (*Proxy, error) {
 		cfg.MaxConns = 64
 	}
 	if cfg.Lookup == nil {
-		cfg.Lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
-			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-		}
+		cfg.Lookup = defaultLookup
 	}
 	if cfg.Audit == nil {
 		cfg.Audit = func(string) {}
@@ -354,15 +352,39 @@ func (p *Proxy) refusedAddr(a netip.Addr) string {
 	return ""
 }
 
-// dial resolves the pinned server's name, refuses every address the host must
-// not reach on the sandbox's behalf, and dials a vetted IP — never the name,
-// so a record that changes between the check and the connect changes nothing.
-// TLS still verifies against Config.TLSName.
-func (p *Proxy) dial(ctx context.Context, network, _ string) (net.Conn, error) {
-	host, port := p.cfg.Server.Hostname(), p.cfg.Server.Port()
-	if port == "" {
-		port = "443"
+// Preflight resolves cfg.Server's name on the host and refuses it when ANY
+// address it names is one the dialer refuses: loopback, this host's own, link-
+// local, multicast or cloud metadata. A cluster on this host — kind, k3s,
+// minikube, Docker Desktop's kubernetes.docker.internal — runs its nodes on
+// this host, so the credential's reach there is the host's, not a remote
+// cluster's. internal/cli runs it before the sandbox is created; the dialer
+// repeats it on every connection, because a record can change after start.
+func Preflight(ctx context.Context, cfg Config) error {
+	if cfg.Server == nil {
+		return errors.New("kube proxy: Server is required")
 	}
+	p := &Proxy{cfg: cfg}
+	if p.cfg.Lookup == nil {
+		p.cfg.Lookup = defaultLookup
+	}
+	p.vet = p.refusedAddr
+	if fixture != nil {
+		fixture(p)
+	}
+	_, err := p.addrs(ctx)
+	return err
+}
+
+func defaultLookup(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// addrs resolves the pinned server's name and refuses the whole answer when
+// any address in it is one snug does not reach on the sandbox's behalf: a
+// name that resolves to a public address AND to this host is a name pointing
+// at this host.
+func (p *Proxy) addrs(ctx context.Context) ([]netip.Addr, error) {
+	host := p.cfg.Server.Hostname()
 	var addrs []netip.Addr
 	if a, err := netip.ParseAddr(host); err == nil {
 		addrs = []netip.Addr{a}
@@ -372,14 +394,39 @@ func (p *Proxy) dial(ctx context.Context, network, _ string) (net.Conn, error) {
 			return nil, fmt.Errorf("resolving %s: %w", policy.VisibleText(host), err)
 		}
 	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolving %s: no address", policy.VisibleText(host))
+	}
 	var refused []string
-	var d net.Dialer
-	var lastErr error
 	for _, a := range addrs {
 		if why := p.vet(a); why != "" {
 			refused = append(refused, fmt.Sprintf("%s (%s)", a, why))
-			continue
 		}
+	}
+	if len(refused) > 0 {
+		return nil, fmt.Errorf("refusing to dial %s: it resolves to %s, which snug does not reach on the "+
+			"sandbox's behalf. A cluster on this host runs its nodes on this host, so acting as you there "+
+			"is acting on the host", policy.VisibleText(host), strings.Join(refused, ", "))
+	}
+	return addrs, nil
+}
+
+// dial resolves the pinned server's name, refuses the answer when any address
+// in it is one the host must not reach on the sandbox's behalf, and dials a
+// vetted IP — never the name, so a record that changes between the check and
+// the connect changes nothing. TLS still verifies against Config.TLSName.
+func (p *Proxy) dial(ctx context.Context, network, _ string) (net.Conn, error) {
+	port := p.cfg.Server.Port()
+	if port == "" {
+		port = "443"
+	}
+	addrs, err := p.addrs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var d net.Dialer
+	var lastErr error
+	for _, a := range addrs {
 		c, err := d.DialContext(ctx, network, net.JoinHostPort(a.Unmap().String(), port))
 		if err != nil {
 			lastErr = err
@@ -387,12 +434,7 @@ func (p *Proxy) dial(ctx context.Context, network, _ string) (net.Conn, error) {
 		}
 		return p.track(c), nil
 	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("refusing to dial %s: it resolves only to %s, which snug does not reach on the "+
-		"sandbox's behalf (see base.toml \"THERE IS NO `network = \\\"host\\\"`\")",
-		policy.VisibleText(host), strings.Join(refused, ", "))
+	return nil, lastErr
 }
 
 func (p *Proxy) track(c net.Conn) net.Conn {

@@ -569,26 +569,16 @@ type jsonBrowserBridge struct {
 	MaxRelays   int      `json:"max_relays"`
 }
 
-// jsonKube is reportKube. PluginBinary is empty and PluginProblem set when a
-// real run would refuse for want of a usable exec plugin.
+// jsonKube is reportKube.
 type jsonKube struct {
-	Context       string   `json:"context"`
-	Server        string   `json:"server"`
-	Credential    string   `json:"credential"`
-	Chosen        string   `json:"credential_chosen,omitempty"`
-	Presented     string   `json:"presented"`
-	Absent        []string `json:"absent"`
-	Visible       []string `json:"visible,omitempty"`
-	Proxy         string   `json:"proxy_guest"`
-	Refused       []string `json:"refused"`
-	MintBudget    int      `json:"plugin_budget,omitempty"`
-	Plugin        string   `json:"plugin,omitempty"`
-	PluginBinary  string   `json:"plugin_binary,omitempty"`
-	PluginProblem string   `json:"plugin_problem,omitempty"`
-	PluginArgv    []string `json:"plugin_argv,omitempty"`
-	PluginEnv     []string `json:"plugin_env,omitempty"`
-	PluginHelpers []string `json:"plugin_helpers,omitempty"`
-	PluginReach   string   `json:"plugin_reach,omitempty"`
+	Context    string   `json:"context"`
+	Server     string   `json:"server"`
+	Credential string   `json:"credential"`
+	Chosen     string   `json:"credential_chosen,omitempty"`
+	Presented  string   `json:"presented"`
+	Absent     []string `json:"absent"`
+	Proxy      string   `json:"proxy_guest"`
+	Refused    []string `json:"refused"`
 }
 
 type jsonTopology struct {
@@ -886,16 +876,10 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			}
 			return out
 		}
-		budget := 0
-		if k.PluginRow != "" {
-			budget = k.MintBudget
-		}
 		doc.Kube = &jsonKube{
 			Context: text(k.Context), Server: text(k.Server), Credential: k.Credential, Chosen: k.Chosen,
-			Presented: text(k.Presented), Absent: texts(k.Absent), Visible: texts(k.Visible),
-			Proxy: k.Proxy, Refused: k.Refused, MintBudget: budget,
-			Plugin: k.PluginRow, PluginBinary: k.Plugin, PluginProblem: k.PluginProblem,
-			PluginArgv: k.PluginArgv, PluginEnv: k.PluginEnv, PluginHelpers: k.PluginHelpers, PluginReach: k.PluginReach,
+			Presented: text(k.Presented), Absent: texts(k.Absent),
+			Proxy: k.Proxy, Refused: k.Refused,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

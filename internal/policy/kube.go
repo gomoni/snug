@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"net/netip"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -35,9 +34,6 @@ type KubeBinding struct {
 	// Credential is the credential the proxy presents: identity.kubectl.credential,
 	// or the entry's only one when the key is absent. Never "".
 	Credential KubeCredential
-	// Plugin is the user entry's exec plugin when Credential is exec; its
-	// token is the proxy's bearer. nil otherwise.
-	Plugin *KubePlugin
 	// Kubeconfig is the host path that was decoded, link-free.
 	Kubeconfig    string
 	Server        string
@@ -45,8 +41,7 @@ type KubeBinding struct {
 	TLSServerName string
 	// HostUser is the chosen credential, re-decoded: certificate and key, or
 	// the static token, never both. It never enters the sandbox and is never
-	// written: internal/cli hands it to the proxy in snug's own memory. Zero
-	// when Credential is exec.
+	// written: internal/cli hands it to the proxy in snug's own memory.
 	HostUser KubeHostUser
 	// CertSubject and CertNotAfter describe the chosen client certificate for
 	// the screen and the -v line. The run refuses a certificate past
@@ -177,34 +172,6 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 	}
 	if err := kubeUser(b, user, k); err != nil {
 		return refuse("%s", err.Error())
-	}
-	if b.Plugin != nil {
-		// The plugin runs on the host as you and reads its own configuration
-		// from your home: whoever can write ~/.aws/config chooses a
-		// credential_process the host runs, and ~/.azure holds the session
-		// kubelogin hands to az. Writable through this run's grants, that is
-		// the payload choosing code that runs on the host.
-		for _, dir := range b.Plugin.ConfigDirs {
-			hp := home + "/" + dir
-			const why = "refusing credential = %s for context %s: %s %s The %s plugin snug runs on the host " +
-				"reads its configuration there, so a payload that writes it chooses what runs on the host as " +
-				"you. Drop the rw grant over %s.%s"
-			if p.HostPathVisible(hp, true) {
-				return refuse(why, kq(string(b.Credential)), kq(k.Context), VisibleText(hp),
-					"is WRITABLE through a grant of this sandbox.", b.Plugin.Row, VisibleText(hp), "")
-			}
-			if m, h, hit, err := p.writableAliasOf(env, hp); err != nil {
-				return err
-			} else if hit {
-				return refuse(why, kq(string(b.Credential)), kq(k.Context), VisibleText(hp),
-					"is reached by the rw grant "+VisibleText(m.Host)+" through a second mount.", b.Plugin.Row,
-					VisibleText(hp), aliasNote(h))
-			}
-			if name, asked, found := p.writableNameOnChain(env, hp); found {
-				return refuse(why, kq(string(b.Credential)), kq(k.Context), VisibleText(hp),
-					selectionClause(name, asked), b.Plugin.Row, VisibleText(hp), "")
-			}
-		}
 	}
 
 	p.Kube = b
@@ -347,7 +314,7 @@ func kubeCluster(b *KubeBinding, c kubecfg.Cluster, ctx Context) error {
 		return fmt.Errorf("cluster %s: server %s is not https; a bearer token over plain http is readable "+
 			"on the path, and snug accepts only https://host[:port][/path]", name, VisibleText(server))
 	}
-	// The proxy and the exec plugin dial from the HOST, outside the seal
+	// The proxy dials from the HOST, outside the seal
 	// that keeps the sandbox off host loopback, so this refusal is what keeps
 	// identity.kubectl from being a grant to one host port. It covers literals;
 	// a name is not resolved here, because resolution stays pure, and the
@@ -392,8 +359,8 @@ func kubeLoopback(name, server string) error {
 }
 
 // kubeTokenShape is a bearer token: the characters RFC 6750's b64token
-// allows that a static token, a ServiceAccount JWT and an exec plugin's token
-// use. Nothing else is written into an Authorization header.
+// allows that a static token and a ServiceAccount JWT use. Nothing else is
+// written into an Authorization header.
 var kubeTokenShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // KubeTokenOK reports whether tok is one snug's proxy will present.
@@ -417,6 +384,9 @@ func kubeUser(b *KubeBinding, u kubecfg.User, k IdentityKube) error {
 		v := u.Fields[key]
 		switch key {
 		case "exec":
+			return fmt.Errorf("user of context %s authenticates with an exec plugin, which snug does not "+
+				"run (not built: #674); use a context whose user holds client-certificate-data and "+
+				"client-key-data, or a token", kq(context))
 		case "client-certificate-data", "client-key-data", "token":
 			if v.Kind != kubecfg.Scalar {
 				return fmt.Errorf("user of context %s: %s is a %s, not a value", kq(context), key, v.Kind)
@@ -441,12 +411,8 @@ func kubeUser(b *KubeBinding, u kubecfg.User, k IdentityKube) error {
 	if tok != "" {
 		holds = append(holds, KubeCredentialToken)
 	}
-	if u.Exec != nil {
-		holds = append(holds, KubeCredentialExec)
-	}
 	names := map[KubeCredential]string{
 		KubeCredentialClientCert: "a client certificate", KubeCredentialToken: "a static token",
-		KubeCredentialExec: "an exec plugin",
 	}
 	list := func() string {
 		s := make([]string, len(holds))
@@ -459,7 +425,7 @@ func kubeUser(b *KubeBinding, u kubecfg.User, k IdentityKube) error {
 	switch {
 	case len(holds) == 0:
 		return fmt.Errorf("user of context %s holds no credential snug can present (want "+
-			"client-certificate-data and client-key-data, token, or exec)", kq(context))
+			"client-certificate-data and client-key-data, or token)", kq(context))
 	case choice == "" && len(holds) > 1:
 		vals := make([]string, len(holds))
 		for i, h := range holds {
@@ -481,17 +447,7 @@ func kubeUser(b *KubeBinding, u kubecfg.User, k IdentityKube) error {
 				" (not presented)")
 		}
 	}
-	if choice != KubeCredentialExec && k.AWSProfile != "" {
-		return fmt.Errorf("identity.kubectl.aws_profile is set, but credential = %s runs no aws plugin; "+
-			"drop the key", kq(string(choice)))
-	}
 	switch choice {
-	case KubeCredentialExec:
-		pl, err := kubePluginOf(u.Exec, k, context)
-		if err != nil {
-			return err
-		}
-		b.Plugin = pl
 	case KubeCredentialClientCert:
 		c, err1 := base64.StdEncoding.DecodeString(cert)
 		kd, err2 := base64.StdEncoding.DecodeString(key)
@@ -578,51 +534,6 @@ func kubeconfig(name string, cluster kubeClusterOut, user any) []byte {
 		panic(fmt.Sprintf("policy: encoding a generated kubeconfig: %v", err))
 	}
 	return buf.Bytes()
-}
-
-// KubeMintBudget is how many times one run may run the exec plugin, the one
-// at start included. The token source never runs it before the cached token
-// expires — not on a 401 either — so this only binds when a plugin hands out
-// very short tokens or the clock jumps.
-const KubeMintBudget = 64
-
-// ResolveKubeHostBinary judges a host program identity.kubectl runs with your
-// credential — an exec plugin or a helper the plugin runs — named by
-// what in messages. It refuses a relative name, a binary inside the target,
-// and one a writable grant reaches by bytes, by a second mount, or by a name
-// on its resolution chain — the same three arms as ResolveEngineBinary.
-// Whether the file is an executable rather than a script is internal/cli's
-// check: it needs a read.
-func (p *Policy) ResolveKubeHostBinary(env Environ, what, asGiven string) (string, error) {
-	if !filepath.IsAbs(asGiven) {
-		return "", fmt.Errorf("%s %s is not an absolute path; snug runs it on the host with your "+
-			"cluster credential and judges it against this sandbox's grants, which a relative name matches "+
-			"none of", what, VisibleText(asGiven))
-	}
-	asGiven = filepath.Clean(asGiven)
-	resolved, err := ResolveExistingHostPath(env, asGiven)
-	if err != nil {
-		return "", fmt.Errorf("%s %s: %s", what, VisibleText(asGiven), visibleErr(err))
-	}
-	const why = "snug runs it on the host with your cluster credential, so a binary the payload can " +
-		"write or choose is the payload holding that credential. Install it where no grant of " +
-		"this sandbox reaches."
-	if _, in := under(p.Target, resolved); in {
-		return "", fmt.Errorf("%s %s is inside the target %s. %s", what, VisibleText(resolved), VisibleText(p.Target), why)
-	}
-	if p.HostPathVisible(resolved, true) {
-		return "", fmt.Errorf("%s %s: a grant of this sandbox makes it WRITABLE. %s", what, VisibleText(resolved), why)
-	}
-	if m, h, hit, err := p.writableAliasOf(env, resolved); err != nil {
-		return "", err
-	} else if hit {
-		return "", fmt.Errorf("%s %s: the rw grant %s reaches it through a second mount of the same "+
-			"filesystem.%s %s", what, VisibleText(resolved), VisibleText(m.Host), aliasNote(h), why)
-	}
-	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
-		return "", fmt.Errorf("%s %s: %s %s", what, VisibleText(asGiven), selectionClause(name, asked), why)
-	}
-	return resolved, nil
 }
 
 // reencodeCAs parses every PEM block of a CA bundle as an X.509 certificate

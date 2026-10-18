@@ -12,8 +12,7 @@ KUBECTL  context    aks-dev -> https://aks-dev.example.azmk8s.io:443
                     absolute URIs, dot and escaped path segments,
                     loopback, host-owned and cloud-metadata addresses
          absent     aks-cert, aks-token, eks, kind-kind,
-                    the entry's static token (not presented), ~/.kube/cache,
-                    ~/.azure, ~/.aws
+                    the entry's static token (not presented)
          reach      whatever YOUR RBAC allows, on this one server, while this run
                     lives; snug cannot see RBAC and claims nothing. Impersonation,
                     Secrets, TokenRequest and workloads are yours to use if the cluster

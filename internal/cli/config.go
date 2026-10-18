@@ -1076,8 +1076,8 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 		}
 		rows = append(rows, capRows("kubectl "+visibleValue(id.Kube.Context)+" as YOU ("+visibleValue(cred)+")",
 			"THE SANDBOX CAN ACT AS YOU on this one cluster while the run lives: snug's proxy on "+
-				"the host presents the context's own credential — its client certificate, static token, "+
-				"or the token its kubelogin or aws plugin returns — on every request from inside, on "+
+				"the host presents the context's own credential — its client certificate or static token — "+
+				"on every request from inside, on "+
 				"whatever YOUR RBAC allows; on an AKS local account that is cluster root. The credential "+
 				"never enters the sandbox and goes to that one server only; but what is read or minted "+
 				"through it — Secrets, tokens, workloads — outlives the run. pods/exec, pods/portforward "+

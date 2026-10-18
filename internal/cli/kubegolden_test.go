@@ -47,7 +47,7 @@ func kubePolicyAs(t *testing.T, withNet bool, cred policy.KubeCredential) *polic
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, err := startKubeIdentity(p, env, false, true); err != nil {
+	if _, err := startKubeIdentity(p, false, true); err != nil {
 		t.Fatal(err)
 	}
 	p.InstallAnchors()
@@ -98,7 +98,7 @@ func TestGoldenKubeDryRunBlock(t *testing.T) {
 	got := runDirPID.ReplaceAllString(b.String(), "run-N")
 	for _, want := range []string{"credential client-certificate\n", "CN=fixture-master,O=system:masters",
 		"2099-01-01", "never written, never inside", "the entry's static token (not presented)",
-		"kind-kind", "~/.azure", "YOUR RBAC allows", "Impersonation"} {
+		"kind-kind", "YOUR RBAC allows", "Impersonation"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("KUBE block lacks %q:\n%s", want, got)
 		}
@@ -180,38 +180,6 @@ func TestNotGrantedListsAzure(t *testing.T) {
 	}
 }
 
-// Red-team finding: the absent row was a constant, so a grant onto ~/.azure
-// was readable inside while the screen said absent.
-func TestKubeDryRunSaysWhenAGrantShowsAzure(t *testing.T) {
-	p := kubePolicy(t)
-	p.Mounts["/home/u/.azure"] = policy.Mount{Guest: "/home/u/.azure", Host: "/srv/az", Kind: policy.KindBind, From: []string{"leaky"}}
-	var b bytes.Buffer
-	describeKube(&b, buildKubeReport(p))
-	got := b.String()
-	if !strings.Contains(got, "VISIBLE    ~/.azure (granted by leaky)") {
-		t.Errorf("a granted ~/.azure is not called out:\n%s", got)
-	}
-	if strings.Contains(got, "~/.kube/cache, ~/.azure") {
-		t.Errorf("~/.azure is still listed absent:\n%s", got)
-	}
-}
-
-// Red-team G2: the row read guest paths only, so ~/.azure bound at another
-// guest path was readable while the screen said absent.
-func TestKubeDryRunSaysWhenAHostGrantShowsAzureElsewhere(t *testing.T) {
-	p := kubePolicy(t)
-	p.Mounts["/az"] = policy.Mount{Guest: "/az", Host: "/home/u/.azure", Kind: policy.KindBind, From: []string{"leaky"}}
-	var b bytes.Buffer
-	describeKube(&b, buildKubeReport(p))
-	got := b.String()
-	if !strings.Contains(got, "VISIBLE    ~/.azure (at /az, granted by leaky)") {
-		t.Errorf("~/.azure bound at /az is not called out:\n%s", got)
-	}
-	if strings.Contains(got, "~/.kube/cache, ~/.azure") {
-		t.Errorf("~/.azure is still listed absent:\n%s", got)
-	}
-}
-
 // A kube profile without @net resolves, gets a stage for the proxy's socket,
 // and the NETWORK block says the one thing that makes "isolated" untrue.
 func TestKubeOnlyProfileIsNotOffline(t *testing.T) {
@@ -227,53 +195,4 @@ func TestKubeOnlyProfileIsNotOffline(t *testing.T) {
 			t.Errorf("NETWORK block lacks %q:\n%s", want, b.String())
 		}
 	}
-}
-
-// identity.kubectl with credential = "exec" against the AKS kubelogin shape.
-func kubeHostExecPolicy(t *testing.T) *policy.Policy {
-	t.Helper()
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-	reg, err := profile.Builtins()
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg["aks-entra"] = &policy.Profile{Name: "aks-entra", Identity: &policy.Identity{Kube: policy.IdentityKube{
-		Context: "aks-entra", Credential: policy.KubeCredentialExec, Server: "https://aks-entra.example.azmk8s.io:443"}}}
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "aks-entra")
-	fixture, err := os.ReadFile("../policy/testdata/kubeconfig-exec.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := newEnvFakeEnv()
-	env.kube = map[string][]byte{"/home/u/.kube/config": fixture}
-	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if _, err := startKubeIdentity(p, env, false, true); err != nil {
-		t.Fatal(err)
-	}
-	p.InstallAnchors()
-	return p
-}
-
-func TestGoldenKubeExecDryRunBlock(t *testing.T) {
-	p := kubeHostExecPolicy(t)
-	var b bytes.Buffer
-	describeKube(&b, buildKubeReport(p))
-	got := b.String()
-	for _, want := range []string{"YOU — the user of context aks-entra", "the token the kubelogin plugin returns",
-		"--login azurecli", "valid as you at EVERY", "exec.env is never used",
-		"env PATH=/usr/local/bin:/usr/bin:/bin\n", "env PYTHONNOUSERSITE=1\n", "it runs az off that PATH",
-		"YOUR RBAC allows", "a real run would REFUSE", "not found on /usr/local/bin:/usr/bin:/bin"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("KUBE block lacks %q:\n%s", want, got)
-		}
-	}
-	for _, bad := range []string{"host mint", "80faf920", "ServiceAccount"} {
-		if strings.Contains(got, bad) {
-			t.Errorf("KUBE block shows %q under credential = exec:\n%s", bad, got)
-		}
-	}
-	checkGolden(t, "kube-exec.dryrun.txt", got, "this is what a human reads before snug runs a plugin as them")
 }

@@ -611,3 +611,59 @@ func TestKubeProxyConnLimit(t *testing.T) {
 		t.Error("a connection past MaxConns was answered")
 	}
 }
+
+// A server on this host is refused before the sandbox exists, and a name
+// whose answer holds one local address among public ones is refused whole:
+// that name points at this host.
+func TestKubeProxyPreflightRefusesAServerOnThisHost(t *testing.T) {
+	public := netip.MustParseAddr("203.0.113.7")
+	for _, answer := range [][]string{
+		{"127.0.0.1"}, {"::1"}, {"0.0.0.0"}, {"192.0.2.10"}, {"fe80::1"}, {"169.254.169.254"},
+		{"203.0.113.7", "127.0.0.1"}, {"203.0.113.7", "192.0.2.10"},
+	} {
+		var addrs []netip.Addr
+		for _, a := range answer {
+			addrs = append(addrs, netip.MustParseAddr(a))
+		}
+		server, _ := url.Parse("https://kubernetes.docker.internal:6443")
+		err := Preflight(context.Background(), Config{Server: server,
+			HostAddrs: []netip.Addr{netip.MustParseAddr("192.0.2.10")},
+			Lookup:    func(context.Context, string) ([]netip.Addr, error) { return addrs, nil }})
+		if err == nil || !strings.Contains(err.Error(), "cluster on this host") {
+			t.Errorf("%v: Preflight = %v, want the on-this-host refusal", answer, err)
+		}
+	}
+	for _, lit := range []string{"https://127.0.0.1:6443", "https://[::1]:6443"} {
+		server, _ := url.Parse(lit)
+		if err := Preflight(context.Background(), Config{Server: server}); err == nil {
+			t.Errorf("%s: Preflight accepted a loopback literal", lit)
+		}
+	}
+	server, _ := url.Parse("https://aks-dev.example.azmk8s.io:443")
+	if err := Preflight(context.Background(), Config{Server: server,
+		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{public}, nil }}); err != nil {
+		t.Errorf("a public server: %v", err)
+	}
+	if err := Preflight(context.Background(), Config{Server: server,
+		Lookup: func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no such host") }}); err == nil {
+		t.Error("a name that does not resolve was accepted")
+	}
+}
+
+func TestKubeProxyDialerRefusesAMixedAnswer(t *testing.T) {
+	up := newUpstream(t, nil)
+	f := start(t, up, "", func(c *Config) {
+		c.Server, _ = url.Parse("https://kube.example:6443")
+		c.Lookup = func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("127.0.0.1")}, nil
+		}
+	})
+	f.p.vet = f.p.refusedAddr
+	status, _ := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+	if !strings.HasPrefix(status, "502") {
+		t.Errorf("a name resolving to a public address and loopback: %s, want 502", status)
+	}
+	if n := up.count(); n != 0 {
+		t.Errorf("%d requests reached a server", n)
+	}
+}

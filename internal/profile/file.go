@@ -120,7 +120,6 @@ type rawIdentityKube struct {
 	Server     string `toml:"server"`
 	Credential string `toml:"credential"`
 	Kubeconfig string `toml:"kubeconfig"`
-	AWSProfile string `toml:"aws_profile"`
 }
 
 type rawIdentitySSH struct {
@@ -599,7 +598,6 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 			Server:     r.Kube.Server,
 			Credential: policy.KubeCredential(r.Kube.Credential),
 			Kubeconfig: r.Kube.Kubeconfig,
-			AWSProfile: r.Kube.AWSProfile,
 		},
 	}
 	if *id == (policy.Identity{}) {
