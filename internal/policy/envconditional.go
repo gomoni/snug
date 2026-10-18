@@ -216,9 +216,9 @@ func reaching(set map[ProfileName]*Profile, selected []ProfileName, owners map[P
 	var out []ProfileName
 	for _, root := range selected {
 		closure := map[ProfileName]*Profile{}
-		// set is already the expanded, cycle-checked closure of every root, so
+		// set is already the expanded closure of every root, so
 		// expanding one root over it cannot fail.
-		_ = expand(set, root, closure, nil)
+		_ = expand(set, root, closure)
 		for n := range closure {
 			if owners[n] {
 				out = append(out, root)

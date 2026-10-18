@@ -321,7 +321,7 @@ func coversGuest(guests []string, path string) bool {
 // laxer.
 func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map[string]string) ([]string, map[string]string, error) {
 	closure := map[ProfileName]*Profile{}
-	if err := expand(reg, name, closure, nil); err != nil {
+	if err := expand(reg, name, closure); err != nil {
 		return nil, nil, err
 	}
 

@@ -81,7 +81,7 @@ func Resolve(sel []*Profile, ctx Context) (*Policy, error)
 
 The algorithm:
 
-1. **Expand `include` transitively** into a *set* of profiles (depth-first, cycle-detected). Because the result is a set, `include` is idempotent and diamond includes are harmless.
+1. **Expand `include` transitively** into a *set* of profiles (depth-first). Because the result is a set, `include` is idempotent: a profile reached twice, by a diamond or a cycle, counts once, and a cycle is not an error.
 2. **Expand path variables** (`{target}`, `{target_parent}`, `{home}`, `~`) against `ctx`.
 3. **Canonicalise host paths** with `EvalSymlinks`, and lexically clean guest paths.
 4. **Fold the grant multiset into `map[Guest]Mount`** with this join — **RULE 1, the same-path rule**:

@@ -1315,16 +1315,6 @@ func TestTmpIsPrivateByDefault(t *testing.T) {
 	}
 }
 
-func TestIncludeCycleIsDetected(t *testing.T) {
-	reg := testRegistry()
-	reg["a"] = &Profile{Name: "a", Include: []ProfileName{"b"}}
-	reg["b"] = &Profile{Name: "b", Include: []ProfileName{"a"}}
-	if _, err := Resolve(reg, []ProfileName{"a"}, testCtx(), newFakeEnv()); err == nil ||
-		!strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("expected a cycle error, got %v", err)
-	}
-}
-
 // Code-injection env vars are refused loudly rather than dropped silently, so
 // the human learns why their profile did not do what it said.
 func TestForbiddenEnvIsRefusedLoudly(t *testing.T) {

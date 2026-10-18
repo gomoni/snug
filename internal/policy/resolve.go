@@ -132,7 +132,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	//    include is idempotent and diamond includes are harmless.
 	set := map[ProfileName]*Profile{}
 	for _, name := range selected {
-		if err := expand(reg, name, set, nil); err != nil {
+		if err := expand(reg, name, set); err != nil {
 			return nil, err
 		}
 	}
@@ -1368,7 +1368,7 @@ func union(a, b []string) []string {
 func Expand(reg map[ProfileName]*Profile, selected []ProfileName) (map[ProfileName]*Profile, error) {
 	out := map[ProfileName]*Profile{}
 	for _, name := range selected {
-		if err := expand(reg, name, out, nil); err != nil {
+		if err := expand(reg, name, out); err != nil {
 			return nil, err
 		}
 	}
@@ -1431,12 +1431,11 @@ func UnknownProfile(reg map[ProfileName]*Profile, name ProfileName) error {
 	return fmt.Errorf("unknown profile %q (see: snug profile list)", name)
 }
 
-func expand(reg map[ProfileName]*Profile, name ProfileName, out map[ProfileName]*Profile, stack []ProfileName) error {
-	for _, s := range stack {
-		if s == name {
-			return fmt.Errorf("include cycle: %s -> %s", JoinNames(stack, " -> "), name)
-		}
-	}
+// expand adds name and everything it includes to out. A profile is recorded
+// before its includes are followed and a name already in out returns at once,
+// so a diamond or a cycle counts each profile once: includes compose as a set,
+// and a cycle is not an error.
+func expand(reg map[ProfileName]*Profile, name ProfileName, out map[ProfileName]*Profile) error {
 	if _, done := out[name]; done {
 		return nil
 	}
@@ -1446,7 +1445,7 @@ func expand(reg map[ProfileName]*Profile, name ProfileName, out map[ProfileName]
 	}
 	out[name] = prof
 	for _, inc := range prof.Include {
-		if err := expand(reg, inc, out, append(stack, name)); err != nil {
+		if err := expand(reg, inc, out); err != nil {
 			return err
 		}
 	}
