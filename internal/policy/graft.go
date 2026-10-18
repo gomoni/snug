@@ -1180,7 +1180,7 @@ func existsInSandbox(p *Policy, guest string) bool {
 //     owes this function nothing; do not "fix" it by resolving its argument
 //     first — that is precisely the defect it exists to close.
 //   - policy.resolveKube (kube.go, issue #664) — asks about
-//     identity.kube.kubeconfig as the identity path loop stored it: the
+//     identity.kubectl.kubeconfig as the identity path loop stored it: the
 //     link-free destination authorableLinks resolved, which is the spelling the
 //     file is later opened by (RESOLVE_NO_SYMLINKS). The obligation is
 //     discharged at write time, as for EngineTargetGraft; writableNameOnChain

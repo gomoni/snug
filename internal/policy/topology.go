@@ -124,7 +124,7 @@ func (t Topology) NeedsStage() bool {
 // reversed once. TestTopologyIsDerivedNotSettable checks this the same way
 // TestPolicyHasNoRestrictionOperation checks invariant 1: by finding none.
 //
-// `kube` is whether identity.kube resolved. Its proxy listens on a socket the
+// `kube` is whether identity.kubectl resolved. Its proxy listens on a socket the
 // stage creates INSIDE the sandbox's network namespace, so a kube run needs a
 // stage even with no @net — raised the same way the podman branch raises it,
 // and the reason a kube profile is not an offline profile.

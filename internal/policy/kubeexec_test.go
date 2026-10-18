@@ -17,7 +17,7 @@ func kubeExecFixture(t *testing.T) string {
 }
 
 func hostExec(context, server string) IdentityKube {
-	return IdentityKube{Context: context, Token: KubeTokenHostExec, Server: server}
+	return IdentityKube{Context: context, Credential: KubeCredentialExec, Server: server}
 }
 
 const (
@@ -66,8 +66,8 @@ func TestKubeHostExecBuildsTheKubeloginArgv(t *testing.T) {
 	if !strings.Contains(pl.Reach, "EVERY AKS cluster in your tenant") {
 		t.Errorf("reach = %q", pl.Reach)
 	}
-	if p.Kube.SAName != "" || p.Kube.HostUser.Token != nil || p.Kube.HostUser.ClientKeyData != nil {
-		t.Errorf("host-exec carries a ServiceAccount or a host credential: %+v", p.Kube)
+	if p.Kube.HostUser.Token != nil || p.Kube.HostUser.ClientKeyData != nil {
+		t.Errorf("credential = exec carries a static host credential: %+v", p.Kube)
 	}
 	if !reflect.DeepEqual(pl.Helpers, []string{"az"}) {
 		t.Errorf("helpers = %q, want az judged too", pl.Helpers)
@@ -81,7 +81,7 @@ func TestKubeHostExecRefusesAnUnknownPlugin(t *testing.T) {
 
 func TestKubeHostExecRefusesGKEPlugin(t *testing.T) {
 	wantExecRefusal(t, hostExec("gke", "https://gke.example.com"), "", nil, "gke-gcloud-auth-plugin",
-		"cloud-platform", `token = "serviceaccount"`)
+		"cloud-platform")
 }
 
 // A relative command would be looked up wherever the plugin's cwd is; the
@@ -120,7 +120,7 @@ func TestKubeHostExecRefusesArgvOutsideThePluginGrammar(t *testing.T) {
 // profile names it, and any other name refuses outright. The built
 // environment carries the profile's value, never the file's.
 func TestKubeHostExecNeverUsesTheFileEnv(t *testing.T) {
-	wantExecRefusal(t, hostExec("eks-demo", eksDemoServer), "", nil, "AWS_PROFILE", "identity.kube.aws_profile")
+	wantExecRefusal(t, hostExec("eks-demo", eksDemoServer), "", nil, "AWS_PROFILE", "identity.kubectl.aws_profile")
 	k := hostExec("eks-demo", eksDemoServer)
 	k.AWSProfile = "work"
 	p, err := execResolve(t, k, "", nil)
@@ -176,41 +176,26 @@ func TestKubeHostExecRefusesAWritableConfigDir(t *testing.T) {
 	}
 }
 
-func TestKubeHostExecRefusesACertOrStaticTokenUser(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{kube: hostExec("aks-dev", "https://aks-dev.example.azmk8s.io:443")},
-		"is not one", `token = "serviceaccount"`)
-}
-
-func TestKubeHostExecRefusesAServiceAccount(t *testing.T) {
-	k := hostExec("aks-entra", aksEntraServer)
-	k.ServiceAccount = "dev/snug-agent"
-	wantExecRefusal(t, k, "", nil, "service_account is set", "acts as YOU")
-}
-
 func TestKubeAWSProfileRefusedWithoutAnAWSRow(t *testing.T) {
 	k := hostExec("aks-entra", aksEntraServer)
 	k.AWSProfile = "work"
 	wantExecRefusal(t, k, "", nil, "aws_profile is set", "kubelogin")
-	sa := IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", AWSProfile: "work"}
-	wantKubeRefusal(t, kubeCase{kube: sa}, "aws_profile is set", "runs no aws plugin")
+	cert := IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,
+		Server: "https://aks-dev.example.azmk8s.io:443", AWSProfile: "work"}
+	wantKubeRefusal(t, kubeCase{kube: cert}, "aws_profile is set", "runs no aws plugin")
 }
 
-// serviceaccount on an exec user: the plugin authenticates the mint, the
-// sandbox acts as the ServiceAccount — the narrowest form for AKS and EKS.
-func TestKubeServiceAccountMintsThroughAnExecUser(t *testing.T) {
-	k := IdentityKube{Context: "aks-entra", Token: KubeTokenServiceAccount, Server: aksEntraServer,
-		ServiceAccount: "dev/snug-agent"}
+// Absent credential on an entry whose only credential is its exec plugin is
+// that plugin: the only reading, printed on the dry run.
+func TestKubeCredentialAbsentOnAnExecOnlyEntryIsExec(t *testing.T) {
+	k := hostExec("aks-entra", aksEntraServer)
+	k.Credential = ""
 	p, err := execResolve(t, k, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Kube.Plugin == nil || p.Kube.Plugin.Row != "kubelogin" || p.Kube.SAName != "snug-agent" {
-		t.Fatalf("Kube = %+v", p.Kube)
-	}
-	mf := string(p.Kube.MintKubeconfigAs(KubeHostUser{Token: Secret("plugin-token")}))
-	if !strings.Contains(mf, `"token": "plugin-token"`) || strings.Contains(mf, "exec") {
-		t.Errorf("mint kubeconfig does not carry the plugin's token as a static token:\n%s", mf)
+	if p.Kube.Credential != KubeCredentialExec || p.Kube.Plugin == nil {
+		t.Errorf("Kube = %+v", p.Kube)
 	}
 }
 

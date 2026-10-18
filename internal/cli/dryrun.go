@@ -2042,14 +2042,14 @@ func claudeSettingsCarriedNames(m policy.Mount) []string {
 	return names
 }
 
-// describeKubeReach is identity.kube's line in the NETWORK block. The proxy
+// describeKubeReach is identity.kubectl's line in the NETWORK block. The proxy
 // dials from the host, so it is reach this sandbox has with or without @net —
 // and without @net it is the one thing that makes "isolated" untrue.
 func describeKubeReach(out io.Writer, p *policy.Policy) {
 	if p.Kube == nil {
 		return
 	}
-	fmt.Fprintf(out, "         EXCEPT   %s inside is snug's identity.kube proxy to\n", strings.TrimPrefix(policy.KubeProxyGuest, "http://"))
+	fmt.Fprintf(out, "         EXCEPT   %s inside is snug's identity.kubectl proxy to\n", strings.TrimPrefix(policy.KubeProxyGuest, "http://"))
 	fmt.Fprintf(out, "                  %s, dialled from the HOST: this sandbox reaches\n", visibleValue(p.Kube.Server))
 	fmt.Fprintf(out, "                  that API server, and through it whatever the cluster reaches.\n")
 	fmt.Fprintf(out, "                  A kube profile is not an offline profile.\n")

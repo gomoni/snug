@@ -365,7 +365,7 @@ type jsonDoc struct {
 	Network    jsonNetwork    `json:"network"`
 	// BrowserBridge is absent when the policy's login set lacks claude.
 	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
-	// Kube is absent when no identity.kube block is pinned.
+	// Kube is absent when no identity.kubectl block is pinned.
 	Kube        *jsonKube       `json:"kube,omitempty"`
 	Topology    jsonTopology    `json:"topology"`
 	Containers  *jsonContainers `json:"containers"`
@@ -569,33 +569,26 @@ type jsonBrowserBridge struct {
 	MaxRelays   int      `json:"max_relays"`
 }
 
-// jsonKube is reportKube. Kubectl is empty and KubectlProblem set when a real
-// run would refuse for want of a host kubectl.
+// jsonKube is reportKube. PluginBinary is empty and PluginProblem set when a
+// real run would refuse for want of a usable exec plugin.
 type jsonKube struct {
-	Context        string   `json:"context"`
-	Server         string   `json:"server"`
-	ServiceAccount string   `json:"service_account"`
-	Kubectl        string   `json:"kubectl"`
-	KubectlProblem string   `json:"kubectl_problem,omitempty"`
-	MintArgv       []string `json:"mint_argv"`
-	MintEnv        []string `json:"mint_env"`
-	MintBudget     int      `json:"mint_budget"`
-	Requested      string   `json:"requested_lifetime"`
-	Credential     string   `json:"host_credential"`
-	// StaticTokenUnused: the host user also holds a static token, never sent.
-	StaticTokenUnused bool     `json:"static_token_unused"`
-	Absent            []string `json:"absent"`
-	Visible           []string `json:"visible,omitempty"`
-	Proxy             string   `json:"proxy_guest"`
-	Refused           []string `json:"refused"`
-	TokenMode         string   `json:"token_mode"`
-	Plugin            string   `json:"plugin,omitempty"`
-	PluginBinary      string   `json:"plugin_binary,omitempty"`
-	PluginProblem     string   `json:"plugin_problem,omitempty"`
-	PluginArgv        []string `json:"plugin_argv,omitempty"`
-	PluginEnv         []string `json:"plugin_env,omitempty"`
-	PluginHelpers     []string `json:"plugin_helpers,omitempty"`
-	PluginReach       string   `json:"plugin_reach,omitempty"`
+	Context       string   `json:"context"`
+	Server        string   `json:"server"`
+	Credential    string   `json:"credential"`
+	Chosen        string   `json:"credential_chosen,omitempty"`
+	Presented     string   `json:"presented"`
+	Absent        []string `json:"absent"`
+	Visible       []string `json:"visible,omitempty"`
+	Proxy         string   `json:"proxy_guest"`
+	Refused       []string `json:"refused"`
+	MintBudget    int      `json:"plugin_budget,omitempty"`
+	Plugin        string   `json:"plugin,omitempty"`
+	PluginBinary  string   `json:"plugin_binary,omitempty"`
+	PluginProblem string   `json:"plugin_problem,omitempty"`
+	PluginArgv    []string `json:"plugin_argv,omitempty"`
+	PluginEnv     []string `json:"plugin_env,omitempty"`
+	PluginHelpers []string `json:"plugin_helpers,omitempty"`
+	PluginReach   string   `json:"plugin_reach,omitempty"`
 }
 
 type jsonTopology struct {
@@ -893,13 +886,14 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			}
 			return out
 		}
+		budget := 0
+		if k.PluginRow != "" {
+			budget = k.MintBudget
+		}
 		doc.Kube = &jsonKube{
-			Context: text(k.Context), Server: text(k.Server), ServiceAccount: text(k.ServiceAccount),
-			Kubectl: text(k.Kubectl), KubectlProblem: text(k.KubectlProblem),
-			MintArgv: texts(k.MintArgv), MintEnv: k.MintEnv, MintBudget: k.MintBudget,
-			Requested: k.Requested, Credential: k.Credential, StaticTokenUnused: k.StaticTokenUnused,
-			Absent: texts(k.Absent), Visible: texts(k.Visible),
-			Proxy: k.Proxy, Refused: k.Refused, TokenMode: k.Mode,
+			Context: text(k.Context), Server: text(k.Server), Credential: k.Credential, Chosen: k.Chosen,
+			Presented: text(k.Presented), Absent: texts(k.Absent), Visible: texts(k.Visible),
+			Proxy: k.Proxy, Refused: k.Refused, MintBudget: budget,
 			Plugin: k.PluginRow, PluginBinary: k.Plugin, PluginProblem: k.PluginProblem,
 			PluginArgv: k.PluginArgv, PluginEnv: k.PluginEnv, PluginHelpers: k.PluginHelpers, PluginReach: k.PluginReach,
 		}

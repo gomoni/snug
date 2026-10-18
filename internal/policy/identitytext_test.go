@@ -120,10 +120,10 @@ var wantIdentityLeaves = []string{
 	"ssh.host", "ssh.key", "ssh.agent",
 	"git.name", "git.email", "git.signing_key",
 	"gh.host", "gh.user",
-	"kube.context", "kube.server", "kube.token", "kube.service_account", "kube.kubeconfig",
+	"kubectl.context", "kubectl.server", "kubectl.credential", "kubectl.kubeconfig",
 	// aws_profile reaches one host sink, the exec plugin's AWS_PROFILE, and is
 	// shape-checked (awsProfileShape) before it does.
-	"kube.aws_profile",
+	"kubectl.aws_profile",
 }
 
 // TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf replaces the hand-written
@@ -293,7 +293,7 @@ func TestIdentityFieldsEnumeratesExactlyThePathLeaves(t *testing.T) {
 			got = append(got, f.Key)
 		}
 	}
-	want := []string{"ssh.key", "git.signing_key", "kube.kubeconfig"}
+	want := []string{"ssh.key", "git.signing_key", "kubectl.kubeconfig"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("identity leaves carrying `path` = %v, want exactly %v", got, want)
 	}

@@ -1,6 +1,6 @@
-// Package kubebroker is the token source behind identity.kube: the one place a
-// run's credential for the pinned cluster is minted and cached, in snug's own
-// process. Its only caller is internal/kubeproxy, which writes the token into
+// Package kubebroker is the token source behind identity.kubectl's credential
+// = "exec": the one place a run's token from the context's exec plugin is
+// minted and cached, in snug's own process. Its only caller is internal/kubeproxy, which writes the token into
 // the Authorization header of a request to the pinned server; nothing in the
 // sandbox ever holds it.
 //
@@ -31,7 +31,7 @@ type Token struct {
 // Config is the source's fixed shape. Mint is injected by internal/cli; the
 // rest are bounds, and the zero value of each is replaced by its default in New.
 type Config struct {
-	Mint        func(context.Context) (Token, error) // one host-side mint
+	Mint        func(context.Context) (Token, error) // one run of the exec plugin
 	Budget      int                                  // mints per run, the first token included
 	Skew        time.Duration                        // a token is stale this long before its expiry
 	MintTimeout time.Duration

@@ -16,13 +16,14 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-func TestKubeMintEnvIsBuiltNotInherited(t *testing.T) {
+func TestKubePluginCmdEnvIsBuiltNotInherited(t *testing.T) {
 	for _, k := range []string{"HTTPS_PROXY", "AWS_PROFILE", "KUBECONFIG", "AZURE_CONFIG_DIR", "KUBECACHEDIR"} {
 		t.Setenv(k, "/from/the/repo/envrc")
 	}
-	argv := []string{"/usr/bin/kubectl", "create", "token", "a"}
-	cmd := kubeMintCmd(context.Background(), argv, []string{"PATH=/usr/bin:/bin", "HOME=/h", "KUBERC=off"})
-	if !slices.Equal(cmd.Env, []string{"PATH=/usr/bin:/bin", "HOME=/h", "KUBERC=off"}) {
+	argv := []string{"/usr/bin/kubelogin", "get-token"}
+	env := (&policy.KubePlugin{}).KubePluginEnv("/h")
+	cmd := kubeMintCmd(context.Background(), argv, env)
+	if !slices.Equal(cmd.Env, env) || slices.ContainsFunc(cmd.Env, func(s string) bool { return strings.Contains(s, "envrc") }) {
 		t.Errorf("Env = %q", cmd.Env)
 	}
 	if cmd.Dir != "/" {
@@ -35,102 +36,53 @@ func TestKubeMintEnvIsBuiltNotInherited(t *testing.T) {
 	}
 }
 
-func TestKubeMintBinaryRefusesAScript(t *testing.T) {
+func checkPluginIsABinary(path string) error {
+	return checkHostBinaryIsELF("kube exec plugin", "kubelogin", path)
+}
+
+func TestKubePluginBinaryRefusesAScript(t *testing.T) {
 	dir := t.TempDir()
-	script := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec distrobox-enter -- kubectl \"$@\"\n"), 0o755); err != nil {
+	script := filepath.Join(dir, "kubelogin")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec distrobox-enter -- kubelogin \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkKubectlIsABinary(script); err == nil || !strings.Contains(err.Error(), "it is a script") {
+	if err := checkPluginIsABinary(script); err == nil || !strings.Contains(err.Error(), "it is a script") {
 		t.Errorf("a shim script: %v", err)
 	}
 }
 
-func TestKubeMintBinaryFollowsSymlinkToELF(t *testing.T) {
+func TestKubePluginBinaryFollowsSymlinkToELF(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(t.TempDir(), "kubectl")
+	link := filepath.Join(t.TempDir(), "kubelogin")
 	if err := os.Symlink(self, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkKubectlIsABinary(link); err != nil {
+	if err := checkPluginIsABinary(link); err != nil {
 		t.Errorf("a symlink to an ELF binary refused: %v", err)
-	}
-}
-
-func TestRuntimeDirCreateFileRefusesExistingAndLinks(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
-	rt, err := openRuntimeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rt.Remove()
-	p, err := rt.CreateFile("kube-mint.json", []byte("x"), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fi, err := os.Stat(p)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %v, %v", fi.Mode().Perm(), err)
-	}
-	if _, err := rt.CreateFile("kube-mint.json", []byte("y"), 0o600); err == nil {
-		t.Error("CreateFile overwrote an existing entry")
-	}
-	if err := rt.RemoveFile("kube-mint.json"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/etc/passwd", filepath.Join(rt.Path(), "planted")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.CreateFile("planted", []byte("y"), 0o600); err == nil {
-		t.Error("CreateFile followed a planted link")
-	}
-	if _, err := rt.CreateFile("../escape", nil, 0o600); err == nil {
-		t.Error("CreateFile accepted a path")
 	}
 }
 
 func writeStub(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "kubectl")
+	p := filepath.Join(t.TempDir(), "kubelogin")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return p
 }
 
-func TestKubeMintParsesATokenRequest(t *testing.T) {
-	stub := writeStub(t, `echo '{"kind":"TokenRequest","status":{"token":"eyJ.abc-_9","expirationTimestamp":"2999-01-01T00:00:00Z"}}'`)
-	tok, _, err := runKubeMint(kubeMintCmd(context.Background(), []string{stub}, []string{"PATH=/usr/bin:/bin"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(tok.Value) != "eyJ.abc-_9" || tok.Expiry.Year() != 2999 {
-		t.Errorf("token = %q, expiry %v", tok.Value, tok.Expiry)
-	}
-	for _, bad := range []string{
-		`echo '{"status":{"token":"a b","expirationTimestamp":"2999-01-01T00:00:00Z"}}'`,
-		`echo '{"status":{"token":"ok","expirationTimestamp":"2000-01-01T00:00:00Z"}}'`,
-		`echo not-json`,
-		`echo boom >&2; exit 3`,
-	} {
-		if _, _, err := runKubeMint(kubeMintCmd(context.Background(), []string{writeStub(t, bad)}, nil)); err == nil {
-			t.Errorf("accepted the output of %q", bad)
-		}
-	}
-}
-
-// The reason the mint gets its own pid namespace: cancelling it kills kubectl
-// AND whatever it spawned, which a process group alone does not guarantee once
-// the child setsid()s.
-func TestKubeMintCancelLeavesNoGrandchild(t *testing.T) {
+// The reason a plugin run gets its own pid namespace: cancelling it kills the
+// plugin AND whatever it spawned, which a process group alone does not
+// guarantee once the child setsid()s.
+func TestKubePluginCancelLeavesNoGrandchild(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	stub := writeStub(t, "setsid sleep 300 & echo $! > "+pidFile+"\nsleep 300\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { runKubeMint(kubeMintCmd(ctx, []string{stub}, []string{"PATH=/usr/bin:/bin"})); close(done) }()
+	go func() { runKubeCmd(kubeMintCmd(ctx, []string{stub}, []string{"PATH=/usr/bin:/bin"})); close(done) }()
 	var pid []byte
 	for range 100 {
 		if pid, _ = os.ReadFile(pidFile); len(pid) > 0 {
@@ -143,7 +95,7 @@ func TestKubeMintCancelLeavesNoGrandchild(t *testing.T) {
 	}
 	cancel()
 	<-done
-	// The pid written is in the mint's pid namespace; the grandchild is found
+	// The pid written is in the plugin's pid namespace; the grandchild is found
 	// by its command line instead.
 	for range 50 {
 		if !sleepRunning(t, "300", os.Getpid()) {
@@ -151,7 +103,7 @@ func TestKubeMintCancelLeavesNoGrandchild(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Error("a grandchild of the mint survived its cancellation")
+	t.Error("a grandchild of the plugin survived its cancellation")
 }
 
 // sleepRunning reports whether a `sleep <arg>` owned by this user, started
@@ -171,15 +123,15 @@ func sleepRunning(t *testing.T, arg string, after int) bool {
 	return false
 }
 
-func TestKubeDryRunMintsNothing(t *testing.T) {
+func TestKubeDryRunRunsNothing(t *testing.T) {
 	rt := shortTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", rt)
-	t.Setenv("PATH", t.TempDir()) // no kubectl anywhere
 	pol := &policy.Policy{Home: "/home/u", Mounts: map[string]policy.Mount{}, Env: map[string]policy.EnvVar{},
-		Kube: &policy.KubeBinding{Context: "aks-dev", Mode: policy.KubeTokenServiceAccount, SANamespace: "dev", SAName: "snug-agent"}}
+		Kube: &policy.KubeBinding{Context: "aks-dev", Credential: policy.KubeCredentialExec,
+			Plugin: &policy.KubePlugin{Row: "kubelogin", Command: "snug-test-no-such-plugin"}}}
 	run, err := startKubeIdentity(pol, policy.OSEnviron{}, false, true)
 	if err != nil {
-		t.Fatalf("a dry run refused for a missing kubectl: %v", err)
+		t.Fatalf("a dry run refused for a missing plugin: %v", err)
 	}
 	if run != nil {
 		t.Error("a dry run started a kube run")
@@ -188,46 +140,45 @@ func TestKubeDryRunMintsNothing(t *testing.T) {
 	if len(ents) != 0 {
 		t.Errorf("a dry run created %v under XDG_RUNTIME_DIR", ents)
 	}
-	if !strings.Contains(pol.KubeMintProblem, "kubectl not found") {
-		t.Errorf("KubeMintProblem = %q", pol.KubeMintProblem)
+	if !strings.Contains(pol.KubePluginProblem, "not found on") {
+		t.Errorf("KubePluginProblem = %q", pol.KubePluginProblem)
 	}
 	if _, err := startKubeIdentity(pol, policy.OSEnviron{}, false, false); err == nil {
-		t.Error("a real run started with no host kubectl")
+		t.Error("a real run started with no plugin")
 	}
 }
 
-func TestKubeMintBinaryRefusesAHardLink(t *testing.T) {
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+// A certificate or token shape starts no process and writes nothing: the
+// credential is a Go value handed to the proxy.
+func TestKubeCredentialShapesStartNothingAndWriteNothing(t *testing.T) {
+	rt := shortTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", rt)
+	pol := &policy.Policy{Home: "/home/u", Mounts: map[string]policy.Mount{}, Env: map[string]policy.EnvVar{},
+		Kube: &policy.KubeBinding{Context: "aks-dev", Credential: policy.KubeCredentialToken,
+			HostUser: policy.KubeHostUser{Token: policy.Secret("tok")}, TokenLen: 3}}
+	run, err := startKubeIdentity(pol, policy.OSEnviron{}, false, false)
+	if err != nil || run == nil || run.token == nil || string(*run.token) != "tok" || run.src != nil || run.cert != nil {
+		t.Fatalf("token shape: run %+v, %v", run, err)
 	}
-	dir := t.TempDir()
-	copyTo := filepath.Join(dir, "kubectl")
-	b, err := os.ReadFile(self)
-	if err != nil {
-		t.Fatal(err)
+	run.close()
+	if ents, _ := os.ReadDir(rt); len(ents) != 0 {
+		t.Errorf("the token shape created %v under XDG_RUNTIME_DIR", ents)
 	}
-	if err := os.WriteFile(copyTo, b, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkKubectlIsABinary(copyTo); err != nil {
-		t.Fatalf("control: a single-link ELF refused: %v", err)
-	}
-	if err := os.Link(copyTo, filepath.Join(dir, "other-name")); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkKubectlIsABinary(copyTo); err == nil || !strings.Contains(err.Error(), "hard links") {
-		t.Errorf("a kubectl with a second hard link was accepted: %v", err)
+	expired := &policy.Policy{Home: "/home/u", Kube: &policy.KubeBinding{Context: "aks-dev",
+		Credential: policy.KubeCredentialClientCert, CertSubject: "CN=x", CertNotAfter: time.Now().Add(-time.Hour)}}
+	if _, err := startKubeIdentity(expired, policy.OSEnviron{}, false, false); err == nil ||
+		!strings.Contains(err.Error(), "expired on") {
+		t.Errorf("an expired client certificate started a run: %v", err)
 	}
 }
 
-// A mint must not retire the OS thread it ran on: an earlier child of this
-// process whose Pdeathsig is tied to that thread — the stage, in a real run —
-// would be SIGKILLed with it. Measured as the stage dying partway through
-// TestKubeBrokerBudgetRefuses before runKubeMint unlocked its thread.
-func TestKubeMintDoesNotKillAnEarlierPdeathsigChild(t *testing.T) {
+// A plugin run must not retire the OS thread it ran on: an earlier child of
+// this process whose Pdeathsig is tied to that thread — the stage, in a real
+// run — would be SIGKILLed with it. Measured as the stage dying partway
+// through TestKubeBrokerBudgetRefuses before the run unlocked its thread.
+func TestKubePluginDoesNotKillAnEarlierPdeathsigChild(t *testing.T) {
 	// Forked from many goroutines, so their parent threads are spread over
-	// the runtime's idle threads — the ones a mint goroutine is handed.
+	// the runtime's idle threads — the ones a plugin goroutine is handed.
 	victims := make([]*exec.Cmd, 32)
 	var wg sync.WaitGroup
 	for i := range victims {
@@ -256,17 +207,17 @@ func TestKubeMintDoesNotKillAnEarlierPdeathsigChild(t *testing.T) {
 	}()
 	stub := writeStub(t, `echo '{"status":{"token":"t","expirationTimestamp":"2999-01-01T00:00:00Z"}}'`)
 	for range 100 {
-		if _, _, err := runKubeMint(kubeMintCmd(context.Background(), []string{stub}, nil)); err != nil {
+		if _, _, err := runKubeCmd(kubeMintCmd(context.Background(), []string{stub}, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, c := range victims {
 		if err := c.Process.Signal(syscall.Signal(0)); err != nil {
-			t.Fatalf("a Pdeathsig child started before the mints was killed: %v", err)
+			t.Fatalf("a Pdeathsig child started before the plugin runs was killed: %v", err)
 		}
 		var ws syscall.WaitStatus
 		if pid, _ := syscall.Wait4(c.Process.Pid, &ws, syscall.WNOHANG, nil); pid != 0 {
-			t.Fatalf("a Pdeathsig child started before the mints exited: %v", ws)
+			t.Fatalf("a Pdeathsig child started before the plugin runs exited: %v", ws)
 		}
 	}
 }

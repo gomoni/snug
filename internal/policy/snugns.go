@@ -59,7 +59,7 @@ const SnugDir = "/snug"
 // one by name.
 const StagedBinDir = SnugDir + "/bin"
 
-// KubeProxyGuestPort and KubeProxyGuest are where identity.kube's proxy
+// KubeProxyGuestPort and KubeProxyGuest are where identity.kubectl's proxy
 // listens inside the sandbox: its OWN loopback, on a socket the stage creates
 // in the sandbox's network namespace and snug binds before bwrap is forked. A
 // constant, because the generated kubeconfig is written at Resolve, before any

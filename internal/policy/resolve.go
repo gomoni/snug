@@ -445,7 +445,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			id := *prof.Identity
 			id.SSH.Agent = mode
-			if _, err := ParseKubeTokenMode(string(id.Kube.Token)); err != nil {
+			if _, err := ParseKubeCredential(string(id.Kube.Credential)); err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
 			// The default is filled in BEFORE the path loop, so an omitted

@@ -1,20 +1,20 @@
-// Package kubeproxy is identity.kube's authenticating reverse proxy: a server
-// in snug's own process, on a listener whose socket lives in the sandbox's
-// network namespace, that forwards what kubectl inside sends to the ONE pinned
-// API server and adds the bearer on the way out.
+// Package kubeproxy is identity.kubectl's authenticating reverse proxy: a
+// server in snug's own process, on a listener whose socket lives in the
+// sandbox's network namespace, that forwards what kubectl inside sends to the
+// ONE pinned API server and presents the host credential on the way out.
 //
-// The bearer never enters the sandbox. The guest's kubeconfig names
-// http://127.0.0.1:6443 and carries no credential; this package is the only
-// reader of the token, and it writes it into exactly one place — the
-// Authorization header of a request to the pinned server.
+// The credential never enters the sandbox. The guest's kubeconfig names
+// http://127.0.0.1:6443 and carries none; this package is the only holder of
+// it, and it presents it in exactly one place — the TLS client certificate or
+// the Authorization header of a request to the pinned server.
 //
-// The proxy decides WHERE a request goes and AS WHOM, and nothing else: every
-// method, path and query the cluster's RBAC allows is forwarded. A request
-// that tries to change either — a credential or impersonation header of its
-// own, an absolute target, a path that a gateway in front of several clusters
-// would resolve to a different one — is refused with a 4xx, never quietly
-// rewritten, so `kubectl --as=x` fails rather than running as the pinned
-// identity while printing as if it impersonated.
+// The proxy decides WHERE a request goes and with WHICH credential, and
+// nothing else: every method, path, query and header the cluster accepts is
+// forwarded, including the client's own Authorization and Impersonate-*
+// headers. What that credential may do is the cluster's RBAC. A request that
+// would change WHERE — a tunnel, an absolute target, a path that a gateway in
+// front of several clusters would resolve to a different one — is refused
+// with a 4xx, never quietly rewritten.
 package kubeproxy
 
 import (
@@ -35,7 +35,8 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// Config is the proxy's fixed shape. Listener, Server and Token are required.
+// Config is the proxy's fixed shape. Listener and Server are required, and
+// exactly one of Token and ClientCert.
 type Config struct {
 	// Listener is the socket already listening inside the sandbox's netns.
 	Listener net.Listener
@@ -46,10 +47,14 @@ type Config struct {
 	CAs *x509.CertPool
 	// TLSName is the name the server's certificate is checked against.
 	TLSName string
-	// Token returns the bearer for one request. It mints only when the
-	// cached token is stale — never because the cluster answered 401, which
-	// a pod the sandbox controls can make it do on every request.
+	// Token returns the bearer for one request, which replaces any
+	// Authorization the client sent. It mints only when the cached token is
+	// stale — never because the cluster answered 401, which a pod the sandbox
+	// controls can make it do on every request.
 	Token func(context.Context) (policy.Secret, error)
+	// ClientCert is presented in the TLS handshake with the pinned server.
+	// With it, the request is forwarded with its headers as sent.
+	ClientCert *tls.Certificate
 	// HostAddrs are the addresses this host owns, refused by the dialer.
 	HostAddrs []netip.Addr
 	// MaxConns bounds concurrent connections from inside; 0 is 64.
@@ -86,8 +91,11 @@ var fixture func(*Proxy)
 
 // New builds the proxy. It does not start serving; Serve does.
 func New(cfg Config) (*Proxy, error) {
-	if cfg.Listener == nil || cfg.Server == nil || cfg.Token == nil {
-		return nil, errors.New("kube proxy: Listener, Server and Token are required")
+	if cfg.Listener == nil || cfg.Server == nil {
+		return nil, errors.New("kube proxy: Listener and Server are required")
+	}
+	if (cfg.Token == nil) == (cfg.ClientCert == nil) {
+		return nil, errors.New("kube proxy: exactly one of Token and ClientCert is required")
 	}
 	if cfg.Server.Scheme != "https" || cfg.Server.Host == "" {
 		return nil, fmt.Errorf("kube proxy: server %s is not https", policy.VisibleText(cfg.Server.String()))
@@ -112,17 +120,31 @@ func New(cfg Config) (*Proxy, error) {
 		fixture(p)
 	}
 	p.ln = newTrackingListener(cfg.Listener, cfg.MaxConns)
+	tlsc := &tls.Config{
+		RootCAs:    cfg.CAs,
+		ServerName: cfg.TLSName,
+		MinVersion: tls.VersionTLS12,
+	}
+	if c := cfg.ClientCert; c != nil {
+		var once sync.Once
+		tlsc.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			once.Do(func() {
+				subject := "?"
+				if c.Leaf != nil {
+					subject = c.Leaf.Subject.String()
+				}
+				p.cfg.Audit("server requested a client certificate; sent " + policy.VisibleText(subject))
+			})
+			return c, nil
+		}
+	}
 	p.tr = &http.Transport{
 		// Written out, not inherited: a transport cloned from the default
 		// reads HTTPS_PROXY from snug's environment and would hand the bearer
 		// to whatever proxy that names.
-		Proxy:       nil,
-		DialContext: p.dial,
-		TLSClientConfig: &tls.Config{
-			RootCAs:    cfg.CAs,
-			ServerName: cfg.TLSName,
-			MinVersion: tls.VersionTLS12,
-		},
+		Proxy:           nil,
+		DialContext:     p.dial,
+		TLSClientConfig: tlsc,
 		// HTTP/1.1 only. Go's HTTP/2 transport refuses a request carrying
 		// Upgrade, and kubectl exec, attach and port-forward are upgrades; an
 		// empty, non-nil TLSNextProto is what turns h2 off.
@@ -181,23 +203,27 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "snug kube proxy: "+why, status)
 		return
 	}
-	tok, err := p.cfg.Token(r.Context())
-	if err != nil {
-		p.cfg.Audit(fmt.Sprintf("%s %s: no token: %v", r.Method, policy.VisibleText(r.URL.Path), err))
-		http.Error(w, "snug kube proxy: no token for the pinned identity: "+policy.VisibleText(err.Error()),
-			http.StatusServiceUnavailable)
-		return
+	if p.cfg.Token != nil {
+		tok, err := p.cfg.Token(r.Context())
+		if err != nil {
+			p.cfg.Audit(fmt.Sprintf("%s %s: no token: %v", r.Method, policy.VisibleText(r.URL.Path), err))
+			http.Error(w, "snug kube proxy: no token for the pinned identity: "+policy.VisibleText(err.Error()),
+				http.StatusServiceUnavailable)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), tokenKey{}, tok))
 	}
 	sw := &statusWriter{ResponseWriter: w}
 	start := time.Now()
-	p.rp.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), tokenKey{}, tok)))
+	p.rp.ServeHTTP(sw, r)
 	p.cfg.Audit(fmt.Sprintf("%s %s -> %d (%s)", r.Method, policy.VisibleText(r.URL.Path), sw.status(),
 		time.Since(start).Round(time.Millisecond)))
 }
 
-// rewrite is the only reader of the token. Hop-by-hop headers — including any
-// the request named in Connection — are already gone from r.Out, so a guest
-// cannot name Authorization there to strip the header set below.
+// rewrite is the only reader of the token, and it SETS Authorization: a
+// client's own is replaced, so the bearer on the wire is the pinned one. Hop-by-hop
+// headers — including any the request named in Connection — are already gone
+// from r.Out, so a guest cannot name Authorization there to strip it.
 func (p *Proxy) rewrite(r *httputil.ProxyRequest) {
 	r.SetURL(p.cfg.Server)
 	r.Out.Host = p.cfg.Server.Host
@@ -206,59 +232,20 @@ func (p *Proxy) rewrite(r *httputil.ProxyRequest) {
 	// changed no test). X-Real-Ip is not on its list.
 	r.Out.Header.Del("X-Real-Ip")
 	r.Out.Trailer = nil
-	tok, _ := r.In.Context().Value(tokenKey{}).(policy.Secret)
-	r.Out.Header.Set("Authorization", "Bearer "+string(tok))
+	if tok, ok := r.In.Context().Value(tokenKey{}).(policy.Secret); ok {
+		r.Out.Header.Set("Authorization", "Bearer "+string(tok))
+	}
 }
 
-// identityHeaders are refused by lowercase name with '_' read as '-': Go's
-// server keeps a header it cannot canonicalise under its raw spelling, and a
-// server behind the pinned one may fold the two.
-var (
-	identityExact  = []string{"authorization", "proxy-authorization"}
-	identityPrefix = []string{"impersonate-", "x-remote-"}
-)
-
-// wsBearer is client-go's way of carrying a bearer in a websocket handshake,
-// for clients that cannot set Authorization.
-const wsBearer = "base64url.bearer.authorization.k8s.io."
-
-// admit refuses a request that would change where it goes or as whom. It
-// returns 0 when the request is forwarded.
+// admit refuses a request that would change where it goes. It returns 0 when
+// the request is forwarded.
 func admit(r *http.Request) (int, string) {
 	if r.Method == http.MethodConnect {
 		return http.StatusMethodNotAllowed, "CONNECT is refused: this proxy reaches one API server"
 	}
 	if r.URL.Scheme != "" || r.URL.Host != "" || !strings.HasPrefix(r.RequestURI, "/") {
 		return http.StatusBadRequest, "only an origin-form request target (/path) is forwarded; the " +
-			"server is pinned by identity.kube"
-	}
-	for name, vals := range r.Header {
-		n := strings.ReplaceAll(strings.ToLower(name), "_", "-")
-		for _, e := range identityExact {
-			if n == e {
-				return http.StatusForbidden, fmt.Sprintf("header %s is refused: identity.kube pins who "+
-					"this sandbox is, and snug supplies the credential", policy.VisibleText(name))
-			}
-		}
-		for _, pre := range identityPrefix {
-			if strings.HasPrefix(n, pre) {
-				return http.StatusForbidden, fmt.Sprintf("header %s is refused: identity.kube pins who "+
-					"this sandbox is, and impersonation would change it", policy.VisibleText(name))
-			}
-		}
-		if n == "trailer" {
-			return http.StatusBadRequest, "request trailers are refused"
-		}
-		if n == "sec-websocket-protocol" {
-			for _, v := range vals {
-				for _, proto := range strings.Split(v, ",") {
-					if strings.HasPrefix(strings.ToLower(strings.TrimSpace(proto)), wsBearer) {
-						return http.StatusForbidden, "a bearer in Sec-WebSocket-Protocol is refused: " +
-							"snug supplies the credential"
-					}
-				}
-			}
-		}
+			"server is pinned by identity.kubectl"
 	}
 	if why := badPath(r.URL.EscapedPath()); why != "" {
 		return http.StatusBadRequest, why

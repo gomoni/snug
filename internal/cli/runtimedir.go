@@ -179,51 +179,6 @@ func (d *runtimeDir) Socket(name string) (string, error) {
 	return filepath.Join(d.path, name), nil
 }
 
-// Mkdir creates a private directory name inside this run's directory, through
-// the verified parent descriptor, and returns its host path. It refuses an
-// existing entry.
-func (d *runtimeDir) Mkdir(name string) (string, error) {
-	if err := checkSocketName(name); err != nil {
-		return "", err
-	}
-	if err := d.snugRoot.Mkdir(filepath.Join(d.runName, name), 0o700); err != nil {
-		return "", fmt.Errorf("runtime directory: creating %s: %w - this run's directory is "+
-			"private and fresh, so an entry already there was put there by something else; "+
-			"check that nothing else writes to %s", name, err, d.path)
-	}
-	return filepath.Join(d.path, name), nil
-}
-
-// CreateFile writes data to a NEW file name inside this run's directory, with
-// mode perm, through the verified parent descriptor: an entry already there —
-// a planted file or link — is refused, not followed or overwritten.
-func (d *runtimeDir) CreateFile(name string, data []byte, perm os.FileMode) (string, error) {
-	if err := checkSocketName(name); err != nil {
-		return "", err
-	}
-	f, err := d.snugRoot.OpenFile(filepath.Join(d.runName, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return "", fmt.Errorf("runtime directory: creating %s: %w - snug refuses an entry it did not "+
-			"create; check that nothing else writes to %s", name, err, d.path)
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return "", fmt.Errorf("runtime directory: writing %s: %w - check free space under %s", name, err, d.path)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("runtime directory: writing %s: %w - check free space under %s", name, err, d.path)
-	}
-	return filepath.Join(d.path, name), nil
-}
-
-// RemoveFile removes name from this run's directory.
-func (d *runtimeDir) RemoveFile(name string) error {
-	if err := checkSocketName(name); err != nil {
-		return err
-	}
-	return d.snugRoot.Remove(filepath.Join(d.runName, name))
-}
-
 func checkSocketName(name string) error {
 	if name == "" || name == "." || name == ".." ||
 		strings.ContainsRune(name, filepath.Separator) || strings.Contains(name, "\x00") {

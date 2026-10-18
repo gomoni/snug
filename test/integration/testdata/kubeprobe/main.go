@@ -1,4 +1,4 @@
-// Command kubeprobe runs INSIDE a sandbox in the identity.kube integration
+// Command kubeprobe runs INSIDE a sandbox in the identity.kubectl integration
 // tests. It speaks raw HTTP to snug's proxy on the sandbox's loopback, tries
 // to bind the proxy's port, and searches what the sandbox can read for a
 // string. Each subcommand prints one line per result; it has no pass/fail of

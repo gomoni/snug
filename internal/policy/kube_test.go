@@ -14,12 +14,12 @@ import (
 	"github.com/gomoni/snug/internal/hostread"
 )
 
-func TestKubeIdentityUnknownTokenValueRefuses(t *testing.T) {
+func TestKubeUnknownCredentialValueNamesTheSet(t *testing.T) {
 	reg, sel := identityProfiles(map[ProfileName]Identity{
-		"k": {Kube: IdentityKube{Context: "aks-dev", Token: "static", Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}},
+		"k": {Kube: IdentityKube{Context: "aks-dev", Credential: "serviceaccount", Server: "https://aks-dev.example.azmk8s.io:443"}},
 	})
 	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
-	if err == nil || p != nil || !strings.Contains(err.Error(), "(want serviceaccount or host-exec)") ||
+	if err == nil || p != nil || !strings.Contains(err.Error(), "(want client-certificate, token or exec)") ||
 		!strings.Contains(err.Error(), `"k"`) {
 		t.Fatalf("p = %v, err = %v; want a nil policy and the unknown-token refusal naming the profile", p, err)
 	}
@@ -30,8 +30,7 @@ func TestKubeIdentityUnknownTokenValueRefuses(t *testing.T) {
 // are one pin, not three.
 func TestKubeKubeconfigSpellingsAreOneIdentity(t *testing.T) {
 	block := func(kc string) Identity {
-		return Identity{Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: kc}}
+		return Identity{Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: kc}}
 	}
 	for _, pair := range [][2]string{{"", "{home}/.kube/config"}, {"", "~/.kube/config"}, {"{home}/.kube/config", "~/.kube/config"}} {
 		reg, sel := identityProfiles(map[ProfileName]Identity{"ident-a": block(pair[0]), "ident-b": block(pair[1])})
@@ -101,7 +100,7 @@ type kubeCase struct {
 
 func kubeResolve(t *testing.T, c kubeCase) (*Policy, error) {
 	t.Helper()
-	k := IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}
+	k := IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"}
 	if c.kube != (IdentityKube{}) {
 		k = c.kube
 	}
@@ -174,7 +173,7 @@ func TestKubeIdentityGeneratesOneClusterOneContextPointingAtTheProxy(t *testing.
 	if got.Clusters[0].Cluster["server"] != KubeProxyGuest {
 		t.Errorf("server = %v, want snug's proxy %s", got.Clusters[0].Cluster["server"], KubeProxyGuest)
 	}
-	if got.Contexts[0].Context["namespace"] != "dev" || got.CurrentContext != "aks-dev" {
+	if _, ok := got.Contexts[0].Context["namespace"]; ok || got.CurrentContext != "aks-dev" {
 		t.Errorf("context = %+v, current = %q", got.Contexts[0], got.CurrentContext)
 	}
 	for g := range p.Mounts {
@@ -185,44 +184,136 @@ func TestKubeIdentityGeneratesOneClusterOneContextPointingAtTheProxy(t *testing.
 	if e := p.Env["KUBECONFIG"]; len(e.Entries) != 1 || e.Entries[0].Value != "/home/u/.kube/config" {
 		t.Errorf("KUBECONFIG = %+v", e)
 	}
-	if p.Kube == nil || p.Kube.SAName != "snug-agent" || p.Kube.SANamespace != "dev" {
+	if p.Kube == nil || p.Kube.Credential != KubeCredentialClientCert {
 		t.Errorf("Kube = %+v", p.Kube)
 	}
 }
 
-func TestKubeIdentityNeverCopiesAHostUserEntry(t *testing.T) {
-	p, err := kubeResolve(t, kubeCase{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := base64.StdEncoding.EncodeToString([]byte("FIXTURECERT"))
-	key := base64.StdEncoding.EncodeToString([]byte("FIXTUREKEYMATERIAL"))
-	for guest, m := range p.Mounts {
-		c := string(m.Content)
-		for _, bad := range []string{"FIXTUREKEYMATERIAL", key, "FIXTURECERT", cert, "FIXTURETOKENVALUE",
-			"clusterUser_rg_aks-dev", "kind-kind", "38921", "aws", "client-key-data", "\"token\""} {
-			if strings.Contains(c, bad) {
-				t.Errorf("%s carries %q from the host kubeconfig", guest, bad)
-			}
+func fixtureUserData(t *testing.T) (cert, key string) {
+	t.Helper()
+	for _, l := range strings.Split(kubeFixture(t), "\n") {
+		l = strings.TrimSpace(l)
+		if v, ok := strings.CutPrefix(l, "client-certificate-data: "); ok {
+			cert = v
+		}
+		if v, ok := strings.CutPrefix(l, "client-key-data: "); ok {
+			key = v
 		}
 	}
-	if got := strings.Join(p.Kube.OtherContexts, ","); got != "eks,kind-kind" {
-		t.Errorf("OtherContexts = %q", got)
+	return cert, key
+}
+
+func TestKubeIdentityNeverCopiesAHostUserEntry(t *testing.T) {
+	cert, key := fixtureUserData(t)
+	for _, c := range []IdentityKube{
+		{Context: "aks-dev", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"},
+		{Context: "aks-dev", Credential: KubeCredentialToken, Server: "https://aks-dev.example.azmk8s.io:443"},
+	} {
+		p, err := kubeResolve(t, kubeCase{kube: c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for guest, m := range p.Mounts {
+			s := string(m.Content)
+			for _, bad := range []string{key, key[40:80], cert, "FIXTURETOKENVALUE", "PRIVATE KEY",
+				"clusterUser_rg_aks-dev", "kind-kind", "38921", "aws", "client-key-data", "\"token\""} {
+				if strings.Contains(s, bad) {
+					t.Errorf("credential %s: %s carries %q from the host kubeconfig", c.Credential, guest, bad)
+				}
+			}
+		}
+		if got := strings.Join(p.Kube.OtherContexts, ","); got != "aks-cert,aks-token,eks,kind-kind" {
+			t.Errorf("OtherContexts = %q", got)
+		}
 	}
 }
 
-func TestKubeHostUserPrefersCertificateOverToken(t *testing.T) {
+// One identity per profile: an entry holding a certificate AND a token (AKS
+// local accounts: masterclient and clusterUser) refuses without the key.
+func TestKubeCredentialRefusesAnAmbiguousEntryWithoutTheKey(t *testing.T) {
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Server: "https://aks-dev.example.azmk8s.io:443"}},
+		"holds a client certificate and a static token", "different identities", "will not choose",
+		`identity.kubectl.credential = "client-certificate" or "token"`)
+	execBeside := strings.Replace(kubeExecFixture(t), "    exec:\n      apiVersion: client.authentication.k8s.io/v1\n",
+		"    token: FIXTURETOKENVALUE\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n", 1)
+	if execBeside == kubeExecFixture(t) {
+		t.Fatal("fixture edit did not apply")
+	}
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks-iam", Server: "https://iam.example.com"}, file: execBeside},
+		"holds a static token and an exec plugin", `"token" or "exec"`)
+}
+
+func TestKubeCredentialRefusesAShapeTheEntryLacks(t *testing.T) {
+	for _, c := range []struct {
+		ctx  string
+		cred KubeCredential
+		want string
+	}{
+		{"aks-dev", KubeCredentialExec, "holds a client certificate and a static token"},
+		{"aks-cert", KubeCredentialToken, "holds a client certificate"},
+		{"aks-token", KubeCredentialClientCert, "holds a static token"},
+	} {
+		wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: c.ctx, Credential: c.cred,
+			Server: "https://aks-dev.example.azmk8s.io:443"}}, `identity.kubectl.credential = "`+string(c.cred)+`"`, c.want)
+	}
+}
+
+func TestKubeCredentialAbsentOnAnUnambiguousEntryIsThatOne(t *testing.T) {
+	for ctx, want := range map[string]KubeCredential{"aks-cert": KubeCredentialClientCert, "aks-token": KubeCredentialToken} {
+		p, err := kubeResolve(t, kubeCase{kube: IdentityKube{Context: ctx, Server: "https://aks-dev.example.azmk8s.io:443"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Kube.Credential != want || len(p.Kube.Unused) != 0 {
+			t.Errorf("%s: credential %q unused %q, want %q and nothing unused", ctx, p.Kube.Credential, p.Kube.Unused, want)
+		}
+	}
+}
+
+// The binding holds the chosen shape only; the other is never decoded.
+func TestKubeCredentialKeepsOnlyTheChosenShape(t *testing.T) {
 	p, err := kubeResolve(t, kubeCase{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(p.Kube.HostUser.ClientKeyData) != "FIXTUREKEYMATERIAL" || len(p.Kube.HostUser.Token) != 0 {
-		t.Errorf("HostUser keeps key %q and token %d bytes; want the key and no token",
-			string(p.Kube.HostUser.ClientKeyData), len(p.Kube.HostUser.Token))
+	hu := p.Kube.HostUser
+	if len(hu.ClientCertData) == 0 || len(hu.ClientKeyData) == 0 || len(hu.Token) != 0 {
+		t.Errorf("client-certificate kept cert %d, key %d, token %d bytes; want no token",
+			len(hu.ClientCertData), len(hu.ClientKeyData), len(hu.Token))
 	}
-	if !slices.Contains(p.Kube.HostUserShape, "static token") {
-		t.Errorf("HostUserShape = %v, want it to say the static token stayed out", p.Kube.HostUserShape)
+	if p.Kube.CertSubject != "CN=fixture-master,O=system:masters" || p.Kube.CertNotAfter.Year() != 2099 {
+		t.Errorf("subject %q notAfter %v", p.Kube.CertSubject, p.Kube.CertNotAfter)
 	}
+	if !slices.Equal(p.Kube.Unused, []string{"the entry's static token (not presented)"}) {
+		t.Errorf("Unused = %q", p.Kube.Unused)
+	}
+	q, err := kubeResolve(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialToken,
+		Server: "https://aks-dev.example.azmk8s.io:443"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hu = q.Kube.HostUser
+	if string(hu.Token) != "FIXTURETOKENVALUE" || len(hu.ClientCertData) != 0 || len(hu.ClientKeyData) != 0 {
+		t.Errorf("token kept cert %d, key %d bytes; want the token only", len(hu.ClientCertData), len(hu.ClientKeyData))
+	}
+	if q.Kube.TokenLen != len("FIXTURETOKENVALUE") || q.Kube.TokenJWT {
+		t.Errorf("token shape %d jwt=%v", q.Kube.TokenLen, q.Kube.TokenJWT)
+	}
+	if !slices.Equal(q.Kube.Unused, []string{"the entry's client certificate (not presented)"}) {
+		t.Errorf("Unused = %q", q.Kube.Unused)
+	}
+}
+
+func TestKubeCredentialRefusesAnUnpairedOrMalformedCredential(t *testing.T) {
+	_, key := fixtureUserData(t)
+	f := kubeFixture(t)
+	at := strings.Index(f, "- name: clusterUser_rg_aks-dev")
+	notPair := f[:at] + strings.Replace(f[at:], "client-key-data: "+key, "client-key-data: "+
+		base64.StdEncoding.EncodeToString([]byte("-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n")), 1)
+	wantKubeRefusal(t, kubeCase{file: notPair}, "do not form a pair")
+	badTok := strings.Replace(kubeFixture(t), "token: FIXTURETOKENVALUE\n", "token: \"a b\"\n", 1)
+	wantKubeRefusal(t, kubeCase{file: badTok, kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialToken,
+		Server: "https://aks-dev.example.azmk8s.io:443"}}, "not a bearer token")
 }
 
 func TestKubeIdentityAbsentAddsNothing(t *testing.T) {
@@ -245,8 +336,7 @@ func TestKubeIdentityAbsentAddsNothing(t *testing.T) {
 }
 
 func TestKubeIdentityRefusesALoopbackServer(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "kind-kind", Token: KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}, "host's loopback", "THERE IS NO")
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "kind-kind", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"}}, "host's loopback", "THERE IS NO")
 	for _, srv := range []string{"https://localhost:6443", "https://[::1]:6443", "https://api.localhost"} {
 		wantKubeRefusal(t, kubeCase{file: strings.Replace(kubeFixture(t),
 			"https://aks-dev.example.azmk8s.io:443", srv, 1)}, "host's loopback")
@@ -279,7 +369,7 @@ func TestKubeIdentityRefusesInsecureSkipTLSVerify(t *testing.T) {
 }
 
 func TestKubeIdentityRefusesProxyURL(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{file: clusterField(t, "proxy-url: http://proxy.example:3128")}, "carries no proxy")
+	wantKubeRefusal(t, kubeCase{file: clusterField(t, "proxy-url: http://proxy.example:3128")}, "never through a proxy the file names")
 }
 
 func TestKubeIdentityRefusesACertificateAuthorityPath(t *testing.T) {
@@ -328,15 +418,13 @@ func TestKubeSandboxKubeconfigCarriesNoCredentialAndNoCA(t *testing.T) {
 }
 
 func TestKubeIdentityUnknownContextNamesTheKnownOnes(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-prod", Token: KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}, `"aks-prod"`, "contexts: aks-dev, eks, kind-kind")
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-prod", Credential: KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"}}, `"aks-prod"`, "contexts: aks-cert, aks-dev, aks-token, eks, kind-kind")
 }
 
 // The fixture's eks user runs `aws eks get-token` with no --cluster-name:
 // outside the grammar, so refused before anything could run it.
-func TestKubeServiceAccountRefusesAnExecUserOutsideTheGrammar(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Token: KubeTokenServiceAccount,
-		Server: "https://eks.example.com", ServiceAccount: "dev/snug-agent"}}, "aws eks get-token without --cluster-name")
+func TestKubeExecUserOutsideTheGrammarRefuses(t *testing.T) {
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Server: "https://eks.example.com"}}, "aws eks get-token without --cluster-name")
 	userField := func(line string) string {
 		return strings.Replace(kubeFixture(t), "    token: FIXTURETOKENVALUE\n", "    token: FIXTURETOKENVALUE\n    "+line+"\n", 1)
 	}
@@ -347,15 +435,7 @@ func TestKubeServiceAccountRefusesAnExecUserOutsideTheGrammar(t *testing.T) {
 }
 
 func TestKubeIdentityRefusesAMalformedBlock(t *testing.T) {
-	sa := func(s string) IdentityKube {
-		return IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount, ServiceAccount: s}
-	}
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Token: KubeTokenServiceAccount, ServiceAccount: "dev/a"}}, "needs identity.kube.context")
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", ServiceAccount: "dev/a"}}, "token is not set")
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount}}, "needs identity.kube.service_account")
-	for _, bad := range []string{"nons", "Dev/a", "-x/a", "dev/-a", "dev/", "/a", "dev/a/b"} {
-		wantKubeRefusal(t, kubeCase{kube: sa(bad)}, "is not \"namespace/name\"")
-	}
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Credential: KubeCredentialToken}}, "needs identity.kubectl.context")
 }
 
 func TestKubeIdentityRefusesAMissingOrUndecodableFile(t *testing.T) {
@@ -390,14 +470,13 @@ func TestKubeIdentityRefusesAKubeconfigUnderTargetOrRW(t *testing.T) {
 }
 
 // TestGoldenKubeGeneratedFiles is the review artifact for the bytes snug
-// writes for identity.kube: a diff here is a change to what enters the sandbox.
+// writes for identity.kubectl: a diff here is a change to what enters the sandbox.
 func TestGoldenKubeGeneratedFiles(t *testing.T) {
 	p, err := kubeResolve(t, kubeCase{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := "# ~/.kube/config inside the sandbox\n" + string(p.Kube.SandboxKubeconfig()) +
-		"# the host-side mint's kubeconfig (fixture credential)\n" + string(p.Kube.MintKubeconfig())
+	got := "# ~/.kube/config inside the sandbox\n" + string(p.Kube.SandboxKubeconfig())
 	const path = "testdata/identity-kube.txt"
 	if *update {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
@@ -414,7 +493,7 @@ func TestGoldenKubeGeneratedFiles(t *testing.T) {
 }
 
 func TestKubeIdentityPathRefusalsUseTheKubeconfigRole(t *testing.T) {
-	err := identityKeyRefusal("p", "kube.kubeconfig", "/run/user/1000/snug/x", "snug's runtime directory /run/user/1000/snug", "It holds endpoints")
+	err := identityKeyRefusal("p", "kubectl.kubeconfig", "/run/user/1000/snug/x", "snug's runtime directory /run/user/1000/snug", "It holds endpoints")
 	for _, want := range []string{"decodes it on the host", "~/.kube"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal lacks %q: %v", want, err)
@@ -425,73 +504,23 @@ func TestKubeIdentityPathRefusalsUseTheKubeconfigRole(t *testing.T) {
 	}
 }
 
-func TestKubeHostMintNeverReadsTheHostFile(t *testing.T) {
-	p, err := kubeResolve(t, kubeCase{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	argv := p.Kube.MintArgv("/usr/bin/kubectl", "/run/snug/r/kube-mint.json", "/run/snug/r/kube-cache")
-	want := []string{"/usr/bin/kubectl", "--kubeconfig=/run/snug/r/kube-mint.json", "--context=snug",
-		"--cache-dir=/run/snug/r/kube-cache", "create", "token", "snug-agent", "--namespace=dev",
-		"--duration=1h0m0s", "-o", "json"}
-	if !slices.Equal(argv, want) {
-		t.Fatalf("argv = %q\nwant %q", argv, want)
-	}
-	for _, a := range argv {
-		if strings.Contains(a, p.Kube.Kubeconfig) {
-			t.Errorf("argv element %q names the host kubeconfig", a)
-		}
-	}
-	env := KubeMintEnv("/run/snug/r/kube-home")
-	if !slices.Equal(env, []string{"PATH=/usr/bin:/bin", "HOME=/run/snug/r/kube-home", "KUBERC=off"}) {
-		t.Errorf("env = %q", env)
-	}
-}
-
-func TestKubeMintKubeconfigCarriesOnlyTheAllowlist(t *testing.T) {
-	p, err := kubeResolve(t, kubeCase{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(p.Kube.MintKubeconfig())
-	for _, bad := range []string{"FIXTURETOKENVALUE", "aws", "kind-kind", "clusterUser_rg_aks-dev", "exec"} {
-		if strings.Contains(got, bad) {
-			t.Errorf("mint kubeconfig carries %q", bad)
-		}
-	}
-	key := base64.StdEncoding.EncodeToString([]byte("FIXTUREKEYMATERIAL"))
-	if !strings.Contains(got, key) || !strings.Contains(got, `"name": "snug"`) {
-		t.Errorf("mint kubeconfig lacks the client key or the snug names:\n%s", got)
-	}
-	tokenOnly := strings.Replace(kubeFixture(t),
-		"    client-certificate-data: RklYVFVSRUNFUlQ=\n    client-key-data: RklYVFVSRUtFWU1BVEVSSUFM\n    token:",
-		"    token:", 1)
-	q, err := kubeResolve(t, kubeCase{file: tokenOnly})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(q.Kube.MintKubeconfig()), "FIXTURETOKENVALUE") {
-		t.Error("a token-only user's mint kubeconfig lacks the token")
-	}
-}
-
-func TestKubeMintBinaryRefusesWritableOrRelative(t *testing.T) {
+func TestKubeHostBinaryRefusesWritableOrRelative(t *testing.T) {
 	p, err := kubeResolve(t, kubeCase{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := newFakeEnv()
-	env.files["/usr/bin/kubectl"] = true
-	if got, err := p.ResolveKubeMintBinary(env, "/usr/bin/kubectl"); err != nil || got != "/usr/bin/kubectl" {
-		t.Errorf("an ordinary kubectl: %q, %v", got, err)
+	env.files["/usr/bin/kubelogin"] = true
+	if got, err := p.ResolveKubeHostBinary(env, "plugin", "/usr/bin/kubelogin"); err != nil || got != "/usr/bin/kubelogin" {
+		t.Errorf("an ordinary plugin: %q, %v", got, err)
 	}
-	if _, err := p.ResolveKubeMintBinary(env, "kubectl"); err == nil {
-		t.Error("a relative kubectl was accepted")
+	if _, err := p.ResolveKubeHostBinary(env, "plugin", "kubelogin"); err == nil {
+		t.Error("a relative plugin was accepted")
 	}
-	env.files["/home/u/proj/sub/bin/kubectl"] = true
-	if _, err := p.ResolveKubeMintBinary(env, "/home/u/proj/sub/bin/kubectl"); err == nil ||
+	env.files["/home/u/proj/sub/bin/kubelogin"] = true
+	if _, err := p.ResolveKubeHostBinary(env, "plugin", "/home/u/proj/sub/bin/kubelogin"); err == nil ||
 		!strings.Contains(err.Error(), "inside the target") {
-		t.Errorf("a kubectl in the target: %v", err)
+		t.Errorf("a plugin in the target: %v", err)
 	}
 	w, err := kubeResolve(t, kubeCase{
 		profile: func(p *Profile) { p.RW = []string{"/opt/k"} },
@@ -500,9 +529,9 @@ func TestKubeMintBinaryRefusesWritableOrRelative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.files["/opt/k/kubectl"] = true
-	if _, err := w.ResolveKubeMintBinary(env, "/opt/k/kubectl"); err == nil || !strings.Contains(err.Error(), "WRITABLE") {
-		t.Errorf("a kubectl under an rw grant: %v", err)
+	env.files["/opt/k/kubelogin"] = true
+	if _, err := w.ResolveKubeHostBinary(env, "plugin", "/opt/k/kubelogin"); err == nil || !strings.Contains(err.Error(), "WRITABLE") {
+		t.Errorf("a plugin under an rw grant: %v", err)
 	}
 }
 
@@ -517,7 +546,7 @@ func TestAzureFamilyIsInlineConfigAndItsPointersAreNot(t *testing.T) {
 	}
 }
 
-// Red-team findings on the identity.kube implementation, each a permanent test.
+// Red-team findings on the identity.kubectl implementation, each a permanent test.
 
 func TestConditionalEnvKubeconfigRefused(t *testing.T) {
 	for name, side := range map[string]EnvGrants{
@@ -527,7 +556,7 @@ func TestConditionalEnvKubeconfigRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p, err := kubeResolve(t, kubeCase{profile: func(p *Profile) { p.Environ = side }})
 			if err == nil || p != nil || !strings.Contains(err.Error(), "KUBECONFIG") {
-				t.Fatalf("a profile's KUBECONFIG beside identity.kube resolved (%v); snug's value silently wins", err)
+				t.Fatalf("a profile's KUBECONFIG beside identity.kubectl resolved (%v); snug's value silently wins", err)
 			}
 		})
 	}
@@ -576,11 +605,10 @@ func TestOSEnvironKubeConfigRefusesAHardLink(t *testing.T) {
 }
 
 // Red-team finding F2: an earlier run that could write the kubeconfig changed
-// its server, and the next identity.kube run sent the host credential there.
+// its server, and the next identity.kubectl run sent the host credential there.
 // The profile pins the server; the file must agree.
 func TestKubeServerIsPinnedByTheProfile(t *testing.T) {
 	moved := strings.Replace(kubeFixture(t), "https://aks-dev.example.azmk8s.io:443", "https://attacker.example:443", 1)
-	wantKubeRefusal(t, kubeCase{file: moved}, "identity.kube.server is", "attacker.example", "another run")
-	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent"}}, "needs identity.kube.server", `server = "https://aks-dev.example.azmk8s.io:443"`)
+	wantKubeRefusal(t, kubeCase{file: moved}, "identity.kubectl.server is", "attacker.example", "another run")
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert}}, "needs identity.kubectl.server", `server = "https://aks-dev.example.azmk8s.io:443"`)
 }

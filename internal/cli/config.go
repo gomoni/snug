@@ -1069,24 +1069,19 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"anything inside can add an SSH key to the account, an effect that "+
 				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
-	if id.Kube.Context != "" && id.Kube.Token == policy.KubeTokenHostExec {
-		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as YOU, through its exec plugin",
-			"THE SANDBOX CAN ACT AS YOU on this one cluster while the run lives: snug runs the "+
-				"context's own kubelogin or aws plugin on the host and its proxy adds that token to every "+
-				"request from inside, on whatever YOUR RBAC allows. No token enters the sandbox; but the "+
-				"token itself is valid wherever its issuer says — a kubelogin token at every AKS cluster in "+
-				"your tenant — and a Role that reads Secrets or creates tokens or pods hands out credentials "+
-				"that outlive the run. pods/exec, pods/portforward and services/proxy reach the cluster's "+
-				"network, with or without @net.")...)
-	} else if id.Kube.Context != "" {
-		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as "+visibleValue(id.Kube.ServiceAccount),
-			"THE SANDBOX CAN ACT AS THIS SERVICEACCOUNT on this one cluster while the run "+
-				"lives: snug's proxy on the host adds the token to every request from inside, "+
-				"and anything inside can spend it on whatever the account's RoleBinding allows. "+
-				"No token enters the sandbox; but a Role that reads Secrets, creates tokens or "+
-				"creates pods hands out credentials that outlive the run. pods/exec, "+
-				"pods/portforward and services/proxy reach the cluster's network, with or "+
-				"without @net. Your kubeconfig, its other contexts and your credential do not enter.")...)
+	if id.Kube.Context != "" {
+		cred := string(id.Kube.Credential)
+		if cred == "" {
+			cred = "its only credential"
+		}
+		rows = append(rows, capRows("kubectl "+visibleValue(id.Kube.Context)+" as YOU ("+visibleValue(cred)+")",
+			"THE SANDBOX CAN ACT AS YOU on this one cluster while the run lives: snug's proxy on "+
+				"the host presents the context's own credential — its client certificate, static token, "+
+				"or the token its kubelogin or aws plugin returns — on every request from inside, on "+
+				"whatever YOUR RBAC allows; on an AKS local account that is cluster root. The credential "+
+				"never enters the sandbox and goes to that one server only; but what is read or minted "+
+				"through it — Secrets, tokens, workloads — outlives the run. pods/exec, pods/portforward "+
+				"and services/proxy reach the cluster's network, with or without @net.")...)
 	}
 	show("identity", rows)
 }

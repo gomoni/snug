@@ -207,21 +207,34 @@ user = "some-one"
 	}
 }
 
-func TestKubeIdentityUnknownTokenValueRefusesAtLoad(t *testing.T) {
-	_, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\ntoken = \"static\"\n"), "mine.toml", true)
-	if err == nil || !strings.Contains(err.Error(), `(want serviceaccount or host-exec)`) || !strings.Contains(err.Error(), `"x"`) {
-		t.Fatalf("err = %v, want the unknown-token refusal naming the profile", err)
+func TestKubeIdentityUnknownCredentialValueRefusesAtLoad(t *testing.T) {
+	_, err := parse([]byte("[profile.x.identity.kubectl]\ncontext = \"aks-dev\"\ncredential = \"serviceaccount\"\n"), "mine.toml", true)
+	if err == nil || !strings.Contains(err.Error(), `(want client-certificate, token or exec)`) || !strings.Contains(err.Error(), `"x"`) {
+		t.Fatalf("err = %v, want the unknown-credential refusal naming the profile", err)
+	}
+}
+
+// The keys a ServiceAccount mode had are gone, not ignored: an old profile
+// refuses rather than resolving to something it did not say.
+func TestKubeIdentityRefusesTheRemovedKeys(t *testing.T) {
+	for _, line := range []string{`token = "serviceaccount"`, `service_account = "dev/snug-agent"`} {
+		if _, err := parse([]byte("[profile.x.identity.kubectl]\ncontext = \"aks-dev\"\n"+line+"\n"), "mine.toml", true); err == nil {
+			t.Errorf("%s was accepted", line)
+		}
+	}
+	if _, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\n"), "mine.toml", true); err == nil {
+		t.Error("[identity.kube] was accepted; the block is identity.kubectl")
 	}
 }
 
 func TestKubeIdentityDecodesEveryLeaf(t *testing.T) {
-	ps, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\nserver = \"https://aks-dev.example.azmk8s.io:443\"\ntoken = \"serviceaccount\"\n"+
-		"service_account = \"dev/snug-agent\"\nkubeconfig = \"{home}/.kube/config\"\n"), "mine.toml", true)
+	ps, err := parse([]byte("[profile.x.identity.kubectl]\ncontext = \"aks-dev\"\nserver = \"https://aks-dev.example.azmk8s.io:443\"\ncredential = \"exec\"\n"+
+		"kubeconfig = \"{home}/.kube/config\"\naws_profile = \"work\"\n"), "mine.toml", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := policy.IdentityKube{Context: "aks-dev", Token: policy.KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "{home}/.kube/config"}
+	want := policy.IdentityKube{Context: "aks-dev", Credential: policy.KubeCredentialExec,
+		Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "{home}/.kube/config", AWSProfile: "work"}
 	if got := ps["x"].Identity.Kube; got != want {
 		t.Fatalf("Kube = %+v, want %+v", got, want)
 	}

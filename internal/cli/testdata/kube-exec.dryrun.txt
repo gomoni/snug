@@ -1,11 +1,14 @@
-KUBE     context    aks-entra -> https://aks-entra.example.azmk8s.io:443
+KUBECTL  context    aks-entra -> https://aks-entra.example.azmk8s.io:443
                     server pinned by the profile; generated ~/.kube/config, read-only,
                     with NO credential: kubectl talks to http://127.0.0.1:6443, snug's proxy
-                    on the host adds the bearer and forwards to that server only
-         as         YOU — the user of context aks-entra, through its kubelogin plugin
-         token      returned by the plugin on the host at start (this dry run ran
-                    nothing), again on expiry while this run lives, at most 64 times;
-                    its issuer decides its lifetime. It never enters the sandbox
+                    on the host presents your credential to that server only
+         as         YOU — the user of context aks-entra
+         credential exec
+                    the token the kubelogin plugin returns, as the bearer,
+                    replacing any the client sends; again on expiry, at most 64
+                    times; read from the host kubeconfig at start (this dry run
+                    presented nothing), held in snug's memory for the run, never
+                    written, never inside
          plugin     NONE — a real run would REFUSE to start: kubelogin not found on /usr/local/bin:/usr/bin:/bin; snug looks up a bare exec-plugin command there only, never on your PATH — install it there, or name it by absolute path in the kubeconfig
                     kubelogin get-token
                       --login azurecli
@@ -24,16 +27,13 @@ KUBE     context    aks-entra -> https://aks-entra.example.azmk8s.io:443
                       AKS cluster in your tenant where you hold RBAC, for its
                       lifetime (60-90 min per Entra documentation, not measured);
                       snug sends it to https://aks-entra.example.azmk8s.io:443 only
-         refused    Authorization, Proxy-Authorization, Impersonate-*,
-                    X-Remote-*, a websocket bearer, trailers, CONNECT,
-                    absolute URIs, dot segments
-         absent     eks-demo, eks-iam, gke,
-                    the host user entry (exec plugin kubelogin), ~/.kube/cache,
-                    ~/.azure, ~/.aws
-         reach      whatever YOUR RBAC allows, on this one server,
-                    while this run lives; snug cannot see RBAC and claims nothing. No
-                    token of snug's is inside to carry away — but a Role that reads
-                    Secrets, creates tokens or creates pods hands out credentials
-                    that outlive the run. pods/exec, pods/portforward and
+         refused    CONNECT, absolute URIs, dot and escaped path segments,
+                    loopback, host-owned and cloud-metadata addresses
+         absent     eks-demo, eks-iam, gke, ~/.kube/cache, ~/.azure, ~/.aws
+         reach      whatever YOUR RBAC allows, on this one server, while this run
+                    lives; snug cannot see RBAC and claims nothing. Impersonation,
+                    Secrets, TokenRequest and workloads are yours to use if the cluster
+                    allows, and what is read or minted outlives the run. No credential
+                    of yours is inside to carry away. pods/exec, pods/portforward and
                     services/proxy reach the cluster's network through the API
                     server, with or without @net

@@ -419,86 +419,72 @@ dns = true
 # Not a builtin, deliberately: the path is host-specific, and a profile that
 # guesses wrong would fail at a different layer than the one the human wrote.
 #
-# KUBERNETES: [identity.kube] pins ONE cluster and ONE ServiceAccount on it, and
-# NO credential enters the sandbox — no file, no token, no exec plugin. snug
-# reads the named context's cluster from your host kubeconfig as data and
-# generates a one-context ~/.kube/config inside whose server is
-# http://127.0.0.1:6443 and whose user is empty. That address is snug's proxy:
-# a socket on the sandbox's own loopback, held by snug on the host, which adds
-# the bearer to each request and forwards it, over TLS, to the pinned server
-# and nowhere else. The token is minted on the host by `kubectl create token`
-# for the ServiceAccount, run by YOUR kubectl with YOUR credential, through a
-# per-run kubeconfig snug writes — never the host file itself. You create the
-# ServiceAccount and its RoleBinding once, on the cluster; the RoleBinding is
-# the real bound on what the sandbox can do there. kubectl must be on the host
-# (an ELF binary, not a distrobox or asdf shim) and, to be useful, inside —
-# the same one-file bind as gh above. It needs no @net: the proxy dials from
-# the host.
+# KUBERNETES: [identity.kubectl] pins ONE cluster and ONE identity on it, and
+# NO credential enters the sandbox — no file, no token, no key, no exec
+# plugin. snug reads the named context's cluster and user entry from your host
+# kubeconfig as data and generates a one-context ~/.kube/config inside whose
+# server is http://127.0.0.1:6443 and whose user is empty. That address is
+# snug's proxy: a socket on the sandbox's own loopback, held by snug on the
+# host, which presents your credential and forwards each request, over TLS, to
+# the pinned server and nowhere else. snug protects the HOST — your credential
+# stays out and goes to one server — and not the cluster: what that credential
+# may do there is the cluster's RBAC, and every request kubectl sends is
+# forwarded as sent, `--as` included.
 #
-# ABUSE: a hostile process inside the sandbox can act as ServiceAccount
-# dev/snug-agent on aks-dev — and on no other server — for as long as the run
-# lives, as often as the API server accepts, on anything that account's
-# RoleBinding allows. It never holds snug's token, so it cannot replay it
-# elsewhere or after the run; but what the RoleBinding lets it READ or MINT
-# leaves with it: a Role that reads Secrets, creates tokens (TokenRequest) or
-# creates pods (each with its own ServiceAccount token) hands out credentials
-# that outlive the run, and what it CREATES on the cluster stays. Your host
-# credential authenticates the mint (for an AKS local account it is cluster
-# root: the pinned argv — one ServiceAccount, one namespace, `create token`
-# only — is the whole bound on what that host mint does). pods/exec,
+# credential picks the ONE credential of the context's user entry the proxy
+# presents:
+#   "client-certificate"  client-certificate-data + client-key-data, as the
+#                         TLS client certificate
+#   "token"               the static token, as the bearer
+#   "exec"                the entry's exec plugin, run on the host (below)
+# Leave it out when the entry holds one credential. An entry holding two is
+# refused without it: on AKS local accounts the certificate is masterclient
+# (system:masters) and the token is clusterUser — two identities, and snug
+# does not choose between them. Neither needs anything created on the cluster.
+#
+# credential = "exec" runs kubelogin with --login azurecli, `aws eks
+# get-token`, or aws-iam-authenticator on the host, with an argv snug BUILDS
+# from a fixed per-plugin grammar (anything else in the file's args refuses),
+# an environment of exactly PATH=/usr/local/bin:/usr/bin:/bin, HOME and
+# PYTHONNOUSERSITE=1 — az is Python, and a writable ~/.local user site would
+# otherwise run code on the host — (plus AWS_PROFILE from
+# identity.kubectl.aws_profile — the file's exec.env is never used), and takes
+# only the token and its expiry from the answer. A bare command is looked up
+# on that PATH only. Refused while ~/.azure, ~/.kube/cache or ~/.aws is
+# writable through a grant: the plugin reads its configuration there, on the
+# host, and a writable ~/.aws/config is a credential_process the host would
+# run.
+#
+# kubectl must be inside to be useful — the same one-file bind as gh above.
+# It needs no @net: the proxy dials from the host.
+#
+# ABUSE: a hostile process inside the sandbox can act as YOU — the chosen
+# credential of context aks-dev — on that ONE server for as long as the run
+# lives, as often as the API server accepts, on whatever that identity may do
+# there: on an AKS local account that is cluster root, so every Secret, every
+# ServiceAccount token, any workload on any node, and impersonation of anyone;
+# what it reads, mints or creates outlives the run. pods/exec,
 # pods/portforward and services/proxy reach the cluster's network through the
-# API server, so a kube profile WITHOUT @net is still not an offline sandbox:
-# it reaches that API server and whatever the cluster reaches. It cannot
-# reach kind-kind, any other context, your client certificate or key, the
-# static token, ~/.kube/cache or ~/.azure, and it cannot send Authorization,
-# Impersonate-* or X-Remote-* through the proxy: those are refused, not
-# stripped, so `kubectl --as` fails loudly.
+# API server, so a kubectl profile WITHOUT @net is still not an offline
+# sandbox. It never holds the credential: it cannot act after the run, on any
+# other server, on a host-local service or a cloud metadata address, and it
+# cannot make the host run anything but the one exec plugin snug runs. The
+# credential's own reach is its issuer's: a kubelogin token is valid as you at
+# EVERY AKS cluster in your tenant where you hold RBAC for its 60-90 minutes
+# (Entra documentation, not measured), an aws token is a presigned STS token
+# for one EKS cluster for about 15 minutes — and that is what leaks if the
+# HOST leaks it, not the sandbox.
 #
 # KUBE-TEMPLATE-BEGIN
 #   [profile.aks-dev]
 #   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
-#     [profile.aks-dev.identity.kube]
-#     context         = "aks-dev"            # a context in the host kubeconfig
-#     server          = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
-#     token           = "serviceaccount"
-#     service_account = "dev/snug-agent"     # namespace/name, created by you
-#     # kubeconfig    = "{home}/.kube/config"
+#     [profile.aks-dev.identity.kubectl]
+#     context    = "aks-dev"               # a context in the host kubeconfig
+#     server     = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
+#     credential = "client-certificate"    # or "token", or "exec"
+#     # kubeconfig  = "{home}/.kube/config"
+#     # aws_profile = "work"               # exec with an aws plugin only
 # KUBE-TEMPLATE-END
-#
-# HOST-EXEC: token = "host-exec" runs the context's own exec plugin on the
-# host — kubelogin with --login azurecli, `aws eks get-token`, or
-# aws-iam-authenticator — with an argv snug BUILDS from a fixed per-plugin
-# grammar (anything else in the file's args refuses), an environment of
-# exactly PATH=/usr/local/bin:/usr/bin:/bin, HOME and PYTHONNOUSERSITE=1 —
-# az is Python, and a writable ~/.local user site would otherwise run code on
-# the host — (plus AWS_PROFILE from
-# identity.kube.aws_profile — the file's exec.env is never used), and takes
-# only the token and its expiry from the answer. A bare command is looked up
-# on that PATH only. The sandbox then acts as YOU, not as a ServiceAccount.
-# Refused while ~/.azure, ~/.kube/cache or ~/.aws is writable through a
-# grant: the plugin reads its configuration there, on the host, and a
-# writable ~/.aws/config is a credential_process the host would run.
-#
-# ABUSE (host-exec): a hostile process inside the sandbox can act as YOU on
-# the ONE pinned server for as long as the run lives, on whatever your RBAC
-# there allows. It never holds the token; but the token's own reach is its
-# issuer's, not snug's: a kubelogin token is valid as you at EVERY AKS
-# cluster in your tenant where you hold RBAC for its 60-90 minutes (Entra
-# documentation, not measured), an aws token is a presigned STS token for one
-# EKS cluster for about 15 minutes, and that is what a token leaked from the
-# host would reach. Prefer serviceaccount where you can create one: on an
-# exec user, the plugin's token only authenticates the host-side mint, and
-# the sandbox acts as the ServiceAccount.
-#
-# KUBE-HOSTEXEC-TEMPLATE-BEGIN
-#   [profile.aks-me]
-#   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
-#     [profile.aks-me.identity.kube]
-#     context = "aks-entra"                 # a context whose user is kubelogin -l azurecli
-#     server  = "https://aks-entra.example.azmk8s.io:443"
-#     token   = "host-exec"
-#     # aws_profile = "work"                # aws plugins only, in place of the file's exec.env
-# KUBE-HOSTEXEC-TEMPLATE-END
 
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude

@@ -52,7 +52,7 @@ import (
 // both read the identical file for the identical reason.
 const MaxSSHPublicKeyBytes = 64 << 10
 
-// MaxKubeconfigBytes bounds identity.kube.kubeconfig. A kubeconfig carries a
+// MaxKubeconfigBytes bounds identity.kubectl.kubeconfig. A kubeconfig carries a
 // few base64 certificates per cluster and user, so tens of KiB is ordinary and
 // a megabyte is a file with hundreds of clusters; past that it is not a
 // kubeconfig, and the read must not be a memory-exhaustion primitive.

@@ -137,15 +137,11 @@ gate:
 	# Same fix, same reasoning as the thirteen above.
 	go vet ./test/integration/testdata/loginprobe
 	go vet ./test/integration/testdata/fakeopener
-	# testdata/stubkubectl (identity.kube) is the sixteenth: a host kubectl
-	# that answers `create token -o json` from a mode file beside itself.
-	# Built lazily by kube_test.go. Same fix, same reasoning as above.
-	go vet ./test/integration/testdata/stubkubectl
-	# testdata/kubeprobe is the seventeenth: the payload that speaks to the
-	# kube proxy from inside. Built lazily by kube_test.go.
+	# testdata/kubeprobe (identity.kubectl) is the sixteenth: the payload that
+	# speaks to the kube proxy from inside. Built lazily by kube_test.go.
 	go vet ./test/integration/testdata/kubeprobe
-	# testdata/stubkubeplugin is the eighteenth: a host exec plugin built as
-	# kubelogin, for token = "host-exec". Built lazily by kube_test.go.
+	# testdata/stubkubeplugin is the seventeenth: a host exec plugin built as
+	# kubelogin, for credential = "exec". Built lazily by kube_test.go.
 	go vet ./test/integration/testdata/stubkubeplugin
 	go test ./...
 

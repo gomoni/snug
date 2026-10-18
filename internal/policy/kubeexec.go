@@ -24,7 +24,7 @@ type KubePlugin struct {
 	// APIVersion is the ExecCredential version the file names; the plugin's
 	// output must carry the same one.
 	APIVersion string
-	// AWSProfile is identity.kube.aws_profile, for an aws row; "" otherwise.
+	// AWSProfile is identity.kubectl.aws_profile, for an aws row; "" otherwise.
 	AWSProfile string
 	// ConfigDirs are the host directories the plugin reads its own
 	// configuration and cache from, under the host home. A grant that makes
@@ -49,7 +49,7 @@ const KubePluginPATH = "/usr/local/bin:/usr/bin:/bin"
 // KubePluginEnv is a plugin's whole environment: PATH, HOME — the host home,
 // because these are the host's own tools reading the host's own ~/.azure and
 // ~/.aws — PYTHONNOUSERSITE=1, and AWS_PROFILE for an aws row with
-// identity.kube.aws_profile set. Nothing is inherited: KUBECONFIG, a proxy
+// identity.kubectl.aws_profile set. Nothing is inherited: KUBECONFIG, a proxy
 // variable, AWS_* or AZURE_* in snug's environment would steer what the
 // plugin authenticates as.
 //
@@ -262,8 +262,7 @@ func kubePluginOf(e *kubecfg.Exec, k IdentityKube, context string) (*KubePlugin,
 			"AWS documentation, not measured)"
 	case "gke-gcloud-auth-plugin":
 		return nil, fmt.Errorf("context %s authenticates with gke-gcloud-auth-plugin, which snug does not run: "+
-			"its token is cloud-platform scoped and can mint durable service-account keys. Use "+
-			"token = \"serviceaccount\" with a ServiceAccount you create", ctx)
+			"its token is cloud-platform scoped and can mint durable service-account keys", ctx)
 	default:
 		return nil, fmt.Errorf("context %s authenticates with exec plugin %s, which snug does not run; it "+
 			"runs %s", ctx, kq(base), kubePluginRows)
@@ -272,13 +271,13 @@ func kubePluginOf(e *kubecfg.Exec, k IdentityKube, context string) (*KubePlugin,
 	usesProfile := p.Row == "aws" || p.Row == "aws-iam-authenticator"
 	switch {
 	case k.AWSProfile != "" && !usesProfile:
-		return nil, fmt.Errorf("identity.kube.aws_profile is set, but context %s runs %s, which reads no "+
+		return nil, fmt.Errorf("identity.kubectl.aws_profile is set, but context %s runs %s, which reads no "+
 			"AWS profile; drop the key", ctx, p.Row)
 	case k.AWSProfile != "" && !awsProfileShape.MatchString(k.AWSProfile):
-		return nil, fmt.Errorf("identity.kube.aws_profile %s is not an AWS profile name", kq(k.AWSProfile))
+		return nil, fmt.Errorf("identity.kubectl.aws_profile %s is not an AWS profile name", kq(k.AWSProfile))
 	case awsProfileEnv && k.AWSProfile == "":
 		return nil, fmt.Errorf("the exec entry of context %s sets AWS_PROFILE in its env, and snug never "+
-			"uses the file's exec.env. Name the profile in yours: identity.kube.aws_profile = \"<name>\"", ctx)
+			"uses the file's exec.env. Name the profile in yours: identity.kubectl.aws_profile = \"<name>\"", ctx)
 	}
 	p.AWSProfile = k.AWSProfile
 	return p, nil

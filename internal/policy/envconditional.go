@@ -101,12 +101,12 @@ var conditionalEnvs = []conditionalEnv{
 	},
 	{
 		names: []string{"KUBECONFIG"},
-		key:   func(*Profile) string { return "identity.kube" },
+		key:   func(*Profile) string { return "identity.kubectl" },
 		// The pin, not p.Kube: checkConditionalEnv runs before resolveKube
 		// builds the binding, so p.Kube is always nil here and the conflict
 		// would never fire (red team, measured).
-		on:     func(p *Policy) bool { return p.Identity.Pinned("kube") },
-		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "kube") },
+		on:     func(p *Policy) bool { return p.Identity.Pinned("kubectl") },
+		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "kubectl") },
 		writes: "points kubectl at the one-context kubeconfig it generates",
 	},
 	{

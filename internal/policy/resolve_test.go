@@ -752,12 +752,12 @@ func maximalProfile() *Profile {
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
 				SigningKey: "/home/u/.ssh/sign.pub"},
 			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
-			// NOT the default path, so dropping identity.kube.kubeconfig really
+			// NOT the default path, so dropping identity.kubectl.kubeconfig really
 			// changes which file is read (the fixture serves both).
-			// The widest kube block: a ServiceAccount minted through an aws
-			// exec user, so aws_profile is a key this test can drop too.
-			Kube: IdentityKube{Context: "eks-demo", Token: KubeTokenServiceAccount,
-				Server: "https://EKS0.gr7.eu-west-1.eks.amazonaws.com", ServiceAccount: "dev/snug-agent",
+			// The widest kube block: an aws exec user, so aws_profile is a key
+			// this test can drop too.
+			Kube: IdentityKube{Context: "eks-demo", Credential: KubeCredentialExec,
+				Server:     "https://EKS0.gr7.eu-west-1.eks.amazonaws.com",
 				Kubeconfig: "/home/u/.kube/maximal", AWSProfile: "work"},
 		},
 		Environ: EnvGrants{
@@ -784,7 +784,7 @@ type keyDrop struct {
 
 // droppedLeafDefault is the value an identity leaf resolves to when a profile
 // omits it, expanded against testCtx's home.
-var droppedLeafDefault = map[string]string{"kube.kubeconfig": "/home/u/.kube/config"}
+var droppedLeafDefault = map[string]string{"kubectl.kubeconfig": "/home/u/.kube/config"}
 
 func keyDrops() []keyDrop {
 	return []keyDrop{
@@ -811,18 +811,17 @@ func keyDrops() []keyDrop {
 		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
-		{"identity.kube.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
-		{"identity.kube.server", "Identity.Kube.Server", func(p *Profile) { p.Identity.Kube.Server = "" }},
-		{"identity.kube.token", "Identity.Kube.Token", func(p *Profile) { p.Identity.Kube.Token = "" }},
-		{"identity.kube.service_account", "Identity.Kube.ServiceAccount", func(p *Profile) { p.Identity.Kube.ServiceAccount = "" }},
-		{"identity.kube.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},
-		{"identity.kube.aws_profile", "Identity.Kube.AWSProfile", func(p *Profile) { p.Identity.Kube.AWSProfile = "" }},
+		{"identity.kubectl.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
+		{"identity.kubectl.server", "Identity.Kube.Server", func(p *Profile) { p.Identity.Kube.Server = "" }},
+		{"identity.kubectl.credential", "Identity.Kube.Credential", func(p *Profile) { p.Identity.Kube.Credential = "" }},
+		{"identity.kubectl.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},
+		{"identity.kubectl.aws_profile", "Identity.Kube.AWSProfile", func(p *Profile) { p.Identity.Kube.AWSProfile = "" }},
 		// Whole blocks, because identity joins one block at a time: removing a
 		// block removes one pin, and must widen nothing the others grant.
 		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},
 		{"identity.git", "Identity.Git", func(p *Profile) { p.Identity.Git = IdentityGit{} }},
 		{"identity.gh", "Identity.Gh", func(p *Profile) { p.Identity.Gh = IdentityGh{} }},
-		{"identity.kube", "Identity.Kube", func(p *Profile) { p.Identity.Kube = IdentityKube{} }},
+		{"identity.kubectl", "Identity.Kube", func(p *Profile) { p.Identity.Kube = IdentityKube{} }},
 		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},
 		{"environ.merge", "Environ.Merge", func(p *Profile) { p.Environ.Merge = nil }},
 		{"environ.prepend", "Environ.Prepend", func(p *Profile) { p.Environ.Prepend = nil }},

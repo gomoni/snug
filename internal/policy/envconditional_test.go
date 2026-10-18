@@ -154,7 +154,7 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 	}
 	// Eleven written (the nine of issue #621, LISTEN_PID which the #621 red
 	// team found exported by the staged door script, and BROWSER for the
-	// login bridge of issue #455, KUBECONFIG for identity.kube), five that
+	// login bridge of issue #455, KUBECONFIG for identity.kubectl), five that
 	// outrank them.
 	if got := len(ConditionalEnvNames()); got != 12 {
 		t.Errorf("ConditionalEnvNames() = %v, want 12 names", ConditionalEnvNames())

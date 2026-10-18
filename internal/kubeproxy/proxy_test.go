@@ -3,15 +3,22 @@ package kubeproxy
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,9 +39,16 @@ type upstream struct {
 	reqs  []*http.Request
 	auths []string
 	hosts []string
+	peers []string // client certificate subject per request, "" for none
 }
 
 func newUpstream(t *testing.T, h http.HandlerFunc) *upstream {
+	return newUpstreamTLS(t, h, nil)
+}
+
+// newUpstreamTLS is newUpstream that requires and verifies a client
+// certificate issued as clientCA, when clientCA is not nil.
+func newUpstreamTLS(t *testing.T, h http.HandlerFunc, clientCA *x509.Certificate) *upstream {
 	t.Helper()
 	u := &upstream{}
 	u.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +56,11 @@ func newUpstream(t *testing.T, h http.HandlerFunc) *upstream {
 		u.reqs = append(u.reqs, r)
 		u.auths = append(u.auths, r.Header.Get("Authorization"))
 		u.hosts = append(u.hosts, r.Host)
+		peer := ""
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			peer = r.TLS.PeerCertificates[0].Subject.String()
+		}
+		u.peers = append(u.peers, peer)
 		u.mu.Unlock()
 		if h != nil {
 			h(w, r)
@@ -50,6 +69,11 @@ func newUpstream(t *testing.T, h http.HandlerFunc) *upstream {
 		fmt.Fprintf(w, "path=%s", r.URL.EscapedPath())
 	}))
 	u.srv.EnableHTTP2 = true
+	if clientCA != nil {
+		pool := x509.NewCertPool()
+		pool.AddCert(clientCA)
+		u.srv.TLS = &tls.Config{ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}
+	}
 	u.srv.StartTLS()
 	t.Cleanup(u.srv.Close)
 	return u
@@ -148,35 +172,102 @@ func TestKubeProxyInjectsTheBearerAndForwardsToThePinnedServerOnly(t *testing.T)
 	}
 }
 
-func TestKubeProxyRefusesIdentityHeaders(t *testing.T) {
+// clientCert is a self-signed client certificate standing in for an AKS
+// local account's CN=masterclient.
+func clientCert(t *testing.T) *tls.Certificate {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(7),
+		Subject:   pkix.Name{CommonName: "masterclient", Organization: []string{"system:masters"}},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(der)
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: k, Leaf: leaf}
+}
+
+// A bearer shape SETS Authorization: the client's own is replaced, so the
+// credential on the wire is the pinned one. Every other header — the
+// impersonation ones included — is the cluster's to judge and is forwarded.
+func TestKubeProxyBearerOverwritesTheClientsAuthorization(t *testing.T) {
 	up := newUpstream(t, nil)
 	f := start(t, up, "", nil)
-	for _, h := range []string{
-		"Authorization: Bearer mine",
-		"authorization: Basic eDp5",
-		"Proxy-Authorization: Basic eDp5",
-		"Impersonate-User: admin",
-		"Impersonate-Group: system:masters",
-		"Impersonate-Uid: 0",
-		"Impersonate-Extra-Scopes: all",
-		"Impersonate_User: admin",
-		"IMPERSONATE-USER: admin",
-		"X-Remote-User: admin",
-		"X-Remote-Group: system:masters",
-		"X-Remote-Extra-Foo: bar",
-		"Sec-WebSocket-Protocol: v5.channel.k8s.io, base64url.bearer.authorization.k8s.io.bWluZQ",
-		"Trailer: Impersonate-User",
+	status, _ := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer mine\r\n"+
+		"Impersonate-User: someone\r\nConnection: close\r\n\r\n")
+	if !strings.HasPrefix(status, "200") || up.count() != 1 {
+		t.Fatalf("status %q, %d upstream requests", status, up.count())
+	}
+	if up.auths[0] != "Bearer "+testToken {
+		t.Errorf("upstream Authorization = %q, want snug's", up.auths[0])
+	}
+	if v := up.reqs[0].Header.Get("Impersonate-User"); v != "someone" {
+		t.Errorf("Impersonate-User upstream = %q, want it forwarded as sent", v)
+	}
+	if up.peers[0] != "" {
+		t.Errorf("a bearer shape presented a client certificate %q", up.peers[0])
+	}
+}
+
+// The certificate shape presents the client certificate in the handshake,
+// adds no Authorization of snug's, and forwards the client's headers as sent.
+func TestKubeProxyPresentsTheClientCertificate(t *testing.T) {
+	cc := clientCert(t)
+	up := newUpstreamTLS(t, nil, cc.Leaf)
+	f := start(t, up, "", func(c *Config) { c.Token, c.ClientCert = nil, cc })
+	status, body := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+	if !strings.HasPrefix(status, "200") {
+		t.Fatalf("status %q body %q", status, body)
+	}
+	if up.peers[0] != "CN=masterclient,O=system:masters" || up.auths[0] != "" {
+		t.Errorf("upstream saw peer %q Authorization %q, want the certificate and no bearer", up.peers[0], up.auths[0])
+	}
+	raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer mine\r\nImpersonate-User: someone\r\n"+
+		"Connection: close\r\n\r\n")
+	if up.auths[1] != "Bearer mine" || up.reqs[1].Header.Get("Impersonate-User") != "someone" {
+		t.Errorf("certificate shape changed the client's headers: Authorization %q Impersonate-User %q",
+			up.auths[1], up.reqs[1].Header.Get("Impersonate-User"))
+	}
+	f.amu.Lock()
+	defer f.amu.Unlock()
+	if !slices.ContainsFunc(f.audit, func(s string) bool {
+		return s == "server requested a client certificate; sent CN=masterclient,O=system:masters"
+	}) {
+		t.Errorf("no handshake audit line: %q", f.audit)
+	}
+}
+
+// Without the certificate the pinned server refuses the handshake: the
+// upstream in the test above really did verify it.
+func TestKubeProxyCertificateUpstreamRefusesNone(t *testing.T) {
+	cc := clientCert(t)
+	up := newUpstreamTLS(t, nil, cc.Leaf)
+	f := start(t, up, "", nil)
+	if status, _ := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"); !strings.HasPrefix(status, "502") {
+		t.Errorf("status %q without a client certificate, want 502", status)
+	}
+}
+
+func TestKubeProxyNewRefusesNeitherOrBothCredentials(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	su, _ := url.Parse("https://api.example")
+	tok := func(context.Context) (policy.Secret, error) { return nil, nil }
+	for name, cfg := range map[string]Config{
+		"neither": {Listener: ln, Server: su},
+		"both":    {Listener: ln, Server: su, Token: tok, ClientCert: clientCert(t)},
 	} {
-		status, body := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\n"+h+"\r\nConnection: close\r\n\r\n")
-		if !strings.HasPrefix(status, "403") && !strings.HasPrefix(status, "400") {
-			t.Errorf("%q: status %q body %q, want a refusal", h, status, body)
+		if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Errorf("%s: %v", name, err)
 		}
-	}
-	if n := up.count(); n != 0 {
-		t.Errorf("%d refused requests reached the server", n)
-	}
-	if n := f.tokens.Load(); n != 0 {
-		t.Errorf("the token was fetched %d times for refused requests", n)
 	}
 }
 

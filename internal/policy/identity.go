@@ -59,29 +59,32 @@ func ParseSSHMode(s string) (SSHMode, error) {
 	}
 }
 
-// KubeTokenMode is how snug mints, on the host, the token its proxy adds to
-// what kubectl inside sends. "" is UNSET, not a mode, and Resolve refuses a
-// kube block without one, so absence never picks a minting route.
-type KubeTokenMode string
+// KubeCredential names the ONE credential of the pinned context's user entry
+// that snug's proxy presents to the API server. "" is UNSET: Resolve reads it
+// as the entry's only credential, and refuses an entry holding two, because a
+// client certificate and a static token in one entry may be two identities.
+type KubeCredential string
 
-// KubeTokenServiceAccount mints with the host's own kubectl, `kubectl create
-// token`, for the one ServiceAccount identity.kube.service_account names.
-const KubeTokenServiceAccount KubeTokenMode = "serviceaccount"
+// KubeCredentialClientCert presents the entry's client-certificate-data and
+// client-key-data as the proxy's TLS client certificate.
+const KubeCredentialClientCert KubeCredential = "client-certificate"
 
-// KubeTokenHostExec runs the host context's own exec plugin — kubelogin, aws
-// eks get-token, aws-iam-authenticator — on the host, with an argv snug
-// builds from a fixed per-plugin grammar, and its token is the proxy's bearer:
-// the sandbox acts as YOU on the pinned server.
-const KubeTokenHostExec KubeTokenMode = "host-exec"
+// KubeCredentialToken presents the entry's static token as the proxy's bearer.
+const KubeCredentialToken KubeCredential = "token"
 
-// ParseKubeTokenMode is the door into KubeTokenMode, with the same rule as
+// KubeCredentialExec runs the entry's exec plugin — kubelogin, aws eks
+// get-token, aws-iam-authenticator — on the host, with an argv snug builds
+// from a fixed per-plugin grammar, and presents the token it returns.
+const KubeCredentialExec KubeCredential = "exec"
+
+// ParseKubeCredential is the door into KubeCredential, with the same rule as
 // ParseSSHMode: a named set, and anything else unknown, quoting the set.
-func ParseKubeTokenMode(s string) (KubeTokenMode, error) {
-	switch KubeTokenMode(s) {
-	case KubeTokenServiceAccount, KubeTokenHostExec, "":
-		return KubeTokenMode(s), nil
+func ParseKubeCredential(s string) (KubeCredential, error) {
+	switch KubeCredential(s) {
+	case KubeCredentialClientCert, KubeCredentialToken, KubeCredentialExec, "":
+		return KubeCredential(s), nil
 	default:
-		return "", fmt.Errorf("unknown identity.kube.token %q (want serviceaccount or host-exec)", s)
+		return "", fmt.Errorf("unknown identity.kubectl.credential %q (want client-certificate, token or exec)", s)
 	}
 }
 
@@ -102,7 +105,7 @@ type Identity struct {
 	SSH  IdentitySSH  `snug:"ssh"`
 	Git  IdentityGit  `snug:"git"`
 	Gh   IdentityGh   `snug:"gh"`
-	Kube IdentityKube `snug:"kube"`
+	Kube IdentityKube `snug:"kubectl"`
 }
 
 // NESTED BY VALUE, AND A POINTER HERE WOULD BREAK THREE THINGS WHILE COMPILING,
@@ -165,23 +168,19 @@ type IdentityGit struct {
 	SigningKey string `snug:"signing_key,path"`
 }
 
-// IdentityKube pins one cluster and one ServiceAccount on it. Context names a
-// context in the host kubeconfig; snug reads that context's cluster as data
-// and never carries its user entry inside. The namespace is the first half of
-// ServiceAccount ("namespace/name") and is not a key of its own: it is where
-// the account lives, and a default namespace for kubectl would be a setting
-// for the program inside, which a profile does not carry.
+// IdentityKube pins one cluster and one identity on it. Context names a
+// context in the host kubeconfig; snug reads that context's cluster and user
+// entry as data, and the credential it presents never enters the sandbox.
 type IdentityKube struct {
 	Context string `snug:"context"`
 	// Server is the API server the profile expects the context to name. The
 	// kubeconfig is a file other runs may have been able to write; the profile
 	// is not. Pinning the server here is what keeps the FILE from choosing
-	// where snug's host-side mint sends your credential: a kubeconfig whose
-	// context names any other server is refused.
-	Server         string        `snug:"server"`
-	Token          KubeTokenMode `snug:"token"`
-	ServiceAccount string        `snug:"service_account"`
-	Kubeconfig     string        `snug:"kubeconfig,path"`
+	// where snug's proxy sends your credential: a kubeconfig whose context
+	// names any other server is refused.
+	Server     string         `snug:"server"`
+	Credential KubeCredential `snug:"credential"`
+	Kubeconfig string         `snug:"kubeconfig,path"`
 	// AWSProfile is the AWS_PROFILE an aws exec plugin runs with. It is an
 	// identity — which AWS account — not program configuration, and it is
 	// here because the file's own exec.env is never used. Valid only with a
@@ -189,7 +188,7 @@ type IdentityKube struct {
 	AWSProfile string `snug:"aws_profile"`
 }
 
-// DefaultKubeconfig is identity.kube.kubeconfig when a kube block omits it.
+// DefaultKubeconfig is identity.kubectl.kubeconfig when a kube block omits it.
 const DefaultKubeconfig = "{home}/.kube/config"
 
 type IdentityGh struct {
@@ -243,9 +242,9 @@ var identityPathRoles = map[string]identityPathRole{
 		example: "{home}/.ssh/id_ed25519.pub",
 		fix:     "Copy the PUBLIC key to a directory snug does not manage (for example ~/.ssh) and name that path instead.",
 	},
-	"kube.kubeconfig": {
-		chooses: "which cluster, and which of your host credentials, snug's host-side mint uses",
-		reads:   "snug decodes it on the host and mints with the credential it names",
+	"kubectl.kubeconfig": {
+		chooses: "which cluster, and which of your host credentials, snug's proxy presents",
+		reads:   "snug decodes it on the host and presents the credential it holds",
 		example: "{home}/.kube/config",
 		fix:     "Keep the kubeconfig in a directory snug does not manage (for example ~/.kube) and name that path instead.",
 	},
@@ -305,7 +304,7 @@ func (p *Policy) IdentityOwner(block string) ProfileName {
 	return ""
 }
 
-// Pinned reports whether block key ("ssh", "git", "gh", "kube") is set. It is false
+// Pinned reports whether block key ("ssh", "git", "gh", "kubectl") is set. It is false
 // for a nil Identity and for a key that names no block.
 func (i *Identity) Pinned(key string) bool {
 	if i == nil {

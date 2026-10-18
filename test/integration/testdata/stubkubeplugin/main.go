@@ -1,8 +1,9 @@
 // Command stubkubeplugin stands in for a host exec-credential plugin
-// (kubelogin) in the identity.kube host-exec integration tests. It is built
-// under the name kubelogin, so snug matches its row. Like stubkubectl it reads
-// its behaviour from "mode" beside its executable — ok, cert or grandchild —
-// and appends its argv and its environment to "calls" beside it.
+// (kubelogin) in the identity.kubectl credential = "exec" integration tests.
+// It is built under the name kubelogin, so snug matches its row. snug runs it
+// with a built environment, so it reads its behaviour from "mode" beside its
+// executable — ok, short, hang, cert or grandchild — and appends its argv and
+// its environment to "calls" beside it, so a test can count runs.
 //
 // In ok mode its answer carries, beside the token and expiry, an extra field
 // and a refresh-token-shaped value, and it writes to stderr: none of that may
@@ -33,12 +34,18 @@ func main() {
 	fmt.Fprintf(f, "ARGV %s\nENV %s\n", strings.Join(os.Args[1:], " "), strings.Join(env, " "))
 	f.Close()
 	mode, _ := os.ReadFile(filepath.Join(dir, "mode"))
+	life := time.Hour
+	if strings.TrimSpace(string(mode)) == "short" {
+		life = 2 * time.Second
+	}
 	status := map[string]string{
 		"token":               "stub-plugin-token-4567",
-		"expirationTimestamp": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		"expirationTimestamp": time.Now().Add(life).UTC().Format(time.RFC3339),
 		"refreshToken":        "STUBREFRESHTOKEN",
 	}
 	switch strings.TrimSpace(string(mode)) {
+	case "hang":
+		time.Sleep(10 * time.Minute)
 	case "cert":
 		status["clientCertificateData"] = "STUBCERT"
 		status["clientKeyData"] = "STUBKEY"

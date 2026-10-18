@@ -318,9 +318,9 @@ var envTypes = map[string]envType{
 	"DOCKER_CONFIG":    {path: true},
 	"AZURE_CONFIG_DIR": {path: true},
 	// KUBECONFIG is a colon list to kubectl, which MERGES every file in it,
-	// and it is typed as one path anyway: identity.kube authors exactly one
+	// and it is typed as one path anyway: identity.kubectl authors exactly one
 	// file, a profile `set` names one, and a list type would refuse the
-	// `inherit` that the conflict with identity.kube has to see to name both
+	// `inherit` that the conflict with identity.kubectl has to see to name both
 	// claimants. Taking the host's value whole is annotated, not refused.
 	"KUBECONFIG":            {path: true},
 	"NPM_CONFIG_USERCONFIG": {path: true},
@@ -1567,7 +1567,7 @@ var envNotes = map[string]envNote{
 			"runs for a credential, and a cluster's server and proxy-url decide where the credential is " +
 			"sent (documented by client-go; not measured here)",
 		host: "taking the host's value points kubectl at every cluster and credential the host's " +
-			"kubeconfig files name; identity.kube generates one context for one cluster instead",
+			"kubeconfig files name; identity.kubectl generates one context for one cluster instead",
 	},
 	// Tried: az is not installed in the container this was written in, so
 	// nothing here is measured; the sentence is azure-cli's documentation.

@@ -342,7 +342,7 @@ type Context struct {
 	KnownHosts []byte
 
 	// HostAddresses is every address the host holds, as text, the same set
-	// the stage seals inside. identity.kube refuses a server naming one of
+	// the stage seals inside. identity.kubectl refuses a server naming one of
 	// them, as a usability check; the seal is the bound.
 	HostAddresses []string
 

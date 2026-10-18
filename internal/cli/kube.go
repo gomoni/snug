@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,7 +29,7 @@ import (
 	"github.com/gomoni/snug/internal/sandbox"
 )
 
-// hostAddressesForResolve feeds identity.kube's host-owned-server refusal. It
+// hostAddressesForResolve feeds identity.kubectl's host-owned-server refusal. It
 // is a usability check, not the seal, so an interface enumeration that fails
 // leaves it empty rather than refusing the run; the stage enumerates again and
 // does refuse.
@@ -41,16 +41,11 @@ func hostAddressesForResolve() []string {
 	return a
 }
 
-// kubeMintTimeout bounds one host-side mint. A kubectl that hangs — a network
-// that blackholes, a cluster that never answers — must not hold the run.
+// kubeMintTimeout bounds one run of the exec plugin. A plugin that hangs — a
+// network that blackholes, a login that never answers — must not hold the run.
 const kubeMintTimeout = 30 * time.Second
 
-// checkKubectlIsABinary is checkHostBinaryIsELF for the host kubectl.
-func checkKubectlIsABinary(path string) error {
-	return checkHostBinaryIsELF("host kubectl", "kubectl", path)
-}
-
-// checkHostBinaryIsELF refuses a host program identity.kube runs that is not
+// checkHostBinaryIsELF refuses a host program identity.kubectl runs that is not
 // an ELF executable: a distrobox-export wrapper, a host-spawn shim, an asdf
 // shim, aws CLI v1 (a Python script). snug runs it with a cluster credential,
 // so it must be a program snug can reason about, not a script that runs
@@ -90,23 +85,6 @@ func checkHostBinaryIsELF(what, name, path string) error {
 	return fmt.Errorf("%s %s is not an executable snug can reason about%s. snug runs it on the "+
 		"host with your cluster credential, so it must be the %s binary itself — install the official "+
 		"release binary (for aws, CLI v2) where snug looks for it", what, policy.VisibleText(path), kind, name)
-}
-
-// judgeKubeMintBinary finds and judges the host kubectl, recording the verdict
-// on pol for the --dry-run row.
-func judgeKubeMintBinary(pol *policy.Policy, env policy.Environ) (string, error) {
-	found, err := env.LookPath("kubectl")
-	if err != nil {
-		err = fmt.Errorf("kubectl not found on PATH; identity.kube mints its token with the host's kubectl")
-	} else if found, err = pol.ResolveKubeMintBinary(env, found); err == nil {
-		err = checkKubectlIsABinary(found)
-	}
-	if err != nil {
-		pol.KubeMintProblem = err.Error()
-		return "", err
-	}
-	pol.KubeMintBinary = found
-	return found, nil
 }
 
 // lookPluginPATH finds a bare plugin command on policy.KubePluginPATH only;
@@ -157,8 +135,8 @@ func judgeKubePlugin(pol *policy.Policy, env policy.Environ) (string, error) {
 	return found, nil
 }
 
-// kubeMintCmd builds the one host command a mint runs. Its own user and pid
-// namespace is what reaps grandchildren: kubectl is pid 1 there, Pdeathsig
+// kubeMintCmd builds the one host command a plugin run is. Its own user and pid
+// namespace is what reaps grandchildren: the plugin is pid 1 there, Pdeathsig
 // kills it when the thread that started it dies, and the kernel kills every
 // other process in a pid namespace when its pid 1 exits — a plain process
 // group does not survive SIGKILL of snug that way. Measured with unshare: a
@@ -195,10 +173,7 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-var kubeTokenShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-// runKubeExec runs a plugin to completion as runKubeMint does and parses its
-// ExecCredential. Only the token and its expiry are kept: a certificate in
+// runKubeExec runs a plugin to completion and parses its ExecCredential. Only the token and its expiry are kept: a certificate in
 // the answer refuses, because snug's proxy holds no client certificate, and
 // every other field and the plugin's stderr stay on the host.
 func runKubeExec(cmd *exec.Cmd, apiVersion string) (kubebroker.Token, string, error) {
@@ -224,15 +199,15 @@ func runKubeExec(cmd *exec.Cmd, apiVersion string) (kubebroker.Token, string, er
 			policy.VisibleText(ec.Kind), policy.VisibleText(ec.APIVersion), apiVersion)
 	}
 	if ec.Status.ClientCertificateData != "" || ec.Status.ClientKeyData != "" {
-		return kubebroker.Token{}, stderr, errors.New("it answered with a client certificate; snug's proxy " +
-			"carries a bearer token only")
+		return kubebroker.Token{}, stderr, errors.New("it answered with a client certificate; snug presents " +
+			"an exec plugin's token only")
 	}
 	t, err := tokenOf(ec.Status.Token, ec.Status.ExpirationTimestamp)
 	return t, stderr, err
 }
 
 func tokenOf(tok, expiry string) (kubebroker.Token, error) {
-	if len(tok) > 16<<10 || !kubeTokenShape.MatchString(tok) {
+	if !policy.KubeTokenOK(tok) {
 		return kubebroker.Token{}, errors.New("its token is empty, oversized or not a bearer token")
 	}
 	exp, err := time.Parse(time.RFC3339, expiry)
@@ -243,9 +218,10 @@ func tokenOf(tok, expiry string) (kubebroker.Token, error) {
 	return kubebroker.Token{Value: policy.Secret(tok), Expiry: exp}, nil
 }
 
-// runKubeMint runs cmd to completion on a locked OS thread — Pdeathsig fires
+// runKubeCmd runs cmd to completion on a locked OS thread — Pdeathsig fires
 // when the THREAD that forked the child exits, and the Go scheduler may retire
-// an unlocked one while the child still runs — and parses the TokenRequest.
+// an unlocked one while the child still runs. It returns stdout (capped at 1
+// MiB) and stderr (capped at 16 KiB).
 //
 // The thread is UNLOCKED again once the child has been waited for, and that is
 // not tidiness. A goroutine that exits while locked takes its OS thread with
@@ -253,29 +229,6 @@ func tokenOf(tok, expiry string) (kubebroker.Token, error) {
 // The stage carries Pdeathsig too, so retiring that thread SIGKILLs it: measured
 // as `the stage closed the control channel without reporting the payload's
 // exit` partway through TestKubeBrokerBudgetRefuses, 64 mints in one run.
-func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
-	out, stderr, err := runKubeCmd(cmd)
-	if err != nil {
-		return kubebroker.Token{}, stderr, err
-	}
-	var tr struct {
-		Status struct {
-			Token               string `json:"token"`
-			ExpirationTimestamp string `json:"expirationTimestamp"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(out, &tr); err != nil {
-		return kubebroker.Token{}, stderr, fmt.Errorf("its output is not a TokenRequest: %w", err)
-	}
-	t, err := tokenOf(tr.Status.Token, tr.Status.ExpirationTimestamp)
-	if err != nil {
-		return kubebroker.Token{}, stderr, err
-	}
-	return t, "", nil
-}
-
-// runKubeCmd is the locked-thread run both mints share; it returns stdout
-// (capped at 1 MiB) and stderr (capped at 16 KiB).
 func runKubeCmd(cmd *exec.Cmd) ([]byte, string, error) {
 	var out, errb cappedBuffer
 	out.max, errb.max = 1<<20, 16<<10
@@ -292,61 +245,77 @@ func runKubeCmd(cmd *exec.Cmd) ([]byte, string, error) {
 	return out.b.Bytes(), errb.b.String(), nil
 }
 
-// kubeRun is identity.kube's run-time half: the token source and, once the
-// stage has handed over the relay socket, the proxy listening on it inside
-// the sandbox's network namespace.
+// kubeRun is identity.kubectl's run-time half: the credential the proxy
+// presents — a client certificate, a static token, or the exec plugin's token
+// source — and, once the stage has handed over the relay socket, the proxy
+// listening on it inside the sandbox's network namespace.
 type kubeRun struct {
 	pol    *policy.Policy
-	src    *kubebroker.Source
+	src    *kubebroker.Source // exec only
+	token  *policy.Secret     // static token only; a pointer, so fmt never prints it
+	cert   *tls.Certificate   // client certificate only
 	audit  func(string)
 	mu     sync.Mutex
 	proxy  *kubeproxy.Proxy
 	closed bool
 }
 
-// startKubeIdentity is everything identity.kube needs before the sandbox
-// starts: the host kubectl judged, the preflight mint, and the token source.
-// A dry run judges and names, and starts nothing. The proxy itself starts in
-// apply's relay callback, because its socket does not exist until the stage
-// makes it.
+// startKubeIdentity is everything identity.kubectl needs before the sandbox
+// starts: the credential loaded into snug's memory and, for an exec plugin,
+// the plugin judged and run once. A dry run judges and names, and starts
+// nothing. The proxy itself starts in apply's relay callback, because its
+// socket does not exist until the stage makes it. Nothing here writes a file.
 func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun bool) (*kubeRun, error) {
 	k := pol.Kube
 	if k == nil {
 		return nil, nil
 	}
-	var kubectl, plugin string
-	var kerr, perr error
-	if k.Mode == policy.KubeTokenServiceAccount {
-		kubectl, kerr = judgeKubeMintBinary(pol, env)
-	}
+	var plugin string
+	var perr error
 	if k.Plugin != nil {
 		plugin, perr = judgeKubePlugin(pol, env)
 	}
 	if dryRun {
 		return nil, nil
 	}
-	if kerr != nil {
-		return nil, kerr
-	}
 	if perr != nil {
 		return nil, perr
 	}
-	rt, err := openRuntimeDir()
-	if err != nil {
-		return nil, err
+	audit := func(string) {}
+	if verbose {
+		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: kubectl: "+policy.VisibleText(msg)) }
 	}
-	home, err := rt.Mkdir("kube-home")
-	if err != nil {
-		return nil, err
-	}
-
-	// The plugin runs as the host user it is: HOME is the host home, where
-	// its own ~/.azure or ~/.aws lives (judged unwritable by Resolve).
-	var pluginMint func(context.Context) (kubebroker.Token, error)
-	if pl := k.Plugin; pl != nil {
+	r := &kubeRun{pol: pol, audit: audit}
+	server := policy.VisibleText(k.Server)
+	switch k.Credential {
+	case policy.KubeCredentialClientCert:
+		// The clock is read here, not in Resolve: a certificate past its
+		// notAfter would answer every request with a handshake failure.
+		if time.Now().After(k.CertNotAfter) {
+			return nil, fmt.Errorf("identity.kubectl: the client certificate of context %s (%s) expired on %s; "+
+				"refresh it with your cloud's get-credentials command", policy.VisibleText(k.Context),
+				k.CertSubject, k.CertNotAfter.UTC().Format(time.DateOnly))
+		}
+		c, err := tls.X509KeyPair(k.HostUser.ClientCertData, k.HostUser.ClientKeyData)
+		if err != nil {
+			return nil, fmt.Errorf("identity.kubectl: the client certificate of context %s: %w",
+				policy.VisibleText(k.Context), err)
+		}
+		r.cert = &c
+		audit(fmt.Sprintf("presenting client certificate %s (expires %s) to %s as context %s", k.CertSubject,
+			k.CertNotAfter.UTC().Format(time.DateOnly), server, policy.VisibleText(k.Context)))
+	case policy.KubeCredentialToken:
+		tok := k.HostUser.Token
+		r.token = &tok
+		audit(fmt.Sprintf("presenting static token (%d chars) to %s as context %s", k.TokenLen, server,
+			policy.VisibleText(k.Context)))
+	case policy.KubeCredentialExec:
+		// The plugin runs as the host user it is: HOME is the host home, where
+		// its own ~/.azure or ~/.aws lives (judged unwritable by Resolve).
+		pl := k.Plugin
 		argv := pl.KubeExecArgv(plugin)
 		describe := policy.VisibleText(strings.Join(argv, " "))
-		pluginMint = func(ctx context.Context) (kubebroker.Token, error) {
+		mint := func(ctx context.Context) (kubebroker.Token, error) {
 			ctx, cancel := context.WithTimeout(ctx, kubeMintTimeout)
 			defer cancel()
 			t, stderr, err := runKubeExec(kubeMintCmd(ctx, argv, pl.KubePluginEnv(pol.Home)), pl.APIVersion)
@@ -356,72 +325,21 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 			}
 			return t, nil
 		}
-	}
-
-	mint := pluginMint
-	mintTimeout := kubeMintTimeout
-	if k.Mode == policy.KubeTokenServiceAccount {
-		cache, err := rt.Mkdir("kube-cache")
+		first, err := mint(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("%w. kubectl inside would have no cluster to reach; not starting", err)
+		}
+		audit(fmt.Sprintf("presenting the %s plugin's token (valid until %s) to %s as context %s", pl.Row,
+			first.Expiry.UTC().Format(time.RFC3339), server, policy.VisibleText(k.Context)))
+		src, err := kubebroker.New(kubebroker.Config{Mint: mint, MintTimeout: kubeMintTimeout, Audit: audit}, first)
 		if err != nil {
 			return nil, err
 		}
-		const mintName = "kube-mint.json"
-		mintFile := filepath.Join(rt.Path(), mintName)
-		argv := k.MintArgv(kubectl, mintFile, cache)
-		describe := policy.VisibleText(strings.Join(argv, " "))
-		if pluginMint != nil {
-			mintTimeout = 2*kubeMintTimeout + 5*time.Second
-		}
-		// The host credential is on disk only while a mint is in flight. A
-		// SIGKILL mid-mint leaves it in this run's directory, under
-		// XDG_RUNTIME_DIR (a tmpfs), until the next run's stale-directory
-		// sweep removes it. When the host user is an exec plugin, the
-		// credential is the token it just returned, used for this one mint.
-		mint = func(ctx context.Context) (kubebroker.Token, error) {
-			hu := k.HostUser
-			if pluginMint != nil {
-				t, err := pluginMint(ctx)
-				if err != nil {
-					return kubebroker.Token{}, err
-				}
-				hu = policy.KubeHostUser{Token: t.Value}
-			}
-			if _, err := rt.CreateFile(mintName, k.MintKubeconfigAs(hu), 0o600); err != nil {
-				return kubebroker.Token{}, err
-			}
-			defer rt.RemoveFile(mintName)
-			ctx, cancel := context.WithTimeout(ctx, kubeMintTimeout)
-			defer cancel()
-			t, stderr, err := runKubeMint(kubeMintCmd(ctx, argv, policy.KubeMintEnv(home)))
-			if err != nil {
-				return kubebroker.Token{}, fmt.Errorf("kube token mint failed: %s (env %s, cwd /) exited %v: %s",
-					describe, strings.Join(policy.KubeMintEnvNames(), " "), err,
-					policy.VisibleText(strings.TrimSpace(stderr)))
-			}
-			return t, nil
-		}
+		r.src = src
+	default:
+		return nil, fmt.Errorf("identity.kubectl: no credential resolved for context %s", policy.VisibleText(k.Context))
 	}
-
-	first, err := mint(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("%w. kubectl inside would have no cluster to reach; not starting", err)
-	}
-	// The cluster decides the lifetime: how long it would honour this token
-	// if it leaked from the host. Only a ServiceAccount mint asks for one.
-	if k.Mode == policy.KubeTokenServiceAccount && first.Expiry.After(time.Now().Add(time.Hour+10*time.Minute)) {
-		fmt.Fprintf(os.Stderr, "snug: the cluster issued a token valid until %s (requested 1h).\n",
-			first.Expiry.UTC().Format(time.RFC3339))
-	}
-	audit := func(string) {}
-	if verbose {
-		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: kube: "+policy.VisibleText(msg)) }
-	}
-	audit(fmt.Sprintf("kube token minted at start, valid until %s", first.Expiry.UTC().Format(time.RFC3339)))
-	src, err := kubebroker.New(kubebroker.Config{Mint: mint, MintTimeout: mintTimeout, Audit: audit}, first)
-	if err != nil {
-		return nil, err
-	}
-	return &kubeRun{pol: pol, src: src, audit: audit}, nil
+	return r, nil
 }
 
 // apply asks the stage for the proxy's one relay socket. A nil run — no kube
@@ -444,29 +362,29 @@ func (r *kubeRun) listen(fs []*os.File) error {
 	defer f.Close()
 	fd := int(f.Fd())
 	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: policy.KubeProxyGuestPort, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
-		return fmt.Errorf("identity.kube: binding the proxy to 127.0.0.1:%d inside the sandbox: %w",
+		return fmt.Errorf("identity.kubectl: binding the proxy to 127.0.0.1:%d inside the sandbox: %w",
 			policy.KubeProxyGuestPort, err)
 	}
 	if err := unix.Listen(fd, 64); err != nil {
-		return fmt.Errorf("identity.kube: listening on 127.0.0.1:%d inside the sandbox: %w",
+		return fmt.Errorf("identity.kubectl: listening on 127.0.0.1:%d inside the sandbox: %w",
 			policy.KubeProxyGuestPort, err)
 	}
 	ln, err := net.FileListener(f)
 	if err != nil {
-		return fmt.Errorf("identity.kube: the proxy's listener: %w", err)
+		return fmt.Errorf("identity.kubectl: the proxy's listener: %w", err)
 	}
 	k := r.pol.Kube
 	server, err := url.Parse(k.Server)
 	if err != nil {
 		ln.Close()
-		return fmt.Errorf("identity.kube: server %s: %w", policy.VisibleText(k.Server), err)
+		return fmt.Errorf("identity.kubectl: server %s: %w", policy.VisibleText(k.Server), err)
 	}
 	var pool *x509.CertPool
 	if len(k.CAData) > 0 {
 		pool = x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(k.CAData) {
 			ln.Close()
-			return errors.New("identity.kube: the cluster's certificate-authority-data holds no certificate")
+			return errors.New("identity.kubectl: the cluster's certificate-authority-data holds no certificate")
 		}
 	}
 	var hosts []netip.Addr
@@ -475,10 +393,18 @@ func (r *kubeRun) listen(fs []*os.File) error {
 			hosts = append(hosts, a)
 		}
 	}
-	p, err := kubeproxy.New(kubeproxy.Config{
+	cfg := kubeproxy.Config{
 		Listener: ln, Server: server, CAs: pool, TLSName: k.TLSServerName,
-		Token: r.src.Token, HostAddrs: hosts, Audit: r.audit,
-	})
+		ClientCert: r.cert, HostAddrs: hosts, Audit: r.audit,
+	}
+	switch {
+	case r.src != nil:
+		cfg.Token = r.src.Token
+	case r.token != nil:
+		tok := *r.token
+		cfg.Token = func(context.Context) (policy.Secret, error) { return tok, nil }
+	}
+	p, err := kubeproxy.New(cfg)
 	if err != nil {
 		ln.Close()
 		return err
@@ -487,15 +413,15 @@ func (r *kubeRun) listen(fs []*os.File) error {
 	defer r.mu.Unlock()
 	if r.closed {
 		ln.Close()
-		return errors.New("identity.kube: the run ended before the proxy started")
+		return errors.New("identity.kubectl: the run ended before the proxy started")
 	}
 	r.proxy = p
 	go p.Serve()
 	return nil
 }
 
-// close stops the proxy — every connection on both sides — and cancels a mint
-// in flight. Safe on a nil run.
+// close stops the proxy — every connection on both sides — and cancels a
+// plugin run in flight. Safe on a nil run.
 func (r *kubeRun) close() {
 	if r == nil {
 		return
@@ -507,5 +433,7 @@ func (r *kubeRun) close() {
 	if p != nil {
 		p.Close()
 	}
-	r.src.Close()
+	if r.src != nil {
+		r.src.Close()
+	}
 }

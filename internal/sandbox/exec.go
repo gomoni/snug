@@ -136,7 +136,7 @@ type Options struct {
 
 	// RelaySockets is how many unconnected AF_INET stream sockets the stage
 	// creates INSIDE the sandbox's network namespace, for the login browser
-	// bridge and identity.kube's proxy listener; at most stage.MaxRelaySockets.
+	// bridge and identity.kubectl's proxy listener; at most stage.MaxRelaySockets.
 	// Zero on every run without either. Only the staged arm
 	// has a stage to make them, so Run refuses a nonzero count on a policy
 	// whose topology needs none, and refuses one with OnRelaySockets nil: a

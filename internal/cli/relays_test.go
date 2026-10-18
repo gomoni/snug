@@ -8,7 +8,7 @@ import (
 	"github.com/gomoni/snug/internal/sandbox"
 )
 
-// The login bridge and identity.kube share one batch of relay sockets; each
+// The login bridge and identity.kubectl share one batch of relay sockets; each
 // gets exactly its own slice, in registration order, and a consumer that
 // refuses stops the run with the later consumers' sockets closed.
 func TestRelaySocketConsumersGetTheirOwnSlice(t *testing.T) {

@@ -24,7 +24,7 @@ func (p *Policy) Validate(env Environ) error {
 	// Podman would derive something higher.
 	if want := deriveTopology(p.Net.Mode, p.Podman, p.Kube != nil); p.Topology != want {
 		return fmt.Errorf("policy.Topology (%s) does not match what Net.Mode=%s, Podman=%s and "+
-			"identity.kube=%t derive (%s): build the fixture through Resolve, or set Topology with "+
+			"identity.kubectl=%t derive (%s): build the fixture through Resolve, or set Topology with "+
 			"deriveTopology", p.Topology, p.Net.Mode, p.Podman, p.Kube != nil, want)
 	}
 

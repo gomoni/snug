@@ -108,7 +108,7 @@ JAVA_TOOL_OPTIONS        inherit   ← every JVM in the sandbox parses these fla
 JDK_JAVA_OPTIONS         set       ← the `java` launcher parses these flags before main(), agents included (measured, temurin 21, in a container)
 JDK_JAVA_OPTIONS         inherit   ← the `java` launcher parses these flags before main(), agents included (measured, temurin 21, in a container)
 KUBECONFIG               set       ← kubectl merges every file in this list; a user entry's `exec:` names a program kubectl runs for a credential, and a cluster's server and proxy-url decide where the credential is sent (documented by client-go; not measured here)
-KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kube generates one context for one cluster instead
+KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kubectl generates one context for one cluster instead
 LD_AUDIT                 set       ← the loader runs this auditing library inside every process it starts (measured, glibc 2.43, with the control)
 LD_AUDIT                 inherit   ← the loader runs this auditing library inside every process it starts (measured, glibc 2.43, with the control)
 LESSOPEN                 set       ← less runs this program over every file it opens; the value is a command line, not a path — the '|' form pipes the file through it (measured)
@@ -232,7 +232,7 @@ CARGO_HOME               inherit   ← taking the host's value points cargo back
 AZURE_CONFIG_DIR         set       ← az reads its login from this directory — msal_token_cache.json can hold a refresh token for the whole tenant — and its config file selects extensions az installs and runs (documented by azure-cli; not measured here)
 AZURE_CONFIG_DIR         inherit   ← taking the host's value points az at the host's login, refresh token included; snug generates no az directory (#660)
 KUBECONFIG               set       ← kubectl merges every file in this list; a user entry's `exec:` names a program kubectl runs for a credential, and a cluster's server and proxy-url decide where the credential is sent (documented by client-go; not measured here)
-KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kube generates one context for one cluster instead
+KUBECONFIG               inherit   ← taking the host's value points kubectl at every cluster and credential the host's kubeconfig files name; identity.kubectl generates one context for one cluster instead
 DOCKER_CONFIG            set       ← credsStore in this directory's config.json is a program docker executes, and it runs before docker reaches a daemon (measured, docker 29.4)
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 GH_CONFIG_DIR            set       ← gh reads its tokens from hosts.yml in this directory, and a `!` alias in its config.yml is a shell command gh runs (measured, gh 2.96.0)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,18 +15,23 @@ import (
 // kubePolicy resolves the builtin defaults plus @net and one kube identity
 // against the policy package's fixture kubeconfig, and stages what a dry run
 // stages.
-func kubePolicy(t *testing.T) *policy.Policy { return kubePolicyNet(t, true) }
+func kubePolicy(t *testing.T) *policy.Policy {
+	return kubePolicyAs(t, true, policy.KubeCredentialClientCert)
+}
 
 func kubePolicyNet(t *testing.T, withNet bool) *policy.Policy {
+	return kubePolicyAs(t, withNet, policy.KubeCredentialClientCert)
+}
+
+func kubePolicyAs(t *testing.T, withNet bool, cred policy.KubeCredential) *policy.Policy {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-	t.Setenv("PATH", t.TempDir()) // no host kubectl: the screen says so
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
 	}
 	reg["aks-dev"] = &policy.Profile{Name: "aks-dev", Identity: &policy.Identity{Kube: policy.IdentityKube{
-		Context: "aks-dev", Token: policy.KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}}
+		Context: "aks-dev", Credential: cred, Server: "https://aks-dev.example.azmk8s.io:443"}}}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "aks-dev")
 	if withNet {
 		sel = append(sel, "@net")
@@ -90,21 +96,73 @@ func TestGoldenKubeDryRunBlock(t *testing.T) {
 	var b bytes.Buffer
 	describeKube(&b, buildKubeReport(p))
 	got := runDirPID.ReplaceAllString(b.String(), "run-N")
-	for _, want := range []string{"a real run would REFUSE", "static token is not used",
-		"this pinned", "kind-kind", "~/.azure", "RoleBinding", "  --namespace=dev\n"} {
+	for _, want := range []string{"credential client-certificate\n", "CN=fixture-master,O=system:masters",
+		"2099-01-01", "never written, never inside", "the entry's static token (not presented)",
+		"kind-kind", "~/.azure", "YOUR RBAC allows", "Impersonation"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("KUBE block lacks %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"ServiceAccount", "host mint", "Authorization, Proxy", "Impersonate-*"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("KUBE block shows %q:\n%s", bad, got)
 		}
 	}
 	checkGolden(t, "kube.dryrun.txt", got, "this is what a human reads before trusting a cluster credential proxy")
 }
 
+func TestGoldenKubeTokenDryRunBlock(t *testing.T) {
+	p := kubePolicyAs(t, true, policy.KubeCredentialToken)
+	var b bytes.Buffer
+	describeKube(&b, buildKubeReport(p))
+	got := b.String()
+	for _, want := range []string{"credential token\n", "static token (17 chars, not a JWT",
+		"replacing any the client sends", "the entry's client certificate (not presented)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("KUBE block lacks %q:\n%s", want, got)
+		}
+	}
+	checkGolden(t, "kube-token.dryrun.txt", got, "this is what a human reads before snug presents a static token")
+}
+
+// No byte of the credential reaches the screen or the JSON document, in any
+// shape: only its shape, length, subject and expiry do.
+func TestKubeDryRunNeverPrintsACredentialByte(t *testing.T) {
+	fixture, err := os.ReadFile("../policy/testdata/kubeconfig.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secrets []string
+	for _, l := range strings.Split(string(fixture), "\n") {
+		l = strings.TrimSpace(l)
+		for _, k := range []string{"client-certificate-data: ", "client-key-data: ", "token: "} {
+			if v, ok := strings.CutPrefix(l, k); ok {
+				secrets = append(secrets, v, v[len(v)/2:min(len(v), len(v)/2+12)])
+			}
+		}
+	}
+	for _, cred := range []policy.KubeCredential{policy.KubeCredentialClientCert, policy.KubeCredentialToken} {
+		p := kubePolicyAs(t, true, cred)
+		var b bytes.Buffer
+		describeKube(&b, buildKubeReport(p))
+		js, err := json.Marshal(buildKubeReport(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range secrets {
+			if strings.Contains(b.String(), s) || strings.Contains(string(js), s) {
+				t.Errorf("credential %s: the dry run prints credential bytes %q", cred, s)
+			}
+		}
+	}
+}
+
 func TestProfileShowNamesTheKubeCapability(t *testing.T) {
 	var got []string
-	showIdentity(&policy.Identity{Kube: policy.IdentityKube{Context: "aks-dev", Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}},
-		func(_ string, rows []string) { got = rows })
+	showIdentity(&policy.Identity{Kube: policy.IdentityKube{Context: "aks-dev", Server: "https://aks-dev.example.azmk8s.io:443",
+		Credential: policy.KubeCredentialToken}}, func(_ string, rows []string) { got = rows })
 	all := strings.Join(got, "\n")
-	for _, want := range []string{"kube aks-dev as dev/snug-agent", "ACT AS THIS SERVICEACCOUNT", "RoleBinding"} {
+	for _, want := range []string{"kubectl aks-dev as YOU (token)", "ACT AS YOU", "cluster root"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("profile show lacks %q:\n%s", want, all)
 		}
@@ -155,7 +213,7 @@ func TestKubeOnlyProfileIsNotOffline(t *testing.T) {
 	}
 }
 
-// identity.kube with token = "host-exec" against the AKS kubelogin shape.
+// identity.kubectl with credential = "exec" against the AKS kubelogin shape.
 func kubeHostExecPolicy(t *testing.T) *policy.Policy {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
@@ -164,7 +222,7 @@ func kubeHostExecPolicy(t *testing.T) *policy.Policy {
 		t.Fatal(err)
 	}
 	reg["aks-entra"] = &policy.Profile{Name: "aks-entra", Identity: &policy.Identity{Kube: policy.IdentityKube{
-		Context: "aks-entra", Token: policy.KubeTokenHostExec, Server: "https://aks-entra.example.azmk8s.io:443"}}}
+		Context: "aks-entra", Credential: policy.KubeCredentialExec, Server: "https://aks-entra.example.azmk8s.io:443"}}}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "aks-entra")
 	fixture, err := os.ReadFile("../policy/testdata/kubeconfig-exec.yaml")
 	if err != nil {
@@ -183,12 +241,12 @@ func kubeHostExecPolicy(t *testing.T) *policy.Policy {
 	return p
 }
 
-func TestGoldenKubeHostExecDryRunBlock(t *testing.T) {
+func TestGoldenKubeExecDryRunBlock(t *testing.T) {
 	p := kubeHostExecPolicy(t)
 	var b bytes.Buffer
 	describeKube(&b, buildKubeReport(p))
 	got := b.String()
-	for _, want := range []string{"YOU — the user of context aks-entra, through its kubelogin plugin",
+	for _, want := range []string{"YOU — the user of context aks-entra", "the token the kubelogin plugin returns",
 		"--login azurecli", "valid as you at EVERY", "exec.env is never used",
 		"env PATH=/usr/local/bin:/usr/bin:/bin\n", "env PYTHONNOUSERSITE=1\n", "it runs az off that PATH",
 		"YOUR RBAC allows", "a real run would REFUSE", "not found on /usr/local/bin:/usr/bin:/bin"} {
@@ -198,8 +256,8 @@ func TestGoldenKubeHostExecDryRunBlock(t *testing.T) {
 	}
 	for _, bad := range []string{"host mint", "80faf920", "ServiceAccount"} {
 		if strings.Contains(got, bad) {
-			t.Errorf("KUBE block shows %q under host-exec:\n%s", bad, got)
+			t.Errorf("KUBE block shows %q under credential = exec:\n%s", bad, got)
 		}
 	}
-	checkGolden(t, "kube-host-exec.dryrun.txt", got, "this is what a human reads before snug runs a plugin as them")
+	checkGolden(t, "kube-exec.dryrun.txt", got, "this is what a human reads before snug runs a plugin as them")
 }
