@@ -9,9 +9,9 @@
 // the Authorization header of a request to the pinned server.
 //
 // The proxy decides WHERE a request goes and with WHICH credential, and
-// nothing else: every method, path, query and header the cluster accepts is
-// forwarded, including the client's own Authorization and Impersonate-*
-// headers. What that credential may do is the cluster's RBAC. A request that
+// nothing else: every Kubernetes API method, and every path, query and header
+// the cluster accepts, is forwarded, including the client's own Authorization
+// and Impersonate-* headers. What that credential may do is the cluster's RBAC. A request that
 // would change WHERE — a tunnel, an absolute target, a path that a gateway in
 // front of several clusters would resolve to a different one — is refused
 // with a 4xx, never quietly rewritten.
@@ -254,6 +254,17 @@ func (p *Proxy) rewrite(r *httputil.ProxyRequest) {
 func admit(r *http.Request) (int, string) {
 	if r.Method == http.MethodConnect {
 		return http.StatusMethodNotAllowed, "CONNECT is refused: this proxy reaches one API server"
+	}
+	// The methods the Kubernetes API speaks. Anything else — TRACE above
+	// all, which a front-end may answer by echoing the request, Authorization
+	// included — would carry the host credential for no API call (red team,
+	// measured: TRACE reached the upstream with the bearer).
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodOptions:
+	default:
+		return http.StatusMethodNotAllowed, fmt.Sprintf("method %s is refused: the proxy forwards the methods "+
+			"the Kubernetes API speaks", policy.VisibleText(r.Method))
 	}
 	if r.URL.Scheme != "" || r.URL.Host != "" || !strings.HasPrefix(r.RequestURI, "/") {
 		return http.StatusBadRequest, "only an origin-form request target (/path) is forwarded; the " +

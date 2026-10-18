@@ -469,6 +469,26 @@ func TestKubeIdentityRefusesAKubeconfigUnderTargetOrRW(t *testing.T) {
 	}
 }
 
+// Red-team G1: a grant that shows the host kubeconfig inside — @parent-ro with
+// it beside the target, an ro bind of ~/.kube — put every context's
+// credential there while the screen said "never inside".
+func TestKubeIdentityRefusesAReadableKubeconfig(t *testing.T) {
+	wantKubeRefusal(t, kubeCase{
+		profile: func(p *Profile) {
+			p.Include = append(p.Include, "@parent-ro")
+			p.Identity.Kube.Kubeconfig = "/home/u/proj/aks.kubeconfig"
+		},
+		env: func(e *fakeEnv) {
+			e.files["/home/u/proj/aks.kubeconfig"] = true
+			e.kube["/home/u/proj/aks.kubeconfig"] = []byte(kubeFixture(t))
+		},
+	}, "READABLE inside", "every other context's")
+	wantKubeRefusal(t, kubeCase{
+		profile: func(p *Profile) { p.RO = append(p.RO, "/home/u/.kube:/hostkube") },
+		env:     func(e *fakeEnv) { e.dirs["/home/u/.kube"] = true },
+	}, "READABLE inside")
+}
+
 // TestGoldenKubeGeneratedFiles is the review artifact for the bytes snug
 // writes for identity.kubectl: a diff here is a change to what enters the sandbox.
 func TestGoldenKubeGeneratedFiles(t *testing.T) {

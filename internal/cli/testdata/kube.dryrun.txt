@@ -8,7 +8,8 @@ KUBECTL  context    aks-dev -> https://aks-dev.example.azmk8s.io:443
                     2099-01-01, as the TLS client certificate; read from the host
                     kubeconfig at start (this dry run presented nothing), held in
                     snug's memory for the run, never written, never inside
-         refused    CONNECT, absolute URIs, dot and escaped path segments,
+         refused    CONNECT, TRACE and methods the Kubernetes API does not speak,
+                    absolute URIs, dot and escaped path segments,
                     loopback, host-owned and cloud-metadata addresses
          absent     aks-cert, aks-token, eks, kind-kind,
                     the entry's static token (not presented), ~/.kube/cache,

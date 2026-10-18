@@ -196,6 +196,22 @@ func TestKubeDryRunSaysWhenAGrantShowsAzure(t *testing.T) {
 	}
 }
 
+// Red-team G2: the row read guest paths only, so ~/.azure bound at another
+// guest path was readable while the screen said absent.
+func TestKubeDryRunSaysWhenAHostGrantShowsAzureElsewhere(t *testing.T) {
+	p := kubePolicy(t)
+	p.Mounts["/az"] = policy.Mount{Guest: "/az", Host: "/home/u/.azure", Kind: policy.KindBind, From: []string{"leaky"}}
+	var b bytes.Buffer
+	describeKube(&b, buildKubeReport(p))
+	got := b.String()
+	if !strings.Contains(got, "VISIBLE    ~/.azure (at /az, granted by leaky)") {
+		t.Errorf("~/.azure bound at /az is not called out:\n%s", got)
+	}
+	if strings.Contains(got, "~/.kube/cache, ~/.azure") {
+		t.Errorf("~/.azure is still listed absent:\n%s", got)
+	}
+}
+
 // A kube profile without @net resolves, gets a stage for the proxy's socket,
 // and the NETWORK block says the one thing that makes "isolated" untrue.
 func TestKubeOnlyProfileIsNotOffline(t *testing.T) {

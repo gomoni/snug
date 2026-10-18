@@ -210,6 +210,16 @@ func mountTableUnreadable(err error) error {
 // a grant the string comparison could not see. A mount table that cannot be
 // read is an error, not a pass.
 func (p *Policy) writableAliasOf(env Environ, path string) (Mount, aliasHit, bool, error) {
+	return p.aliasOf(env, path, true)
+}
+
+// visibleAliasOf is writableAliasOf for a bind at any access: a grant through
+// which the sandbox can READ path by a second mount.
+func (p *Policy) visibleAliasOf(env Environ, path string) (Mount, aliasHit, bool, error) {
+	return p.aliasOf(env, path, false)
+}
+
+func (p *Policy) aliasOf(env Environ, path string, needWrite bool) (Mount, aliasHit, bool, error) {
 	mt, err := newMountTable(env)
 	if err != nil {
 		return Mount{}, aliasHit{}, false, mountTableUnreadable(err)
@@ -224,7 +234,7 @@ func (p *Policy) writableAliasOf(env Environ, path string) (Mount, aliasHit, boo
 	sort.Strings(guests)
 	for _, g := range guests {
 		m := p.Mounts[g]
-		if m.Kind != KindBind || m.Access != AccessRW {
+		if m.Kind != KindBind || (needWrite && m.Access != AccessRW) {
 			continue
 		}
 		if h, ok := mt.aliasOverlap(env, m.Host, path); ok {

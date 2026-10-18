@@ -27,7 +27,8 @@ KUBECTL  context    aks-entra -> https://aks-entra.example.azmk8s.io:443
                       AKS cluster in your tenant where you hold RBAC, for its
                       lifetime (60-90 min per Entra documentation, not measured);
                       snug sends it to https://aks-entra.example.azmk8s.io:443 only
-         refused    CONNECT, absolute URIs, dot and escaped path segments,
+         refused    CONNECT, TRACE and methods the Kubernetes API does not speak,
+                    absolute URIs, dot and escaped path segments,
                     loopback, host-owned and cloud-metadata addresses
          absent     eks-demo, eks-iam, gke, ~/.kube/cache, ~/.azure, ~/.aws
          reach      whatever YOUR RBAC allows, on this one server, while this run

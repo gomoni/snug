@@ -295,6 +295,26 @@ func TestKubeProxyRefusesCONNECTAndAbsoluteURI(t *testing.T) {
 // A gateway in front of several clusters that normalises paths would resolve
 // these outside the pinned prefix, carrying the bearer (red team, measured:
 // forwarded unchanged before this refusal).
+// Red-team G3: TRACE and made-up methods reached the upstream carrying the
+// bearer; a front-end echoing TRACE would hand it back inside.
+func TestKubeProxyRefusesMethodsTheAPIDoesNotSpeak(t *testing.T) {
+	up := newUpstream(t, nil)
+	f := start(t, up, "", nil)
+	for _, m := range []string{"TRACE", "TRACK", "FOO", "PROPFIND"} {
+		if status, _ := raw(t, f.addr, m+" /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"); !strings.HasPrefix(status, "405") {
+			t.Errorf("%s: %s, want 405", m, status)
+		}
+	}
+	if n := up.count(); n != 0 {
+		t.Errorf("%d refused-method requests reached the server", n)
+	}
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+		if status, _ := raw(t, f.addr, m+" /api HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); !strings.HasPrefix(status, "200") {
+			t.Errorf("%s: %s, want it forwarded", m, status)
+		}
+	}
+}
+
 func TestKubeProxyRefusesDotSegments(t *testing.T) {
 	up := newUpstream(t, nil)
 	f := start(t, up, "/k8s/clusters/c1", nil)

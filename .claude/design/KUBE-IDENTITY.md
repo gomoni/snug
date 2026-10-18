@@ -63,9 +63,12 @@ kubectl ──http──> 127.0.0.1:6443 ══ socket created in N by the stage
   workload creation whatever the cluster reaches. The NETWORK block says so
   on every kube run (`TestKubeOnlyProfileIsNotOffline`).
 - **The proxy** (`internal/kubeproxy`) is goroutines in P0. It decides only
-  WHERE a request goes and WITH WHICH credential; every method, path, query
+  WHERE a request goes and WITH WHICH credential; every Kubernetes API
+  method (GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS) and every path, query
   and header is forwarded, `Impersonate-*` and the client's own
-  `Authorization` included, and the cluster decides the rest. Under a bearer
+  `Authorization` included, and the cluster decides the rest. Any other
+  method refuses: TRACE would carry the credential to a front-end that may
+  echo it back. Under a bearer
   shape it SETS `Authorization`, so the client's is replaced; under the
   certificate shape it presents the certificate in the handshake and adds no
   header. It refuses what would change WHERE: `CONNECT`, absolute-form
@@ -134,8 +137,11 @@ Refused at Resolve, each naming the fix:
   decides where the host credential goes; the kubeconfig only has to agree;
 - the kubeconfig under the target, reachable by a writable grant (bytes,
   second mount, a name on its chain), or with a second hard link — whoever
-  writes it chooses where the host credential is sent. `@home`'s tmpfs does
-  not count; it writes nothing through;
+  writes it chooses where the host credential is sent;
+- the kubeconfig READABLE inside through any grant (by path or a second
+  mount): `@parent-ro` with it beside the target, an ro bind of `~/.kube`. It
+  holds the credential the proxy keeps out, and every other context's.
+  `@home`'s tmpfs at `{home}` is not a bind and counts for neither;
 - a missing context, a duplicate context/cluster/user name;
 - a cluster field outside the three above (`insecure-skip-tls-verify: true`,
   `proxy-url`, `certificate-authority` path, non-empty `extensions`, unknown);

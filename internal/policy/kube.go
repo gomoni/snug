@@ -124,6 +124,22 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 	if name, asked, found := p.writableNameOnChain(env, path); found {
 		return refuse(writable, VisibleText(path), selectionClause(name, asked), "")
 	}
+	// READABLE is refused too: the file holds the credential the proxy keeps
+	// out — and every other context's — so a grant that shows it inside
+	// (@parent-ro with the kubeconfig beside the target, an ro bind of
+	// ~/.kube) puts it there while the screen says "never inside" (red team,
+	// measured). @home's tmpfs at {home} is not a bind and does not count.
+	const readable = "refusing identity.kubectl.kubeconfig %s: %s It holds the credential snug's proxy keeps " +
+		"out of the sandbox, and every other context's. Drop the grant, or name a kubeconfig no grant shows.%s"
+	if p.HostPathVisible(path, false) {
+		return refuse(readable, VisibleText(path), "a grant of this sandbox makes it READABLE inside.", "")
+	}
+	if m, h, hit, err := p.visibleAliasOf(env, path); err != nil {
+		return err
+	} else if hit {
+		return refuse(readable, VisibleText(path), "the grant "+VisibleText(m.Host)+
+			" shows it inside through a second mount of the same filesystem.", aliasNote(h))
+	}
 
 	f, err := env.KubeConfig(path)
 	if errors.Is(err, fs.ErrNotExist) {

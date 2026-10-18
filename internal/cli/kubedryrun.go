@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/gomoni/snug/internal/policy"
@@ -39,7 +40,7 @@ type reportKube struct {
 // is the list internal/kubeproxy's admit and dialer enforce, named, not
 // re-derived: everything that would change WHERE the credential goes.
 var kubeProxyRefuses = []string{
-	"CONNECT", "absolute URIs", "dot and escaped path segments",
+	"CONNECT, TRACE and methods the Kubernetes API does not speak", "absolute URIs", "dot and escaped path segments",
 	"loopback, host-owned and cloud-metadata addresses",
 }
 
@@ -81,9 +82,14 @@ func buildKubeReport(p *policy.Policy) *reportKube {
 	// Read off the policy, not asserted: a profile grant onto either path
 	// makes it visible whatever identity.kubectl does (red team: a host:guest
 	// bind onto ~/.azure was readable while this row said absent).
+	//
+	// By guest path AND by host path: a host:guest bind of ~/.azure onto
+	// another guest path shows the same token cache (red team, measured).
 	for _, rel := range []string{".kube/cache", ".azure", ".aws"} {
 		if from, ok := guestVisible(p, p.Home+"/"+rel); ok {
 			visible = append(visible, "~/"+rel+" (granted by "+from+")")
+		} else if at, from, ok := hostVisible(p, p.Home+"/"+rel); ok {
+			visible = append(visible, "~/"+rel+" (at "+at+", granted by "+from+")")
 		} else {
 			absent = append(absent, "~/"+rel)
 		}
@@ -190,6 +196,30 @@ func describeKube(out io.Writer, k *reportKube) {
 	fmt.Fprintf(out, "                    of yours is inside to carry away. pods/exec, pods/portforward and\n")
 	fmt.Fprintf(out, "                    services/proxy reach the cluster's network through the API\n")
 	fmt.Fprintf(out, "                    server, with or without @net\n")
+}
+
+// hostVisible reports whether host, or a path under it, is bound inside by a
+// grant, and at which guest path: the guest of the first bind, in sorted
+// order, whose host side is at, under or above host.
+func hostVisible(p *policy.Policy, host string) (string, string, bool) {
+	guests := make([]string, 0, len(p.Mounts))
+	for g := range p.Mounts {
+		guests = append(guests, g)
+	}
+	slices.Sort(guests)
+	for _, g := range guests {
+		m := p.Mounts[g]
+		if m.Kind != policy.KindBind {
+			continue
+		}
+		switch {
+		case m.Host == host || strings.HasPrefix(m.Host, host+"/"):
+			return g, strings.Join(m.From, "+"), true
+		case strings.HasPrefix(host, m.Host+"/"):
+			return g + strings.TrimPrefix(host, m.Host), strings.Join(m.From, "+"), true
+		}
+	}
+	return "", "", false
 }
 
 // guestVisible reports whether guest is reachable inside through a grant: the
