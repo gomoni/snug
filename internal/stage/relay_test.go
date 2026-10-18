@@ -113,11 +113,11 @@ func TestNetreadyHandsBackSocketsInN(t *testing.T) {
 	}
 }
 
-// TestNetreadyRefusesMoreThanThreeRelaySockets holds the bound on both sides.
+// TestNetreadyRefusesMoreRelaySocketsThanTheBound holds the bound on both sides.
 // P1 refuses a raw request over it with an Err and no descriptor — that side
 // is the trust boundary, so it is driven directly rather than through
 // WaitNetReady — and WaitNetReady refuses before writing anything at all.
-func TestNetreadyRefusesMoreThanThreeRelaySockets(t *testing.T) {
+func TestNetreadyRefusesMoreRelaySocketsThanTheBound(t *testing.T) {
 	t.Run("P1", func(t *testing.T) {
 		st := startRelayStage(t)
 		if err := sendRequest(st.control, request{Op: "netready", NetIface: "lo",
@@ -132,7 +132,7 @@ func TestNetreadyRefusesMoreThanThreeRelaySockets(t *testing.T) {
 		if len(fds) != 0 {
 			t.Errorf("the refusal carried %d descriptor(s)", len(fds))
 		}
-		want := fmt.Sprintf("asking for %d login relay sockets", maxRelaySockets+1)
+		want := fmt.Sprintf("asking for %d relay sockets", maxRelaySockets+1)
 		if ev.Op != "netready" || !strings.Contains(ev.Err, want) {
 			t.Errorf("got event %+v, want a \"netready\" whose Err contains %q", ev, want)
 		}

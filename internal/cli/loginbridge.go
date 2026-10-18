@@ -15,7 +15,6 @@ import (
 	"github.com/gomoni/snug/internal/loginbridge"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
-	"github.com/gomoni/snug/internal/stage"
 )
 
 const (
@@ -28,9 +27,9 @@ const (
 	// loginRefusalsPrinted bounds the stderr noise a sandbox can cause by
 	// writing garbage to the FIFO.
 	loginRefusalsPrinted = 5
-	// loginRelaySockets is how many relay sockets the run asks the stage for:
-	// the stage's own maximum.
-	loginRelaySockets = stage.MaxRelaySockets
+	// loginRelaySockets is how many relay sockets the bridge asks the stage
+	// for: one per callback it relays in a run.
+	loginRelaySockets = 3
 )
 
 // browserPreflight refuses a run whose profile turns the login bridge on in a
@@ -66,8 +65,7 @@ func (b *loginBridge) apply(o *sandbox.Options) {
 	if b == nil {
 		return
 	}
-	o.RelaySockets = loginRelaySockets
-	o.OnRelaySockets = b.setRelay
+	addRelaySockets(o, loginRelaySockets, b.setRelay)
 }
 
 // flowHandler receives a login flow the predicate accepted. A non-nil error
@@ -178,10 +176,11 @@ func (b *loginBridge) Dial(port int) (net.Conn, error) {
 }
 
 // setRelay is Options.OnRelaySockets.
-func (b *loginBridge) setRelay(fs []*os.File) {
+func (b *loginBridge) setRelay(fs []*os.File) error {
 	b.mu.Lock()
 	b.relay = fs
 	b.mu.Unlock()
+	return nil
 }
 
 // close stops the reader, ends any live flow (its listeners and

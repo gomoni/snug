@@ -1,9 +1,11 @@
 KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443
-                    server pinned by the profile; generated ~/.kube/config, read-only
+                    server pinned by the profile; generated ~/.kube/config, read-only,
+                    with NO credential: kubectl talks to http://127.0.0.1:6443, snug's proxy
+                    on the host adds the bearer and forwards to that server only
          as         ServiceAccount dev/snug-agent (namespace dev)
          token      minted on the host at start (this dry run minted nothing), again on
                     expiry while this run lives, at most 64 times; requested 1h0m0s, the
-                    cluster may cap or extend it
+                    cluster may cap or extend it. It never enters the sandbox
          host mint  NONE — a real run would REFUSE to start: kubectl not found on PATH; identity.kube mints its token with the host's kubectl
                     kubectl
                       --kubeconfig=/run/user/1000/snug/run-N/kube-mint.json
@@ -18,14 +20,16 @@ KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443
                     sandbox, and if the host user is cluster-admin this pinned
                     argv is the whole bound on what the host mint does
                     the host user's static token is not used and not sent
-         inside     /snug/bin/snug-kube-token (exec plugin; snug's own binary)
-                    socket /snug/kube-token.sock (0600, run-scoped)
+         refused    Authorization, Proxy-Authorization, Impersonate-*,
+                    X-Remote-*, a websocket bearer, trailers, CONNECT,
+                    absolute URIs, dot segments
          absent     eks, kind-kind,
                     the host user entry (client certificate, client key, static token),
                     ~/.kube/cache, ~/.azure
-         reach      whatever dev/snug-agent's RoleBinding allows; snug cannot see RBAC and
-                    claims nothing. After the run, up to one token lifetime — and only
-                    if the Role grants no token/secret create or read, no workload
-                    create or patch, no nodes/proxy. pods/exec, pods/portforward and
-                    services/proxy reach the cluster's private network through the
-                    API server
+         reach      whatever dev/snug-agent's RoleBinding allows, on this one server,
+                    while this run lives; snug cannot see RBAC and claims nothing. No
+                    token of snug's is inside to carry away — but a Role that reads
+                    Secrets, creates tokens or creates pods hands out credentials
+                    that outlive the run. pods/exec, pods/portforward and
+                    services/proxy reach the cluster's network through the API
+                    server, with or without @net

@@ -62,7 +62,7 @@ func relayWorker(netnsFD, n int, ch chan<- relayResult) {
 	}
 	if err := unix.Setns(netnsFD, unix.CLONE_NEWNET); err != nil {
 		ch <- relayResult{err: fmt.Errorf("joining the sandbox's network namespace to create "+
-			"the login relay sockets: setns: %w", err)}
+			"the relay sockets: setns: %w", err)}
 		return
 	}
 	fds := make([]int, 0, n)
@@ -70,7 +70,7 @@ func relayWorker(netnsFD, n int, ch chan<- relayResult) {
 		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
 			closeFDs(fds)
-			ch <- relayResult{err: fmt.Errorf("creating a login relay socket in the sandbox's "+
+			ch <- relayResult{err: fmt.Errorf("creating a relay socket in the sandbox's "+
 				"network namespace: %w", err)}
 			return
 		}
@@ -99,7 +99,7 @@ func waitNoThreadInNamespace(pinned string, timeout time.Duration) error {
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%d thread(s) of the stage are still in the sandbox's network "+
-				"namespace %s (tids %v) after creating the login relay sockets", len(stuck), pinned, stuck)
+				"namespace %s (tids %v) after creating the relay sockets", len(stuck), pinned, stuck)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -124,30 +124,30 @@ func closeFDs(fds []int) {
 // being the measurement.
 func verifyRelaySockets(fds []int, claimed, want int, netns string) error {
 	if claimed != want || len(fds) != want {
-		return fmt.Errorf("asked for %d login relay socket(s); the \"netready\" event claimed %d "+
+		return fmt.Errorf("asked for %d relay socket(s); the \"netready\" event claimed %d "+
 			"and carried %d", want, claimed, len(fds))
 	}
 	for i, fd := range fds {
 		dom, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
 		if err != nil {
-			return fmt.Errorf("login relay socket %d: SO_DOMAIN: %w", i, err)
+			return fmt.Errorf("relay socket %d: SO_DOMAIN: %w", i, err)
 		}
 		if dom != unix.AF_INET {
-			return fmt.Errorf("login relay socket %d has domain %d, want AF_INET (%d)", i, dom, unix.AF_INET)
+			return fmt.Errorf("relay socket %d has domain %d, want AF_INET (%d)", i, dom, unix.AF_INET)
 		}
 		typ, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TYPE)
 		if err != nil {
-			return fmt.Errorf("login relay socket %d: SO_TYPE: %w", i, err)
+			return fmt.Errorf("relay socket %d: SO_TYPE: %w", i, err)
 		}
 		if typ != unix.SOCK_STREAM {
-			return fmt.Errorf("login relay socket %d has type %d, want SOCK_STREAM (%d)", i, typ, unix.SOCK_STREAM)
+			return fmt.Errorf("relay socket %d has type %d, want SOCK_STREAM (%d)", i, typ, unix.SOCK_STREAM)
 		}
 		got, err := socketNetns(fd)
 		if err != nil {
-			return fmt.Errorf("login relay socket %d: %w", i, err)
+			return fmt.Errorf("relay socket %d: %w", i, err)
 		}
 		if got != netns {
-			return fmt.Errorf("login relay socket %d is in network namespace %s, not the sandbox's %s",
+			return fmt.Errorf("relay socket %d is in network namespace %s, not the sandbox's %s",
 				i, got, netns)
 		}
 	}

@@ -9,9 +9,9 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// reportKube is identity.kube as a fact about this run: what the sandbox's
-// generated kubeconfig names, the exact host command that mints, and what
-// stays out. Every value is the one the run uses, from the same functions.
+// reportKube is identity.kube as a fact about this run: where the sandbox's
+// generated kubeconfig points, the exact host command that mints, what the
+// proxy refuses, and what stays out. Every value is the one the run uses, from the same functions.
 type reportKube struct {
 	Context        string
 	Server         string
@@ -29,8 +29,15 @@ type reportKube struct {
 	StaticTokenUnused bool
 	Absent            []string // what the host file holds and the sandbox does not get
 	Visible           []string // credential-bearing paths a grant makes visible anyway
-	Shim              string
-	Socket            string
+	Proxy             string   // the guest URL kubectl talks to
+	Refused           []string // what the proxy refuses from inside
+}
+
+// kubeProxyRefuses is what the proxy refuses from inside, for the screen. It
+// is the list internal/kubeproxy's admit enforces, named, not re-derived.
+var kubeProxyRefuses = []string{
+	"Authorization", "Proxy-Authorization", "Impersonate-*", "X-Remote-*",
+	"a websocket bearer", "trailers", "CONNECT", "absolute URIs", "dot segments",
 }
 
 func buildKubeReport(p *policy.Policy) *reportKube {
@@ -67,7 +74,7 @@ func buildKubeReport(p *policy.Policy) *reportKube {
 		MintBudget: policy.KubeMintBudget, Requested: policy.KubeTokenDuration,
 		Credential: cred, Absent: absent, Visible: visible,
 		StaticTokenUnused: len(k.HostUser.ClientCertData) > 0 && slices.Contains(k.HostUserShape, "static token"),
-		Shim:              policy.KubeTokenShimGuest, Socket: policy.KubeTokenSocketGuest,
+		Proxy:             policy.KubeProxyGuest, Refused: kubeProxyRefuses,
 	}
 }
 
@@ -77,11 +84,13 @@ func describeKube(out io.Writer, k *reportKube) {
 		return
 	}
 	fmt.Fprintf(out, "KUBE     context    %s -> %s\n", visibleValue(k.Context), visibleValue(k.Server))
-	fmt.Fprintf(out, "                    server pinned by the profile; generated ~/.kube/config, read-only\n")
+	fmt.Fprintf(out, "                    server pinned by the profile; generated ~/.kube/config, read-only,\n")
+	fmt.Fprintf(out, "                    with NO credential: kubectl talks to %s, snug's proxy\n", k.Proxy)
+	fmt.Fprintf(out, "                    on the host adds the bearer and forwards to that server only\n")
 	fmt.Fprintf(out, "         as         ServiceAccount %s (namespace %s)\n", visibleValue(k.ServiceAccount), visibleValue(k.Namespace))
 	fmt.Fprintf(out, "         token      minted on the host at start (this dry run minted nothing), again on\n")
 	fmt.Fprintf(out, "                    expiry while this run lives, at most %d times; requested %s, the\n", k.MintBudget, k.Requested)
-	fmt.Fprintf(out, "                    cluster may cap or extend it\n")
+	fmt.Fprintf(out, "                    cluster may cap or extend it. It never enters the sandbox\n")
 	if k.KubectlProblem != "" {
 		fmt.Fprintf(out, "         host mint  NONE — a real run would REFUSE to start: %s\n", visibleValue(k.KubectlProblem))
 	}
@@ -118,8 +127,13 @@ func describeKube(out io.Writer, k *reportKube) {
 	if k.StaticTokenUnused {
 		fmt.Fprintf(out, "                    the host user's static token is not used and not sent\n")
 	}
-	fmt.Fprintf(out, "         inside     %s (exec plugin; snug's own binary)\n", k.Shim)
-	fmt.Fprintf(out, "                    socket %s (0600, run-scoped)\n", k.Socket)
+	for i, line := range wrapList(k.Refused, 60) {
+		label := "refused   "
+		if i > 0 {
+			label = "          "
+		}
+		fmt.Fprintf(out, "         %s %s\n", label, line)
+	}
 	for i, line := range wrapList(k.Absent, 60) {
 		label := "absent    "
 		if i > 0 {
@@ -130,12 +144,13 @@ func describeKube(out io.Writer, k *reportKube) {
 	for _, v := range k.Visible {
 		fmt.Fprintf(out, "         VISIBLE    %s — identity.kube does not keep it out\n", visibleValue(v))
 	}
-	fmt.Fprintf(out, "         reach      whatever %s's RoleBinding allows; snug cannot see RBAC and\n", visibleValue(k.ServiceAccount))
-	fmt.Fprintf(out, "                    claims nothing. After the run, up to one token lifetime — and only\n")
-	fmt.Fprintf(out, "                    if the Role grants no token/secret create or read, no workload\n")
-	fmt.Fprintf(out, "                    create or patch, no nodes/proxy. pods/exec, pods/portforward and\n")
-	fmt.Fprintf(out, "                    services/proxy reach the cluster's private network through the\n")
-	fmt.Fprintf(out, "                    API server\n")
+	fmt.Fprintf(out, "         reach      whatever %s's RoleBinding allows, on this one server,\n", visibleValue(k.ServiceAccount))
+	fmt.Fprintf(out, "                    while this run lives; snug cannot see RBAC and claims nothing. No\n")
+	fmt.Fprintf(out, "                    token of snug's is inside to carry away — but a Role that reads\n")
+	fmt.Fprintf(out, "                    Secrets, creates tokens or creates pods hands out credentials\n")
+	fmt.Fprintf(out, "                    that outlive the run. pods/exec, pods/portforward and\n")
+	fmt.Fprintf(out, "                    services/proxy reach the cluster's network through the API\n")
+	fmt.Fprintf(out, "                    server, with or without @net\n")
 }
 
 // guestVisible reports whether guest is reachable inside through a grant: the

@@ -3,38 +3,31 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/gomoni/snug/internal/kubebroker"
+	"github.com/gomoni/snug/internal/kubeproxy"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
 )
-
-// snugExecutable is the running snug binary, canonical, for the
-// exec-credential shim identity.kube binds into the sandbox. "" when it cannot
-// be named, which Resolve refuses for a kube identity and ignores otherwise.
-func snugExecutable() string {
-	p, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	real, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		return ""
-	}
-	return real
-}
 
 // hostAddressesForResolve feeds identity.kube's host-owned-server refusal. It
 // is a usability check, not the seal, so an interface enumeration that fails
@@ -192,23 +185,31 @@ func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
 	return kubebroker.Token{Value: policy.Secret(tr.Status.Token), Expiry: exp}, "", nil
 }
 
-// startKubeIdentity is everything identity.kube needs at run time: the host
-// kubectl judged, the preflight mint, and the broker on its socket. A dry run
-// judges and names, and starts nothing.
-func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun bool) (cleanup func(), err error) {
-	noop := func() {}
+// kubeRun is identity.kube's run-time half: the token source and, once the
+// stage has handed over the relay socket, the proxy listening on it inside
+// the sandbox's network namespace.
+type kubeRun struct {
+	pol    *policy.Policy
+	src    *kubebroker.Source
+	audit  func(string)
+	mu     sync.Mutex
+	proxy  *kubeproxy.Proxy
+	closed bool
+}
+
+// startKubeIdentity is everything identity.kube needs before the sandbox
+// starts: the host kubectl judged, the preflight mint, and the token source.
+// A dry run judges and names, and starts nothing. The proxy itself starts in
+// apply's relay callback, because its socket does not exist until the stage
+// makes it.
+func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun bool) (*kubeRun, error) {
 	k := pol.Kube
 	if k == nil {
-		return noop, nil
+		return nil, nil
 	}
 	kubectl, kerr := judgeKubeMintBinary(pol, env)
 	if dryRun {
-		sock, err := plannedSocket("kube-token.sock")
-		if err != nil {
-			return nil, err
-		}
-		pol.BindSocket(sock, policy.KubeTokenSocketGuest, identityProvenance(pol, "kube"))
-		return noop, nil
+		return nil, nil
 	}
 	if kerr != nil {
 		return nil, kerr
@@ -222,10 +223,6 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 		return nil, err
 	}
 	cache, err := rt.Mkdir("kube-cache")
-	if err != nil {
-		return nil, err
-	}
-	sock, err := rt.Socket("kube-token.sock")
 	if err != nil {
 		return nil, err
 	}
@@ -255,23 +252,109 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 
 	first, err := mint(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("%w. kubectl has no credential inside; not starting", err)
+		return nil, fmt.Errorf("%w. kubectl inside would have no cluster to reach; not starting", err)
 	}
-	// The cluster decides the lifetime; a longer one than asked for is a
-	// longer life for a token taken from this run, so it is said every time.
+	// The cluster decides the lifetime. The token never enters the sandbox,
+	// so a long one is no longer a long life for a stolen copy — but it is
+	// how long the cluster would honour this one if it leaked from the host.
 	if first.Expiry.After(time.Now().Add(time.Hour + 10*time.Minute)) {
-		fmt.Fprintf(os.Stderr, "snug: the cluster issued a token valid until %s (requested 1h); a token "+
-			"taken from this run stays usable that long after it ends.\n", first.Expiry.UTC().Format(time.RFC3339))
+		fmt.Fprintf(os.Stderr, "snug: the cluster issued a token valid until %s (requested 1h).\n",
+			first.Expiry.UTC().Format(time.RFC3339))
 	}
 	audit := func(string) {}
 	if verbose {
-		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: kube: "+msg) }
+		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: kube: "+policy.VisibleText(msg)) }
 	}
-	b, err := kubebroker.New(kubebroker.Config{Socket: sock, Mint: mint, MintTimeout: kubeMintTimeout, Audit: audit}, first)
+	audit(fmt.Sprintf("kube token minted at start, valid until %s", first.Expiry.UTC().Format(time.RFC3339)))
+	src, err := kubebroker.New(kubebroker.Config{Mint: mint, MintTimeout: kubeMintTimeout, Audit: audit}, first)
 	if err != nil {
 		return nil, err
 	}
-	go b.Serve()
-	pol.BindSocket(sock, policy.KubeTokenSocketGuest, identityProvenance(pol, "kube"))
-	return b.Close, nil
+	return &kubeRun{pol: pol, src: src, audit: audit}, nil
+}
+
+// apply asks the stage for the proxy's one relay socket. A nil run — no kube
+// identity, or a dry run — asks for none.
+func (r *kubeRun) apply(o *sandbox.Options) {
+	if r == nil {
+		return
+	}
+	addRelaySockets(o, 1, r.listen)
+}
+
+// listen binds the relay socket to policy.KubeProxyGuest inside the sandbox's
+// network namespace and starts the proxy on it. It runs before bwrap is
+// forked, so nothing inside can hold the port first; and the socket is bound
+// without SO_REUSEADDR or SO_REUSEPORT, so nothing inside can bind it beside
+// the proxy afterwards either (measured: a payload bind on 127.0.0.1:6443 and
+// on 0.0.0.0:6443 gets EADDRINUSE).
+func (r *kubeRun) listen(fs []*os.File) error {
+	f := fs[0]
+	defer f.Close()
+	fd := int(f.Fd())
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: policy.KubeProxyGuestPort, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		return fmt.Errorf("identity.kube: binding the proxy to 127.0.0.1:%d inside the sandbox: %w",
+			policy.KubeProxyGuestPort, err)
+	}
+	if err := unix.Listen(fd, 64); err != nil {
+		return fmt.Errorf("identity.kube: listening on 127.0.0.1:%d inside the sandbox: %w",
+			policy.KubeProxyGuestPort, err)
+	}
+	ln, err := net.FileListener(f)
+	if err != nil {
+		return fmt.Errorf("identity.kube: the proxy's listener: %w", err)
+	}
+	k := r.pol.Kube
+	server, err := url.Parse(k.Server)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("identity.kube: server %s: %w", policy.VisibleText(k.Server), err)
+	}
+	var pool *x509.CertPool
+	if len(k.CAData) > 0 {
+		pool = x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(k.CAData) {
+			ln.Close()
+			return errors.New("identity.kube: the cluster's certificate-authority-data holds no certificate")
+		}
+	}
+	var hosts []netip.Addr
+	for _, h := range hostAddressesForResolve() {
+		if a, err := netip.ParseAddr(h); err == nil {
+			hosts = append(hosts, a)
+		}
+	}
+	p, err := kubeproxy.New(kubeproxy.Config{
+		Listener: ln, Server: server, CAs: pool, TLSName: k.TLSServerName,
+		Token: r.src.Token, HostAddrs: hosts, Audit: r.audit,
+	})
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		ln.Close()
+		return errors.New("identity.kube: the run ended before the proxy started")
+	}
+	r.proxy = p
+	go p.Serve()
+	return nil
+}
+
+// close stops the proxy — every connection on both sides — and cancels a mint
+// in flight. Safe on a nil run.
+func (r *kubeRun) close() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.closed = true
+	p := r.proxy
+	r.mu.Unlock()
+	if p != nil {
+		p.Close()
+	}
+	r.src.Close()
 }

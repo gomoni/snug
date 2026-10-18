@@ -178,7 +178,7 @@ func handBuiltTmpfsPolicy(size uint64) *Policy {
 		},
 		TmpfsSizeBytes: size,
 	}
-	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
+	p.Topology = deriveTopology(p.Net.Mode, p.Podman, p.Kube != nil)
 	return p
 }
 

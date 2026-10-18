@@ -59,9 +59,16 @@ const SnugDir = "/snug"
 // one by name.
 const StagedBinDir = SnugDir + "/bin"
 
-// KubeTokenShimGuest is the exec-credential plugin the generated kubeconfig
-// names: snug's own executable, bound read-only, dispatched on argv[0].
-const KubeTokenShimGuest = StagedBinDir + "/snug-kube-token"
+// KubeProxyGuestPort and KubeProxyGuest are where identity.kube's proxy
+// listens inside the sandbox: its OWN loopback, on a socket the stage creates
+// in the sandbox's network namespace and snug binds before bwrap is forked. A
+// constant, because the generated kubeconfig is written at Resolve, before any
+// socket exists; 6443 is the API server's conventional port, and nothing
+// inside exists yet to hold it first.
+const (
+	KubeProxyGuestPort = 6443
+	KubeProxyGuest     = "http://127.0.0.1:6443"
+)
 
 // ContainerSocketGuest and AgentSocketGuest are the two sockets snug publishes
 // inside the sandbox. They are here rather than beside their callers so that
@@ -70,10 +77,6 @@ const KubeTokenShimGuest = StagedBinDir + "/snug-kube-token"
 const (
 	ContainerSocketGuest = SnugDir + "/podman.sock"
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
-	// KubeTokenSocketGuest is the exec-credential broker's socket; the shim
-	// at KubeTokenShimGuest is its only intended client.
-	KubeTokenSocketGuest = SnugDir + "/kube-token.sock"
-
 	// BrowserFIFOGuest is where snug binds the FIFO the login-bridge shim
 	// writes to — a profile's login = ["claude"] only, never present
 	// otherwise. sh can `>` a FIFO but cannot speak AF_UNIX, which is why this

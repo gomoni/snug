@@ -75,7 +75,7 @@ func TestOSEnvironKubeConfigRefusesALinkAndAnOversizedFile(t *testing.T) {
 	}
 }
 
-// withEgress adds a profile granting the network, which identity.kube needs.
+// withEgress adds a profile granting the network, as most kube selections do.
 func withEgress(reg map[ProfileName]*Profile, sel []ProfileName) (map[ProfileName]*Profile, []ProfileName) {
 	reg["egress"] = &Profile{Name: "egress", Network: "egress"}
 	return reg, append(sel, "egress")
@@ -141,7 +141,7 @@ func wantKubeRefusal(t *testing.T, c kubeCase, want ...string) {
 	}
 }
 
-func TestKubeIdentityGeneratesOneClusterOneContextAndTheShim(t *testing.T) {
+func TestKubeIdentityGeneratesOneClusterOneContextPointingAtTheProxy(t *testing.T) {
 	p, err := kubeResolve(t, kubeCase{})
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestKubeIdentityGeneratesOneClusterOneContextAndTheShim(t *testing.T) {
 		}
 		Users []struct {
 			Name string
-			User struct{ Exec map[string]any }
+			User map[string]any
 		}
 		Contexts []struct {
 			Name    string
@@ -171,18 +171,16 @@ func TestKubeIdentityGeneratesOneClusterOneContextAndTheShim(t *testing.T) {
 	if len(got.Clusters) != 1 || len(got.Users) != 1 || len(got.Contexts) != 1 {
 		t.Fatalf("want one of each, got %+v", got)
 	}
-	if got.Clusters[0].Cluster["server"] != "https://aks-dev.example.azmk8s.io:443" {
-		t.Errorf("server = %v", got.Clusters[0].Cluster["server"])
-	}
-	if got.Users[0].User.Exec["command"] != KubeTokenShimGuest {
-		t.Errorf("exec command = %v, want %s", got.Users[0].User.Exec["command"], KubeTokenShimGuest)
+	if got.Clusters[0].Cluster["server"] != KubeProxyGuest {
+		t.Errorf("server = %v, want snug's proxy %s", got.Clusters[0].Cluster["server"], KubeProxyGuest)
 	}
 	if got.Contexts[0].Context["namespace"] != "dev" || got.CurrentContext != "aks-dev" {
 		t.Errorf("context = %+v, current = %q", got.Contexts[0], got.CurrentContext)
 	}
-	shim, ok := p.Mounts[KubeTokenShimGuest]
-	if !ok || shim.Kind != KindBind || shim.Access != AccessRO || shim.Host != "/usr/bin/snug" {
-		t.Errorf("shim mount = %+v, want a read-only bind of snug's executable", shim)
+	for g := range p.Mounts {
+		if strings.HasPrefix(g, StagedBinDir+"/") && strings.Contains(g, "kube") {
+			t.Errorf("%s is mounted: no kube helper runs inside", g)
+		}
 	}
 	if e := p.Env["KUBECONFIG"]; len(e.Entries) != 1 || e.Entries[0].Value != "/home/u/.kube/config" {
 		t.Errorf("KUBECONFIG = %+v", e)
@@ -236,7 +234,7 @@ func TestKubeIdentityAbsentAddsNothing(t *testing.T) {
 	if p.Kube != nil {
 		t.Errorf("Kube = %+v with no kube block", p.Kube)
 	}
-	for _, g := range []string{"/home/u/.kube/config", KubeTokenShimGuest} {
+	for _, g := range []string{"/home/u/.kube/config"} {
 		if _, ok := p.Mounts[g]; ok {
 			t.Errorf("%s mounted with no kube block", g)
 		}
@@ -292,8 +290,41 @@ func TestKubeIdentityRefusesAnUnknownClusterField(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{file: clusterField(t, "disable-compression: true")}, "refused rather than dropped")
 }
 
-func TestKubeIdentityRequiresEgress(t *testing.T) {
-	wantKubeRefusal(t, kubeCase{noNet: true}, "needs egress", "@net")
+// The proxy dials the cluster from the host, so a kube profile needs no
+// network grant — but its listener is a socket the stage creates in the
+// sandbox's netns, so the run gets a stage. NOT an offline sandbox: the
+// sandbox reaches one API server, and through it whatever the cluster reaches.
+func TestKubeSelectsAStageWithoutNet(t *testing.T) {
+	p, err := kubeResolve(t, kubeCase{noNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Net.Mode == NetEgress {
+		t.Fatalf("net mode = %s with no network grant", p.Net.Mode)
+	}
+	if p.Topology.Netns != NetnsStage {
+		t.Errorf("topology netns = %s, want stage: the proxy's socket is made by the stage", p.Topology.Netns)
+	}
+}
+
+// The generated kubeconfig holds nothing secret and nothing from the host
+// user: no token, no exec plugin, no client certificate — and no CA, because
+// the TLS hop is the proxy's, on the host.
+func TestKubeSandboxKubeconfigCarriesNoCredentialAndNoCA(t *testing.T) {
+	p, err := kubeResolve(t, kubeCase{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := string(p.Mounts["/home/u/.kube/config"].Content)
+	for _, bad := range []string{"exec", "token", "client-certificate", "client-key", "certificate-authority",
+		"tls-server-name", "https://", "auth-provider", "username", "password"} {
+		if strings.Contains(c, bad) {
+			t.Errorf("generated kubeconfig carries %q:\n%s", bad, c)
+		}
+	}
+	if !strings.Contains(c, `"user": {}`) {
+		t.Errorf("user entry is not empty:\n%s", c)
+	}
 }
 
 func TestKubeIdentityUnknownContextNamesTheKnownOnes(t *testing.T) {

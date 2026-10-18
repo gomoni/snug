@@ -14,7 +14,9 @@ import (
 // kubePolicy resolves the builtin defaults plus @net and one kube identity
 // against the policy package's fixture kubeconfig, and stages what a dry run
 // stages.
-func kubePolicy(t *testing.T) *policy.Policy {
+func kubePolicy(t *testing.T) *policy.Policy { return kubePolicyNet(t, true) }
+
+func kubePolicyNet(t *testing.T, withNet bool) *policy.Policy {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("PATH", t.TempDir()) // no host kubectl: the screen says so
@@ -24,16 +26,17 @@ func kubePolicy(t *testing.T) *policy.Policy {
 	}
 	reg["aks-dev"] = &policy.Profile{Name: "aks-dev", Identity: &policy.Identity{Kube: policy.IdentityKube{
 		Context: "aks-dev", Token: policy.KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}}
-	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@net", "aks-dev")
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "aks-dev")
+	if withNet {
+		sel = append(sel, "@net")
+	}
 	fixture, err := os.ReadFile("../policy/testdata/kubeconfig.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := newEnvFakeEnv()
 	env.kube = map[string][]byte{"/home/u/.kube/config": fixture}
-	env.dirs["/usr/bin/snug"] = true
 	ctx := envGoldenCtx()
-	ctx.SnugExecutable = "/usr/bin/snug"
 	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, ctx, env)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -67,7 +70,7 @@ func TestGoldenKubeArgv(t *testing.T) {
 	p := kubePolicy(t)
 	got := runDirPID.ReplaceAllString(goldenFormat(p.BwrapArgs(1000, 1000)), "run-N")
 	for _, want := range []string{
-		"/home/u/.kube/config", policy.KubeTokenShimGuest, policy.KubeTokenSocketGuest, "KUBECONFIG",
+		"/home/u/.kube/config", "KUBECONFIG",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv does not name %s", want)
@@ -79,7 +82,7 @@ func TestGoldenKubeArgv(t *testing.T) {
 			t.Errorf("argv reaches the host ~/.kube other than through the generated file: %q", line)
 		}
 	}
-	checkGolden(t, "identity-kube.bwrap.txt", got, "this is the argv for a sandbox holding a cluster credential broker")
+	checkGolden(t, "identity-kube.bwrap.txt", got, "this is the argv for a sandbox behind a cluster credential proxy")
 }
 
 func TestGoldenKubeDryRunBlock(t *testing.T) {
@@ -93,7 +96,7 @@ func TestGoldenKubeDryRunBlock(t *testing.T) {
 			t.Errorf("KUBE block lacks %q:\n%s", want, got)
 		}
 	}
-	checkGolden(t, "kube.dryrun.txt", got, "this is what a human reads before trusting a cluster credential broker")
+	checkGolden(t, "kube.dryrun.txt", got, "this is what a human reads before trusting a cluster credential proxy")
 }
 
 func TestProfileShowNamesTheKubeCapability(t *testing.T) {
@@ -132,5 +135,22 @@ func TestKubeDryRunSaysWhenAGrantShowsAzure(t *testing.T) {
 	}
 	if strings.Contains(got, "~/.kube/cache, ~/.azure") {
 		t.Errorf("~/.azure is still listed absent:\n%s", got)
+	}
+}
+
+// A kube profile without @net resolves, gets a stage for the proxy's socket,
+// and the NETWORK block says the one thing that makes "isolated" untrue.
+func TestKubeOnlyProfileIsNotOffline(t *testing.T) {
+	p := kubePolicyNet(t, false)
+	if p.Net.Mode != policy.NetIsolated || !p.Topology.NeedsStage() {
+		t.Fatalf("net %s, needs stage %v; want isolated with a stage", p.Net.Mode, p.Topology.NeedsStage())
+	}
+	var b strings.Builder
+	describeNetwork(&b, p)
+	for _, want := range []string{"NETWORK  isolated", "EXCEPT   127.0.0.1:6443", p.Kube.Server,
+		"dialled from the HOST", "not an offline profile"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("NETWORK block lacks %q:\n%s", want, b.String())
+		}
 	}
 }

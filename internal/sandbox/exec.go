@@ -135,8 +135,9 @@ type Options struct {
 	ExcludeFromTeardown []int
 
 	// RelaySockets is how many unconnected AF_INET stream sockets the stage
-	// creates INSIDE the sandbox's network namespace for the login browser
-	// bridge, at most three. Zero on every run without it. Only the staged arm
+	// creates INSIDE the sandbox's network namespace, for the login browser
+	// bridge and identity.kube's proxy listener; at most stage.MaxRelaySockets.
+	// Zero on every run without either. Only the staged arm
 	// has a stage to make them, so Run refuses a nonzero count on a policy
 	// whose topology needs none, and refuses one with OnRelaySockets nil: a
 	// socket requested and then held by nobody is a request nobody meant.
@@ -147,7 +148,9 @@ type Options struct {
 	// the sandbox's own netns), close-on-exec, and owned by the callee from
 	// then on. Called once, after the network is confirmed and before bwrap is
 	// forked, so no payload exists yet; never called when RelaySockets is 0.
-	OnRelaySockets func([]*os.File)
+	// An error refuses the run before bwrap is forked: a listener that could
+	// not be bound is a capability the profile asked for and will not have.
+	OnRelaySockets func([]*os.File) error
 }
 
 // RunInfo is what a running sandbox reports about itself, once, at startup:
@@ -171,9 +174,9 @@ const infoFDTimeout = 10 * time.Second
 func Run(p *policy.Policy, uid, gid int, opts Options) (int, error) {
 	if opts.RelaySockets != 0 {
 		if !p.Topology.NeedsStage() {
-			return 0, fmt.Errorf("%d login relay socket(s) requested on a run with no stage: only "+
+			return 0, fmt.Errorf("%d relay socket(s) requested on a run with no stage: only "+
 				"the stage can create a socket in the sandbox's network namespace, and this policy "+
-				"has none (the login browser bridge needs @net)", opts.RelaySockets)
+				"has none", opts.RelaySockets)
 		}
 		if opts.OnRelaySockets == nil {
 			return 0, fmt.Errorf("sandbox.Options.RelaySockets is %d but OnRelaySockets is nil — "+
@@ -753,7 +756,9 @@ func runStaged(p *policy.Policy, bwrap string, argv []string, extra []*os.File,
 		return 0, r.err
 	}
 	if len(r.relay) > 0 {
-		opts.OnRelaySockets(r.relay)
+		if err := opts.OnRelaySockets(r.relay); err != nil {
+			return 0, err
+		}
 	}
 
 	if err := helper.checkBeforeSandbox(release != nil); err != nil {

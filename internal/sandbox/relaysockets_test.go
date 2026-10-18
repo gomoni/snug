@@ -13,7 +13,7 @@ import (
 // cannot be honoured and is refused rather than quietly dropped (invariant 5);
 // and a count with no OnRelaySockets would be sockets in N held by nobody.
 func TestRelaySocketsAreRefusedWhereNothingCanMakeOrHoldThem(t *testing.T) {
-	hold := func([]*os.File) {}
+	hold := func([]*os.File) error { return nil }
 	for _, c := range []struct {
 		name string
 		p    *policy.Policy

@@ -1071,12 +1071,13 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 	}
 	if id.Kube.Context != "" {
 		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as "+visibleValue(id.Kube.ServiceAccount),
-			"THE SANDBOX CAN ACT AS THIS SERVICEACCOUNT on this one cluster: snug mints "+
-				"short-lived tokens for it on the host, with your own kubectl and credential, "+
-				"and anything inside can spend them on whatever the account's RoleBinding "+
-				"allows — for the run and up to one token lifetime after. pods/exec, "+
-				"pods/portforward and services/proxy reach the cluster's private network. "+
-				"Your kubeconfig, its other contexts and your credential do not enter.")...)
+			"THE SANDBOX CAN ACT AS THIS SERVICEACCOUNT on this one cluster while the run "+
+				"lives: snug's proxy on the host adds the token to every request from inside, "+
+				"and anything inside can spend it on whatever the account's RoleBinding allows. "+
+				"No token enters the sandbox; but a Role that reads Secrets, creates tokens or "+
+				"creates pods hands out credentials that outlive the run. pods/exec, "+
+				"pods/portforward and services/proxy reach the cluster's network, with or "+
+				"without @net. Your kubeconfig, its other contexts and your credential do not enter.")...)
 	}
 	show("identity", rows)
 }

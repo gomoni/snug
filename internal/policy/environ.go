@@ -341,10 +341,6 @@ type Context struct {
 	// every host you have ever connected to.
 	KnownHosts []byte
 
-	// SnugExecutable is the resolved path of the running snug binary: the host
-	// side of the exec-credential shim identity.kube binds into the sandbox.
-	SnugExecutable string
-
 	// HostAddresses is every address the host holds, as text, the same set
 	// the stage seals inside. identity.kube refuses a server naming one of
 	// them, as a usability check; the seal is the bound.
