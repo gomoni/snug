@@ -453,6 +453,7 @@ dns = true
 #   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
 #     [profile.aks-dev.identity.kube]
 #     context         = "aks-dev"            # a context in the host kubeconfig
+#     server          = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
 #     token           = "serviceaccount"
 #     service_account = "dev/snug-agent"     # namespace/name, created by you
 #     # kubeconfig    = "{home}/.kube/config"

@@ -120,7 +120,7 @@ var wantIdentityLeaves = []string{
 	"ssh.host", "ssh.key", "ssh.agent",
 	"git.name", "git.email", "git.signing_key",
 	"gh.host", "gh.user",
-	"kube.context", "kube.token", "kube.service_account", "kube.kubeconfig",
+	"kube.context", "kube.server", "kube.token", "kube.service_account", "kube.kubeconfig",
 }
 
 // TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf replaces the hand-written

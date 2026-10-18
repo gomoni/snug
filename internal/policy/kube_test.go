@@ -16,7 +16,7 @@ import (
 
 func TestKubeIdentityUnknownTokenValueRefuses(t *testing.T) {
 	reg, sel := identityProfiles(map[ProfileName]Identity{
-		"k": {Kube: IdentityKube{Context: "aks-dev", Token: "static", ServiceAccount: "dev/snug-agent"}},
+		"k": {Kube: IdentityKube{Context: "aks-dev", Token: "static", Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}},
 	})
 	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
 	if err == nil || p != nil || !strings.Contains(err.Error(), "(want serviceaccount)") ||
@@ -31,7 +31,7 @@ func TestKubeIdentityUnknownTokenValueRefuses(t *testing.T) {
 func TestKubeKubeconfigSpellingsAreOneIdentity(t *testing.T) {
 	block := func(kc string) Identity {
 		return Identity{Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			ServiceAccount: "dev/snug-agent", Kubeconfig: kc}}
+			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: kc}}
 	}
 	for _, pair := range [][2]string{{"", "{home}/.kube/config"}, {"", "~/.kube/config"}, {"{home}/.kube/config", "~/.kube/config"}} {
 		reg, sel := identityProfiles(map[ProfileName]Identity{"ident-a": block(pair[0]), "ident-b": block(pair[1])})
@@ -101,7 +101,7 @@ type kubeCase struct {
 
 func kubeResolve(t *testing.T, c kubeCase) (*Policy, error) {
 	t.Helper()
-	k := IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount, ServiceAccount: "dev/snug-agent"}
+	k := IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}
 	if c.kube != (IdentityKube{}) {
 		k = c.kube
 	}
@@ -248,7 +248,7 @@ func TestKubeIdentityAbsentAddsNothing(t *testing.T) {
 
 func TestKubeIdentityRefusesALoopbackServer(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "kind-kind", Token: KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent"}}, "host's loopback", "THERE IS NO")
+		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}, "host's loopback", "THERE IS NO")
 	for _, srv := range []string{"https://localhost:6443", "https://[::1]:6443", "https://api.localhost"} {
 		wantKubeRefusal(t, kubeCase{file: strings.Replace(kubeFixture(t),
 			"https://aks-dev.example.azmk8s.io:443", srv, 1)}, "host's loopback")
@@ -298,12 +298,12 @@ func TestKubeIdentityRequiresEgress(t *testing.T) {
 
 func TestKubeIdentityUnknownContextNamesTheKnownOnes(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-prod", Token: KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent"}}, `"aks-prod"`, "contexts: aks-dev, eks, kind-kind")
+		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}, `"aks-prod"`, "contexts: aks-dev, eks, kind-kind")
 }
 
 func TestKubeServiceAccountRefusesAnExecUser(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Token: KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent"}}, "exec plugin (aws)", "#659")
+		Server: "https://eks.example.com", ServiceAccount: "dev/snug-agent"}}, "exec plugin (aws)", "#659")
 	userField := func(line string) string {
 		return strings.Replace(kubeFixture(t), "    token: FIXTURETOKENVALUE\n", "    token: FIXTURETOKENVALUE\n    "+line+"\n", 1)
 	}
@@ -540,4 +540,14 @@ func TestOSEnvironKubeConfigRefusesAHardLink(t *testing.T) {
 	if _, err := (OSEnviron{}).KubeConfig(p); err == nil || !strings.Contains(err.Error(), "hard links") {
 		t.Errorf("a kubeconfig with a second hard link was read: %v", err)
 	}
+}
+
+// Red-team finding F2: an earlier run that could write the kubeconfig changed
+// its server, and the next identity.kube run sent the host credential there.
+// The profile pins the server; the file must agree.
+func TestKubeServerIsPinnedByTheProfile(t *testing.T) {
+	moved := strings.Replace(kubeFixture(t), "https://aks-dev.example.azmk8s.io:443", "https://attacker.example:443", 1)
+	wantKubeRefusal(t, kubeCase{file: moved}, "identity.kube.server is", "attacker.example", "another run")
+	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
+		ServiceAccount: "dev/snug-agent"}}, "needs identity.kube.server", `server = "https://aks-dev.example.azmk8s.io:443"`)
 }

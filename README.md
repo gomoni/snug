@@ -413,6 +413,7 @@ include = ["@net"]
 ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
   [profile.aks-dev.identity.kube]
   context         = "aks-dev"
+  server          = "https://aks-dev.example.azmk8s.io:443"  # must match kubeconfig
   token           = "serviceaccount"
   service_account = "dev/snug-agent"   # you create it, and its RoleBinding
 ```

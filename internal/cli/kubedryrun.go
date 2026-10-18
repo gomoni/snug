@@ -76,8 +76,8 @@ func describeKube(out io.Writer, k *reportKube) {
 	if k == nil {
 		return
 	}
-	fmt.Fprintf(out, "KUBE     context    %s -> %s   (generated ~/.kube/config, read-only)\n",
-		visibleValue(k.Context), visibleValue(k.Server))
+	fmt.Fprintf(out, "KUBE     context    %s -> %s\n", visibleValue(k.Context), visibleValue(k.Server))
+	fmt.Fprintf(out, "                    server pinned by the profile; generated ~/.kube/config, read-only\n")
 	fmt.Fprintf(out, "         as         ServiceAccount %s (namespace %s)\n", visibleValue(k.ServiceAccount), visibleValue(k.Namespace))
 	fmt.Fprintf(out, "         token      minted on the host at start (this dry run minted nothing), again on\n")
 	fmt.Fprintf(out, "                    expiry while this run lives, at most %d times; requested %s, the\n", k.MintBudget, k.Requested)

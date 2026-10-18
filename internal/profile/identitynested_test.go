@@ -215,13 +215,13 @@ func TestKubeIdentityUnknownTokenValueRefusesAtLoad(t *testing.T) {
 }
 
 func TestKubeIdentityDecodesEveryLeaf(t *testing.T) {
-	ps, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\ntoken = \"serviceaccount\"\n"+
+	ps, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\nserver = \"https://aks-dev.example.azmk8s.io:443\"\ntoken = \"serviceaccount\"\n"+
 		"service_account = \"dev/snug-agent\"\nkubeconfig = \"{home}/.kube/config\"\n"), "mine.toml", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := policy.IdentityKube{Context: "aks-dev", Token: policy.KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent", Kubeconfig: "{home}/.kube/config"}
+		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "{home}/.kube/config"}
 	if got := ps["x"].Identity.Kube; got != want {
 		t.Fatalf("Kube = %+v, want %+v", got, want)
 	}

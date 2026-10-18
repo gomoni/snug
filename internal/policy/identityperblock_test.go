@@ -28,7 +28,7 @@ var (
 	gitBlock  = IdentityGit{Name: "Base Name", Email: "base@example.com"}
 	ghBlock   = IdentityGh{User: "base-user"}
 	kubeBlock = IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-		ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"}
+		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"}
 )
 
 func TestIdentityPinPerBlockRefusesNamingBothOwners(t *testing.T) {
@@ -37,7 +37,7 @@ func TestIdentityPinPerBlockRefusesNamingBothOwners(t *testing.T) {
 		"git": {{Git: gitBlock}, {Git: IdentityGit{Name: "Other", Email: "other@example.com"}}},
 		"gh":  {{Gh: ghBlock}, {Gh: IdentityGh{User: "other-user"}}},
 		"kube": {{Kube: kubeBlock}, {Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			ServiceAccount: "dev/other", Kubeconfig: "/home/u/.kube/config"}}},
+			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/other", Kubeconfig: "/home/u/.kube/config"}}},
 	}
 	for _, pin := range identityPins {
 		pair, ok := differ[pin.Key]

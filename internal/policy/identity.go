@@ -166,7 +166,13 @@ type IdentityGit struct {
 // the account lives, and a default namespace for kubectl would be a setting
 // for the program inside, which a profile does not carry.
 type IdentityKube struct {
-	Context        string        `snug:"context"`
+	Context string `snug:"context"`
+	// Server is the API server the profile expects the context to name. The
+	// kubeconfig is a file other runs may have been able to write; the profile
+	// is not. Pinning the server here is what keeps the FILE from choosing
+	// where snug's host-side mint sends your credential: a kubeconfig whose
+	// context names any other server is refused.
+	Server         string        `snug:"server"`
 	Token          KubeTokenMode `snug:"token"`
 	ServiceAccount string        `snug:"service_account"`
 	Kubeconfig     string        `snug:"kubeconfig,path"`

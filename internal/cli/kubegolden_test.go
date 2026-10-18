@@ -23,7 +23,7 @@ func kubePolicy(t *testing.T) *policy.Policy {
 		t.Fatal(err)
 	}
 	reg["aks-dev"] = &policy.Profile{Name: "aks-dev", Identity: &policy.Identity{Kube: policy.IdentityKube{
-		Context: "aks-dev", Token: policy.KubeTokenServiceAccount, ServiceAccount: "dev/snug-agent"}}}
+		Context: "aks-dev", Token: policy.KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}}
 	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "@net", "aks-dev")
 	fixture, err := os.ReadFile("../policy/testdata/kubeconfig.yaml")
 	if err != nil {
@@ -98,7 +98,7 @@ func TestGoldenKubeDryRunBlock(t *testing.T) {
 
 func TestProfileShowNamesTheKubeCapability(t *testing.T) {
 	var got []string
-	showIdentity(&policy.Identity{Kube: policy.IdentityKube{Context: "aks-dev", ServiceAccount: "dev/snug-agent"}},
+	showIdentity(&policy.Identity{Kube: policy.IdentityKube{Context: "aks-dev", Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}},
 		func(_ string, rows []string) { got = rows })
 	all := strings.Join(got, "\n")
 	for _, want := range []string{"kube aks-dev as dev/snug-agent", "ACT AS THIS SERVICEACCOUNT", "RoleBinding"} {

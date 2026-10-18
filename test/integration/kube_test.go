@@ -71,6 +71,7 @@ users:
 include = ["@net"]
   [profile.kubetest.identity.kube]
   context         = "aks-dev"
+  server          = "https://kube.example.invalid:443"
   token           = "serviceaccount"
   service_account = "dev/snug-agent"
   kubeconfig      = %q
@@ -203,6 +204,7 @@ func TestKubeKubeconfigUnderTargetRefuses(t *testing.T) {
 include = ["@net"]
   [profile.kubetest.identity.kube]
   context         = "aks-dev"
+  server          = "https://kube.example.invalid:443"
   token           = "serviceaccount"
   service_account = "dev/snug-agent"
   kubeconfig      = %q

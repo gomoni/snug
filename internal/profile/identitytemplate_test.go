@@ -170,7 +170,7 @@ func TestKubeTemplateLoadsAsAUserProfile(t *testing.T) {
 	if !ok || p.Identity == nil {
 		t.Fatalf("template defines no aks-dev identity: %v", extracted)
 	}
-	want := policy.IdentityKube{Context: "aks-dev", Token: policy.KubeTokenServiceAccount, ServiceAccount: "dev/snug-agent"}
+	want := policy.IdentityKube{Context: "aks-dev", Token: policy.KubeTokenServiceAccount, Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}
 	if p.Identity.Kube != want {
 		t.Errorf("Kube = %+v, want %+v", p.Identity.Kube, want)
 	}

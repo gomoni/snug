@@ -753,7 +753,7 @@ func maximalProfile() *Profile {
 			// NOT the default path, so dropping identity.kube.kubeconfig really
 			// changes which file is read (the fixture serves both).
 			Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-				ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/maximal"},
+				Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/maximal"},
 		},
 		Environ: EnvGrants{
 			Set:      map[string]string{"MY_TOOL_ROOT": "/opt/tool"},
@@ -807,6 +807,7 @@ func keyDrops() []keyDrop {
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
 		{"identity.kube.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
+		{"identity.kube.server", "Identity.Kube.Server", func(p *Profile) { p.Identity.Kube.Server = "" }},
 		{"identity.kube.token", "Identity.Kube.Token", func(p *Profile) { p.Identity.Kube.Token = "" }},
 		{"identity.kube.service_account", "Identity.Kube.ServiceAccount", func(p *Profile) { p.Identity.Kube.ServiceAccount = "" }},
 		{"identity.kube.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},

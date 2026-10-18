@@ -60,6 +60,9 @@ re-encoded values leave snug.
 
 Refused at Resolve, each naming the fix:
 
+- a kube block without `server`, or a kubeconfig whose context names a
+  different server. The profile — trusted, outside the sandboxed material —
+  decides where the host credential goes; the kubeconfig only has to agree;
 - the kubeconfig under the target, reachable by a writable grant (bytes,
   second mount, a name on its chain), or with a second hard link — whoever
   writes it chooses where the host credential is sent. `@home`'s tmpfs does
@@ -99,6 +102,16 @@ refuse naming both.
   The bound today is the token lifetime.
 - **Host loopback clusters** (kind): the narrow grant is pasta `-T <port>`; not
   built.
+
+## 4a. Residual, stated
+
+The host kubectl is judged against THIS run's grants: a kubectl the sandbox
+could write is refused. A kubectl replaced earlier — by a run whose target was
+the directory it lives in, or by anything else running as you — is the host,
+and snug does not defend against the host (`THREAT-MODEL.md`, user-provided
+holes). The container engine binary has the same property. The same holds for
+the certificate authority and `tls-server-name` in the kubeconfig: the server
+is pinned by the profile, the CA is not.
 
 ## 5. Not measured
 

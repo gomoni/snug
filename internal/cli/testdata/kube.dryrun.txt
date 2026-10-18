@@ -1,4 +1,5 @@
-KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443   (generated ~/.kube/config, read-only)
+KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443
+                    server pinned by the profile; generated ~/.kube/config, read-only
          as         ServiceAccount dev/snug-agent (namespace dev)
          token      minted on the host at start (this dry run minted nothing), again on
                     expiry while this run lives, at most 64 times; requested 1h0m0s, the

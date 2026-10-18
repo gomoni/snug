@@ -119,7 +119,7 @@ func baseNestedIdentity() Identity {
 		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
 		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
 		Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"},
+			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"},
 	}
 }
 

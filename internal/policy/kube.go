@@ -147,6 +147,21 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 	if err := kubeCluster(b, cluster, ctx); err != nil {
 		return refuse("%s", err.Error())
 	}
+	// The file names the server; the profile decides it. An earlier run that
+	// could write the kubeconfig — through a target it was in, say — could
+	// otherwise point the host-side mint, and the credential it sends, at a
+	// server of its choosing (red team, measured across two runs).
+	if k.Server == "" {
+		return refuse("[identity.kube] needs identity.kube.server: the API server snug may send your host "+
+			"credential to. Context %s in %s names %s today; if that is your cluster, write\n"+
+			"         server = %s", kq(k.Context), VisibleText(path), VisibleText(b.Server), kq(b.Server))
+	}
+	if k.Server != b.Server {
+		return refuse("identity.kube.server is %s, but context %s in %s names %s. Refusing: the kubeconfig "+
+			"chooses where snug's host-side mint sends your credential only if it agrees with the profile, "+
+			"and a file another run could have written is not the authority. If you changed the cluster, "+
+			"update identity.kube.server.", kq(k.Server), kq(k.Context), VisibleText(path), kq(b.Server))
+	}
 	if p.Net.Mode != NetEgress {
 		return refuse("identity.kube needs egress: %s is off the box, and nothing in this selection "+
 			"grants the network. Add include = [\"@net\"] or -p @net.", VisibleText(b.Server))

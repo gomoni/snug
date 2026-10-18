@@ -117,6 +117,7 @@ type rawIdentity struct {
 
 type rawIdentityKube struct {
 	Context        string `toml:"context"`
+	Server         string `toml:"server"`
 	Token          string `toml:"token"`
 	ServiceAccount string `toml:"service_account"`
 	Kubeconfig     string `toml:"kubeconfig"`
@@ -595,6 +596,7 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 		},
 		Kube: policy.IdentityKube{
 			Context:        r.Kube.Context,
+			Server:         r.Kube.Server,
 			Token:          policy.KubeTokenMode(r.Kube.Token),
 			ServiceAccount: r.Kube.ServiceAccount,
 			Kubeconfig:     r.Kube.Kubeconfig,
