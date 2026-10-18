@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/gomoni/snug/internal/policy"
 )
@@ -317,5 +320,51 @@ func TestKubePluginEnvKeepsPythonUserSiteOff(t *testing.T) {
 	}
 	if run(pl.KubePluginEnv(home)) {
 		t.Error("a .pth in the host home's user site ran under the plugin's environment")
+	}
+}
+
+// Red-team F2: the plugin inherited a descriptor snug itself was started
+// with (fd 7, a host key file), because its fork skipped fdseal. A
+// descriptor this process holds without close-on-exec must not reach it.
+func TestKubePluginInheritsNoDescriptorBeyondStdio(t *testing.T) {
+	f, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fd := int(f.Fd())
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatal(err)
+	}
+	// /proc/self, not /proc/$$: the plugin is pid 1 of its own pid namespace,
+	// and this /proc is the host's.
+	stub := writeStub(t, `ls -1 /proc/self/fd | sed 's/^/FD /'`)
+	out, _, err := runKubeCmd(kubeMintCmd(context.Background(), []string{stub}, []string{"PATH=/usr/bin:/bin"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "FD "+strconv.Itoa(fd)+"\n") {
+		t.Errorf("the plugin inherited fd %d:\n%s", fd, out)
+	}
+	if !strings.Contains(string(out), "FD 0\n") {
+		t.Fatalf("the stub listed no descriptors; the check would pass vacuously:\n%s", out)
+	}
+}
+
+// Red-team F4: a failed host-address enumeration left the proxy's dialer
+// with no host-owned refusal list. It refuses the run instead, before the
+// socket is bound.
+func TestKubeListenRefusesWhenHostAddressesFail(t *testing.T) {
+	old := kubeHostAddresses
+	kubeHostAddresses = func() ([]string, error) { return nil, errors.New("netlink: boom") }
+	defer func() { kubeHostAddresses = old }()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &kubeRun{pol: &policy.Policy{Kube: &policy.KubeBinding{Server: "https://api.example"}}, audit: func(string) {}}
+	err = r.listen([]*os.File{os.NewFile(uintptr(fd), "relay")})
+	if err == nil || !strings.Contains(err.Error(), "listing this host's addresses") {
+		t.Errorf("listen with no host addresses: %v", err)
 	}
 }

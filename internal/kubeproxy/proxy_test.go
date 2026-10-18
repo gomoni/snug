@@ -301,6 +301,9 @@ func TestKubeProxyRefusesDotSegments(t *testing.T) {
 	for _, p := range []string{
 		"/../c2/api", "/api/../../c2", "/%2e%2e/c2/api", "/%2E%2E/c2", "/..%2fc2/api",
 		"/api/%2f/x", "/./api", "/api//v1", `/api\..\c2`, "/api/%5c",
+		// A second decoding round, a stripped path parameter, overlong and
+		// look-alike encodings (red team, measured forwarded before).
+		"/%252e%252e/c2/api", "/..;/c2/api", "/api;x/v1", "/%c0%ae%c0%ae/c2", "/%e2%80%a4%e2%80%a4/c2", "/api/%00",
 	} {
 		status, _ := raw(t, f.addr, "GET "+p+" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
 		if !strings.HasPrefix(status, "400") {
@@ -416,8 +419,14 @@ func TestKubeProxyDialerRefusesLoopbackHostAndMetadata(t *testing.T) {
 			return why
 		}
 		status, body := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-		if !strings.HasPrefix(status, "502") || !strings.Contains(body, "refusing to dial") {
-			t.Errorf("%s: %s %q, want a 502 naming the refusal", a, status, body)
+		if !strings.HasPrefix(status, "502") || strings.TrimSpace(body) != upstreamFailed {
+			t.Errorf("%s: %s %q, want a 502 with the fixed body", a, status, body)
+		}
+		f.amu.Lock()
+		audited := strings.Join(f.audit, "\n")
+		f.amu.Unlock()
+		if !strings.Contains(audited, "refusing to dial") {
+			t.Errorf("%s: the audit does not name the refusal: %q", a, audited)
 		}
 		if dialled.Load() {
 			t.Errorf("%s was dialled", a)
@@ -455,11 +464,35 @@ func TestKubeProxyAnswers503WhenTheSourceFails(t *testing.T) {
 		c.Token = func(context.Context) (policy.Secret, error) { return nil, errors.New("mint budget spent") }
 	})
 	status, body := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-	if !strings.HasPrefix(status, "503") || !strings.Contains(body, "mint budget spent") {
-		t.Errorf("%s %q", status, body)
+	if !strings.HasPrefix(status, "503") || strings.TrimSpace(body) != noToken {
+		t.Errorf("%s %q, want the fixed body: the source's error carries the plugin's stderr", status, body)
 	}
 	if up.count() != 0 {
 		t.Error("a request with no token reached the server")
+	}
+}
+
+// Red-team F1: a dial or resolve error named the resolved address, the
+// pinned server's name and the host's DNS resolver in the 502 body, inside an
+// offline sandbox. The body is fixed; the detail is the host's audit line.
+func TestKubeProxyUpstreamErrorBodyCarriesNoHostDetail(t *testing.T) {
+	up := newUpstream(t, nil)
+	f := start(t, up, "", func(c *Config) {
+		c.Server, _ = url.Parse("https://dead.example.invalid:6443")
+		c.Lookup = func(context.Context, string) ([]netip.Addr, error) {
+			return nil, errors.New("lookup dead.example.invalid on 192.0.2.53:53: no such host")
+		}
+	})
+	_, body := raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+	for _, bad := range []string{"dead.example", "192.0.2.53", "lookup", "6443"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the 502 body inside carries %q: %q", bad, body)
+		}
+	}
+	f.amu.Lock()
+	defer f.amu.Unlock()
+	if !strings.Contains(strings.Join(f.audit, "\n"), "192.0.2.53") {
+		t.Errorf("the detail is not on the host's audit: %q", f.audit)
 	}
 }
 

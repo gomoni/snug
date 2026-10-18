@@ -28,6 +28,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +86,14 @@ type Proxy struct {
 }
 
 type tokenKey struct{}
+
+// The bodies answered inside when the upstream or the token source fails.
+// Fixed text: the detail is on the host's audit line (snug -v).
+const (
+	upstreamFailed = "snug kube proxy: the pinned API server could not be reached; snug -v on the host has the detail"
+	noToken        = "snug kube proxy: no token for the pinned identity (the exec plugin failed, or its run " +
+		"budget is spent); snug -v on the host has the detail"
+)
 
 // fixture is set only in a binary built with -tags snugfixture (fixture.go).
 var fixture func(*Proxy)
@@ -159,9 +168,12 @@ func New(cfg Config) (*Proxy, error) {
 		Rewrite:       p.rewrite,
 		Transport:     p.tr,
 		FlushInterval: -1, // every write, so a watch or logs -f is not held back
+		// The detail goes to the host's audit only: a dial error names the
+		// resolved address and the host's resolver, which an offline sandbox
+		// has no other way to learn (red team, measured).
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.cfg.Audit(fmt.Sprintf("%s %s: upstream: %v", r.Method, policy.VisibleText(r.URL.Path), err))
-			http.Error(w, "snug kube proxy: "+policy.VisibleText(err.Error()), http.StatusBadGateway)
+			http.Error(w, upstreamFailed, http.StatusBadGateway)
 		},
 	}
 	// No ReadTimeout or WriteTimeout: either one would cut a watch.
@@ -206,9 +218,9 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Token != nil {
 		tok, err := p.cfg.Token(r.Context())
 		if err != nil {
+			// The plugin's error carries its stderr, which stays on the host.
 			p.cfg.Audit(fmt.Sprintf("%s %s: no token: %v", r.Method, policy.VisibleText(r.URL.Path), err))
-			http.Error(w, "snug kube proxy: no token for the pinned identity: "+policy.VisibleText(err.Error()),
-				http.StatusServiceUnavailable)
+			http.Error(w, noToken, http.StatusServiceUnavailable)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), tokenKey{}, tok))
@@ -255,18 +267,33 @@ func admit(r *http.Request) (int, string) {
 
 // badPath refuses a path a server in front of the cluster could resolve
 // outside the pinned server's prefix: a dot segment, an empty segment, a
-// backslash, or an escaped '/', '.' or '\'. Kubernetes object names cannot
-// contain any of them, so kubectl never sends one.
+// backslash, a ';' (a path parameter some servers strip, so "..;" climbs), or
+// an escape a decoding gateway could turn into one — an escaped '/', '.',
+// '\' or '%' (a second decoding round), or any escaped byte outside printable
+// ASCII (overlong and look-alike encodings). Kubernetes object names contain
+// none of them, so kubectl never sends one.
 func badPath(raw string) string {
 	low := strings.ToLower(raw)
-	for _, enc := range []string{"%2f", "%2e", "%5c"} {
+	for _, enc := range []string{"%2f", "%2e", "%5c", "%25"} {
 		if strings.Contains(low, enc) {
-			return fmt.Sprintf("the path holds %s; an escaped '/', '.' or '\\' is refused so that no "+
+			return fmt.Sprintf("the path holds %s; an escaped '/', '.', '\\' or '%%' is refused so that no "+
 				"server in front of the cluster can resolve it outside the pinned server", enc)
+		}
+	}
+	for i := 0; i+2 < len(raw); i++ {
+		if raw[i] != '%' {
+			continue
+		}
+		if b, err := strconv.ParseUint(raw[i+1:i+3], 16, 8); err == nil && (b < 0x20 || b > 0x7e) {
+			return fmt.Sprintf("the path holds %s, an escaped byte outside printable ASCII, which is refused "+
+				"so that no server in front of the cluster can decode it into a path separator", raw[i:i+3])
 		}
 	}
 	if strings.Contains(raw, `\`) {
 		return "the path holds a backslash, which is refused"
+	}
+	if strings.Contains(raw, ";") {
+		return "the path holds ';', a path parameter some servers strip, which is refused"
 	}
 	segs := strings.Split(strings.TrimPrefix(raw, "/"), "/")
 	for i, s := range segs {

@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gomoni/snug/internal/fdseal"
 	"github.com/gomoni/snug/internal/kubebroker"
 	"github.com/gomoni/snug/internal/kubeproxy"
 	"github.com/gomoni/snug/internal/policy"
@@ -40,6 +41,9 @@ func hostAddressesForResolve() []string {
 	}
 	return a
 }
+
+// kubeHostAddresses is sandbox.HostAddresses; a test replaces it.
+var kubeHostAddresses = sandbox.HostAddresses
 
 // kubeMintTimeout bounds one run of the exec plugin. A plugin that hangs — a
 // network that blackholes, a login that never answers — must not hold the run.
@@ -237,6 +241,12 @@ func runKubeCmd(cmd *exec.Cmd) ([]byte, string, error) {
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
+		// Every fork is sealed: a descriptor snug inherited from whatever
+		// started it is not the plugin's (red team, measured: fd 7 reached it).
+		if err := fdseal.SealFor(cmd); err != nil {
+			done <- err
+			return
+		}
 		done <- cmd.Run()
 	}()
 	if err := <-done; err != nil {
@@ -360,6 +370,13 @@ func (r *kubeRun) apply(o *sandbox.Options) {
 func (r *kubeRun) listen(fs []*os.File) error {
 	f := fs[0]
 	defer f.Close()
+	// The dialer's host-owned refusal runs outside the seal, so an
+	// enumeration that fails refuses the run rather than leaving it empty
+	// (red team: it was swallowed into an empty list).
+	owned, err := kubeHostAddresses()
+	if err != nil {
+		return fmt.Errorf("identity.kubectl: listing this host's addresses for the proxy's dialer: %w", err)
+	}
 	fd := int(f.Fd())
 	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: policy.KubeProxyGuestPort, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
 		return fmt.Errorf("identity.kubectl: binding the proxy to 127.0.0.1:%d inside the sandbox: %w",
@@ -388,7 +405,7 @@ func (r *kubeRun) listen(fs []*os.File) error {
 		}
 	}
 	var hosts []netip.Addr
-	for _, h := range hostAddressesForResolve() {
+	for _, h := range owned {
 		if a, err := netip.ParseAddr(h); err == nil {
 			hosts = append(hosts, a)
 		}
