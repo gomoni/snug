@@ -77,7 +77,7 @@ func (p *Policy) Validate(env Environ) error {
 			"(add the 'sys' profile)")
 	case !hasTarget:
 		return fmt.Errorf("target %s is not visible inside the sandbox: no profile grants it.\n"+
-			"       Add 'target-rw' to make it writable, or 'parent-ro' to see it read-only.", p.Target)
+			"       Add -p @target-rw to make it writable, or -p @parent-ro to see it read-only.", p.Target)
 	}
 
 	// Build the sandbox's own symlink map so we can resolve guest paths through
