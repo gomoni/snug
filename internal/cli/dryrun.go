@@ -2042,6 +2042,19 @@ func claudeSettingsCarriedNames(m policy.Mount) []string {
 	return names
 }
 
+// describeKubeReach is identity.kube's line in the NETWORK block. The proxy
+// dials from the host, so it is reach this sandbox has with or without @net —
+// and without @net it is the one thing that makes "isolated" untrue.
+func describeKubeReach(out io.Writer, p *policy.Policy) {
+	if p.Kube == nil {
+		return
+	}
+	fmt.Fprintf(out, "         EXCEPT   %s inside is snug's identity.kube proxy to\n", strings.TrimPrefix(policy.KubeProxyGuest, "http://"))
+	fmt.Fprintf(out, "                  %s, dialled from the HOST: this sandbox reaches\n", visibleValue(p.Kube.Server))
+	fmt.Fprintf(out, "                  that API server, and through it whatever the cluster reaches.\n")
+	fmt.Fprintf(out, "                  A kube profile is not an offline profile.\n")
+}
+
 // describeNetwork spells out what the sandbox can and cannot reach. The
 // negative half matters more than the positive half and is stated first.
 func describeNetwork(out io.Writer, p *policy.Policy) {
@@ -2052,6 +2065,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "         Pathname sockets (X11, D-Bus, Wayland, ssh-agent) are a MOUNT\n")
 		fmt.Fprintf(out, "         question, not a network one — see FILESYSTEM for what is granted.\n")
 		fmt.Fprintf(out, "         Add the '@net' profile for egress.\n")
+		describeKubeReach(out, p)
 		// An http door is an INBOUND descriptor handover and needs no egress,
 		// so `listen_names` without '@net' is a working configuration — and
 		// this arm rendered nothing about it. The screen therefore omitted the
@@ -2069,6 +2083,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		fmt.Fprintf(out, "         pathname sockets (X11, D-Bus, Wayland, ssh-agent) — see FILESYSTEM,\n")
 		fmt.Fprintf(out, "                         not this block; a directory grant can expose one\n")
 		fmt.Fprintf(out, "         egress          full, IPv4 + IPv6\n")
+		describeKubeReach(out, p)
 		// RENDERED FROM THE RESOLVED POLICY, never from a literal (issue
 		// #28), and printed UNCONDITIONALLY in this arm rather than gated on
 		// p.Net.DNS (issue #166). This line was a hardcoded string printed

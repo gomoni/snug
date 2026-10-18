@@ -1062,7 +1062,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// Validate runs, so a hand-built *Policy that skips Resolve cannot carry a
 	// Topology inconsistent with its own Net/Podman — Validate refuses exactly
 	// that (see the rule below).
-	p.Topology = deriveTopology(p.Net.Mode, p.Podman)
+	p.Topology = deriveTopology(p.Net.Mode, p.Podman, p.Kube != nil)
 
 	// The launcher opens every bind source with RESOLVE_NO_SYMLINKS, so a host
 	// that is not already canonical would be refused at launch with a message

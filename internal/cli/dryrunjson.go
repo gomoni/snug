@@ -586,8 +586,8 @@ type jsonKube struct {
 	StaticTokenUnused bool     `json:"static_token_unused"`
 	Absent            []string `json:"absent"`
 	Visible           []string `json:"visible,omitempty"`
-	Shim              string   `json:"shim"`
-	Socket            string   `json:"socket"`
+	Proxy             string   `json:"proxy_guest"`
+	Refused           []string `json:"refused"`
 }
 
 type jsonTopology struct {
@@ -891,7 +891,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			MintArgv: texts(k.MintArgv), MintEnv: k.MintEnv, MintBudget: k.MintBudget,
 			Requested: k.Requested, Credential: k.Credential, StaticTokenUnused: k.StaticTokenUnused,
 			Absent: texts(k.Absent), Visible: texts(k.Visible),
-			Shim: k.Shim, Socket: k.Socket,
+			Proxy: k.Proxy, Refused: k.Refused,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

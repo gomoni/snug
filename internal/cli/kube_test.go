@@ -177,17 +177,16 @@ func TestKubeDryRunMintsNothing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no kubectl anywhere
 	pol := &policy.Policy{Home: "/home/u", Mounts: map[string]policy.Mount{}, Env: map[string]policy.EnvVar{},
 		Kube: &policy.KubeBinding{Context: "aks-dev", SANamespace: "dev", SAName: "snug-agent"}}
-	cleanup, err := startKubeIdentity(pol, policy.OSEnviron{}, false, true)
+	run, err := startKubeIdentity(pol, policy.OSEnviron{}, false, true)
 	if err != nil {
 		t.Fatalf("a dry run refused for a missing kubectl: %v", err)
 	}
-	cleanup()
+	if run != nil {
+		t.Error("a dry run started a kube run")
+	}
 	ents, _ := os.ReadDir(rt)
 	if len(ents) != 0 {
 		t.Errorf("a dry run created %v under XDG_RUNTIME_DIR", ents)
-	}
-	if m, ok := pol.Mounts[policy.KubeTokenSocketGuest]; !ok || !m.RunScoped {
-		t.Errorf("the planned socket is not on the dry-run screen: %+v", m)
 	}
 	if !strings.Contains(pol.KubeMintProblem, "kubectl not found") {
 		t.Errorf("KubeMintProblem = %q", pol.KubeMintProblem)

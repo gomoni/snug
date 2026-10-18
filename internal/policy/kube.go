@@ -21,8 +21,8 @@ import (
 )
 
 // KubeBinding is what Resolve made of a kube identity block: the one cluster
-// the sandbox's generated kubeconfig names, the one ServiceAccount the broker
-// mints for, and the host credential the HOST-SIDE mint authenticates with.
+// snug's proxy forwards to, the one ServiceAccount the host-side mint asks a
+// token for, and the host credential that mint authenticates with.
 // It is resolver output, never profile text, and it is not inside Identity
 // because Identity must stay a comparable value of profile leaves.
 type KubeBinding struct {
@@ -65,8 +65,10 @@ var (
 )
 
 // resolveKube turns a pinned kube block into p.Kube, the generated sandbox
-// kubeconfig, the shim bind and KUBECONFIG. It runs after the grants and the
-// network mode are final, because two of its refusals read them.
+// kubeconfig and KUBECONFIG. It runs after the grants are final, because its
+// location refusals read them. It needs no network grant: snug's proxy dials
+// the cluster from the host, and deriveTopology gives the run the stage that
+// creates the proxy's socket.
 func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error {
 	if !p.Identity.Pinned("kube") {
 		return nil
@@ -162,23 +164,14 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 			"and a file another run could have written is not the authority. If you changed the cluster, "+
 			"update identity.kube.server.", kq(k.Server), kq(k.Context), VisibleText(path), kq(b.Server))
 	}
-	if p.Net.Mode != NetEgress {
-		return refuse("identity.kube needs egress: %s is off the box, and nothing in this selection "+
-			"grants the network. Add include = [\"@net\"] or -p @net.", VisibleText(b.Server))
-	}
 	if err := kubeUser(b, user, k.Context); err != nil {
 		return refuse("%s", err.Error())
-	}
-	if ctx.SnugExecutable == "" {
-		return refuse("cannot stage the exec-credential shim: snug could not name its own executable")
 	}
 
 	p.Kube = b
 	from := []string{p.IdentityProvenance("kube")}
 	p.Replace(Mount{Guest: home + "/.kube/config", Kind: KindData, Access: AccessRO,
 		Content: b.SandboxKubeconfig(), From: from})
-	p.Replace(Mount{Guest: KubeTokenShimGuest, Kind: KindBind, Host: ctx.SnugExecutable,
-		Access: AccessRO, From: from})
 	p.AuthorEnv("KUBECONFIG", home+"/.kube/config")
 	return nil
 }
@@ -315,13 +308,12 @@ func kubeCluster(b *KubeBinding, c kubecfg.Cluster, ctx Context) error {
 		return fmt.Errorf("cluster %s: server %s is not https; a bearer token over plain http is readable "+
 			"on the path, and snug accepts only https://host[:port][/path]", name, VisibleText(server))
 	}
-	// A usability check, NOT the bound, and only for the SANDBOX side: inside,
-	// pasta's `--map-host-loopback none` and `-T none` plus the stage sealing
-	// every host-owned address (net.go, stage/loopback.go) are the bound, and a
-	// name resolving to the host at run time is still sealed. The host-side
-	// mint is outside that seal and dials whatever the kubeconfig names; what
-	// bounds it is that the kubeconfig is the human's (the location refusals
-	// above). Names are not resolved here, because resolution stays pure.
+	// The proxy and the host-side mint dial from the HOST, outside the seal
+	// that keeps the sandbox off host loopback, so this refusal is what keeps
+	// identity.kube from being a grant to one host port. It covers literals;
+	// a name is not resolved here, because resolution stays pure, and the
+	// proxy's dialer repeats the check on every address the name resolves to
+	// at run time (internal/kubeproxy).
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return kubeLoopback(name, server)
@@ -445,28 +437,20 @@ type kubeContextOut struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-type kubeExecOut struct {
-	APIVersion         string `json:"apiVersion"`
-	Command            string `json:"command"`
-	InteractiveMode    string `json:"interactiveMode"`
-	ProvideClusterInfo bool   `json:"provideClusterInfo"`
-}
-
-// SandboxKubeconfig is the ~/.kube/config generated inside: one cluster, one
-// user whose only credential is the exec-credential shim, one context. It is
-// JSON, which is YAML, emitted from Go values — no host byte is copied, and no
-// host cluster or user name appears in it.
+// SandboxKubeconfig is the ~/.kube/config generated inside: one cluster, which
+// is snug's proxy on the sandbox's own loopback, one user with NO credential,
+// one context. Plain http and no CA: both ends of that loopback are inside the
+// sandbox, and the hop to the real server is the proxy's, over TLS, from the
+// host. It is JSON, which is YAML, emitted from Go values — no host byte is
+// copied, and no host cluster or user name appears in it.
 func (k *KubeBinding) SandboxKubeconfig() []byte {
-	return k.kubeconfig(k.Context, map[string]any{"exec": kubeExecOut{
-		APIVersion: "client.authentication.k8s.io/v1", Command: KubeTokenShimGuest,
-		InteractiveMode: "Never", ProvideClusterInfo: false,
-	}}, k.SANamespace)
+	return kubeconfig(k.Context, kubeClusterOut{Server: KubeProxyGuest}, struct{}{}, k.SANamespace)
 }
 
-func (k *KubeBinding) kubeconfig(name string, user any, namespace string) []byte {
+func kubeconfig(name string, cluster kubeClusterOut, user any, namespace string) []byte {
 	f := kubeconfigFile{
 		APIVersion: "v1", Kind: "Config",
-		Clusters:       []kubeNamed{{Name: name, Cluster: kubeClusterOut{Server: k.Server, CAData: k.CAData, TLSServerName: k.TLSServerName}}},
+		Clusters:       []kubeNamed{{Name: name, Cluster: cluster}},
 		Users:          []kubeNamed{{Name: name, User: user}},
 		Contexts:       []kubeNamed{{Name: name, Context: kubeContextOut{Cluster: name, User: name, Namespace: namespace}}},
 		CurrentContext: name,
@@ -483,14 +467,16 @@ func (k *KubeBinding) kubeconfig(name string, user any, namespace string) []byte
 }
 
 // KubeTokenDuration is the lifetime the mint REQUESTS. The cluster may cap or
-// extend it; the broker reads the expiry the cluster returned. It is not a
-// profile key: a knob on the credential's lifetime is precedent for every
-// other knob, and an hour bounds what a token taken from one run is worth.
+// extend it; the token source reads the expiry the cluster returned. It is not
+// a profile key: a knob on the credential's lifetime is precedent for every
+// other knob. The token never enters the sandbox; an hour bounds what it is
+// worth if it leaks from the host.
 const KubeTokenDuration = "1h0m0s"
 
 // KubeMintBudget is how many mints one run may make, the preflight included.
-// The broker never mints before the cached token expires, so this only binds
-// when a cluster hands out very short tokens or the clock jumps.
+// The token source never mints before the cached token expires — not on a 401
+// either — so this only binds when a cluster hands out very short tokens or
+// the clock jumps.
 const KubeMintBudget = 64
 
 // KubeMintContext is the only cluster, user and context name in the host-side
@@ -513,7 +499,8 @@ func (k *KubeBinding) MintKubeconfig() Secret {
 	if len(u.ClientCertificateData) == 0 {
 		u.Token = string(k.HostUser.Token)
 	}
-	return Secret(k.kubeconfig(KubeMintContext, u, ""))
+	return Secret(kubeconfig(KubeMintContext,
+		kubeClusterOut{Server: k.Server, CAData: k.CAData, TLSServerName: k.TLSServerName}, u, ""))
 }
 
 // MintArgv is the host command that mints one token, exactly. Every element is

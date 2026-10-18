@@ -12,10 +12,6 @@
 --dir /etc
 --perms 0755
 --dir /home
---perms 0755
---dir /snug
---perms 0755
---dir /snug/bin
 --symlink usr/bin /bin
 --dev /dev
 --remount-ro /dev
@@ -40,7 +36,6 @@
 --ro-bind-data 15 /proc/key-users
 --ro-bind-data 16 /proc/keys
 --ro-bind /proc/sys /proc/sys
---bind-fd 21 /snug/kube-token.sock
 --size 1073741824
 --tmpfs /home/u/.cache
 --size 1073741824
@@ -51,19 +46,18 @@
 --tmpfs /home/u/.local
 --size 1073741824
 --tmpfs /home/u/proj
---ro-bind-fd 22 /snug/bin/snug-kube-token
 --ro-bind-data 17 /home/u/.kube/config
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind-fd 23 /home/u/proj/sub
+--bind-fd 21 /home/u/proj/sub
 --remount-ro /
 --clearenv
 --setenv HOME /home/u
 --setenv KUBECONFIG /home/u/.kube/config
 --setenv LOGNAME u
---setenv PATH /snug/bin:/usr/bin:/bin:/usr/sbin:/sbin
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
 --setenv PS1 🔒 snug:\w\$ 
 --setenv SHELL /usr/bin/bash
 --setenv SNUG 1

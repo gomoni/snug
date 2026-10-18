@@ -398,18 +398,19 @@ It does refuse `identity.gh.host` with no `identity.gh.user`, because that stage
 the token of whatever account your host's `gh` was logged in to — a credential
 the profile never named.
 
-## Kubernetes — one cluster, one ServiceAccount
+## Kubernetes — one cluster, one ServiceAccount, no credential inside
 
 `[identity.kube]` pins one context of host kubeconfig and one ServiceAccount.
-No credential file enters. Inside: generated `~/.kube/config` (one cluster,
-one context, read-only) whose only credential is exec plugin
-`/snug/bin/snug-kube-token`. Plugin asks snug on host; snug runs host
-`kubectl create token <sa>` with your credential, through per-run kubeconfig
-it writes, never host file. Token short-lived; minting stops when snug exits.
+No credential enters — no file, no token, no exec plugin. Inside: generated
+`~/.kube/config` (one cluster, one context, read-only) naming
+`http://127.0.0.1:6443`, user empty. That port is snug's proxy: socket in
+sandbox netns, held by snug on host, adds bearer, forwards over TLS to pinned
+server only. Token minted on host by `kubectl create token <sa>` with your
+credential, through per-run kubeconfig snug writes, never host file. No
+`@net` needed — proxy dials from host — so kube profile is NOT offline.
 
 ```toml
 [profile.aks-dev]
-include = ["@net"]
 ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
   [profile.aks-dev.identity.kube]
   context         = "aks-dev"
@@ -418,12 +419,14 @@ ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
   service_account = "dev/snug-agent"   # you create it, and its RoleBinding
 ```
 
-RoleBinding is the real bound: anything inside spends token on whatever it
-allows, plus `pods/exec`/`port-forward` reach cluster's private network. Host
-kubectl must be ELF binary (not distrobox/asdf shim). Refused: exec-plugin
-users (#659), loopback servers (kind on host loopback unreachable),
-`insecure-skip-tls-verify`, `proxy-url`, kubeconfig in target or under rw
-grant. `az` inside: not built (#660). Design:
+RoleBinding is the real bound: anything inside acts as SA on whatever it
+allows while run lives; a Role reading Secrets or creating tokens/pods hands
+out credentials that outlive it. `pods/exec`/`port-forward` reach cluster's
+network. Proxy refuses `Authorization`, `Impersonate-*` (`kubectl --as`),
+`X-Remote-*`, `CONNECT`, absolute URIs, dot segments. Host kubectl must be ELF
+binary (not distrobox/asdf shim). Refused: exec-plugin users (#659), loopback
+servers, `insecure-skip-tls-verify`, `proxy-url`, kubeconfig in target or
+under rw grant. `az` inside: not built (#660). Design:
 [KUBE-IDENTITY.md](.claude/design/KUBE-IDENTITY.md).
 
 ## Two things that will bite

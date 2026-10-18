@@ -121,8 +121,6 @@ func newFakeEnv() *fakeEnv {
 		// every line of it.
 		files: map[string]bool{
 			"/proc/config.gz": true, "/proc/keys": true, "/proc/key-users": true,
-			// testCtx's SnugExecutable, the host side of identity.kube's shim bind.
-			"/usr/bin/snug": true,
 			// The generated files whose DESTINATION exists on every real host.
 			// rejectGeneratedOntoHost stats the destination of a generated mount
 			// that lands inside a read-only bind, because where nothing is there
@@ -512,7 +510,7 @@ var testDefaults = []ProfileName{"@sys", "@home", "@target-rw"}
 // common run the one nothing pins.
 func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
-		Shell: "/bin/sh", Command: []string{"/bin/sh"}, SnugExecutable: "/usr/bin/snug",
+		Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostUserName: "u", HostGroupName: "users",
 		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
 }
@@ -892,10 +890,6 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 	withoutLogin := func() *Profile {
 		p := maximalProfile()
 		p.Login = nil
-		// identity.kube needs egress too, so it is cleared for the same
-		// reason login is: otherwise the network drop only ever reaches a
-		// refusal on this base as well.
-		p.Identity.Kube = IdentityKube{}
 		return p
 	}
 	for _, base := range []struct {

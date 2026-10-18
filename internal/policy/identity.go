@@ -59,8 +59,8 @@ func ParseSSHMode(s string) (SSHMode, error) {
 	}
 }
 
-// KubeTokenMode is how the host-side broker mints the token kubectl inside
-// uses. T1 has one value; "" is UNSET, not a mode, and Resolve refuses a kube
+// KubeTokenMode is how snug mints, on the host, the token its proxy adds to
+// what kubectl inside sends. T1 has one value; "" is UNSET, not a mode, and Resolve refuses a kube
 // block without one, so absence never picks a minting route.
 type KubeTokenMode string
 

@@ -14,7 +14,9 @@ build:
 
 # The integration suite's snug: the same program plus internal/cli's
 # accountfixture.go, which lets a test name the directory it reports as the
-# account's home. Never an install or release target's input.
+# account's home, and internal/kubeproxy's fixture.go, which lets a test point
+# identity.kube's proxy at an API server on loopback. Never an install or
+# release target's input.
 fixture:
 	go build -tags snugfixture -o $(FIXTURE) ./cmd/snug
 
@@ -34,7 +36,7 @@ gate:
 		exit 1; \
 	fi
 	go vet ./...
-	go vet -tags snugfixture ./internal/cli ./cmd/snug
+	go vet -tags snugfixture ./internal/cli ./internal/kubeproxy ./cmd/snug
 	# `go vet ./...` does NOT compile build-tagged files, so the integration
 	# harness could sit broken indefinitely and every gate would still be green.
 	# Type-checking it costs nothing and needs no privileges — unlike running it.
@@ -139,6 +141,9 @@ gate:
 	# that answers `create token -o json` from a mode file beside itself.
 	# Built lazily by kube_test.go. Same fix, same reasoning as above.
 	go vet ./test/integration/testdata/stubkubectl
+	# testdata/kubeprobe is the seventeenth: the payload that speaks to the
+	# kube proxy from inside. Built lazily by kube_test.go.
+	go vet ./test/integration/testdata/kubeprobe
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

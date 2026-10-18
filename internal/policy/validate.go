@@ -17,15 +17,15 @@ func (p *Policy) Validate(env Environ) error {
 	}
 
 	// Topology is derived, never set independently, so a policy whose Topology
-	// disagrees with what its own Net/Podman would produce did not come through
+	// disagrees with what its own Net/Podman/Kube would produce did not come through
 	// Resolve. This closes the zero-value hazard on hand-built policies: several
 	// unit tests construct &Policy{...} directly, and a zero Topology silently
 	// read as NetnsSandbox/SubuidNone even for a policy whose Net.Mode or
 	// Podman would derive something higher.
-	if want := deriveTopology(p.Net.Mode, p.Podman); p.Topology != want {
-		return fmt.Errorf("policy.Topology (%s) does not match what Net.Mode=%s and Podman=%s derive "+
-			"(%s): build the fixture through Resolve, or set Topology with deriveTopology",
-			p.Topology, p.Net.Mode, p.Podman, want)
+	if want := deriveTopology(p.Net.Mode, p.Podman, p.Kube != nil); p.Topology != want {
+		return fmt.Errorf("policy.Topology (%s) does not match what Net.Mode=%s, Podman=%s and "+
+			"identity.kube=%t derive (%s): build the fixture through Resolve, or set Topology with "+
+			"deriveTopology", p.Topology, p.Net.Mode, p.Podman, p.Kube != nil, want)
 	}
 
 	// Report the whole picture at once. Someone who selected an empty or

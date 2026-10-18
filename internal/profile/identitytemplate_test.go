@@ -174,7 +174,9 @@ func TestKubeTemplateLoadsAsAUserProfile(t *testing.T) {
 	if p.Identity.Kube != want {
 		t.Errorf("Kube = %+v, want %+v", p.Identity.Kube, want)
 	}
-	if !slices.Contains(p.Include, "@net") {
-		t.Errorf("template does not include @net, which identity.kube needs: %v", p.Include)
+	// No @net: the proxy dials from the host, and a template that granted
+	// egress anyway would hand every copy of it the internet for nothing.
+	if slices.Contains(p.Include, "@net") {
+		t.Errorf("template includes @net, which identity.kube does not need: %v", p.Include)
 	}
 }

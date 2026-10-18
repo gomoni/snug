@@ -420,36 +420,42 @@ dns = true
 # guesses wrong would fail at a different layer than the one the human wrote.
 #
 # KUBERNETES: [identity.kube] pins ONE cluster and ONE ServiceAccount on it, and
-# no credential file enters the sandbox. snug reads the named context's cluster
-# from your host kubeconfig as data, generates a one-context ~/.kube/config
-# inside whose only credential is an exec plugin (/snug/bin/snug-kube-token),
-# and answers that plugin from the host: `kubectl create token` for the
-# ServiceAccount, run by YOUR kubectl with YOUR credential, through a per-run
-# kubeconfig snug writes — never the host file itself. You create the
+# NO credential enters the sandbox — no file, no token, no exec plugin. snug
+# reads the named context's cluster from your host kubeconfig as data and
+# generates a one-context ~/.kube/config inside whose server is
+# http://127.0.0.1:6443 and whose user is empty. That address is snug's proxy:
+# a socket on the sandbox's own loopback, held by snug on the host, which adds
+# the bearer to each request and forwards it, over TLS, to the pinned server
+# and nowhere else. The token is minted on the host by `kubectl create token`
+# for the ServiceAccount, run by YOUR kubectl with YOUR credential, through a
+# per-run kubeconfig snug writes — never the host file itself. You create the
 # ServiceAccount and its RoleBinding once, on the cluster; the RoleBinding is
 # the real bound on what the sandbox can do there. kubectl must be on the host
-# (an ELF binary, not a distrobox or asdf shim) and, for the sandbox to use the
-# token, inside — the same one-file bind as gh above. Needs @net.
+# (an ELF binary, not a distrobox or asdf shim) and, to be useful, inside —
+# the same one-file bind as gh above. It needs no @net: the proxy dials from
+# the host.
 #
-# ABUSE: a hostile process inside the sandbox can obtain a token for
-# ServiceAccount dev/snug-agent on aks-dev, minted on your host by your own
-# kubectl with your host credential (which, for an AKS local account, is
-# cluster root: the pinned argv — one ServiceAccount, one namespace,
-# `create token` only — is the whole bound on what that host mint does). It
-# can spend the token on anything that account's RoleBinding allows, as often
-# as the API server accepts, for the run and up to one token lifetime after it
-# ends; that post-run bound holds only if the Role grants no token/secret
-# create or read, no workload create or patch, and no nodes/proxy.
-# pods/exec, pods/portforward and services/proxy reach the cluster's private
-# network through the API server, and @net already reaches any network your
-# host routes. It cannot reach kind-kind, any other context, your client
-# certificate or key, the static token, ~/.kube/cache or ~/.azure. The shim
-# is snug's own binary; renamed, it is a copy of snug, which the payload could
-# download anyway.
+# ABUSE: a hostile process inside the sandbox can act as ServiceAccount
+# dev/snug-agent on aks-dev — and on no other server — for as long as the run
+# lives, as often as the API server accepts, on anything that account's
+# RoleBinding allows. It never holds snug's token, so it cannot replay it
+# elsewhere or after the run; but what the RoleBinding lets it READ or MINT
+# leaves with it: a Role that reads Secrets, creates tokens (TokenRequest) or
+# creates pods (each with its own ServiceAccount token) hands out credentials
+# that outlive the run, and what it CREATES on the cluster stays. Your host
+# credential authenticates the mint (for an AKS local account it is cluster
+# root: the pinned argv — one ServiceAccount, one namespace, `create token`
+# only — is the whole bound on what that host mint does). pods/exec,
+# pods/portforward and services/proxy reach the cluster's network through the
+# API server, so a kube profile WITHOUT @net is still not an offline sandbox:
+# it reaches that API server and whatever the cluster reaches. It cannot
+# reach kind-kind, any other context, your client certificate or key, the
+# static token, ~/.kube/cache or ~/.azure, and it cannot send Authorization,
+# Impersonate-* or X-Remote-* through the proxy: those are refused, not
+# stripped, so `kubectl --as` fails loudly.
 #
 # KUBE-TEMPLATE-BEGIN
 #   [profile.aks-dev]
-#   include = ["@net"]
 #   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
 #     [profile.aks-dev.identity.kube]
 #     context         = "aks-dev"            # a context in the host kubeconfig
