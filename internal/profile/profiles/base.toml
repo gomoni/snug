@@ -418,6 +418,46 @@ dns = true
 #
 # Not a builtin, deliberately: the path is host-specific, and a profile that
 # guesses wrong would fail at a different layer than the one the human wrote.
+#
+# KUBERNETES: [identity.kube] pins ONE cluster and ONE ServiceAccount on it, and
+# no credential file enters the sandbox. snug reads the named context's cluster
+# from your host kubeconfig as data, generates a one-context ~/.kube/config
+# inside whose only credential is an exec plugin (/snug/bin/snug-kube-token),
+# and answers that plugin from the host: `kubectl create token` for the
+# ServiceAccount, run by YOUR kubectl with YOUR credential, through a per-run
+# kubeconfig snug writes — never the host file itself. You create the
+# ServiceAccount and its RoleBinding once, on the cluster; the RoleBinding is
+# the real bound on what the sandbox can do there. kubectl must be on the host
+# (an ELF binary, not a distrobox or asdf shim) and, for the sandbox to use the
+# token, inside — the same one-file bind as gh above. Needs @net.
+#
+# ABUSE: a hostile process inside the sandbox can obtain a token for
+# ServiceAccount dev/snug-agent on aks-dev, minted on your host by your own
+# kubectl with your host credential (which, for an AKS local account, is
+# cluster root: the pinned argv — one ServiceAccount, one namespace,
+# `create token` only — is the whole bound on what that host mint does). It
+# can spend the token on anything that account's RoleBinding allows, as often
+# as the API server accepts, for the run and up to one token lifetime after it
+# ends; that post-run bound holds only if the Role grants no token/secret
+# create or read, no workload create or patch, and no nodes/proxy.
+# pods/exec, pods/portforward and services/proxy reach the cluster's private
+# network through the API server, and @net already reaches any network your
+# host routes. It cannot reach kind-kind, any other context, your client
+# certificate or key, the static token, ~/.kube/cache or ~/.azure. The shim
+# is snug's own binary; renamed, it is a copy of snug, which the payload could
+# download anyway.
+#
+# KUBE-TEMPLATE-BEGIN
+#   [profile.aks-dev]
+#   include = ["@net"]
+#   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
+#     [profile.aks-dev.identity.kube]
+#     context         = "aks-dev"            # a context in the host kubeconfig
+#     server          = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
+#     token           = "serviceaccount"
+#     service_account = "dev/snug-agent"     # namespace/name, created by you
+#     # kubeconfig    = "{home}/.kube/config"
+# KUBE-TEMPLATE-END
 
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude

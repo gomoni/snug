@@ -159,7 +159,7 @@ func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The five files named in policy.HostPathVisible's own doc comment
+	// The files named in policy.HostPathVisible's own doc comment
 	// (internal/policy/graft.go):
 	//   - dockerproxy/create.go — checkOne, via the hostPathVisible wrapper
 	//     this file's own TestHostPathVisibleHasOneAuthor already pins.
@@ -168,7 +168,10 @@ func TestHostPathVisibleCallersAreInventoried(t *testing.T) {
 	//   - policy/engineexec.go — CheckEngineBinary and CheckEngineToolchainTree
 	//     (issue #405), one file, two callers of the ancestor arm.
 	//   - policy/enginetarget.go — EngineTargetGraft (issue #376).
+	//   - policy/kube.go — resolveKube, whether a grant makes the host
+	//     kubeconfig writable (issue #664).
 	want := map[string]bool{
+		"internal/policy/kube.go":         true,
 		"internal/dockerproxy/create.go":  true,
 		"internal/policy/graft.go":        true,
 		"internal/cli/dryrun.go":          true,

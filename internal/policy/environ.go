@@ -2,12 +2,17 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/gomoni/snug/internal/hostread"
+	"github.com/gomoni/snug/internal/kubecfg"
 )
 
 // Environ is every host lookup the resolver needs. It exists so that Resolve is
@@ -71,6 +76,14 @@ type Environ interface {
 	// everything mounted BENEATH it, because bwrap's bind is RECURSIVE and
 	// carries them in.
 	HostMounts() ([]HostMount, error)
+
+	// KubeConfig reads the host kubeconfig at path — already spelled without
+	// links, because the identity path loop stored the link-free destination —
+	// and decodes it. Raw bytes never leave the method: the decoded File is
+	// the only thing policy sees, and it carries no host credential beyond the
+	// allowlisted fields Resolve chooses to keep. A missing file is an error
+	// for which errors.Is(err, fs.ErrNotExist) holds.
+	KubeConfig(path string) (kubecfg.File, error)
 
 	Uid() int
 	Gid() int
@@ -171,6 +184,27 @@ func unescapeMountinfo(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// KubeConfig opens with RESOLVE_NO_SYMLINKS: the path is a file the human
+// named, and a link planted on it would choose which server snug's host-side
+// mint sends a credential to.
+//
+// A second hard link is refused too: RESOLVE_NO_SYMLINKS does not see one, and
+// a link left inside a target an earlier run could write would let that run
+// rewrite the file in place (red team, measured with a pre-existing link).
+func (OSEnviron) KubeConfig(p string) (kubecfg.File, error) {
+	if fi, err := os.Lstat(p); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
+			return kubecfg.File{}, fmt.Errorf("it has %d hard links; a second name for the file "+
+				"is a second place it can be rewritten from. Copy it to a file of its own", st.Nlink)
+		}
+	}
+	data, err := hostread.RequiredNoLinks(p, hostread.MaxKubeconfigBytes)
+	if err != nil {
+		return kubecfg.File{}, err
+	}
+	return kubecfg.Parse(data)
 }
 
 func (OSEnviron) Uid() int { return os.Getuid() }
@@ -306,6 +340,15 @@ type Context struct {
 	// filtered by the caller. Binding the whole file would tell the sandbox
 	// every host you have ever connected to.
 	KnownHosts []byte
+
+	// SnugExecutable is the resolved path of the running snug binary: the host
+	// side of the exec-credential shim identity.kube binds into the sandbox.
+	SnugExecutable string
+
+	// HostAddresses is every address the host holds, as text, the same set
+	// the stage seals inside. identity.kube refuses a server naming one of
+	// them, as a usability check; the seal is the bound.
+	HostAddresses []string
 
 	// LegacyTIOCSTI reports whether this kernel still allows the TIOCSTI ioctl,
 	// read from /proc/sys/dev/tty/legacy_tiocsti. When it does, a process in the

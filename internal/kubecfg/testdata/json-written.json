@@ -1,0 +1,15 @@
+{
+  "kind": "Config",
+  "apiVersion": "v1",
+  "preferences": {},
+  "clusters": [
+    {"name": "aks-dev", "cluster": {"server": "https://aks-dev-dns-0000.hcp.example.azmk8s.io:443", "certificate-authority-data": "RkFLRUNB", "insecure-skip-tls-verify": false}}
+  ],
+  "users": [
+    {"name": "u", "user": {"token": "fixturetoken0000"}}
+  ],
+  "contexts": [
+    {"name": "aks-dev", "context": {"cluster": "aks-dev", "user": "u"}}
+  ],
+  "current-context": "aks-dev"
+}

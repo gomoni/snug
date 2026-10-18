@@ -86,8 +86,8 @@ func refuseIdentityKeyEngineState(name ProfileName, key, path string, ctx Contex
 }
 
 func identityKeyRefusal(profile ProfileName, key, path, what, holds string) error {
-	return fmt.Errorf("profile %q: refusing identity.%s %s: it is inside %s. %s, and snug would read\n"+
-		"       the file and stage its contents into the sandbox's $HOME. Copy the PUBLIC key to a\n"+
-		"       directory snug does not manage (for example ~/.ssh) and name that path instead.",
-		profile, key, VisibleText(path), what, holds)
+	role := identityPathRoles[key]
+	return fmt.Errorf("profile %q: refusing identity.%s %s: it is inside %s. %s, and %s.\n"+
+		"       %s",
+		profile, key, VisibleText(path), what, holds, role.reads, role.fix)
 }
