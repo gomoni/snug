@@ -4,14 +4,17 @@ An identity pins the one account each tool acts as inside the sandbox. That
 protects what is most worth protecting: no ssh key, git configuration, `gh`
 login or token is mounted.
 
-It is also simply convenient. Inside, each tool has exactly one account, and
-it is the default: no `ssh -i`, no `gh auth switch`. A sandbox for your work
-account cannot push as your personal one, so nothing can act as the wrong
-account. Two accounts are two profiles, one per run:
+It is also simply convenient. Inside, each tool has exactly one account, and it
+is the default: no `ssh -i`, no `gh auth switch` or `kubectl config
+set-context`. A sandbox for your work account cannot push as your personal one,
+so nothing can act as the wrong account. Two accounts are two profiles, one per
+run, and so are two Kubernetes clusters:
 
 ```sh
-snug -p work     ~/src/app
-snug -p personal ~/src/app
+# kubectl reaches the dev cluster only
+snug -p kube-dev      ~/src/app
+# kubectl reaches the test cluster only
+snug -p kube-test     ~/src/app
 ```
 
 `snug` pins each tool separately as it does not and cannot check that the ssh key
@@ -23,6 +26,7 @@ host's configuration as data and writes only keys that cannot run a program.
 ## `identity`
 
 ```toml
+# first define work related identities
 [profile.work]
 include = ["@net"]
 
@@ -40,24 +44,37 @@ include = ["@net"]
   host = "ghe.example.com"
   user = "you-at-work"
 
-[profile.personal]
-include = ["@net"]
+# make sure manually installed kubectl is available
+[profile.kubectl-cli]
+ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
 
-  [profile.personal.identity.ssh]
-  key   = "{home}/.ssh/personal.pub"
-  agent = "proxy"
+[profile.kube-dev]
+include = ["work", "kubectl-cli"]
+  [profile.dev.identity.kubectl]
+  context    = "aks-dev"
+  server     = "https://aks-dev.example.azmk8s.io:443"
+  credential = "client-certificate"
 
-  [profile.personal.identity.gh]
-  user = "you"
+[profile.test]
+include = ["work", "kubectl"]
+  [profile.test.identity.kubectl]
+  context    = "aks-test"
+  server     = "https://aks-test.example.azmk8s.io:443"
+  credential = "token"
 ```
 
-`identity` itself holds up to three optional blocks: `ssh`, `git` and `gh`.
-Blocks from different profiles combine, but each block has one value per run.
-A second, different value of the same block is refused, naming both profiles:
+`kube-dev` and `kubetest` push, commit and call `gh` as `work` does. Each adds
+a different cluster definition. `kubectl` inside sees one context, and the
+other cluster is not there at all.
+
+`identity` itself holds up to four optional blocks: `ssh`, `git`, `gh` and
+`kubectl`. Blocks from different profiles combine, but each block has one value
+per run. A second, different value of the same block is refused, naming both
+profiles:
 
 ```text
-$ snug -p work -p personal ~/src/app
-snug: profiles "personal" and "work" pin different identity.ssh; select only one of them, or make the two blocks identical
+$ snug -p work -p other ~/src/app
+snug: profiles "other" and "work" pin different identity.ssh; select only one of them, or make the two blocks identical
 ```
 
 ### `identity.ssh`
@@ -124,6 +141,68 @@ git reads it below the generated `~/.gitconfig`, so the pinned keys still win.
 snug stages that account's token in a private `hosts.yml` and sets
 `GH_CONFIG_DIR` to its directory. `gh` itself must be inside; see
 [Staging a single program](filesystem.md#staging-a-single-program-snugbin).
+
+### `identity.kubectl`
+
+| key | value | default |
+|---|---|---|
+| `context` | a context in the host kubeconfig | none |
+| `server` | the API server **remote** URL that context must name | none |
+| `credential` | `"client-certificate"` or `"token"` | the one the user entry holds |
+| `kubeconfig` | path to the host kubeconfig | `{home}/.kube/config` |
+
+```toml
+[profile.aks-dev]
+ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
+
+  [profile.aks-dev.identity.kubectl]
+  context    = "dev"
+  server     = "https://dev.example.com:443"
+  credential = "client-certificate"
+```
+
+`snug` reads the context's cluster and user entry from the host `kubeconfig`
+and generates a `~/.kube/config` inside the sandbox. This config has a single
+cluster, a single context and an empty user. No certificate, token or exec
+plugin enters the sandbox. The server it names is `http://127.0.0.1:6443`,
+which is snug's proxy. It presents the context's own credential and
+forwards each request over TLS to `server`, and nowhere else.
+
+The proxy runs on the host and uses the host network, so `@net` is not
+required.
+
+`credential` picks which one credential of the context's user entry the proxy
+presents to the upstream `server`. It is required only when that entry in the
+host kubeconfig holds more than a single credential.
+
+- `client-certificate`: the `client-certificate-data` and
+  `client-key-data`, as the proxy's TLS client certificate.
+- `token`: the static token, as the bearer. It replaces any
+  `Authorization` the sandboxed client may send.
+
+snug protects the host, not the cluster.
+
+Unlike the [container proxy](containers.md), this proxy does not filter the
+Kubernetes API. The sandbox can do anything your RBAC allows on that server.
+
+What snug does guarantee is that your Kubernetes credentials never enter the
+sandbox, so nothing inside can leak them.
+
+#### Refused before the run
+
+snug does not start the sandbox for:
+
+- a `server` on this host. loopback, host's own addresses, link-local and
+  cloud-metadata addresses are all refused. This would be an easy sandbox escape.
+- `insecure-skip-tls-verify` or `proxy-url` in the cluster entry.
+- a certificate, key or CA given by path.
+- a kubeconfig the sandbox could read or write through any grant.
+- a context whose user authenticates with an exec plugin (`kubelogin`,
+  `aws`, `gke-gcloud-auth-plugin`): snug does not run exec plugins yet, see
+  [#674](https://github.com/gomoni/snug/issues/674).
+
+`snug --dry-run` shows the context, the credential presented, and what was
+left out.
 
 ### Rules
 
