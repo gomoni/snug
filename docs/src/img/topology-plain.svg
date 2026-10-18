@@ -26,7 +26,7 @@
   <!-- bwrap leg -->
   <rect x="48" y="190" width="1084" height="154" rx="8"
         fill="#cfe7d5" stroke="#2f6b45" stroke-width="2"/>
-  <text x="68" y="218" font-size="17" font-weight="bold" fill="#17402a">snug __inpidns → bwrap — pid 1 of THIS namespace</text>
+  <text x="68" y="218" font-size="17" font-weight="bold" fill="#17402a">snug __inpidns mounts this namespace's /proc, then execs bwrap — pid 1 here</text>
 
   <!-- sandbox pid namespace -->
   <rect x="72" y="234" width="1036" height="94" rx="8"

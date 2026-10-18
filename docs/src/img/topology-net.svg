@@ -37,8 +37,8 @@
   <rect x="48" y="146" width="520" height="110" rx="8"
         fill="#ffffff" stroke="#2f6fb5" stroke-width="2"/>
   <text x="68" y="174" font-size="19" font-weight="bold" fill="#1d4a7d">P1  snug __stage-setup → __stage-serve</text>
-  <text x="68" y="198" font-size="15" fill="#33475c">made N, pinned it by a descriptor, and LEFT</text>
-  <text x="68" y="220" font-size="15" fill="#33475c">sits in an empty netns of its own</text>
+  <text x="68" y="198" font-size="15" fill="#33475c">made N, pinned it by a descriptor, and LEFT for an empty netns</text>
+  <text x="68" y="220" font-size="15" fill="#33475c">drops CAP_SYS_PTRACE before it forks anything</text>
   <text x="68" y="242" font-size="15" fill="#33475c">catches and drops SIGINT/TERM/HUP/QUIT</text>
 
   <line x1="470" y1="84" x2="470" y2="140" stroke="#555" stroke-width="2" marker-end="url(#tn-arrow)"/>
@@ -55,8 +55,8 @@
   <text x="92" y="330" font-size="17" font-weight="bold" fill="#17402a">snug __innetns → bwrap → init → your command</text>
   <text x="92" y="358" font-size="15" fill="#17402a">+ intermediate pid ns from P1 — bwrap is pid 1 there</text>
   <text x="92" y="380" font-size="15" fill="#17402a">+ bwrap's own pid ns — init is pid 1 there</text>
-  <text x="92" y="402" font-size="15" fill="#17402a">+ its own mount ns</text>
-  <text x="92" y="424" font-size="15" fill="#17402a">+ seccomp</text>
+  <text x="92" y="402" font-size="15" fill="#17402a">+ its own mount ns + seccomp</text>
+  <text x="92" y="424" font-size="15" fill="#17402a">+ payload parked (--block-fd) until snug sees pasta still running</text>
   <text x="92" y="464" font-size="17" font-weight="bold" fill="#17402a">FULL SANDBOX</text>
 
   <line x1="505" y1="256" x2="505" y2="298" stroke="#555" stroke-width="2" marker-end="url(#tn-arrow)"/>
