@@ -106,16 +106,16 @@ func TestIdentityFieldKeysMatchTheProfileTOMLTags(t *testing.T) {
 	for i := 0; i < raw.NumField(); i++ {
 		f := raw.Field(i)
 		switch f.Name {
-		case "SSH", "Git", "Gh", "Kube":
+		case "SSH", "Git", "Gh":
 			prefix := f.Tag.Get("toml") + "."
 			nested := f.Type
 			for j := 0; j < nested.NumField(); j++ {
 				got = append(got, prefix+nested.Field(j).Tag.Get("toml"))
 			}
 		default:
-			t.Fatalf("rawIdentity.%s is none of ssh, git, gh or kube: [identity] is a container "+
+			t.Fatalf("rawIdentity.%s is neither ssh, git nor gh: [identity] is a container "+
 				"of per-tool blocks with no keys of its own, and a field here that is not "+
-				"one of the blocks decodes a key policy.IdentityFieldKeys() cannot name",
+				"one of the three decodes a key policy.IdentityFieldKeys() cannot name",
 				f.Name)
 		}
 	}
@@ -204,25 +204,5 @@ user = "some-one"
 	}
 	if p.Identity.Gh.User != "some-one" {
 		t.Errorf("Gh.User = %q, want %q", p.Identity.Gh.User, "some-one")
-	}
-}
-
-func TestKubeIdentityUnknownTokenValueRefusesAtLoad(t *testing.T) {
-	_, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\ntoken = \"static\"\n"), "mine.toml", true)
-	if err == nil || !strings.Contains(err.Error(), `(want serviceaccount)`) || !strings.Contains(err.Error(), `"x"`) {
-		t.Fatalf("err = %v, want the unknown-token refusal naming the profile", err)
-	}
-}
-
-func TestKubeIdentityDecodesEveryLeaf(t *testing.T) {
-	ps, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\nserver = \"https://aks-dev.example.azmk8s.io:443\"\ntoken = \"serviceaccount\"\n"+
-		"service_account = \"dev/snug-agent\"\nkubeconfig = \"{home}/.kube/config\"\n"), "mine.toml", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := policy.IdentityKube{Context: "aks-dev", Token: policy.KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "{home}/.kube/config"}
-	if got := ps["x"].Identity.Kube; got != want {
-		t.Fatalf("Kube = %+v, want %+v", got, want)
 	}
 }

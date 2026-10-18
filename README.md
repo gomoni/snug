@@ -284,19 +284,18 @@ Then `snug -p srv-rw ~/src/proj` will mount `/srv/project` and
 - Path variables: `{target}`, `{target_parent}`, `{home}`, `~` — the three
   `resolve.go` actually builds, plus the tilde.
 
-## Identity — who the sandbox acts as
+## Identity — one account per sandbox
 
 > **Alpha state
 > A lot of details will change, be ready that your configuration won't survive
 
-An `[identity]` block pins who the sandbox acts as, one block per tool. Bounds
+An `[identity]` block pins the sandbox to one git/ssh/GitHub account. Bounds
 blast radius, not secrecy: an agent that can sign with one key pushes as that
 account and no other, and `gh` answers as that account and no other. Without
 pinning, "the agent has ssh" means "the agent is you, everywhere".
 
 One block per tool. `[identity]` itself has no keys; each tool block is
-independently optional, an absent one contributes nothing, and each is its own
-pin (see "Two accounts, two profiles").
+independently optional and an absent one contributes nothing.
 
 ```toml
 # ~/.config/snug/profiles.d/accounts.toml
@@ -397,34 +396,6 @@ token and both halves work, so run all three the first time you write a profile.
 It does refuse `identity.gh.host` with no `identity.gh.user`, because that staged
 the token of whatever account your host's `gh` was logged in to — a credential
 the profile never named.
-
-## Kubernetes — one cluster, one ServiceAccount
-
-`[identity.kube]` pins one context of host kubeconfig and one ServiceAccount.
-No credential file enters. Inside: generated `~/.kube/config` (one cluster,
-one context, read-only) whose only credential is exec plugin
-`/snug/bin/snug-kube-token`. Plugin asks snug on host; snug runs host
-`kubectl create token <sa>` with your credential, through per-run kubeconfig
-it writes, never host file. Token short-lived; minting stops when snug exits.
-
-```toml
-[profile.aks-dev]
-include = ["@net"]
-ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]
-  [profile.aks-dev.identity.kube]
-  context         = "aks-dev"
-  server          = "https://aks-dev.example.azmk8s.io:443"  # must match kubeconfig
-  token           = "serviceaccount"
-  service_account = "dev/snug-agent"   # you create it, and its RoleBinding
-```
-
-RoleBinding is the real bound: anything inside spends token on whatever it
-allows, plus `pods/exec`/`port-forward` reach cluster's private network. Host
-kubectl must be ELF binary (not distrobox/asdf shim). Refused: exec-plugin
-users (#659), loopback servers (kind on host loopback unreachable),
-`insecure-skip-tls-verify`, `proxy-url`, kubeconfig in target or under rw
-grant. `az` inside: not built (#660). Design:
-[KUBE-IDENTITY.md](.claude/design/KUBE-IDENTITY.md).
 
 ## Two things that will bite
 

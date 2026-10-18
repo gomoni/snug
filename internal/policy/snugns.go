@@ -59,10 +59,6 @@ const SnugDir = "/snug"
 // one by name.
 const StagedBinDir = SnugDir + "/bin"
 
-// KubeTokenShimGuest is the exec-credential plugin the generated kubeconfig
-// names: snug's own executable, bound read-only, dispatched on argv[0].
-const KubeTokenShimGuest = StagedBinDir + "/snug-kube-token"
-
 // ContainerSocketGuest and AgentSocketGuest are the two sockets snug publishes
 // inside the sandbox. They are here rather than beside their callers so that
 // every guest path snug owns is declared in one file — the property SnugDir
@@ -70,9 +66,6 @@ const KubeTokenShimGuest = StagedBinDir + "/snug-kube-token"
 const (
 	ContainerSocketGuest = SnugDir + "/podman.sock"
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
-	// KubeTokenSocketGuest is the exec-credential broker's socket; the shim
-	// at KubeTokenShimGuest is its only intended client.
-	KubeTokenSocketGuest = SnugDir + "/kube-token.sock"
 
 	// BrowserFIFOGuest is where snug binds the FIFO the login-bridge shim
 	// writes to — a profile's login = ["claude"] only, never present

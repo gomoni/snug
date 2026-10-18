@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/gomoni/snug/internal/engine"
-	"github.com/gomoni/snug/internal/kubebroker"
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sandbox"
@@ -80,12 +79,6 @@ func (c config) startsNothing() bool { return c.dryRun || c.explain }
 // than threading an exit code back through an extra return.
 func Main() {
 	argv := os.Args[1:]
-
-	// The exec-credential shim identity.kube binds into the sandbox is this
-	// binary under another name; client-go runs it with no snug arguments.
-	if filepath.Base(os.Args[0]) == "snug-kube-token" {
-		os.Exit(kubebroker.ShimMain())
-	}
 
 	// Hidden verbs, dispatched before ANYTHING else — flag parsing, profile
 	// loading, none of it. They are not subcommands: they do not appear in
@@ -679,8 +672,6 @@ func run(cfg config) int {
 		RuntimeDirs:       runtimeDirCandidates(),
 		EngineTmpPrefixes: engine.TmpDirPrefixes(),
 		EngineDataRoots:   engineDataRoots(os.Getenv("SNUG_PODMAN_ROOT")),
-		SnugExecutable:    snugExecutable(),
-		HostAddresses:     hostAddressesForResolve(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
@@ -792,12 +783,6 @@ func run(cfg config) int {
 		return refuse(cfg, exitPolicy, err)
 	}
 	defer idCleanup()
-
-	kubeCleanup, err := startKubeIdentity(pol, env, cfg.verbose, cfg.startsNothing())
-	if err != nil {
-		return refuse(cfg, exitPolicy, err)
-	}
-	defer kubeCleanup()
 
 	ctr, err := startContainers(env, pol, notes, cfg.verbose, cfg.startsNothing())
 	if err != nil {

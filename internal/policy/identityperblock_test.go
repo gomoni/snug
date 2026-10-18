@@ -24,11 +24,9 @@ func identityProfiles(ids map[ProfileName]Identity) (map[ProfileName]*Profile, [
 }
 
 var (
-	sshBlock  = IdentitySSH{Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy}
-	gitBlock  = IdentityGit{Name: "Base Name", Email: "base@example.com"}
-	ghBlock   = IdentityGh{User: "base-user"}
-	kubeBlock = IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"}
+	sshBlock = IdentitySSH{Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy}
+	gitBlock = IdentityGit{Name: "Base Name", Email: "base@example.com"}
+	ghBlock  = IdentityGh{User: "base-user"}
 )
 
 func TestIdentityPinPerBlockRefusesNamingBothOwners(t *testing.T) {
@@ -36,8 +34,6 @@ func TestIdentityPinPerBlockRefusesNamingBothOwners(t *testing.T) {
 		"ssh": {{SSH: sshBlock}, {SSH: IdentitySSH{Key: "/home/u/.ssh/other.pub", Agent: SSHAgentProxy}}},
 		"git": {{Git: gitBlock}, {Git: IdentityGit{Name: "Other", Email: "other@example.com"}}},
 		"gh":  {{Gh: ghBlock}, {Gh: IdentityGh{User: "other-user"}}},
-		"kube": {{Kube: kubeBlock}, {Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/other", Kubeconfig: "/home/u/.kube/config"}}},
 	}
 	for _, pin := range identityPins {
 		pair, ok := differ[pin.Key]

@@ -118,8 +118,6 @@ func baseNestedIdentity() Identity {
 		SSH: IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
 		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
 		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
-		Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-			Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/config"},
 	}
 }
 
@@ -151,12 +149,6 @@ func TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf(t *testing.T) {
 				b.Git.SigningKey = ""
 				av.SetString(string(SSHAgentProxy))
 				bv.SetString(string(SSHNone))
-			} else if f.Key == "kube.token" {
-				// One accepted value; the other side of the pair is UNSET, which
-				// still leaves the kube block set and so still a different pin.
-				// "-a" would be refused by the parser naming one profile.
-				av.SetString(string(KubeTokenServiceAccount))
-				bv.SetString("")
 			} else {
 				av.SetString(av.String() + "-a")
 				bv.SetString(bv.String() + "-b")
