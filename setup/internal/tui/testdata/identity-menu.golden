@@ -9,7 +9,7 @@ snug-setup  ~/work/snug-setup  IDENTITY
   ( ) plainsof
         ssh   github.com
               ~/.ssh/config  Host github.com  → github_auth
-        ! profiles "plainsof" and "vyskocilm" pin different identity.ssh; profiles "plainsof" and "…
+        ! conflicts with vyskocilm on ssh, git, gh
 
   git
   ( ) none
@@ -19,10 +19,7 @@ snug-setup  ~/work/snug-setup  IDENTITY
         sign  github_sign
   ( ) plainsof
         git   <p@example.org>
-        ! profiles "plainsof" and "vyskocilm" pin different identity.ssh; profiles "plainsof" and "…
-  ( ) from host
-        M V <m@example.org>
-        ! profiles "vyskocilm" and "vyskocilm-2" pin different identity.git
+        ! conflicts with vyskocilm on ssh, git, gh
 
   gh
   ( ) none
@@ -32,9 +29,6 @@ snug-setup  ~/work/snug-setup  IDENTITY
         also includes: gh-cli
   ( ) plainsof
         gh    github.com/plainsof
-        ! profiles "plainsof" and "vyskocilm" pin different identity.ssh; profiles "plainsof" and "…
-  ( ) from host
-        github.com/vyskocilm
-        ! profiles "vyskocilm" and "vyskocilm-2" pin different identity.gh
+        ! conflicts with vyskocilm on ssh, git, gh
 
  j/k move  space pick or toggle  ? why  esc back

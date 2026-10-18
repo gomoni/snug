@@ -77,6 +77,8 @@ type effective struct {
 type problem struct {
 	block Block
 	msg   string
+	// names are the two profiles of a block conflict; nil for any other problem.
+	names []string
 }
 
 // idState is the result of folding the picks the way snug folds the selected
@@ -236,7 +238,7 @@ func (s Selection) resolve(picks map[Block]int) idState {
 		if o := owners[b]; len(o) > 1 {
 			for _, other := range o[1:] {
 				if s.blockValue(other.id, b) != s.blockValue(o[0].id, b) {
-					st.problems = append(st.problems, problem{b, fmt.Sprintf("profiles %q and %q pin different identity.%s", o[0].name, other.name, b)})
+					st.problems = append(st.problems, problem{b, fmt.Sprintf("profiles %q and %q pin different identity.%s", o[0].name, other.name, b), []string{o[0].name, other.name}})
 					conflict[b] = true
 					break
 				}
@@ -244,7 +246,7 @@ func (s Selection) resolve(picks map[Block]int) idState {
 		}
 		for _, m := range owners[b] {
 			if _, ok := agentOf(m.id.SSHAgent); b == BlockSSH && !ok {
-				st.problems = append(st.problems, problem{b, fmt.Sprintf("profile %q: unknown identity.ssh.agent %q (want proxy or none)", m.name, m.id.SSHAgent)})
+				st.problems = append(st.problems, problem{block: b, msg: fmt.Sprintf("profile %q: unknown identity.ssh.agent %q (want proxy or none)", m.name, m.id.SSHAgent)})
 			}
 		}
 		switch src := s.srcAt(b, picks); {
@@ -279,11 +281,11 @@ func (st *idState) crossBlock(owners map[Block][]member) {
 			if len(ssh) > 0 {
 				who = fmt.Sprintf("profile %q sets identity.ssh with no agent", ssh[0].name)
 			}
-			st.problems = append(st.problems, problem{BlockGit, fmt.Sprintf("profile %q: identity.git.signing_key needs identity.ssh.agent = \"proxy\", and %s", git[0].name, who)})
+			st.problems = append(st.problems, problem{block: BlockGit, msg: fmt.Sprintf("profile %q: identity.git.signing_key needs identity.ssh.agent = \"proxy\", and %s", git[0].name, who)})
 		case !slices.ContainsFunc(git, func(g member) bool {
 			return slices.ContainsFunc(ssh, func(x member) bool { return x.name == g.name })
 		}):
-			st.problems = append(st.problems, problem{BlockGit, fmt.Sprintf("profiles %q and %q: identity.git.signing_key needs identity.ssh from the same profile", git[0].name, ssh[0].name)})
+			st.problems = append(st.problems, problem{block: BlockGit, msg: fmt.Sprintf("profiles %q and %q: identity.git.signing_key needs identity.ssh from the same profile", git[0].name, ssh[0].name)})
 		}
 	}
 	if len(ssh) == 0 && len(gh) == 0 {
@@ -301,13 +303,13 @@ func (st *idState) crossBlock(owners map[Block][]member) {
 	ghActive := ghUser != "" || ghHost != ""
 	switch {
 	case ghHost != "" && sshHost == "" && sshActive:
-		st.problems = append(st.problems, problem{BlockGH, halfNamed(gh[0].name, ssh[0].name, "gh", ghHost, "ssh")})
+		st.problems = append(st.problems, problem{block: BlockGH, msg: halfNamed(gh[0].name, ssh[0].name, "gh", ghHost, "ssh")})
 	case sshHost != "" && ghHost == "" && ghActive:
 		other := ssh[0].name
 		if len(gh) > 0 {
 			other = gh[0].name
 		}
-		st.problems = append(st.problems, problem{BlockSSH, halfNamed(ssh[0].name, other, "ssh", sshHost, "gh")})
+		st.problems = append(st.problems, problem{block: BlockSSH, msg: halfNamed(ssh[0].name, other, "ssh", sshHost, "gh")})
 	}
 }
 
@@ -465,9 +467,11 @@ func identityLine(id ingest.ProfileIdentity, b Block) string {
 }
 
 // BlockProblem returns what snug would refuse if block b came from choice i,
-// "" when nothing. For the picked choice that is every problem keyed to the
-// block now; for any other it is the problems the pick would add, in any
-// block, so a line is marked for the conflict it would cause.
+// "" when nothing. For the picked choice that is snug's own wording for every
+// problem keyed to the block now. For any other it is what the pick would add,
+// in any block, written compactly: "conflicts with X on ssh, git" for block
+// conflicts, and the full text for any other problem, so a line is marked for
+// the conflict it would cause.
 func (s Selection) BlockProblem(b Block, i int) string {
 	cur := s.resolve(s.Block)
 	if i == s.Block[b] {
@@ -475,13 +479,40 @@ func (s Selection) BlockProblem(b Block, i int) string {
 	}
 	picks := maps.Clone(s.Block)
 	picks[b] = i
-	var out []string
-	for _, p := range s.resolve(picks).problems {
-		if !slices.ContainsFunc(cur.problems, func(q problem) bool { return q.msg == p.msg }) {
-			out = append(out, p.msg)
+	hyp := s.resolve(picks)
+	mine := []string{s.srcAt(b, picks).name}
+	for _, m := range hyp.members {
+		if m.via == mine[0] {
+			mine = append(mine, m.name)
 		}
 	}
-	return strings.Join(out, "; ")
+	var others, blocks, full []string
+	for _, p := range hyp.problems {
+		if slices.ContainsFunc(cur.problems, func(q problem) bool { return q.msg == p.msg }) {
+			continue
+		}
+		if p.names == nil {
+			full = append(full, p.msg)
+			continue
+		}
+		theirs := slices.DeleteFunc(slices.Clone(p.names), func(n string) bool { return slices.Contains(mine, n) })
+		if len(theirs) == 0 {
+			theirs = p.names
+		}
+		for _, n := range theirs {
+			if !slices.Contains(others, n) {
+				others = append(others, n)
+			}
+		}
+		if bs := p.block.String(); !slices.Contains(blocks, bs) {
+			blocks = append(blocks, bs)
+		}
+	}
+	var out []string
+	if len(others) > 0 {
+		out = append(out, "conflicts with "+strings.Join(others, ", ")+" on "+strings.Join(blocks, ", "))
+	}
+	return strings.Join(append(out, full...), "; ")
 }
 
 // WithBlock returns a copy of s with block b coming from choice i. DESC

@@ -277,7 +277,7 @@ func TestIncludesJoinTheFold(t *testing.T) {
 	if want := `profiles "B" and "C" pin different identity.gh`; !strings.Contains(refusal(c, ps), want) {
 		t.Errorf("refused %q, want %q", refusal(c, ps), want)
 	}
-	if got := s.BlockProblem(BlockGH, idx(t, s, BlockGH, "C")); !strings.Contains(got, `"B" and "C"`) {
+	if got := s.BlockProblem(BlockGH, idx(t, s, BlockGH, "C")); got != "conflicts with B on gh" {
 		t.Errorf("C's line carries no problem: %q", got)
 	}
 }
@@ -377,10 +377,58 @@ func TestALineIsMarkedForTheConflictItWouldCause(t *testing.T) {
 	}
 	s := noRemote(ps...)
 	s = s.WithBlock(BlockGH, idx(t, s, BlockGH, "B"))
-	if got := s.BlockProblem(BlockSSH, idx(t, s, BlockSSH, "A")); !strings.Contains(got, `profiles "A" and "B" pin different identity.gh`) {
+	if got := s.BlockProblem(BlockSSH, idx(t, s, BlockSSH, "A")); got != "conflicts with B on gh" {
 		t.Errorf("ssh line for A carries %q", got)
 	}
 	if got := s.BlockProblem(BlockSSH, 0); got != "" {
 		t.Errorf("none causes nothing: %q", got)
+	}
+}
+
+// accountsToml is shaped like a real accounts.toml: two accounts, each pinning
+// ssh, git and gh, with the host written out in ssh and gh.
+func accountsToml(name, user, email string) ingest.Profile {
+	return prof(name, ingest.ProfileIdentity{
+		SSHKey: "{home}/.ssh/github_auth.pub", SSHHost: "github.com", SSHAgent: "proxy",
+		GitName: "Michal V", Email: email, GHUser: user, GHHost: "github.com",
+	})
+}
+
+func TestFromHostIsNotOfferedForWhatAProfileCovers(t *testing.T) {
+	f := hostFacts()
+	f.Profiles = []ingest.Profile{accountsToml("vyskocilm", "vyskocilm", "m@example.org")}
+	s := Suggest(f, home, hostTarget)
+	for _, b := range allBlocks {
+		if slices.ContainsFunc(s.BlockChoices(b), func(c Choice) bool { return c.Label == FromHost }) {
+			t.Errorf("%v offers from host for a value vyskocilm already pins", b)
+		}
+	}
+	if got := label(s, Identity); got != "vyskocilm" || s.UsesHost() {
+		t.Errorf("row %q", got)
+	}
+
+	other := accountsToml("vyskocilm", "vyskocilm", "m@example.org")
+	other.Identity.SSHKey = "{home}/.ssh/another.pub"
+	f.Profiles = []ingest.Profile{other}
+	s = Suggest(f, home, hostTarget)
+	has := func(b Block) bool {
+		return slices.ContainsFunc(s.BlockChoices(b), func(c Choice) bool { return c.Label == FromHost })
+	}
+	if !has(BlockSSH) || has(BlockGit) || has(BlockGH) {
+		t.Errorf("from host covers only what no profile covers: ssh %v git %v gh %v", has(BlockSSH), has(BlockGit), has(BlockGH))
+	}
+}
+
+func TestHypotheticalProblemIsCompact(t *testing.T) {
+	f := ingest.Facts{
+		Profiles: []ingest.Profile{accountsToml("vyskocilm", "vyskocilm", "m@example.org"), accountsToml("plainsof", "plainsof", "p@example.org")},
+		Repo:     repoFacts("git@github.com:gomoni/snug.git", "m@example.org"),
+	}
+	s := Suggest(f, home, hostTarget)
+	if got := s.BlockProblem(BlockSSH, idx(t, s, BlockSSH, "plainsof")); got != "conflicts with vyskocilm on git, gh" {
+		t.Errorf("compact text: %q", got)
+	}
+	if got := s.BlockProblem(BlockSSH, s.Block[BlockSSH]); got != "" {
+		t.Errorf("the picked line has no problem: %q", got)
 	}
 }

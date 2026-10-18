@@ -18,6 +18,6 @@ snug-setup  ~/work/snug-setup  IDENTITY
   ( ) b
         gh    github.com/b-user
         ! b: gh not logged in as b-user on github.com — gh auth login --hostname github.com
-        ! profiles "a" and "b" pin different identity.gh
+        ! conflicts with a on gh
 
  j/k move  space pick or toggle  ? why  esc back

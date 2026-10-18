@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/hostfacts"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/safe"
@@ -135,7 +136,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 	s.env = prop.Env
 
 	id := Row{Sure: true, Choices: []Choice{{Label: NoIdentity}}}
-	s.sources, s.blockDefault, s.host = identitySources(f)
+	s.sources, s.blockDefault, s.host = identitySources(f, home)
 	s.Block = maps.Clone(s.blockDefault)
 	if s.host != nil && s.host.sign != nil && s.srcAt(BlockSSH, s.Block).kind == srcHost && s.srcAt(BlockGit, s.Block).kind == srcHost {
 		s.Parts[PartSigning] = true
@@ -247,8 +248,9 @@ func baseRow(parentIsHome bool) Row {
 // block. A profile that matches the remote is suggested for every block it
 // pins and the other blocks get none. FromHost is suggested for every block
 // the host has only when no profile of yours matches and the match is not a
-// tie between two.
-func identitySources(f ingest.Facts) (map[Block][]source, map[Block]int, *hostIdentity) {
+// tie between two. FromHost is not offered for a block that a profile of
+// yours already pins with the same identifying value (see covered).
+func identitySources(f ingest.Facts, home string) (map[Block][]source, map[Block]int, *hostIdentity) {
 	pick := ingest.Suggest(ingest.SuggestInput{Repo: f.Repo, SSH: f.SSH, Keys: f.Keys, Profiles: f.Profiles, Authors: f.Authors, GH: f.GH, GitSigningKey: f.GitSigningKey})
 	taken := func(n string) bool {
 		return slices.ContainsFunc(f.Profiles, func(p ingest.Profile) bool { return strings.EqualFold(p.Name, n) }) ||
@@ -286,7 +288,7 @@ func identitySources(f ingest.Facts) (map[Block][]source, map[Block]int, *hostId
 			}
 			list = append(list, c)
 		}
-		if hi != nil && hi.block(b) != nil {
+		if hi != nil && hi.block(b) != nil && !covered(f.Profiles, hi, b, home) {
 			p := hi.block(b)
 			c := source{Choice: Choice{Label: FromHost, Why: "from your host", Facts: []string{
 				safe.Inline(strings.SplitN(p.text, " ", 2)[0] + ": " + p.why),
@@ -591,4 +593,31 @@ func (s Selection) ghWarning(name string) string {
 		return ""
 	}
 	return safe.Inline(name + ": gh not logged in as " + id.GHUser + " on " + host + " — gh auth login --hostname " + host)
+}
+
+// covered reports whether a profile of yours pins block b to what the host
+// would write: the same key file for ssh, the same name and email for git, the
+// same login for gh, with a host that is unwritten or github.com on both
+// sides. It decides only what the submenu offers; the fold still compares
+// blocks as written.
+func covered(profiles []ingest.Profile, h *hostIdentity, b Block, home string) bool {
+	defHost := func(v string) bool { return v == "" || v == draft.GitHubHost }
+	expand := func(p string) string {
+		if rest, ok := strings.CutPrefix(p, "{home}"); ok && home != "" {
+			p = home + rest
+		}
+		return filepath.Clean(p)
+	}
+	return slices.ContainsFunc(profiles, func(p ingest.Profile) bool {
+		id := p.Identity
+		switch b {
+		case BlockSSH:
+			return id.SSHKey != "" && expand(id.SSHKey) == filepath.Clean(h.ssh.pub) && defHost(id.SSHHost)
+		case BlockGit:
+			return id.GitName == h.git.a && id.Email == h.git.b
+		case BlockGH:
+			return id.GHUser != "" && id.GHUser == h.gh.a && defHost(id.GHHost)
+		}
+		return false
+	})
 }
