@@ -294,7 +294,7 @@ dns = true
 # outlives the sandbox; the address and the token are per-run so a stale one is
 # never reached again, and "clear site data" is the remedy if you want it gone.
 #
-# NOT the `listen_names` environment variable, which names an OUTBOUND forward
+# NOT the `http_proxy` environment variable, which names an OUTBOUND forward
 # proxy. This is inbound.
 #
 # There is no builtin, and no form where the sandbox picks. Name your doors in
