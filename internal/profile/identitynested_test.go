@@ -76,8 +76,8 @@ func TestUnknownAgentModeIsRefusedAtParseTime(t *testing.T) {
 func TestEmptyIdentityBlockIsRefused(t *testing.T) {
 	_, err := parse([]byte("[profile.x]\n[profile.x.identity]\n"), "mine.toml", true)
 	if err == nil {
-		t.Fatal("an [identity] block that sets nothing resolved; it still sets " +
-			"IdentityOwner and relabels the generated ~/.gitconfig's provenance")
+		t.Fatal("an [identity] block that sets nothing resolved; it reads as a pin " +
+			"that does not exist")
 	}
 	if !strings.Contains(err.Error(), "mine.toml") || !strings.Contains(err.Error(), `"x"`) {
 		t.Errorf("error does not name the file and the profile: %v", err)

@@ -367,18 +367,19 @@ generated file: `git commit` inside has no author. See
 
 ### Two accounts, two profiles
 
-Write the block twice. Each sandbox then acts as one account through **both**
-channels, and cannot act as the other.
+Each identity block (`ssh`, `git`, `gh`) is own pin. Same block set differently
+by two selected profiles: error naming both. Different blocks compose.
 
 ```console
 $ snug -p personal ~/src/proj    # one account
 $ snug -p work     ~/src/proj    # the other
 $ snug -p personal -p work ~/src/proj
-snug: profiles "personal" and "work" pin different identities; select only one
+snug: profiles "personal" and "work" pin different identity.ssh; select only one of them, or make the two blocks identical
 ```
 
-Selecting both is an error rather than a merge: an identity is a pin, and two
-pins are a contradiction.
+Account's blocks in one profile: sandbox acts as that account through both
+channels. Blocks split across profiles: ssh from one, gh from other — composes,
+and acts as each per channel.
 
 ## Checking which account you are
 

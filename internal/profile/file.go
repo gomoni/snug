@@ -101,7 +101,8 @@ type rawEnviron struct {
 //
 // The inner blocks are VALUES, not pointers, which is the opposite of
 // rawProfile.Identity above. That pointer is load-bearing — p.Identity != nil is
-// what gates the generated ~/.gitconfig and sets IdentityOwner — and inside it
+// what tells Resolve to look at this profile's blocks at all; each block then takes part
+// in the identity join only if it sets something — and inside it
 // there is no absent-vs-empty distinction left to preserve: an empty
 // [identity.ssh] and an absent one both yield empty strings, so pointers would buy
 // three nil guards and no behaviour. DisallowUnknownFields reaches a nested value
@@ -590,18 +591,17 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 
 // emptyIdentityBlock refuses [identity] with no keys under it.
 //
-// An empty block is NOT inert, which is why this is a refusal rather than a
-// tolerated no-op: a non-nil Identity sets IdentityOwner, and that relabels the
-// generated ~/.gitconfig's provenance from git:<name> to identity:<name>. So a
-// block setting nothing makes --dry-run and `snug profile show` claim a pin that
-// does not exist, on the screen a human reads to decide whether to trust the
-// sandbox. Nesting multiplied the shape from one empty block to four.
+// An empty block pins nothing — Resolve joins identity one block at a time and
+// a block with no keys takes no part — so this is not about what it would grant.
+// It is a refusal because a profile file is read by a human deciding whether to
+// trust the sandbox, and `[identity]` with nothing under it reads as a pin that
+// does not exist; the likelier cause is keys written under the wrong table.
 func emptyIdentityBlock(source, name string) error {
 	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
-		"       An empty block is not inert: it makes the generated ~/.gitconfig's provenance\n"+
-		"       read \"identity:%s\" on --dry-run and on `snug profile show`, so the screen a\n"+
-		"       human reads to decide whether to trust the sandbox claims a pin that does not\n"+
-		"       exist. Write at least one key, or remove the block", source, name, name)
+		"       It pins nothing, and a reader of this file would believe it pins something;\n"+
+		"       the likelier cause is keys written under the wrong table. Write at least one\n"+
+		"       key under [identity.ssh], [identity.git] or [identity.gh], or remove the block",
+		source, name)
 }
 
 func asStrict(err error, target **toml.StrictMissingError) bool {

@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -21,7 +22,13 @@ const (
 	// unknown, and ParseSSHMode says so.
 	SSHAgentProxy SSHMode = "proxy"
 
-	SSHNone SSHMode = "none"
+	// SSHNone is the ZERO value, and that is load-bearing: every identity block
+	// is its own pin, so a profile that sets no ssh block stores an empty
+	// IdentitySSH, and every `Agent != SSHNone` reader must read that as "no
+	// agent". Were it "none", an absent block would read as an active agent —
+	// SSH_AUTH_SOCK set, an insteadOf rewrite and commit signing generated —
+	// in a sandbox no profile asked to have one.
+	SSHNone SSHMode = ""
 )
 
 // ParseSSHMode is one of the four doors into policy.SSHMode, and it accepts
@@ -29,8 +36,10 @@ const (
 // judges individually, which is what keeps the accepted set readable as the
 // whole set.
 //
-// The empty string is `none`, so a profile with an identity block and no
-// `agent` key gets no agent rather than a refusal.
+// `none` and the empty string are both SSHNone, so a profile with an ssh block
+// and no `agent` key gets no agent rather than a refusal, and an ssh block
+// holding only `agent = "none"` normalises to the zero block — it grants
+// nothing, so it pins nothing.
 //
 // IT GROWS NO ARM FOR THE OLDER "agent-proxy", deliberately, and that is the
 // whole treatment a spelling snug has dropped gets: snug commits to no
@@ -41,16 +50,23 @@ const (
 // names the accepted set, which is the fix either way. One spelling, one fate.
 func ParseSSHMode(s string) (SSHMode, error) {
 	switch SSHMode(s) {
-	case SSHAgentProxy, SSHNone:
-		return SSHMode(s), nil
-	case "":
+	case SSHAgentProxy:
+		return SSHAgentProxy, nil
+	case "none", "":
 		return SSHNone, nil
 	default:
 		return "", fmt.Errorf("unknown identity.ssh.agent %q (want proxy or none)", s)
 	}
 }
 
-// Identity pins the sandbox to exactly one git/ssh/gh account.
+// Identity pins which account the sandbox acts as, ONE BLOCK AT A TIME. Each
+// top-level field is its own pin: two profiles setting the same block
+// differently are refused, naming both, and profiles setting different blocks
+// compose. So ssh from one profile and gh from another make a sandbox that
+// pushes as one account and calls the API as the other — the blocks are
+// independent channels, and keeping them on one account is the profile
+// author's choice, made by putting them in one profile. What no selection can
+// do is hold two values of one block.
 //
 // The point is not secrecy — it is blast radius. An agent that can sign with
 // one key can push as that account and no other, and `gh api user` answers with
@@ -144,6 +160,76 @@ type identityField struct {
 	Key   string // dotted, with no "identity." prefix: "ssh.key", "git.signing_key"
 	Index []int
 	Path  bool
+	Pin   string // the top-level block the leaf belongs to: "ssh", "git", "gh"
+}
+
+// identityPin is one top-level block of Identity — one pin — and its field
+// index, DERIVED from the type like identityFields, so a block added to
+// Identity joins on its own without an edit to Resolve.
+type identityPin struct {
+	Key   string
+	Index int
+}
+
+var identityPins = mustIdentityPins(reflect.TypeOf(Identity{}))
+
+func mustIdentityPins(t reflect.Type) []identityPin {
+	out := make([]identityPin, 0, t.NumField())
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if f.Type.Kind() != reflect.Struct {
+			panic(fmt.Sprintf("policy: Identity.%s is a %s. Every top-level identity field "+
+				"is a BLOCK and joins as one pin; a bare leaf here would belong to no pin "+
+				"and be compared by nobody", f.Name, f.Type.Kind()))
+		}
+		key, _, _ := strings.Cut(f.Tag.Get("snug"), ",")
+		out = append(out, identityPin{Key: key, Index: i})
+	}
+	return out
+}
+
+// IdentityProvenance is the `identity:<profile>` provenance of a file generated
+// from the given identity blocks: one profile, or several joined with `+`,
+// sorted and without repeats, when the blocks came from different profiles. It
+// is "(identity)" when none of the blocks is pinned.
+func (p *Policy) IdentityProvenance(blocks ...string) string {
+	var owners []string
+	for _, b := range blocks {
+		for _, o := range p.IdentityOwners[b] {
+			if !slices.Contains(owners, string(o)) {
+				owners = append(owners, string(o))
+			}
+		}
+	}
+	if len(owners) == 0 {
+		return "(identity)"
+	}
+	slices.Sort(owners)
+	return "identity:" + strings.Join(owners, "+")
+}
+
+// IdentityOwner is the first profile, in sorted order, that pinned block, for
+// a refusal that names one; "" when no profile did.
+func (p *Policy) IdentityOwner(block string) ProfileName {
+	if o := p.IdentityOwners[block]; len(o) > 0 {
+		return o[0]
+	}
+	return ""
+}
+
+// Pinned reports whether block key ("ssh", "git", "gh") is set. It is false
+// for a nil Identity and for a key that names no block.
+func (i *Identity) Pinned(key string) bool {
+	if i == nil {
+		return false
+	}
+	v := reflect.ValueOf(*i)
+	for _, p := range identityPins {
+		if p.Key == key {
+			return !v.Field(p.Index).IsZero()
+		}
+	}
+	return false
 }
 
 // identityFields is every string leaf of Identity, DERIVED FROM THE TYPE. That
@@ -208,7 +294,8 @@ func mustIdentityFields(t reflect.Type, index []int, prefix string) []identityFi
 			}
 			out = append(out, mustIdentityFields(f.Type, idx, prefix+key+".")...)
 		case reflect.String:
-			out = append(out, identityField{Key: prefix + key, Index: idx, Path: path})
+			pin, _, _ := strings.Cut(prefix+key, ".")
+			out = append(out, identityField{Key: prefix + key, Index: idx, Path: path, Pin: pin})
 		default:
 			panic(fmt.Sprintf("policy: %s.%s is a %s. Only nested value structs and strings are "+
 				"supported: a pointer, slice or map field would make `*p.Identity != id` stop "+

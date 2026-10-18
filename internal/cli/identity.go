@@ -210,7 +210,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		// before this branch, not after. Everything below it starts
 		// something, which a dry run may not.
 		if dryRun {
-			pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
+			pol.BindSocket(sock, policy.AgentSocketGuest, identityProvenance(pol, "ssh", "git"))
 			break
 		}
 		audit := func(string) {}
@@ -251,7 +251,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		go p.Serve()
 		inner := cleanup
 		cleanup = func() { p.Close(); inner() }
-		pol.BindSocket(sock, policy.AgentSocketGuest, "(identity)")
+		pol.BindSocket(sock, policy.AgentSocketGuest, identityProvenance(pol, "ssh", "git"))
 	}
 
 	// The pinned PUBLIC key, so the generated ~/.ssh/config's IdentityFile
@@ -296,7 +296,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.PubKeyGuest, Kind: policy.KindData,
 			Access: policy.AccessRO, Content: data,
-			From: []string{identityProvenance(pol)},
+			From: []string{identityProvenance(pol, "ssh")},
 		})
 	}
 
@@ -315,7 +315,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.SigningKeyGuest, Kind: policy.KindData,
 			Access: policy.AccessRO, Content: data,
-			From: []string{identityProvenance(pol)},
+			From: []string{identityProvenance(pol, "git")},
 		})
 
 		// The allowed_signers line is AUTHORED from the two values already in
@@ -331,7 +331,7 @@ func startSSHIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		pol.Replace(policy.Mount{
 			Guest: pol.Home + "/" + policy.AllowedSignersGuest, Kind: policy.KindData,
 			Access: policy.AccessRO, Content: signers,
-			From: []string{identityProvenance(pol)},
+			From: []string{identityProvenance(pol, "git")},
 		})
 	}
 
@@ -373,13 +373,11 @@ func allowedSignersLine(email string, pub []byte) ([]byte, error) {
 }
 
 // identityProvenance is the `identity:<profile>` string Resolve stages its own
-// identity files with. A mount staged after resolution must carry the same one
-// or the --dry-run screen attributes one of four sibling files to nobody.
-func identityProvenance(pol *policy.Policy) string {
-	if pol.IdentityOwner == "" {
-		return "(identity)"
-	}
-	return "identity:" + string(pol.IdentityOwner)
+// identity files with, for the blocks a file is generated from. A mount staged
+// after resolution must carry the same one or the --dry-run screen attributes
+// one of the sibling files to nobody.
+func identityProvenance(pol *policy.Policy, blocks ...string) string {
+	return pol.IdentityProvenance(blocks...)
 }
 
 // stageGhConfig gives gh a private config directory instead of a token in the
@@ -474,7 +472,7 @@ func stageGhConfig(pol *policy.Policy, id *policy.Identity, dryRun bool, mint to
 	perm := uint32(0o600)
 	pol.Replace(policy.Mount{
 		Guest: dir + "/hosts.yml", Kind: policy.KindData, Access: policy.AccessRW,
-		Content: hosts, Perms: &perm, From: []string{"(identity)"},
+		Content: hosts, Perms: &perm, From: []string{identityProvenance(pol, "gh")},
 	})
 	pol.AuthorEnv("GH_CONFIG_DIR", dir)
 	pol.AuthorEnv("GH_HOST", host)
