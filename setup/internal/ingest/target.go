@@ -324,9 +324,6 @@ func tomlName(table string) func(io.Reader) string {
 // turn them on, and none starts on.
 func Propose(t TargetFacts) Proposal {
 	var p Proposal
-	if t.Git {
-		p.Include = append(p.Include, Pick{"@git", ".git", true})
-	}
 	seen := map[string]bool{}
 	hint := func(name, value, why string) {
 		if !seen[name] {

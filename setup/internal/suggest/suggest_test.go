@@ -242,7 +242,7 @@ func TestIdentityDetailListsWhatTheProfilePins(t *testing.T) {
 	if got != want {
 		t.Errorf("detail:\n%s\nwant:\n%s", got, want)
 	}
-	if d := s.IdentityDetail(0); len(d) != 1 || !strings.Contains(d[0], "@git") {
+	if d := s.IdentityDetail(0); len(d) != 1 || !strings.Contains(d[0], "no git author") {
 		t.Errorf("none: %q", d)
 	}
 }

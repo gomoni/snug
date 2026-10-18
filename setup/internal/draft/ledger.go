@@ -24,7 +24,6 @@ var BuiltinIncludes = map[string][]string{
 	"@home":          nil,
 	"@target-rw":     {"@home"},
 	"@parent-ro":     nil,
-	"@git":           nil,
 	"@net":           nil,
 	"@claude":        {"@sys", "@home"},
 	"@podman-socket": {"@sys", "@home"},

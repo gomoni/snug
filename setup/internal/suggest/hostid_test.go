@@ -211,7 +211,7 @@ func TestBuildNewFromHostGolden(t *testing.T) {
 	if len(refused) != 0 || msg != "" || id == nil {
 		t.Fatalf("refused %v msg %q id %v", refused, msg, id)
 	}
-	if !slices.Contains(d.Includes(), "vyskocilm") || slices.Contains(d.Includes(), "@git") {
+	if !slices.Contains(d.Includes(), "vyskocilm") {
 		t.Errorf("project includes %v", d.Includes())
 	}
 	if strings.Contains(d.Render(), "identity") && strings.Contains(d.Render(), "[profile.app.identity") {

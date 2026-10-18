@@ -3,7 +3,7 @@
 include = [
   # @sys: Read-only OS runtime: /usr plus the few /etc files things actually need.
   "@sys",
-  # @home: $HOME is an empty tmpfs at the host path. Writable, ephemeral.
+  # @home: The home directory (from getent passwd) is an empty tmpfs at the host path. Writable, ephemeral.
   "@home",
 ]
 ro = ["{target}"]

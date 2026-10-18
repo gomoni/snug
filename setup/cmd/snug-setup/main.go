@@ -474,7 +474,7 @@ func (s *setup) rowToken(row suggest.RowID) string {
 		if l := s.sel.IdentityProfile(); l != "" {
 			return `"` + l + `"`
 		}
-		return `"@git"`
+		return ""
 	case suggest.Env:
 		if f := strings.Fields(label); len(f) > 0 && label != suggest.Off {
 			return f[0]

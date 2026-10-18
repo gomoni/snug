@@ -4,7 +4,7 @@ import "regexp"
 
 // Builtins are the snug built-in profiles an Action may name with
 // OpUseProfile or OpDropProfile.
-var Builtins = []string{"@target-rw", "@parent-ro", "@git", "@net", "@claude", "@podman-socket", "@podman-build"}
+var Builtins = []string{"@target-rw", "@parent-ro", "@net", "@claude", "@podman-socket", "@podman-build"}
 
 // Op names of the operations Apply understands.
 const (

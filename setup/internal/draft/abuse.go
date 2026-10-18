@@ -10,7 +10,6 @@ var Abuse = map[string]string{
 	"@home":          "a hostile process inside the sandbox can write anything it likes into any of these directories.",
 	"@target-rw":     "the sandbox can rewrite anything in the target directory.",
 	"@parent-ro":     "a hostile process inside the sandbox can read every file under the target's parent — every sibling project, their .git/config, their .env files, any credential anyone left in one, and any SOCKET sitting in the tree.",
-	"@git":           "the sandbox learns the name and email you commit under, and nothing else from your git config.",
 	"@net":           "the sandbox can reach the whole internet — exfiltrate anything it can read, fetch and run anything it likes.",
 	"@claude":        "the sandbox can spend your Anthropic credits and read your Claude settings and personal skills.",
 	"@podman-socket": "the sandbox can run arbitrary code in a container that shares the sandbox's OWN network namespace — so it reaches exactly what the sandbox reaches and no more: with @net, the whole internet, as the sandbox already could; WITHOUT @net, nothing.",

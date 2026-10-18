@@ -59,12 +59,12 @@ func TestBuildGitOnlyWithoutIdentity(t *testing.T) {
 	f := claudeGoFacts()
 	s := Suggest(f, home, target)
 	d, _ := Build(s, hostFor(target), f.Profiles)
-	if slices.Contains(d.Includes(), "@git") || !slices.Contains(d.Includes(), "vyskocilm") {
+	if !slices.Contains(d.Includes(), "vyskocilm") {
 		t.Errorf("identity set: %v", d.Includes())
 	}
 	s.Pick[Identity] = 0
 	d, _ = Build(s, hostFor(target), f.Profiles)
-	if !slices.Contains(d.Includes(), "@git") || slices.Contains(d.Includes(), "vyskocilm") {
+	if slices.Contains(d.Includes(), "vyskocilm") {
 		t.Errorf("identity none: %v", d.Includes())
 	}
 }

@@ -224,7 +224,7 @@ func (s Selection) derivedDesc() string {
 
 func baseRow(parentIsHome bool) Row {
 	r := Row{Sure: true, Choices: []Choice{
-		{Label: baseWithParent, Facts: []string{"@git is added when no identity profile is selected"}},
+		{Label: baseWithParent},
 		{Label: baseWithout},
 	}}
 	if parentIsHome {
@@ -475,7 +475,7 @@ func (s Selection) Notes() map[RowID]string {
 func (s Selection) IdentityDetail(i int) []string {
 	name := s.Rows[Identity].Choices[i].Label
 	if name == NoIdentity {
-		return []string{"no identity block; @git is added"}
+		return []string{"no identity profile; the sandbox has no git author"}
 	}
 	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name && p.Identity.Pins() })
 	if pi < 0 {

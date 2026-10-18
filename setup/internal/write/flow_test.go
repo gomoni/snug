@@ -49,14 +49,14 @@ func TestPrepareChecksWithSnug(t *testing.T) {
 
 func TestWriteOverwriteShowsDiff(t *testing.T) {
 	w := testworld.New(t)
-	w.Profile("x.toml", "[profile.x]\ninclude = [\"@git\"]\n")
+	w.Profile("x.toml", "[profile.x]\ninclude = [\"@net\"]\n")
 	p, err := Prepare(context.Background(), newDraft(w, "x"), w.ProfDir, "", w.Run,
 		[]ingest.Profile{{Name: "x", File: "x.toml", Dir: w.ProfDir}}, nil, nil)
 	if err != nil || !p.Overwrite || len(p.Blocked) != 0 {
 		t.Fatalf("%+v %v", p, err)
 	}
 	s := p.Title() + "\n" + p.Body()
-	for _, want := range []string{"overwrites", "\n- include = [\"@git\"]", "\n+ "} {
+	for _, want := range []string{"overwrites", "\n- include = [\"@net\"]", "\n+ "} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen lacks %q:\n%s", want, s)
 		}

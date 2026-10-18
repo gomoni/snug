@@ -1,7 +1,7 @@
 snug-setup  ~/work/snug-setup  IDENTITY
 
   ( ) none
-        no identity block; @git is added
+        no identity profile; the sandbox has no git author
 ▸ (•) vyskocilm   suggested
         ssh   github.com  github_auth
               ~/.ssh/config  Host github.com  → github_auth

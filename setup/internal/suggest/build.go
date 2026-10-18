@@ -49,9 +49,6 @@ func Build(s Selection, host draft.Host, profiles []ingest.Profile) (*draft.Draf
 		use(Base, "@parent-ro")
 	}
 	identity := choice(Identity)
-	if identity == NoIdentity {
-		use(Identity, "@git")
-	}
 	for _, row := range []RowID{Agent, Network, Containers} {
 		if l := choice(row); strings.HasPrefix(l, "@") {
 			use(row, l)

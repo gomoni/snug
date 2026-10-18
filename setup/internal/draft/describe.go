@@ -8,10 +8,9 @@ package draft
 // base.toml changes a description.
 var Describe = map[string]string{
 	"@sys":           "Read-only OS runtime: /usr plus the few /etc files things actually need.",
-	"@home":          "$HOME is an empty tmpfs at the host path. Writable, ephemeral.",
+	"@home":          "The home directory (from getent passwd) is an empty tmpfs at the host path. Writable, ephemeral.",
 	"@target-rw":     "The target directory is writable and persists.",
 	"@parent-ro":     "The target's parent directory is readable — every sibling project in it too.",
-	"@git":           "Your git name and email, extracted from the host config. Generated, never bound.",
 	"@net":           "Internet access via a private network namespace. Host loopback unreachable.",
 	"@claude":        "Claude Code: binary and skills read-only, credentials projected and settings generated.",
 	"@podman-socket": "Containers via a filtering proxy over a per-sandbox podman engine, offline unless @net is also selected.",

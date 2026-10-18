@@ -153,7 +153,7 @@ func TestPrintAmbiguousIdentityExitsZero(t *testing.T) {
 	if !strings.Contains(errb.String(), "identity: one or two — pick one") {
 		t.Errorf("stderr %q", errb.String())
 	}
-	if strings.Contains(out.String(), `"one"`) || strings.Contains(out.String(), `"two"`) || !strings.Contains(out.String(), `"@git"`) {
+	if strings.Contains(out.String(), `"one"`) || strings.Contains(out.String(), `"two"`) {
 		t.Errorf("an ambiguous identity must be left out:\n%s", out.String())
 	}
 }
@@ -268,7 +268,7 @@ func TestPrintNewFromHostWritesBothProfiles(t *testing.T) {
 			t.Errorf("lacks %s:\n%s", want, o)
 		}
 	}
-	if strings.Contains(o[proj:], "identity.ssh") || strings.Contains(o, `"@git"`) {
-		t.Errorf("the project profile carries the identity block or @git:\n%s", o)
+	if strings.Contains(o[proj:], "identity.ssh") {
+		t.Errorf("the project profile carries the identity block:\n%s", o)
 	}
 }

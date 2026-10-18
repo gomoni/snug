@@ -33,7 +33,7 @@ func TestContradicts(t *testing.T) {
 		{"drop vs use", entry(use("@net")), entry(drop("@net")), true},
 		{"drop a profile the next one includes", entry(drop("@podman-socket")), entry(use("@podman-build")), true},
 		{"drop the includer, use the included", entry(drop("@podman-build")), entry(use("@podman-socket")), false},
-		{"different profiles", entry(drop("@net")), entry(use("@git")), false},
+		{"different profiles", entry(drop("@net")), entry(use("@claude")), false},
 		{"use twice", entry(use("@net")), entry(use("@net")), false},
 		{"grant vs drop_path", entry(grant("/srv/a", "rw")), entry(dropPath("/srv/a")), true},
 		{"drop_path vs grant", entry(dropPath("/srv/a")), entry(grant("/srv/a", "ro")), true},

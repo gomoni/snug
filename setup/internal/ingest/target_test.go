@@ -118,7 +118,7 @@ func TestProposeFromFacts(t *testing.T) {
 			t.Errorf("@net must never be sure")
 		}
 	}
-	if !slices.Equal(names, []string{"@git", "@net"}) {
+	if !slices.Equal(names, []string{"@net"}) {
 		t.Errorf("includes %v", names)
 	}
 	var env []string
