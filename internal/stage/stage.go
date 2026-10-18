@@ -387,7 +387,7 @@ func (s *Stage) Pid() int { return s.pid }
 func (s *Stage) WaitNetReady(timeout time.Duration, iface string, hostAddrs []string,
 	relaySockets int) ([]*os.File, error) {
 	if relaySockets < 0 || relaySockets > maxRelaySockets {
-		return nil, fmt.Errorf("stage: %d login relay sockets requested; the stage creates "+
+		return nil, fmt.Errorf("stage: %d relay sockets requested; the stage creates "+
 			"between 0 and %d", relaySockets, maxRelaySockets)
 	}
 	if err := sendRequest(s.control, request{Op: "netready", NetIface: iface, HostAddrs: hostAddrs,

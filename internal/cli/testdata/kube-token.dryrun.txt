@@ -1,0 +1,22 @@
+KUBECTL  context    aks-dev -> https://aks-dev.example.azmk8s.io:443
+                    server pinned by the profile; generated ~/.kube/config, read-only,
+                    with NO credential: kubectl talks to http://127.0.0.1:6443, snug's proxy
+                    on the host presents your credential to that server only
+         as         YOU — the user of context aks-dev
+         credential token
+                    static token (17 chars, not a JWT, so it carries no expiry) as
+                    the bearer, replacing any the client sends; read from the host
+                    kubeconfig at start (this dry run presented nothing), held in
+                    snug's memory for the run, never written, never inside
+         refused    CONNECT, TRACE and methods the Kubernetes API does not speak,
+                    absolute URIs, dot and escaped path segments,
+                    loopback, host-owned and cloud-metadata addresses
+         absent     aks-cert, aks-token, eks, kind-kind,
+                    the entry's client certificate (not presented)
+         reach      whatever YOUR RBAC allows, on this one server, while this run
+                    lives; snug cannot see RBAC and claims nothing. Impersonation,
+                    Secrets, TokenRequest and workloads are yours to use if the cluster
+                    allows, and what is read or minted outlives the run. No credential
+                    of yours is inside to carry away. pods/exec, pods/portforward and
+                    services/proxy reach the cluster's network through the API
+                    server, with or without @net

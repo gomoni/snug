@@ -137,3 +137,46 @@ func TestIdentityTemplateLoadsAsAUserProfile(t *testing.T) {
 		t.Errorf("Identity.Gh.User = %q, want \"you\" (the template's placeholder)", p.Identity.Gh.User)
 	}
 }
+
+// The kube template is held the same way: extracted from the embedded
+// base.toml and loaded as a user profile, so the text a human copies parses
+// as written and pins the kube block it claims to.
+func TestKubeTemplateLoadsAsAUserProfile(t *testing.T) {
+	data, err := embedded.ReadFile("profiles/base.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	i := strings.Index(text, "# KUBE-TEMPLATE-BEGIN\n")
+	j := strings.Index(text, "# KUBE-TEMPLATE-END")
+	if i < 0 || j < i {
+		t.Fatal("no KUBE-TEMPLATE fence in base.toml")
+	}
+	var raw []string
+	for line := range strings.SplitSeq(text[i+len("# KUBE-TEMPLATE-BEGIN\n"):j], "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			t.Fatalf("template line %q is not commented", line)
+		}
+		raw = append(raw, strings.TrimPrefix(line, "#"))
+	}
+	extracted, err := parse([]byte(strings.Join(raw, "\n")), "kube-template", true)
+	if err != nil {
+		t.Fatalf("the kube template does not parse as a user profile: %v", err)
+	}
+	p, ok := extracted["aks-dev"]
+	if !ok || p.Identity == nil {
+		t.Fatalf("template defines no aks-dev identity: %v", extracted)
+	}
+	want := policy.IdentityKube{Context: "aks-dev", Credential: policy.KubeCredentialClientCert, Server: "https://aks-dev.example.azmk8s.io:443"}
+	if p.Identity.Kube != want {
+		t.Errorf("Kube = %+v, want %+v", p.Identity.Kube, want)
+	}
+	// No @net: the proxy dials from the host, and a template that granted
+	// egress anyway would hand every copy of it the internet for nothing.
+	if slices.Contains(p.Include, "@net") {
+		t.Errorf("template includes @net, which identity.kubectl does not need: %v", p.Include)
+	}
+}

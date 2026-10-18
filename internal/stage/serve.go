@@ -205,7 +205,7 @@ func MainServe() error {
 			ev := event{Op: "netready"}
 			var relay []int
 			if req.RelaySockets < 0 || req.RelaySockets > maxRelaySockets {
-				ev.Err = fmt.Sprintf("refusing a \"netready\" asking for %d login relay sockets: "+
+				ev.Err = fmt.Sprintf("refusing a \"netready\" asking for %d relay sockets: "+
 					"this stage creates between 0 and %d", req.RelaySockets, maxRelaySockets)
 			} else if err := waitForIface(fdNetSock, iface, netReadyTimeout); err != nil {
 				ev.Err = err.Error()

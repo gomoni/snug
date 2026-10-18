@@ -1069,6 +1069,20 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"anything inside can add an SSH key to the account, an effect that "+
 				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
+	if id.Kube.Context != "" {
+		cred := string(id.Kube.Credential)
+		if cred == "" {
+			cred = "its only credential"
+		}
+		rows = append(rows, capRows("kubectl "+visibleValue(id.Kube.Context)+" as YOU ("+visibleValue(cred)+")",
+			"THE SANDBOX CAN ACT AS YOU on this one cluster while the run lives: snug's proxy on "+
+				"the host presents the context's own credential — its client certificate or static token — "+
+				"on every request from inside, on "+
+				"whatever YOUR RBAC allows; on an AKS local account that is cluster root. The credential "+
+				"never enters the sandbox and goes to that one server only; but what is read or minted "+
+				"through it — Secrets, tokens, workloads — outlives the run. pods/exec, pods/portforward "+
+				"and services/proxy reach the cluster's network, with or without @net.")...)
+	}
 	show("identity", rows)
 }
 

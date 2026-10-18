@@ -22,6 +22,11 @@ import (
 // sandbox's OWN loopback once assigned there, not the host's; unspecified
 // names no address at all; and multicast cannot be assigned to an interface
 // as a unicast local address in the first place.
+// HostAddresses is hostAddresses for a caller outside the package: the
+// resolver's usability check on identity.kubectl's server. The seal itself still
+// reads hostAddresses at sandbox start.
+func HostAddresses() ([]string, error) { return hostAddresses() }
+
 func hostAddresses() ([]string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {

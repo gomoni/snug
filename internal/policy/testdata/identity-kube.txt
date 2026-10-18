@@ -1,0 +1,30 @@
+# ~/.kube/config inside the sandbox
+{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "clusters": [
+    {
+      "name": "aks-dev",
+      "cluster": {
+        "server": "http://127.0.0.1:6443"
+      }
+    }
+  ],
+  "users": [
+    {
+      "name": "aks-dev",
+      "user": {}
+    }
+  ],
+  "contexts": [
+    {
+      "name": "aks-dev",
+      "context": {
+        "cluster": "aks-dev",
+        "user": "aks-dev"
+      }
+    }
+  ],
+  "current-context": "aks-dev",
+  "preferences": {}
+}

@@ -138,8 +138,8 @@ func TestValidateRefusesAnInconsistentTopology(t *testing.T) {
 func TestPodmanDelegatesFullSubuid(t *testing.T) {
 	for _, pm := range []PodmanMode{PodmanSocket, PodmanBuild} {
 		for _, n := range []NetMode{NetIsolated, NetEgress} {
-			if got := deriveTopology(n, pm).Subuid; got != SubuidFull {
-				t.Errorf("deriveTopology(%s, %s).Subuid = %s, want full — "+
+			if got := deriveTopology(n, pm, false).Subuid; got != SubuidFull {
+				t.Errorf("deriveTopology(%s, %s, false).Subuid = %s, want full — "+
 					"a container engine always needs the full delegated range", n, pm, got)
 			}
 		}
@@ -147,14 +147,14 @@ func TestPodmanDelegatesFullSubuid(t *testing.T) {
 	// Positive control: PodmanOff must NOT raise Subuid, on any NetMode — so
 	// this test can distinguish "podman raises it" from "everything raises it".
 	for _, n := range []NetMode{NetIsolated, NetEgress} {
-		if got := deriveTopology(n, PodmanOff).Subuid; got != SubuidNone {
-			t.Errorf("deriveTopology(%s, PodmanOff).Subuid = %s, want none", n, got)
+		if got := deriveTopology(n, PodmanOff, false).Subuid; got != SubuidNone {
+			t.Errorf("deriveTopology(%s, PodmanOff, false).Subuid = %s, want none", n, got)
 		}
 	}
 }
 
 func TestNeedsStageIsFalseForOffline(t *testing.T) {
-	if deriveTopology(NetIsolated, PodmanOff).NeedsStage() {
+	if deriveTopology(NetIsolated, PodmanOff, false).NeedsStage() {
 		t.Error("NetIsolated should not need a stage")
 	}
 	// NetEgress needs a stage as of Commit B (deriveTopology's doc comment):
@@ -165,7 +165,7 @@ func TestNeedsStageIsFalseForOffline(t *testing.T) {
 	// and existed precisely so that commit's diff to deriveTopology would show
 	// up as a failing test, not just a golden diff. It did; this is that
 	// change, made deliberately.
-	if !deriveTopology(NetEgress, PodmanOff).NeedsStage() {
+	if !deriveTopology(NetEgress, PodmanOff, false).NeedsStage() {
 		t.Error("NetEgress should need a stage now that deriveTopology has Commit B's shape")
 	}
 	// An OFFLINE container run also needs a stage now (issue #63, Tier B): the
@@ -173,7 +173,7 @@ func TestNeedsStageIsFalseForOffline(t *testing.T) {
 	// NetnsSandbox on its own — deriveTopology raises Netns to NetnsStage
 	// itself once pm != PodmanOff. This is the assertion that would have
 	// caught a NeedsStage that checked only Netns and not Subuid.
-	if !deriveTopology(NetIsolated, PodmanSocket).NeedsStage() {
+	if !deriveTopology(NetIsolated, PodmanSocket, false).NeedsStage() {
 		t.Error("an offline container run should still need a stage — the engine needs U+N")
 	}
 }
@@ -185,22 +185,22 @@ func TestNeedsStageIsFalseForOffline(t *testing.T) {
 // bug that made deriveTopology raise everything regardless of pm cannot pass.
 func TestPodmanSelectsAStage(t *testing.T) {
 	for _, pm := range []PodmanMode{PodmanSocket, PodmanBuild} {
-		got := deriveTopology(NetIsolated, pm)
+		got := deriveTopology(NetIsolated, pm, false)
 		if got.Netns != NetnsStage {
-			t.Errorf("deriveTopology(NetIsolated, %s).Netns = %s, want stage", pm, got.Netns)
+			t.Errorf("deriveTopology(NetIsolated, %s, false).Netns = %s, want stage", pm, got.Netns)
 		}
 		if got.Subuid != SubuidFull {
-			t.Errorf("deriveTopology(NetIsolated, %s).Subuid = %s, want full", pm, got.Subuid)
+			t.Errorf("deriveTopology(NetIsolated, %s, false).Subuid = %s, want full", pm, got.Subuid)
 		}
 		if !got.NeedsStage() {
-			t.Errorf("deriveTopology(NetIsolated, %s).NeedsStage() = false, want true", pm)
+			t.Errorf("deriveTopology(NetIsolated, %s, false).NeedsStage() = false, want true", pm)
 		}
 	}
 
 	// Positive control: an offline non-podman selection is untouched.
-	off := deriveTopology(NetIsolated, PodmanOff)
+	off := deriveTopology(NetIsolated, PodmanOff, false)
 	if off.Netns != NetnsSandbox || off.Subuid != SubuidNone || off.NeedsStage() {
-		t.Errorf("deriveTopology(NetIsolated, PodmanOff) = %+v, want the unraised floor — "+
+		t.Errorf("deriveTopology(NetIsolated, PodmanOff, false) = %+v, want the unraised floor — "+
 			"the podman branch must not fire for PodmanOff", off)
 	}
 
@@ -214,12 +214,12 @@ func TestPodmanSelectsAStage(t *testing.T) {
 	// deriveTopology). What this arm does assert is that the two fields move
 	// independently: podman raises Subuid on a selection whose Netns is
 	// already where podman would put it.
-	egressPodman := deriveTopology(NetEgress, PodmanSocket)
+	egressPodman := deriveTopology(NetEgress, PodmanSocket, false)
 	if egressPodman.Netns != NetnsStage {
-		t.Errorf("deriveTopology(NetEgress, PodmanSocket).Netns = %s, want stage", egressPodman.Netns)
+		t.Errorf("deriveTopology(NetEgress, PodmanSocket, false).Netns = %s, want stage", egressPodman.Netns)
 	}
 	if egressPodman.Subuid != SubuidFull || !egressPodman.NeedsStage() {
-		t.Errorf("deriveTopology(NetEgress, PodmanSocket) = %+v, want Subuid=full and NeedsStage=true", egressPodman)
+		t.Errorf("deriveTopology(NetEgress, PodmanSocket, false) = %+v, want Subuid=full and NeedsStage=true", egressPodman)
 	}
 }
 

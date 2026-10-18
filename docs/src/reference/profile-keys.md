@@ -30,6 +30,10 @@ Every key a `[profile.NAME]` table accepts. Any other key is an error.
 | `identity.git.signing_key` | string | path to a public key | the block must match | [Identity](../identity.md#identitygit) |
 | `identity.gh.host` | string | host name | the block must match | [Identity](../identity.md#identitygh) |
 | `identity.gh.user` | string | account name | the block must match | [Identity](../identity.md#identitygh) |
+| `identity.kubectl.context` | string | context name in the kubeconfig | the block must match | [Identity](../identity.md#identitykubectl) |
+| `identity.kubectl.server` | string | API server URL | the block must match | [Identity](../identity.md#identitykubectl) |
+| `identity.kubectl.credential` | string | `"client-certificate"`, `"token"` | the block must match | [Identity](../identity.md#identitykubectl) |
+| `identity.kubectl.kubeconfig` | string | path; absent: `{home}/.kube/config` | the block must match | [Identity](../identity.md#identitykubectl) |
 | `podman` | string | `"socket"`, `"build"`; absent: `"off"` | maximum | [Containers](../containers.md) |
 | `plugins` | array of strings | Claude Code plugin names | union | [Claude Code](../claude.md#plugins) |
 | `login` | array of strings | `"claude"` | union | [Claude Code](../claude.md#login) |
@@ -45,7 +49,7 @@ profile "p": podman = "off" changes nothing: "off" is the default and a profile 
 
 ## `identity`
 
-Each block (`ssh`, `git`, `gh`) is its own pin. Two selected profiles
+Each block (`ssh`, `git`, `gh`, `kubectl`) is its own pin. Two selected profiles
 that set the same block differently are refused, naming both; different blocks
 from different profiles combine. `identity.git.signing_key` must be in the
 profile that sets `identity.ssh`.

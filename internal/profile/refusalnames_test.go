@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gomoni/snug/internal/kubecfg"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -33,6 +34,9 @@ type refusalFakeEnv struct {
 
 func (e refusalFakeEnv) EvalSymlinks(p string) (string, error)   { return p, nil }
 func (e refusalFakeEnv) HostMounts() ([]policy.HostMount, error) { return nil, nil }
+func (e refusalFakeEnv) KubeConfig(p string) (kubecfg.File, error) {
+	return kubecfg.File{}, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+}
 
 func (e refusalFakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if e.sockets[p] {

@@ -418,6 +418,58 @@ dns = true
 #
 # Not a builtin, deliberately: the path is host-specific, and a profile that
 # guesses wrong would fail at a different layer than the one the human wrote.
+#
+# KUBERNETES: [identity.kubectl] pins ONE cluster and ONE identity on it, and
+# NO credential enters the sandbox — no file, no token, no key, no exec
+# plugin. snug reads the named context's cluster and user entry from your host
+# kubeconfig as data and generates a one-context ~/.kube/config inside whose
+# server is http://127.0.0.1:6443 and whose user is empty. That address is
+# snug's proxy: a socket on the sandbox's own loopback, held by snug on the
+# host, which presents your credential and forwards each request, over TLS, to
+# the pinned server and nowhere else. snug protects the HOST — your credential
+# stays out and goes to one server — and not the cluster: what that credential
+# may do there is the cluster's RBAC, and every request kubectl sends is
+# forwarded as sent, `--as` included. A server on this host (kind, k3s,
+# minikube: loopback or an address the host owns, after resolving its name) is
+# refused before the sandbox starts, because those nodes run on this host.
+#
+# credential picks the ONE credential of the context's user entry the proxy
+# presents:
+#   "client-certificate"  client-certificate-data + client-key-data, as the
+#                         TLS client certificate
+#   "token"               the static token, as the bearer
+# Leave it out when the entry holds one credential. An entry holding two is
+# refused without it: on AKS local accounts the certificate is masterclient
+# (system:masters) and the token is clusterUser — two identities, and snug
+# does not choose between them. Neither needs anything created on the cluster.
+#
+# A user entry that authenticates with an exec plugin (kubelogin, aws,
+# gke-gcloud-auth-plugin) is refused: snug runs no plugin on the host (#674).
+#
+# kubectl must be inside to be useful — the same one-file bind as gh above.
+# It needs no @net: the proxy dials from the host.
+#
+# ABUSE: a hostile process inside the sandbox can act as YOU — the chosen
+# credential of context aks-dev — on that ONE server for as long as the run
+# lives, as often as the API server accepts, on whatever that identity may do
+# there: on an AKS local account that is cluster root, so every Secret, every
+# ServiceAccount token, any workload on any node, and impersonation of anyone;
+# what it reads, mints or creates outlives the run. pods/exec,
+# pods/portforward and services/proxy reach the cluster's network through the
+# API server, so a kubectl profile WITHOUT @net is still not an offline
+# sandbox. It never holds the credential: it cannot act after the run, on any
+# other server, on a host-local service or a cloud metadata address, and it
+# cannot make the host run anything.
+#
+# KUBE-TEMPLATE-BEGIN
+#   [profile.aks-dev]
+#   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
+#     [profile.aks-dev.identity.kubectl]
+#     context    = "aks-dev"               # a context in the host kubeconfig
+#     server     = "https://aks-dev.example.azmk8s.io:443"   # what that context must name
+#     credential = "client-certificate"    # or "token"
+#     # kubeconfig = "{home}/.kube/config"
+# KUBE-TEMPLATE-END
 
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude

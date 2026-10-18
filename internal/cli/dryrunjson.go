@@ -365,12 +365,14 @@ type jsonDoc struct {
 	Network    jsonNetwork    `json:"network"`
 	// BrowserBridge is absent when the policy's login set lacks claude.
 	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
-	Topology      jsonTopology       `json:"topology"`
-	Containers    *jsonContainers    `json:"containers"`
-	Environment   []jsonEnvVar       `json:"environment"`
-	Seccomp       jsonSeccomp        `json:"seccomp"`
-	TTY           jsonTTY            `json:"tty"`
-	Bwrap         jsonBwrap          `json:"bwrap"`
+	// Kube is absent when no identity.kubectl block is pinned.
+	Kube        *jsonKube       `json:"kube,omitempty"`
+	Topology    jsonTopology    `json:"topology"`
+	Containers  *jsonContainers `json:"containers"`
+	Environment []jsonEnvVar    `json:"environment"`
+	Seccomp     jsonSeccomp     `json:"seccomp"`
+	TTY         jsonTTY         `json:"tty"`
+	Bwrap       jsonBwrap       `json:"bwrap"`
 	// Pasta is nil when this policy starts no pasta process
 	// (network.mode != "egress"). Refs #332 F1e.
 	Pasta *jsonPasta `json:"pasta"`
@@ -565,6 +567,18 @@ type jsonBrowserBridge struct {
 	FIFO        string   `json:"fifo"`
 	MaxOpens    int      `json:"max_opens"`
 	MaxRelays   int      `json:"max_relays"`
+}
+
+// jsonKube is reportKube.
+type jsonKube struct {
+	Context    string   `json:"context"`
+	Server     string   `json:"server"`
+	Credential string   `json:"credential"`
+	Chosen     string   `json:"credential_chosen,omitempty"`
+	Presented  string   `json:"presented"`
+	Absent     []string `json:"absent"`
+	Proxy      string   `json:"proxy_guest"`
+	Refused    []string `json:"refused"`
 }
 
 type jsonTopology struct {
@@ -851,6 +865,21 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		doc.BrowserBridge = &jsonBrowserBridge{
 			Login: b.Login, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
 			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
+		}
+	}
+	if k := rep.Kube; k != nil {
+		text := func(s string) string { v, _ := e.text(s); return v }
+		texts := func(in []string) []string {
+			out := make([]string, len(in))
+			for i, s := range in {
+				out[i] = text(s)
+			}
+			return out
+		}
+		doc.Kube = &jsonKube{
+			Context: text(k.Context), Server: text(k.Server), Credential: k.Credential, Chosen: k.Chosen,
+			Presented: text(k.Presented), Absent: texts(k.Absent),
+			Proxy: k.Proxy, Refused: k.Refused,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

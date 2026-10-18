@@ -59,6 +59,30 @@ func ParseSSHMode(s string) (SSHMode, error) {
 	}
 }
 
+// KubeCredential names the ONE credential of the pinned context's user entry
+// that snug's proxy presents to the API server. "" is UNSET: Resolve reads it
+// as the entry's only credential, and refuses an entry holding two, because a
+// client certificate and a static token in one entry may be two identities.
+type KubeCredential string
+
+// KubeCredentialClientCert presents the entry's client-certificate-data and
+// client-key-data as the proxy's TLS client certificate.
+const KubeCredentialClientCert KubeCredential = "client-certificate"
+
+// KubeCredentialToken presents the entry's static token as the proxy's bearer.
+const KubeCredentialToken KubeCredential = "token"
+
+// ParseKubeCredential is the door into KubeCredential, with the same rule as
+// ParseSSHMode: a named set, and anything else unknown, quoting the set.
+func ParseKubeCredential(s string) (KubeCredential, error) {
+	switch KubeCredential(s) {
+	case KubeCredentialClientCert, KubeCredentialToken, "":
+		return KubeCredential(s), nil
+	default:
+		return "", fmt.Errorf("unknown identity.kubectl.credential %q (want client-certificate or token)", s)
+	}
+}
+
 // Identity pins which account the sandbox acts as, ONE BLOCK AT A TIME. Each
 // top-level field is its own pin: two profiles setting the same block
 // differently are refused, naming both, and profiles setting different blocks
@@ -73,9 +97,10 @@ func ParseSSHMode(s string) (SSHMode, error) {
 // that account and no other. Without pinning, "the agent has ssh" means "the
 // agent is you, everywhere".
 type Identity struct {
-	SSH IdentitySSH `snug:"ssh"`
-	Git IdentityGit `snug:"git"`
-	Gh  IdentityGh  `snug:"gh"`
+	SSH  IdentitySSH  `snug:"ssh"`
+	Git  IdentityGit  `snug:"git"`
+	Gh   IdentityGh   `snug:"gh"`
+	Kube IdentityKube `snug:"kubectl"`
 }
 
 // NESTED BY VALUE, AND A POINTER HERE WOULD BREAK THREE THINGS WHILE COMPILING,
@@ -138,6 +163,24 @@ type IdentityGit struct {
 	SigningKey string `snug:"signing_key,path"`
 }
 
+// IdentityKube pins one cluster and one identity on it. Context names a
+// context in the host kubeconfig; snug reads that context's cluster and user
+// entry as data, and the credential it presents never enters the sandbox.
+type IdentityKube struct {
+	Context string `snug:"context"`
+	// Server is the API server the profile expects the context to name. The
+	// kubeconfig is a file other runs may have been able to write; the profile
+	// is not. Pinning the server here is what keeps the FILE from choosing
+	// where snug's proxy sends your credential: a kubeconfig whose context
+	// names any other server is refused.
+	Server     string         `snug:"server"`
+	Credential KubeCredential `snug:"credential"`
+	Kubeconfig string         `snug:"kubeconfig,path"`
+}
+
+// DefaultKubeconfig is identity.kubectl.kubeconfig when a kube block omits it.
+const DefaultKubeconfig = "{home}/.kube/config"
+
 type IdentityGh struct {
 	// Host is the host gh mints a token for, and the only thing it selects.
 	// Separate from SSH.Host: the two MAY differ, and a profile naming one
@@ -161,6 +204,40 @@ type identityField struct {
 	Index []int
 	Path  bool
 	Pin   string // the top-level block the leaf belongs to: "ssh", "git", "gh"
+}
+
+// identityPathRole is what an identity `path` leaf is FOR, in the words its
+// refusals use. The loop that expands and link-checks every path leaf is
+// shared, and its sentences were written for ssh keys; a kubeconfig is not a
+// key, and a refusal telling the human to copy its PUBLIC half is a wrong
+// instruction. mustIdentityFields panics on a path leaf with no role, so a new
+// path leaf cannot reuse another leaf's sentences by omission.
+type identityPathRole struct {
+	chooses string // what a planted link at the path would choose
+	reads   string // what snug does with the file
+	example string // an absolute spelling for the "must be absolute" refusal
+	fix     string // the instruction when the path sits in snug's own state
+}
+
+var identityPathRoles = map[string]identityPathRole{
+	"ssh.key": {
+		chooses: "which host key the sandbox can sign with",
+		reads:   "snug would read the file and stage its contents into the sandbox's $HOME",
+		example: "{home}/.ssh/id_ed25519.pub",
+		fix:     "Copy the PUBLIC key to a directory snug does not manage (for example ~/.ssh) and name that path instead.",
+	},
+	"git.signing_key": {
+		chooses: "which host key the sandbox can sign with",
+		reads:   "snug would read the file and stage its contents into the sandbox's $HOME",
+		example: "{home}/.ssh/id_ed25519.pub",
+		fix:     "Copy the PUBLIC key to a directory snug does not manage (for example ~/.ssh) and name that path instead.",
+	},
+	"kubectl.kubeconfig": {
+		chooses: "which cluster, and which of your host credentials, snug's proxy presents",
+		reads:   "snug decodes it on the host and presents the credential it holds",
+		example: "{home}/.kube/config",
+		fix:     "Keep the kubeconfig in a directory snug does not manage (for example ~/.kube) and name that path instead.",
+	},
 }
 
 // identityPin is one top-level block of Identity — one pin — and its field
@@ -217,7 +294,7 @@ func (p *Policy) IdentityOwner(block string) ProfileName {
 	return ""
 }
 
-// Pinned reports whether block key ("ssh", "git", "gh") is set. It is false
+// Pinned reports whether block key ("ssh", "git", "gh", "kubectl") is set. It is false
 // for a nil Identity and for a key that names no block.
 func (i *Identity) Pinned(key string) bool {
 	if i == nil {
@@ -294,6 +371,10 @@ func mustIdentityFields(t reflect.Type, index []int, prefix string) []identityFi
 			}
 			out = append(out, mustIdentityFields(f.Type, idx, prefix+key+".")...)
 		case reflect.String:
+			if _, ok := identityPathRoles[prefix+key]; path && !ok {
+				panic(fmt.Sprintf("policy: identity.%s is a path leaf with no identityPathRoles "+
+					"entry; its refusals would borrow another leaf's sentences", prefix+key))
+			}
 			pin, _, _ := strings.Cut(prefix+key, ".")
 			out = append(out, identityField{Key: prefix + key, Index: idx, Path: path, Pin: pin})
 		default:
@@ -355,7 +436,7 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 			}
 			return fmt.Errorf("profile %q: identity.%s contains %q. Every identity field is "+
 				"interpolated into a config file snug GENERATES — ~/.gitconfig, ~/.ssh/config, "+
-				"gh's hosts.yml — where a NEWLINE writes a directive snug did not author, "+
+				"gh's hosts.yml, the sandbox's ~/.kube/config — where a NEWLINE writes a directive snug did not author, "+
 				"and none of it is a Mount that Validate could refuse. They are also "+
 				"rendered into the ~/.claude/CLAUDE.md the agent reads, and there "+
 				"%s. Remove it",

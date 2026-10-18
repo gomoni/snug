@@ -37,10 +37,11 @@ import (
 // not the hazard a request carrying one is.
 const maxMessage = 64 * 1024
 
-// maxRelaySockets bounds request.RelaySockets. The login bridge relays at most
-// three callbacks per run and each relay spends one socket; P1 refuses more, so a confused P0 cannot turn "netready" into a
-// way to fill its own descriptor table with sockets in N.
-const maxRelaySockets = 3
+// maxRelaySockets bounds request.RelaySockets: the login bridge relays at most
+// three callbacks per run, each spending one socket, and identity.kubectl's proxy
+// listens on one. P1 refuses more, so a confused P0 cannot turn "netready"
+// into a way to fill its own descriptor table with sockets in N.
+const maxRelaySockets = 4
 
 // MaxRelaySockets is maxRelaySockets for callers that request that many.
 const MaxRelaySockets = maxRelaySockets
@@ -84,7 +85,7 @@ type request struct {
 
 	// "netready" only: how many unconnected AF_INET stream sockets the stage
 	// creates INSIDE N and hands back on the "netready" event as SCM_RIGHTS.
-	// Zero on every run without the login browser bridge, and omitempty keeps
+	// Zero on every run without the login browser bridge or identity.kubectl, and omitempty keeps
 	// such a run's request byte-for-byte what it was before the field existed.
 	// P1 refuses a count above maxRelaySockets: it is input on that side, the
 	// same trust position as Passthrough.

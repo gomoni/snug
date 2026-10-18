@@ -672,6 +672,7 @@ func run(cfg config) int {
 		RuntimeDirs:       runtimeDirCandidates(),
 		EngineTmpPrefixes: engine.TmpDirPrefixes(),
 		EngineDataRoots:   engineDataRoots(os.Getenv("SNUG_PODMAN_ROOT")),
+		HostAddresses:     hostAddressesForResolve(),
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
@@ -783,6 +784,12 @@ func run(cfg config) int {
 		return refuse(cfg, exitPolicy, err)
 	}
 	defer idCleanup()
+
+	kube, err := startKubeIdentity(pol, cfg.verbose, cfg.startsNothing())
+	if err != nil {
+		return refuse(cfg, exitPolicy, err)
+	}
+	defer kube.close()
 
 	ctr, err := startContainers(env, pol, notes, cfg.verbose, cfg.startsNothing())
 	if err != nil {
@@ -967,6 +974,7 @@ func run(cfg config) int {
 		ExcludeFromTeardown: ctr.excludeFromTeardown,
 	}
 	bridge.apply(&opts)
+	kube.apply(&opts)
 	code, err := sandbox.Run(pol, env.Uid(), env.Gid(), opts)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrGrantRefused) {

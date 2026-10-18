@@ -118,6 +118,8 @@ func baseNestedIdentity() Identity {
 		SSH: IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
 		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
 		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
+		Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,
+			Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "/home/u/.kube/config"},
 	}
 }
 
@@ -149,6 +151,11 @@ func TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf(t *testing.T) {
 				b.Git.SigningKey = ""
 				av.SetString(string(SSHAgentProxy))
 				bv.SetString(string(SSHNone))
+			} else if f.Key == "kubectl.credential" {
+				// Two accepted values: "-a" would be refused by the parser naming
+				// one profile.
+				av.SetString(string(KubeCredentialClientCert))
+				bv.SetString(string(KubeCredentialToken))
 			} else {
 				av.SetString(av.String() + "-a")
 				bv.SetString(bv.String() + "-b")

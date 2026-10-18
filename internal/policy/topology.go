@@ -123,7 +123,12 @@ func (t Topology) NeedsStage() bool {
 // re-create default_profile, which "Decisions made" in CLAUDE.md already
 // reversed once. TestTopologyIsDerivedNotSettable checks this the same way
 // TestPolicyHasNoRestrictionOperation checks invariant 1: by finding none.
-func deriveTopology(n NetMode, pm PodmanMode) Topology {
+//
+// `kube` is whether identity.kubectl resolved. Its proxy listens on a socket the
+// stage creates INSIDE the sandbox's network namespace, so a kube run needs a
+// stage even with no @net — raised the same way the podman branch raises it,
+// and the reason a kube profile is not an offline profile.
+func deriveTopology(n NetMode, pm PodmanMode, kube bool) Topology {
 	t := Topology{Subuid: SubuidNone}
 	switch n {
 	case NetEgress:
@@ -152,6 +157,9 @@ func deriveTopology(n NetMode, pm PodmanMode) Topology {
 			t.Netns = NetnsStage
 		}
 		t.Subuid = SubuidFull
+	}
+	if kube && t.Netns < NetnsStage {
+		t.Netns = NetnsStage
 	}
 	return t
 }
