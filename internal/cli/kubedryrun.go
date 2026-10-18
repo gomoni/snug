@@ -89,10 +89,23 @@ func describeKube(out io.Writer, k *reportKube) {
 	for i, a := range k.MintArgv {
 		argv[i] = visibleValue(a)
 	}
-	for i, line := range wrapWords(strings.Join(argv, " "), 66) {
+	// A new line at every flag, never by width: the run-directory paths carry
+	// this process's pid, so a wrap by width would move with the pid's length.
+	var lines []string
+	for _, a := range argv {
+		if len(lines) == 0 || strings.HasPrefix(a, "-") {
+			lines = append(lines, a)
+		} else {
+			lines[len(lines)-1] += " " + a
+		}
+	}
+	for i, line := range lines {
 		label := "host mint "
 		if i > 0 || k.KubectlProblem != "" {
 			label = "          "
+		}
+		if i > 0 {
+			line = "  " + line
 		}
 		fmt.Fprintf(out, "         %s %s\n", label, line)
 	}

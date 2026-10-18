@@ -88,7 +88,7 @@ func TestGoldenKubeDryRunBlock(t *testing.T) {
 	describeKube(&b, buildKubeReport(p))
 	got := runDirPID.ReplaceAllString(b.String(), "run-N")
 	for _, want := range []string{"a real run would REFUSE", "static token is not used",
-		"this pinned", "kind-kind", "~/.azure", "RoleBinding", "--namespace=dev --duration=1h0m0s -o json"} {
+		"this pinned", "kind-kind", "~/.azure", "RoleBinding", "  --namespace=dev\n"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("KUBE block lacks %q:\n%s", want, got)
 		}

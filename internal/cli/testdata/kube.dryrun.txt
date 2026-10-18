@@ -6,10 +6,12 @@ KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443
                     cluster may cap or extend it
          host mint  NONE — a real run would REFUSE to start: kubectl not found on PATH; identity.kube mints its token with the host's kubectl
                     kubectl
-                    --kubeconfig=/run/user/1000/snug/run-N/kube-mint.json
-                    --context=snug
-                    --cache-dir=/run/user/1000/snug/run-N/kube-cache create
-                    token snug-agent --namespace=dev --duration=1h0m0s -o json
+                      --kubeconfig=/run/user/1000/snug/run-N/kube-mint.json
+                      --context=snug
+                      --cache-dir=/run/user/1000/snug/run-N/kube-cache create token snug-agent
+                      --namespace=dev
+                      --duration=1h0m0s
+                      -o json
                     env PATH HOME KUBERC, cwd /, own user+pid namespace, 30s timeout
                     authenticates on the HOST as the user of context aks-dev,
                     with your client certificate; that credential never enters the
