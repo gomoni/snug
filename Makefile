@@ -144,6 +144,9 @@ gate:
 	# testdata/kubeprobe is the seventeenth: the payload that speaks to the
 	# kube proxy from inside. Built lazily by kube_test.go.
 	go vet ./test/integration/testdata/kubeprobe
+	# testdata/stubkubeplugin is the eighteenth: a host exec plugin built as
+	# kubelogin, for token = "host-exec". Built lazily by kube_test.go.
+	go vet ./test/integration/testdata/stubkubeplugin
 	go test ./...
 
 # Tier 3: really launch sandboxes and assert what is and is not reachable. This

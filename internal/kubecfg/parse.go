@@ -11,6 +11,11 @@
 // document, and a key written twice. go.mod carries no YAML library, and this
 // file is not trying to be one.
 //
+// One block scalar is accepted, under one key: `installHint`, which the AKS
+// kubeconfig's exec entry writes as `|2` prose for a human. Its lines are
+// skipped by indentation and its content is never kept, so no value snug
+// reads can come from a block scalar.
+//
 // A parser differential with client-go cannot widen anything snug hands over,
 // because kubectl never reads the host file through snug: snug re-encodes the
 // allowlisted values it extracted here into a file it writes itself. The cost
@@ -24,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -76,9 +82,24 @@ type Cluster struct {
 	Line   int
 }
 
-// Exec is the part of a user's `exec:` mapping snug reports in a refusal.
+// Exec is a user's `exec:` mapping, as data. Values are kept as written;
+// whether any of them is acceptable is internal/policy's decision. The
+// environment's VALUES are never kept: snug never uses them, and a value
+// there can be a secret.
 type Exec struct {
-	Command string
+	APIVersion         string
+	Command            string
+	Args               []string
+	EnvNames           []string // names under env:, in file order
+	InteractiveMode    string
+	ProvideClusterInfo string
+	// Other names every key beyond the ones above and installHint, in file
+	// order.
+	Other []string
+	// Problem is a shape the fields above cannot carry — an arg that is not a
+	// one-line scalar, env that is not a list of {name, value} — stated for a
+	// refusal. "" when there is none.
+	Problem string
 }
 
 // User is one entry of `users:`, its `user:` mapping kept as Fields. Exec is
@@ -379,6 +400,13 @@ func (p *yparser) mapping(indent int) (*node, error) {
 			if err != nil {
 				return nil, err
 			}
+		} else if k == "installHint" && blockIndicator.MatchString(rest) {
+			// Skipped, not decoded: every line deeper than the key is the
+			// block's, and nothing of it is kept.
+			for p.i < len(p.lines) && p.lines[p.i].indent > indent {
+				p.i++
+			}
+			v = &node{kind: Scalar, line: l.n}
 		} else {
 			if v, err = scalar(rest, l.n); err != nil {
 				return nil, err
@@ -393,6 +421,10 @@ func (p *yparser) mapping(indent int) (*node, error) {
 	}
 	return out, nil
 }
+
+// blockIndicator is a block scalar header: | or >, with at most one
+// indentation digit and one chomping sign in either order.
+var blockIndicator = regexp.MustCompile(`^[|>]([1-9][-+]?|[-+][1-9]?)?$`)
 
 // noContinuation refuses a line indented deeper than the entry just read: that
 // is a multi-line plain scalar, the one way to continue a value the subset does
@@ -554,6 +586,77 @@ func doubleQuoted(s string, n int) (*node, error) {
 	return nil, fmt.Errorf("line %d: unterminated double-quoted scalar", n)
 }
 
+// isNull is a YAML or JSON null: an empty plain value, null or ~.
+func isNull(v *node) bool {
+	return v.kind == Scalar && !v.quoted && (v.text == "" || v.text == "null" || v.text == "~")
+}
+
+func execOf(ex *node) *Exec {
+	e := &Exec{}
+	problem := func(format string, a ...any) {
+		if e.Problem == "" {
+			e.Problem = fmt.Sprintf(format, a...)
+		}
+	}
+	str := func(k string, dst *string) {
+		v := ex.m[k]
+		if v.kind != Scalar {
+			problem("line %d: exec %s is a %s, not a value", v.line, k, v.kind)
+			return
+		}
+		*dst = v.text
+	}
+	for _, k := range ex.keys {
+		v := ex.m[k]
+		switch k {
+		case "apiVersion":
+			str(k, &e.APIVersion)
+		case "command":
+			str(k, &e.Command)
+		case "interactiveMode":
+			str(k, &e.InteractiveMode)
+		case "provideClusterInfo":
+			str(k, &e.ProvideClusterInfo)
+		case "installHint":
+		case "args":
+			if isNull(v) {
+				continue
+			}
+			if v.kind != Seq {
+				problem("line %d: exec args is a %s, not a list", v.line, v.kind)
+				continue
+			}
+			e.Args = []string{}
+			for _, a := range v.seq {
+				if a.kind != Scalar {
+					problem("line %d: an exec arg is a %s, not a value", a.line, a.kind)
+					continue
+				}
+				e.Args = append(e.Args, a.text)
+			}
+		case "env":
+			if isNull(v) {
+				continue
+			}
+			if v.kind != Seq {
+				problem("line %d: exec env is a %s, not a list", v.line, v.kind)
+				continue
+			}
+			for _, it := range v.seq {
+				nm, ok := it.m["name"]
+				if it.kind != Map || !ok || nm.kind != Scalar || nm.text == "" {
+					problem("line %d: an exec env entry has no name", it.line)
+					continue
+				}
+				e.EnvNames = append(e.EnvNames, nm.text)
+			}
+		default:
+			e.Other = append(e.Other, k)
+		}
+	}
+	return e
+}
+
 // ---- JSON ----
 
 // parseJSON walks tokens rather than decoding into map[string]any, because
@@ -689,10 +792,7 @@ func extract(root *node) (File, error) {
 		}
 		u := User{Name: name, Fields: fields(body), Line: it.line}
 		if ex, ok := body.m["exec"]; ok && ex.kind == Map {
-			u.Exec = &Exec{}
-			if c, ok := ex.m["command"]; ok && c.kind == Scalar {
-				u.Exec.Command = c.text
-			}
+			u.Exec = execOf(ex)
 		}
 		f.Users = append(f.Users, u)
 	}

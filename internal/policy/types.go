@@ -527,6 +527,10 @@ type Policy struct {
 	// refuses on the problem rather than reading it back from here.
 	KubeMintBinary  string
 	KubeMintProblem string
+	// KubePluginBinary and KubePluginProblem are the same for the host
+	// context's exec plugin, when Kube.Plugin is set.
+	KubePluginBinary  string
+	KubePluginProblem string
 
 	// Topology is the process shape this policy requires — DERIVED by
 	// deriveTopology at the end of Resolve, never granted by a profile, a TOML

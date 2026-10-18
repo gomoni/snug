@@ -154,3 +154,51 @@ func TestKubeOnlyProfileIsNotOffline(t *testing.T) {
 		}
 	}
 }
+
+// identity.kube with token = "host-exec" against the AKS kubelogin shape.
+func kubeHostExecPolicy(t *testing.T) *policy.Policy {
+	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	reg, err := profile.Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg["aks-entra"] = &policy.Profile{Name: "aks-entra", Identity: &policy.Identity{Kube: policy.IdentityKube{
+		Context: "aks-entra", Token: policy.KubeTokenHostExec, Server: "https://aks-entra.example.azmk8s.io:443"}}}
+	sel := append(append([]policy.ProfileName{}, profile.BuiltinDefaults()...), "aks-entra")
+	fixture, err := os.ReadFile("../policy/testdata/kubeconfig-exec.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newEnvFakeEnv()
+	env.kube = map[string][]byte{"/home/u/.kube/config": fixture}
+	p, err := policy.Resolve(map[policy.ProfileName]*policy.Profile(reg), sel, envGoldenCtx(), env)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, err := startKubeIdentity(p, env, false, true); err != nil {
+		t.Fatal(err)
+	}
+	p.InstallAnchors()
+	return p
+}
+
+func TestGoldenKubeHostExecDryRunBlock(t *testing.T) {
+	p := kubeHostExecPolicy(t)
+	var b bytes.Buffer
+	describeKube(&b, buildKubeReport(p))
+	got := b.String()
+	for _, want := range []string{"YOU — the user of context aks-entra, through its kubelogin plugin",
+		"--login azurecli", "valid as you at EVERY", "exec.env is never used",
+		"env PATH HOME,", "YOUR RBAC allows", "a real run would REFUSE"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("KUBE block lacks %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"host mint", "80faf920", "ServiceAccount"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("KUBE block shows %q under host-exec:\n%s", bad, got)
+		}
+	}
+	checkGolden(t, "kube-host-exec.dryrun.txt", got, "this is what a human reads before snug runs a plugin as them")
+}

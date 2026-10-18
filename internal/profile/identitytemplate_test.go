@@ -180,3 +180,39 @@ func TestKubeTemplateLoadsAsAUserProfile(t *testing.T) {
 		t.Errorf("template includes @net, which identity.kube does not need: %v", p.Include)
 	}
 }
+
+// The host-exec template, held the same way.
+func TestKubeHostExecTemplateLoadsAsAUserProfile(t *testing.T) {
+	data, err := embedded.ReadFile("profiles/base.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	const begin, end = "# KUBE-HOSTEXEC-TEMPLATE-BEGIN\n", "# KUBE-HOSTEXEC-TEMPLATE-END"
+	i, j := strings.Index(text, begin), strings.Index(text, end)
+	if i < 0 || j < i {
+		t.Fatal("no KUBE-HOSTEXEC-TEMPLATE fence in base.toml")
+	}
+	var raw []string
+	for line := range strings.SplitSeq(text[i+len(begin):j], "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			t.Fatalf("template line %q is not commented", line)
+		}
+		raw = append(raw, strings.TrimPrefix(line, "#"))
+	}
+	extracted, err := parse([]byte(strings.Join(raw, "\n")), "kube-hostexec-template", true)
+	if err != nil {
+		t.Fatalf("the host-exec template does not parse as a user profile: %v", err)
+	}
+	p, ok := extracted["aks-me"]
+	if !ok || p.Identity == nil {
+		t.Fatalf("template defines no aks-me identity: %v", extracted)
+	}
+	want := policy.IdentityKube{Context: "aks-entra", Token: policy.KubeTokenHostExec, Server: "https://aks-entra.example.azmk8s.io:443"}
+	if p.Identity.Kube != want {
+		t.Errorf("Kube = %+v, want %+v", p.Identity.Kube, want)
+	}
+}

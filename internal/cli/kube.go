@@ -45,32 +45,38 @@ func hostAddressesForResolve() []string {
 // that blackholes, a cluster that never answers — must not hold the run.
 const kubeMintTimeout = 30 * time.Second
 
-// checkKubectlIsABinary refuses a host kubectl that is not an ELF executable:
-// a distrobox-export wrapper, a host-spawn shim, an asdf shim. snug runs it
-// with a cluster credential, so it must be a program snug can reason about,
-// not a script that runs something else.
+// checkKubectlIsABinary is checkHostBinaryIsELF for the host kubectl.
 func checkKubectlIsABinary(path string) error {
+	return checkHostBinaryIsELF("host kubectl", "kubectl", path)
+}
+
+// checkHostBinaryIsELF refuses a host program identity.kube runs that is not
+// an ELF executable: a distrobox-export wrapper, a host-spawn shim, an asdf
+// shim, aws CLI v1 (a Python script). snug runs it with a cluster credential,
+// so it must be a program snug can reason about, not a script that runs
+// something else. what names it in messages, name is the program.
+func checkHostBinaryIsELF(what, name, path string) error {
 	// HOSTREAD-EXEMPT: four bytes of a file that is tens of megabytes, which
 	// hostread's whole-file read cannot express. O_NONBLOCK keeps a FIFO
 	// planted at the path from blocking the open, and the Stat below refuses
 	// anything but a regular file before a byte is read.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return fmt.Errorf("host kubectl %s: %w", policy.VisibleText(path), err)
+		return fmt.Errorf("%s %s: %w", what, policy.VisibleText(path), err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() {
-		return fmt.Errorf("host kubectl %s is not a regular file; snug runs it on the host with your "+
-			"cluster credential, so it must be the kubectl binary itself", policy.VisibleText(path))
+		return fmt.Errorf("%s %s is not a regular file; snug runs it on the host with your "+
+			"cluster credential, so it must be the %s binary itself", what, policy.VisibleText(path), name)
 	}
 	// A second hard link is a second name the grant checks never judged — one
 	// inside a target an earlier run could write lets that run replace the
 	// bytes in place (red team, measured).
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
-		return fmt.Errorf("host kubectl %s has %d hard links; a second name for the binary is a second "+
+		return fmt.Errorf("%s %s has %d hard links; a second name for the binary is a second "+
 			"place it can be rewritten from, and snug runs it with your cluster credential — install "+
-			"kubectl as a file of its own", policy.VisibleText(path), st.Nlink)
+			"%s as a file of its own", what, policy.VisibleText(path), st.Nlink, name)
 	}
 	head := make([]byte, 4)
 	n, _ := io.ReadFull(f, head)
@@ -81,9 +87,9 @@ func checkKubectlIsABinary(path string) error {
 	if n >= 2 && string(head[:2]) == "#!" {
 		kind = ": it is a script"
 	}
-	return fmt.Errorf("host kubectl %s is not an executable snug can reason about%s. snug runs it on the "+
-		"host with your cluster credential, so it must be the kubectl binary itself — put the official "+
-		"static release (it is one file) on PATH ahead of it", policy.VisibleText(path), kind)
+	return fmt.Errorf("%s %s is not an executable snug can reason about%s. snug runs it on the "+
+		"host with your cluster credential, so it must be the %s binary itself — install the official "+
+		"release binary (for aws, CLI v2) where snug looks for it", what, policy.VisibleText(path), kind, name)
 }
 
 // judgeKubeMintBinary finds and judges the host kubectl, recording the verdict
@@ -100,6 +106,51 @@ func judgeKubeMintBinary(pol *policy.Policy, env policy.Environ) (string, error)
 		return "", err
 	}
 	pol.KubeMintBinary = found
+	return found, nil
+}
+
+// lookPluginPATH finds a bare plugin command on policy.KubePluginPATH only;
+// an absolute one is returned as written, for ResolveKubeHostBinary.
+func lookPluginPATH(env policy.Environ, cmd string) (string, error) {
+	if filepath.IsAbs(cmd) {
+		return cmd, nil
+	}
+	for _, dir := range strings.Split(policy.KubePluginPATH, ":") {
+		c := dir + "/" + cmd
+		if _, err := policy.ResolveExistingHostPath(env, c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found on %s; snug looks up a bare exec-plugin command there only, never on "+
+		"your PATH — install it there, or name it by absolute path in the kubeconfig",
+		policy.VisibleText(cmd), policy.KubePluginPATH)
+}
+
+// judgeKubePlugin finds and judges the host context's exec plugin and the
+// helpers it runs, recording the verdict on pol for the --dry-run row. A
+// helper is judged for writability only: az is a script on every install.
+func judgeKubePlugin(pol *policy.Policy, env policy.Environ) (string, error) {
+	pl := pol.Kube.Plugin
+	what := "kube exec plugin"
+	found, err := lookPluginPATH(env, pl.Command)
+	if err == nil {
+		if found, err = pol.ResolveKubeHostBinary(env, what, found); err == nil {
+			err = checkHostBinaryIsELF(what, pl.Row, found)
+		}
+	}
+	for _, h := range pl.Helpers {
+		if err != nil {
+			break
+		}
+		if hp, lerr := lookPluginPATH(env, h); lerr == nil {
+			_, err = pol.ResolveKubeHostBinary(env, "kube exec plugin helper", hp)
+		}
+	}
+	if err != nil {
+		pol.KubePluginProblem = err.Error()
+		return "", err
+	}
+	pol.KubePluginBinary = found
 	return found, nil
 }
 
@@ -143,6 +194,52 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 
 var kubeTokenShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// runKubeExec runs a plugin to completion as runKubeMint does and parses its
+// ExecCredential. Only the token and its expiry are kept: a certificate in
+// the answer refuses, because snug's proxy holds no client certificate, and
+// every other field and the plugin's stderr stay on the host.
+func runKubeExec(cmd *exec.Cmd, apiVersion string) (kubebroker.Token, string, error) {
+	out, stderr, err := runKubeCmd(cmd)
+	if err != nil {
+		return kubebroker.Token{}, stderr, err
+	}
+	var ec struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Status     struct {
+			Token                 string `json:"token"`
+			ExpirationTimestamp   string `json:"expirationTimestamp"`
+			ClientCertificateData string `json:"clientCertificateData"`
+			ClientKeyData         string `json:"clientKeyData"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(out, &ec); err != nil {
+		return kubebroker.Token{}, stderr, fmt.Errorf("its output is not an ExecCredential: %w", err)
+	}
+	if ec.Kind != "ExecCredential" || ec.APIVersion != apiVersion {
+		return kubebroker.Token{}, stderr, fmt.Errorf("its output is %s %s, want ExecCredential %s",
+			policy.VisibleText(ec.Kind), policy.VisibleText(ec.APIVersion), apiVersion)
+	}
+	if ec.Status.ClientCertificateData != "" || ec.Status.ClientKeyData != "" {
+		return kubebroker.Token{}, stderr, errors.New("it answered with a client certificate; snug's proxy " +
+			"carries a bearer token only")
+	}
+	t, err := tokenOf(ec.Status.Token, ec.Status.ExpirationTimestamp)
+	return t, stderr, err
+}
+
+func tokenOf(tok, expiry string) (kubebroker.Token, error) {
+	if len(tok) > 16<<10 || !kubeTokenShape.MatchString(tok) {
+		return kubebroker.Token{}, errors.New("its token is empty, oversized or not a bearer token")
+	}
+	exp, err := time.Parse(time.RFC3339, expiry)
+	if err != nil || !exp.After(time.Now()) {
+		return kubebroker.Token{}, errors.New("its expirationTimestamp is missing or in the past; a token " +
+			"of unknown life is not cached")
+	}
+	return kubebroker.Token{Value: policy.Secret(tok), Expiry: exp}, nil
+}
+
 // runKubeMint runs cmd to completion on a locked OS thread — Pdeathsig fires
 // when the THREAD that forked the child exits, and the Go scheduler may retire
 // an unlocked one while the child still runs — and parses the TokenRequest.
@@ -154,6 +251,29 @@ var kubeTokenShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // as `the stage closed the control channel without reporting the payload's
 // exit` partway through TestKubeBrokerBudgetRefuses, 64 mints in one run.
 func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
+	out, stderr, err := runKubeCmd(cmd)
+	if err != nil {
+		return kubebroker.Token{}, stderr, err
+	}
+	var tr struct {
+		Status struct {
+			Token               string `json:"token"`
+			ExpirationTimestamp string `json:"expirationTimestamp"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(out, &tr); err != nil {
+		return kubebroker.Token{}, stderr, fmt.Errorf("its output is not a TokenRequest: %w", err)
+	}
+	t, err := tokenOf(tr.Status.Token, tr.Status.ExpirationTimestamp)
+	if err != nil {
+		return kubebroker.Token{}, stderr, err
+	}
+	return t, "", nil
+}
+
+// runKubeCmd is the locked-thread run both mints share; it returns stdout
+// (capped at 1 MiB) and stderr (capped at 16 KiB).
+func runKubeCmd(cmd *exec.Cmd) ([]byte, string, error) {
 	var out, errb cappedBuffer
 	out.max, errb.max = 1<<20, 16<<10
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -164,25 +284,9 @@ func runKubeMint(cmd *exec.Cmd) (kubebroker.Token, string, error) {
 		done <- cmd.Run()
 	}()
 	if err := <-done; err != nil {
-		return kubebroker.Token{}, errb.b.String(), err
+		return nil, errb.b.String(), err
 	}
-	var tr struct {
-		Status struct {
-			Token               string `json:"token"`
-			ExpirationTimestamp string `json:"expirationTimestamp"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(out.b.Bytes(), &tr); err != nil {
-		return kubebroker.Token{}, errb.b.String(), fmt.Errorf("its output is not a TokenRequest: %w", err)
-	}
-	if len(tr.Status.Token) > 16<<10 || !kubeTokenShape.MatchString(tr.Status.Token) {
-		return kubebroker.Token{}, errb.b.String(), errors.New("its token is empty, oversized or not a bearer token")
-	}
-	exp, err := time.Parse(time.RFC3339, tr.Status.ExpirationTimestamp)
-	if err != nil || !exp.After(time.Now()) {
-		return kubebroker.Token{}, errb.b.String(), errors.New("its expirationTimestamp is missing or in the past")
-	}
-	return kubebroker.Token{Value: policy.Secret(tr.Status.Token), Expiry: exp}, "", nil
+	return out.b.Bytes(), errb.b.String(), nil
 }
 
 // kubeRun is identity.kube's run-time half: the token source and, once the
@@ -207,12 +311,22 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 	if k == nil {
 		return nil, nil
 	}
-	kubectl, kerr := judgeKubeMintBinary(pol, env)
+	var kubectl, plugin string
+	var kerr, perr error
+	if k.Mode == policy.KubeTokenServiceAccount {
+		kubectl, kerr = judgeKubeMintBinary(pol, env)
+	}
+	if k.Plugin != nil {
+		plugin, perr = judgeKubePlugin(pol, env)
+	}
 	if dryRun {
 		return nil, nil
 	}
 	if kerr != nil {
 		return nil, kerr
+	}
+	if perr != nil {
+		return nil, perr
 	}
 	rt, err := openRuntimeDir()
 	if err != nil {
@@ -222,42 +336,76 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 	if err != nil {
 		return nil, err
 	}
-	cache, err := rt.Mkdir("kube-cache")
-	if err != nil {
-		return nil, err
-	}
-	const mintName = "kube-mint.json"
-	mintFile := filepath.Join(rt.Path(), mintName)
-	argv := k.MintArgv(kubectl, mintFile, cache)
-	describe := policy.VisibleText(strings.Join(argv, " "))
 
-	// The host credential is on disk only while a mint is in flight. A SIGKILL
-	// mid-mint leaves it in this run's directory, under XDG_RUNTIME_DIR (a
-	// tmpfs), until the next run's stale-directory sweep removes it.
-	mint := func(ctx context.Context) (kubebroker.Token, error) {
-		if _, err := rt.CreateFile(mintName, k.MintKubeconfig(), 0o600); err != nil {
-			return kubebroker.Token{}, err
+	// The plugin runs as the host user it is: HOME is the host home, where
+	// its own ~/.azure or ~/.aws lives (judged unwritable by Resolve).
+	var pluginMint func(context.Context) (kubebroker.Token, error)
+	if pl := k.Plugin; pl != nil {
+		argv := pl.KubeExecArgv(plugin)
+		describe := policy.VisibleText(strings.Join(argv, " "))
+		pluginMint = func(ctx context.Context) (kubebroker.Token, error) {
+			ctx, cancel := context.WithTimeout(ctx, kubeMintTimeout)
+			defer cancel()
+			t, stderr, err := runKubeExec(kubeMintCmd(ctx, argv, pl.KubePluginEnv(pol.Home)), pl.APIVersion)
+			if err != nil {
+				return kubebroker.Token{}, fmt.Errorf("kube exec plugin failed: %s (env %s, cwd /) exited %v: %s",
+					describe, strings.Join(pl.EnvNames(), " "), err, policy.VisibleText(strings.TrimSpace(stderr)))
+			}
+			return t, nil
 		}
-		defer rt.RemoveFile(mintName)
-		ctx, cancel := context.WithTimeout(ctx, kubeMintTimeout)
-		defer cancel()
-		t, stderr, err := runKubeMint(kubeMintCmd(ctx, argv, policy.KubeMintEnv(home)))
+	}
+
+	mint := pluginMint
+	mintTimeout := kubeMintTimeout
+	if k.Mode == policy.KubeTokenServiceAccount {
+		cache, err := rt.Mkdir("kube-cache")
 		if err != nil {
-			return kubebroker.Token{}, fmt.Errorf("kube token mint failed: %s (env %s, cwd /) exited %v: %s",
-				describe, strings.Join(policy.KubeMintEnvNames(), " "), err,
-				policy.VisibleText(strings.TrimSpace(stderr)))
+			return nil, err
 		}
-		return t, nil
+		const mintName = "kube-mint.json"
+		mintFile := filepath.Join(rt.Path(), mintName)
+		argv := k.MintArgv(kubectl, mintFile, cache)
+		describe := policy.VisibleText(strings.Join(argv, " "))
+		if pluginMint != nil {
+			mintTimeout = 2*kubeMintTimeout + 5*time.Second
+		}
+		// The host credential is on disk only while a mint is in flight. A
+		// SIGKILL mid-mint leaves it in this run's directory, under
+		// XDG_RUNTIME_DIR (a tmpfs), until the next run's stale-directory
+		// sweep removes it. When the host user is an exec plugin, the
+		// credential is the token it just returned, used for this one mint.
+		mint = func(ctx context.Context) (kubebroker.Token, error) {
+			hu := k.HostUser
+			if pluginMint != nil {
+				t, err := pluginMint(ctx)
+				if err != nil {
+					return kubebroker.Token{}, err
+				}
+				hu = policy.KubeHostUser{Token: t.Value}
+			}
+			if _, err := rt.CreateFile(mintName, k.MintKubeconfigAs(hu), 0o600); err != nil {
+				return kubebroker.Token{}, err
+			}
+			defer rt.RemoveFile(mintName)
+			ctx, cancel := context.WithTimeout(ctx, kubeMintTimeout)
+			defer cancel()
+			t, stderr, err := runKubeMint(kubeMintCmd(ctx, argv, policy.KubeMintEnv(home)))
+			if err != nil {
+				return kubebroker.Token{}, fmt.Errorf("kube token mint failed: %s (env %s, cwd /) exited %v: %s",
+					describe, strings.Join(policy.KubeMintEnvNames(), " "), err,
+					policy.VisibleText(strings.TrimSpace(stderr)))
+			}
+			return t, nil
+		}
 	}
 
 	first, err := mint(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("%w. kubectl inside would have no cluster to reach; not starting", err)
 	}
-	// The cluster decides the lifetime. The token never enters the sandbox,
-	// so a long one is no longer a long life for a stolen copy — but it is
-	// how long the cluster would honour this one if it leaked from the host.
-	if first.Expiry.After(time.Now().Add(time.Hour + 10*time.Minute)) {
+	// The cluster decides the lifetime: how long it would honour this token
+	// if it leaked from the host. Only a ServiceAccount mint asks for one.
+	if k.Mode == policy.KubeTokenServiceAccount && first.Expiry.After(time.Now().Add(time.Hour+10*time.Minute)) {
 		fmt.Fprintf(os.Stderr, "snug: the cluster issued a token valid until %s (requested 1h).\n",
 			first.Expiry.UTC().Format(time.RFC3339))
 	}
@@ -266,7 +414,7 @@ func startKubeIdentity(pol *policy.Policy, env policy.Environ, verbose, dryRun b
 		audit = func(msg string) { fmt.Fprintln(os.Stderr, "snug: kube: "+policy.VisibleText(msg)) }
 	}
 	audit(fmt.Sprintf("kube token minted at start, valid until %s", first.Expiry.UTC().Format(time.RFC3339)))
-	src, err := kubebroker.New(kubebroker.Config{Mint: mint, MintTimeout: kubeMintTimeout, Audit: audit}, first)
+	src, err := kubebroker.New(kubebroker.Config{Mint: mint, MintTimeout: mintTimeout, Audit: audit}, first)
 	if err != nil {
 		return nil, err
 	}

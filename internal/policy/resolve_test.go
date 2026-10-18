@@ -113,8 +113,12 @@ func newFakeEnv() *fakeEnv {
 	if err != nil {
 		panic(err)
 	}
+	kubeExec, err := os.ReadFile("testdata/kubeconfig-exec.yaml")
+	if err != nil {
+		panic(err)
+	}
 	return &fakeEnv{
-		kube: map[string][]byte{"/home/u/.kube/config": kubeFixture, "/home/u/.kube/maximal": kubeFixture},
+		kube: map[string][]byte{"/home/u/.kube/config": kubeFixture, "/home/u/.kube/maximal": kubeExec},
 		// The procfs entries snug replaces (issue #29). Present here so the
 		// GOLDENS carry those mounts: they are the review artifact for this
 		// change, and a fixture host that published none of them would hide
@@ -750,8 +754,11 @@ func maximalProfile() *Profile {
 			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
 			// NOT the default path, so dropping identity.kube.kubeconfig really
 			// changes which file is read (the fixture serves both).
-			Kube: IdentityKube{Context: "aks-dev", Token: KubeTokenServiceAccount,
-				Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent", Kubeconfig: "/home/u/.kube/maximal"},
+			// The widest kube block: a ServiceAccount minted through an aws
+			// exec user, so aws_profile is a key this test can drop too.
+			Kube: IdentityKube{Context: "eks-demo", Token: KubeTokenServiceAccount,
+				Server: "https://EKS0.gr7.eu-west-1.eks.amazonaws.com", ServiceAccount: "dev/snug-agent",
+				Kubeconfig: "/home/u/.kube/maximal", AWSProfile: "work"},
 		},
 		Environ: EnvGrants{
 			Set:      map[string]string{"MY_TOOL_ROOT": "/opt/tool"},
@@ -809,6 +816,7 @@ func keyDrops() []keyDrop {
 		{"identity.kube.token", "Identity.Kube.Token", func(p *Profile) { p.Identity.Kube.Token = "" }},
 		{"identity.kube.service_account", "Identity.Kube.ServiceAccount", func(p *Profile) { p.Identity.Kube.ServiceAccount = "" }},
 		{"identity.kube.kubeconfig", "Identity.Kube.Kubeconfig", func(p *Profile) { p.Identity.Kube.Kubeconfig = "" }},
+		{"identity.kube.aws_profile", "Identity.Kube.AWSProfile", func(p *Profile) { p.Identity.Kube.AWSProfile = "" }},
 		// Whole blocks, because identity joins one block at a time: removing a
 		// block removes one pin, and must widen nothing the others grant.
 		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},

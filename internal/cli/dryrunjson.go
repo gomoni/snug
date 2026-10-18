@@ -588,6 +588,13 @@ type jsonKube struct {
 	Visible           []string `json:"visible,omitempty"`
 	Proxy             string   `json:"proxy_guest"`
 	Refused           []string `json:"refused"`
+	TokenMode         string   `json:"token_mode"`
+	Plugin            string   `json:"plugin,omitempty"`
+	PluginBinary      string   `json:"plugin_binary,omitempty"`
+	PluginProblem     string   `json:"plugin_problem,omitempty"`
+	PluginArgv        []string `json:"plugin_argv,omitempty"`
+	PluginEnv         []string `json:"plugin_env,omitempty"`
+	PluginReach       string   `json:"plugin_reach,omitempty"`
 }
 
 type jsonTopology struct {
@@ -891,7 +898,9 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			MintArgv: texts(k.MintArgv), MintEnv: k.MintEnv, MintBudget: k.MintBudget,
 			Requested: k.Requested, Credential: k.Credential, StaticTokenUnused: k.StaticTokenUnused,
 			Absent: texts(k.Absent), Visible: texts(k.Visible),
-			Proxy: k.Proxy, Refused: k.Refused,
+			Proxy: k.Proxy, Refused: k.Refused, TokenMode: k.Mode,
+			Plugin: k.PluginRow, PluginBinary: k.Plugin, PluginProblem: k.PluginProblem,
+			PluginArgv: k.PluginArgv, PluginEnv: k.PluginEnv, PluginReach: k.PluginReach,
 		}
 	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)

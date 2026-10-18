@@ -8,7 +8,9 @@
 # what only a real API server answers:
 #
 #   1. inside, `kubectl auth whoami` names system:serviceaccount:<ns>:<name>,
-#      the pinned account — not the host user;
+#      the pinned account — not the host user. For a token = "host-exec"
+#      profile, set SNUG_KUBE_WHOAMI to the username you expect instead (you,
+#      as the plugin authenticates you);
 #   2. `kubectl config get-contexts -o name` inside lists exactly one context;
 #   3. the generated ~/.kube/config carries no client-key-data, no token and
 #      no exec plugin, and names http://127.0.0.1:6443;
@@ -44,6 +46,7 @@ echo "host kubectl: $(kubectl version --client -o yaml 2>/dev/null | sed -n 's/^
 proj=$(mktemp -d)
 trap 'rm -rf "$proj"' EXIT
 other=${SNUG_KUBE_OTHER_CONTEXT:-}
+whoami=${SNUG_KUBE_WHOAMI:-system:serviceaccount:}
 echo_svc=${SNUG_KUBE_ECHO_SERVICE:-}
 
 out=$("$SNUG" -v -p "$SNUG_KUBE_PROFILE" "$proj" -- /bin/sh -c '
@@ -61,7 +64,7 @@ out=$("$SNUG" -v -p "$SNUG_KUBE_PROFILE" "$proj" -- /bin/sh -c '
 $out"
 echo "$out" | grep -v '^snug: kube: [A-Z]* /'
 
-echo "$out" | grep -q '^WHOAMI system:serviceaccount:' || fail "kubectl inside is not the pinned ServiceAccount"
+echo "$out" | grep -qF "WHOAMI $whoami" || fail "kubectl inside is not $whoami"
 echo "$out" | grep -q '^CONTEXTS 1$' || fail "the generated kubeconfig does not hold exactly one context"
 echo "$out" | grep -q '^SECRETS 0$' || fail "the generated kubeconfig carries a credential field"
 echo "$out" | grep -q '^PROXIED$' || fail "the generated kubeconfig does not name snug's proxy"
@@ -77,4 +80,4 @@ fi
 if [ -n "$echo_svc" ]; then
 	echo "$out" | grep -q '^ECHO-CLEAN$' || fail "a Bearer reached the workload behind services/proxy"
 fi
-echo "asserted: kubectl inside is the pinned ServiceAccount on one context through snug's proxy, with no credential in its kubeconfig, --as refused, a token under ~1h, and no other host context"
+echo "asserted: kubectl inside is $whoami on one context through snug's proxy, with no credential in its kubeconfig, --as refused, a token under ~1h, and no other host context"

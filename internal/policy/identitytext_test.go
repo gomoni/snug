@@ -121,6 +121,9 @@ var wantIdentityLeaves = []string{
 	"git.name", "git.email", "git.signing_key",
 	"gh.host", "gh.user",
 	"kube.context", "kube.server", "kube.token", "kube.service_account", "kube.kubeconfig",
+	// aws_profile reaches one host sink, the exec plugin's AWS_PROFILE, and is
+	// shape-checked (awsProfileShape) before it does.
+	"kube.aws_profile",
 }
 
 // TestCheckTextRefusesAForgingRuneAtEveryIdentityLeaf replaces the hand-written

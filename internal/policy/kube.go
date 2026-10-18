@@ -29,6 +29,12 @@ type KubeBinding struct {
 	// Context is the profile's context name. It is also the cluster, user and
 	// context name in the sandbox's file, so no host-side name reaches it.
 	Context string
+	// Mode is identity.kube.token.
+	Mode KubeTokenMode
+	// Plugin is the host context's exec plugin when its user entry is one:
+	// under host-exec its token is the proxy's bearer; under serviceaccount it
+	// authenticates the mint. nil for a certificate or static-token user.
+	Plugin *KubePlugin
 	// Kubeconfig is the host path that was decoded, link-free.
 	Kubeconfig    string
 	Server        string
@@ -36,9 +42,9 @@ type KubeBinding struct {
 	TLSServerName string
 	SANamespace   string
 	SAName        string
-	// HostUser is the mint's credential. It never enters the sandbox; it is
-	// written, by internal/cli, only into the per-run host-side file the mint
-	// reads.
+	// HostUser is the mint's credential when the host user holds one in the
+	// file. It never enters the sandbox; it is written, by internal/cli, only
+	// into the per-run host-side file the mint reads. Zero when Plugin is set.
 	HostUser KubeHostUser
 	// HostUserShape names what the host user entry holds, for the --dry-run
 	// row saying what stayed out: "client certificate", "static token".
@@ -84,19 +90,29 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 		return refuse("[identity.kube] needs identity.kube.context: the name of one context in %s. "+
 			"snug reads that context's cluster as data; its user entry never enters the sandbox.", VisibleText(path))
 	}
-	if k.Token == "" {
-		return refuse("identity.kube.token is not set (want serviceaccount)")
-	}
-	if k.ServiceAccount == "" {
-		return refuse("identity.kube.token = \"serviceaccount\" needs identity.kube.service_account " +
-			"(\"namespace/name\"): the one ServiceAccount snug mints tokens for")
-	}
-	ns, sa, ok := strings.Cut(k.ServiceAccount, "/")
-	if !ok || !dnsLabel.MatchString(ns) || len(sa) > 253 || !dnsSubdomain.MatchString(sa) {
-		// The grammar also forbids a leading '-', so neither half can parse as
-		// a flag in the mint's argv.
-		return refuse("identity.kube.service_account %s is not \"namespace/name\" with both halves Kubernetes names",
-			VisibleText(k.ServiceAccount))
+	var ns, sa string
+	switch k.Token {
+	case "":
+		return refuse("identity.kube.token is not set (want serviceaccount or host-exec)")
+	case KubeTokenServiceAccount:
+		if k.ServiceAccount == "" {
+			return refuse("identity.kube.token = \"serviceaccount\" needs identity.kube.service_account " +
+				"(\"namespace/name\"): the one ServiceAccount snug mints tokens for")
+		}
+		var ok bool
+		ns, sa, ok = strings.Cut(k.ServiceAccount, "/")
+		if !ok || !dnsLabel.MatchString(ns) || len(sa) > 253 || !dnsSubdomain.MatchString(sa) {
+			// The grammar also forbids a leading '-', so neither half can parse as
+			// a flag in the mint's argv.
+			return refuse("identity.kube.service_account %s is not \"namespace/name\" with both halves Kubernetes names",
+				VisibleText(k.ServiceAccount))
+		}
+	case KubeTokenHostExec:
+		if k.ServiceAccount != "" {
+			return refuse("identity.kube.service_account is set, but token = \"host-exec\" acts as YOU through "+
+				"the context's own exec plugin and mints for no ServiceAccount. Drop service_account, or set "+
+				"token = \"serviceaccount\" to act as %s", VisibleText(k.ServiceAccount))
+		}
 	}
 
 	// The host-side mint DECODES this file and authenticates with the
@@ -143,7 +159,7 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 		return refuse("%s", err.Error())
 	}
 	b := &KubeBinding{
-		Context: k.Context, Kubeconfig: path,
+		Context: k.Context, Mode: k.Token, Kubeconfig: path,
 		SANamespace: ns, SAName: sa, OtherContexts: others,
 	}
 	if err := kubeCluster(b, cluster, ctx); err != nil {
@@ -164,8 +180,36 @@ func resolveKube(p *Policy, ctx Context, env Environ, target, home string) error
 			"and a file another run could have written is not the authority. If you changed the cluster, "+
 			"update identity.kube.server.", kq(k.Server), kq(k.Context), VisibleText(path), kq(b.Server))
 	}
-	if err := kubeUser(b, user, k.Context); err != nil {
+	if err := kubeUser(b, user, k); err != nil {
 		return refuse("%s", err.Error())
+	}
+	if b.Plugin != nil {
+		// The plugin runs on the host as you and reads its own configuration
+		// from your home: whoever can write ~/.aws/config chooses a
+		// credential_process the host runs, and ~/.azure holds the session
+		// kubelogin hands to az. Writable through this run's grants, that is
+		// the payload choosing code that runs on the host.
+		for _, dir := range b.Plugin.ConfigDirs {
+			hp := home + "/" + dir
+			const why = "refusing token = %s for context %s: %s %s The %s plugin snug runs on the host " +
+				"reads its configuration there, so a payload that writes it chooses what runs on the host as " +
+				"you. Drop the rw grant over %s.%s"
+			if p.HostPathVisible(hp, true) {
+				return refuse(why, kq(string(k.Token)), kq(k.Context), VisibleText(hp),
+					"is WRITABLE through a grant of this sandbox.", b.Plugin.Row, VisibleText(hp), "")
+			}
+			if m, h, hit, err := p.writableAliasOf(env, hp); err != nil {
+				return err
+			} else if hit {
+				return refuse(why, kq(string(k.Token)), kq(k.Context), VisibleText(hp),
+					"is reached by the rw grant "+VisibleText(m.Host)+" through a second mount.", b.Plugin.Row,
+					VisibleText(hp), aliasNote(h))
+			}
+			if name, asked, found := p.writableNameOnChain(env, hp); found {
+				return refuse(why, kq(string(k.Token)), kq(k.Context), VisibleText(hp),
+					selectionClause(name, asked), b.Plugin.Row, VisibleText(hp), "")
+			}
+		}
 	}
 
 	p.Kube = b
@@ -352,14 +396,36 @@ func kubeLoopback(name, server string) error {
 		"\"THERE IS NO `network = \\\"host\\\"`\".", name, VisibleText(server))
 }
 
-// kubeUser checks the user entry's shape and keeps the one credential the
-// mint will use.
-func kubeUser(b *KubeBinding, u kubecfg.User, context string) error {
+// kubeUser checks the user entry's shape and keeps what the token source
+// will use: the exec plugin, or the one credential the mint authenticates
+// with.
+func kubeUser(b *KubeBinding, u kubecfg.User, k IdentityKube) error {
+	context := k.Context
 	if u.Exec != nil {
-		return fmt.Errorf("context %s authenticates with an exec plugin (%s); token = \"serviceaccount\" "+
-			"mints with your host credential through a kubeconfig snug writes, and carrying an exec entry "+
-			"would be snug running that program on the host. Not supported: see #659 (host-exec).",
-			kq(context), VisibleText(filepath.Base(u.Exec.Command)))
+		for key := range u.Fields {
+			if key != "exec" {
+				return fmt.Errorf("user of context %s sets %s beside its exec plugin; snug runs the plugin "+
+					"and nothing else, so a second credential is refused rather than dropped",
+					kq(context), VisibleText(key))
+			}
+		}
+		pl, err := kubePluginOf(u.Exec, k, context)
+		if err != nil {
+			return err
+		}
+		b.Plugin = pl
+		b.HostUserShape = []string{"exec plugin " + pl.Row}
+		return nil
+	}
+	if b.Mode == KubeTokenHostExec {
+		return fmt.Errorf("token = \"host-exec\" runs the context's own exec plugin, and the user of "+
+			"context %s is not one. snug does not act as a certificate or static-token user from the proxy: "+
+			"that credential lives forever and is often cluster root. Use token = \"serviceaccount\"",
+			kq(context))
+	}
+	if k.AWSProfile != "" {
+		return fmt.Errorf("identity.kube.aws_profile is set, but the user of context %s runs no aws plugin; "+
+			"drop the key", kq(context))
 	}
 	keys := make([]string, 0, len(u.Fields))
 	for k := range u.Fields {
@@ -489,15 +555,20 @@ const KubeMintContext = "snug"
 // static token. It is a Secret because it carries that credential, and the
 // host kubectl never reads the host kubeconfig itself: what it would read
 // there (other users, exec plugins, proxy settings) is not in this file.
-func (k *KubeBinding) MintKubeconfig() Secret {
+func (k *KubeBinding) MintKubeconfig() Secret { return k.MintKubeconfigAs(k.HostUser) }
+
+// MintKubeconfigAs is MintKubeconfig authenticating as u: the host user's own
+// credential, or — when the host user is an exec plugin — the token that
+// plugin just returned, as a static token for the one mint.
+func (k *KubeBinding) MintKubeconfigAs(hu KubeHostUser) Secret {
 	type userOut struct {
 		ClientCertificateData []byte `json:"client-certificate-data,omitempty"`
 		ClientKeyData         []byte `json:"client-key-data,omitempty"`
 		Token                 string `json:"token,omitempty"`
 	}
-	u := userOut{ClientCertificateData: k.HostUser.ClientCertData, ClientKeyData: k.HostUser.ClientKeyData}
+	u := userOut{ClientCertificateData: hu.ClientCertData, ClientKeyData: hu.ClientKeyData}
 	if len(u.ClientCertificateData) == 0 {
-		u.Token = string(k.HostUser.Token)
+		u.Token = string(hu.Token)
 	}
 	return Secret(kubeconfig(KubeMintContext,
 		kubeClusterOut{Server: k.Server, CAData: k.CAData, TLSServerName: k.TLSServerName}, u, ""))
@@ -526,39 +597,46 @@ func KubeMintEnv(kubeHome string) []string {
 func KubeMintEnvNames() []string { return []string{"PATH", "HOME", "KUBERC"} }
 
 // ResolveKubeMintBinary judges the host kubectl the mint will run, named as
-// exec.LookPath found it. It refuses a relative name, a binary inside the
-// target, and one a writable grant reaches by bytes, by a second mount, or by
-// a name on its resolution chain — the same three arms as ResolveEngineBinary,
-// because the mint runs it with a cluster credential. Whether the file is an
-// executable rather than a script is internal/cli's check: it needs a read.
+// exec.LookPath found it. See ResolveKubeHostBinary.
 func (p *Policy) ResolveKubeMintBinary(env Environ, asGiven string) (string, error) {
+	return p.ResolveKubeHostBinary(env, "host kubectl", asGiven)
+}
+
+// ResolveKubeHostBinary judges a host program identity.kube runs with your
+// credential — kubectl, an exec plugin, a helper the plugin runs — named by
+// what in messages. It refuses a relative name, a binary inside the target,
+// and one a writable grant reaches by bytes, by a second mount, or by a name
+// on its resolution chain — the same three arms as ResolveEngineBinary.
+// Whether the file is an executable rather than a script is internal/cli's
+// check: it needs a read.
+func (p *Policy) ResolveKubeHostBinary(env Environ, what, asGiven string) (string, error) {
 	if !filepath.IsAbs(asGiven) {
-		return "", fmt.Errorf("host kubectl %s is not an absolute path; snug runs it on the host with your "+
+		return "", fmt.Errorf("%s %s is not an absolute path; snug runs it on the host with your "+
 			"cluster credential and judges it against this sandbox's grants, which a relative name matches "+
-			"none of", VisibleText(asGiven))
+			"none of", what, VisibleText(asGiven))
 	}
 	asGiven = filepath.Clean(asGiven)
 	resolved, err := ResolveExistingHostPath(env, asGiven)
 	if err != nil {
-		return "", fmt.Errorf("host kubectl %s: %s", VisibleText(asGiven), visibleErr(err))
+		return "", fmt.Errorf("%s %s: %s", what, VisibleText(asGiven), visibleErr(err))
 	}
-	const why = "snug runs it on the host with your cluster credential, so a kubectl the payload can " +
-		"write or choose is the payload holding that credential. Install kubectl where no grant of " +
+	const why = "snug runs it on the host with your cluster credential, so a binary the payload can " +
+		"write or choose is the payload holding that credential. Install it where no grant of " +
 		"this sandbox reaches."
 	if _, in := under(p.Target, resolved); in {
-		return "", fmt.Errorf("host kubectl %s is inside the target %s. %s", VisibleText(resolved), VisibleText(p.Target), why)
+		return "", fmt.Errorf("%s %s is inside the target %s. %s", what, VisibleText(resolved), VisibleText(p.Target), why)
 	}
 	if p.HostPathVisible(resolved, true) {
-		return "", fmt.Errorf("host kubectl %s: a grant of this sandbox makes it WRITABLE. %s", VisibleText(resolved), why)
+		return "", fmt.Errorf("%s %s: a grant of this sandbox makes it WRITABLE. %s", what, VisibleText(resolved), why)
 	}
 	if m, h, hit, err := p.writableAliasOf(env, resolved); err != nil {
 		return "", err
 	} else if hit {
-		return "", fmt.Errorf("host kubectl %s: the rw grant %s reaches it through a second mount of the same "+
-			"filesystem.%s %s", VisibleText(resolved), VisibleText(m.Host), aliasNote(h), why)
+		return "", fmt.Errorf("%s %s: the rw grant %s reaches it through a second mount of the same "+
+			"filesystem.%s %s", what, VisibleText(resolved), VisibleText(m.Host), aliasNote(h), why)
 	}
 	if name, asked, found := p.writableNameOnChain(env, asGiven); found {
-		return "", fmt.Errorf("host kubectl %s: %s %s", VisibleText(asGiven), selectionClause(name, asked), why)
+		return "", fmt.Errorf("%s %s: %s %s", what, VisibleText(asGiven), selectionClause(name, asked), why)
 	}
 	return resolved, nil
 }

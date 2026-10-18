@@ -25,7 +25,7 @@ KUBE     context    aks-dev -> https://aks-dev.example.azmk8s.io:443
                     absolute URIs, dot segments
          absent     eks, kind-kind,
                     the host user entry (client certificate, client key, static token),
-                    ~/.kube/cache, ~/.azure
+                    ~/.kube/cache, ~/.azure, ~/.aws
          reach      whatever dev/snug-agent's RoleBinding allows, on this one server,
                     while this run lives; snug cannot see RBAC and claims nothing. No
                     token of snug's is inside to carry away — but a Role that reads

@@ -121,6 +121,7 @@ type rawIdentityKube struct {
 	Token          string `toml:"token"`
 	ServiceAccount string `toml:"service_account"`
 	Kubeconfig     string `toml:"kubeconfig"`
+	AWSProfile     string `toml:"aws_profile"`
 }
 
 type rawIdentitySSH struct {
@@ -600,6 +601,7 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 			Token:          policy.KubeTokenMode(r.Kube.Token),
 			ServiceAccount: r.Kube.ServiceAccount,
 			Kubeconfig:     r.Kube.Kubeconfig,
+			AWSProfile:     r.Kube.AWSProfile,
 		},
 	}
 	if *id == (policy.Identity{}) {

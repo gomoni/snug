@@ -19,7 +19,7 @@ func TestKubeIdentityUnknownTokenValueRefuses(t *testing.T) {
 		"k": {Kube: IdentityKube{Context: "aks-dev", Token: "static", Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}},
 	})
 	p, err := Resolve(reg, sel, testCtx(), newFakeEnv())
-	if err == nil || p != nil || !strings.Contains(err.Error(), "(want serviceaccount)") ||
+	if err == nil || p != nil || !strings.Contains(err.Error(), "(want serviceaccount or host-exec)") ||
 		!strings.Contains(err.Error(), `"k"`) {
 		t.Fatalf("p = %v, err = %v; want a nil policy and the unknown-token refusal naming the profile", p, err)
 	}
@@ -332,9 +332,11 @@ func TestKubeIdentityUnknownContextNamesTheKnownOnes(t *testing.T) {
 		Server: "https://aks-dev.example.azmk8s.io:443", ServiceAccount: "dev/snug-agent"}}, `"aks-prod"`, "contexts: aks-dev, eks, kind-kind")
 }
 
-func TestKubeServiceAccountRefusesAnExecUser(t *testing.T) {
+// The fixture's eks user runs `aws eks get-token` with no --cluster-name:
+// outside the grammar, so refused before anything could run it.
+func TestKubeServiceAccountRefusesAnExecUserOutsideTheGrammar(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "eks", Token: KubeTokenServiceAccount,
-		Server: "https://eks.example.com", ServiceAccount: "dev/snug-agent"}}, "exec plugin (aws)", "#659")
+		Server: "https://eks.example.com", ServiceAccount: "dev/snug-agent"}}, "aws eks get-token without --cluster-name")
 	userField := func(line string) string {
 		return strings.Replace(kubeFixture(t), "    token: FIXTURETOKENVALUE\n", "    token: FIXTURETOKENVALUE\n    "+line+"\n", 1)
 	}

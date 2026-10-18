@@ -464,6 +464,39 @@ dns = true
 #     service_account = "dev/snug-agent"     # namespace/name, created by you
 #     # kubeconfig    = "{home}/.kube/config"
 # KUBE-TEMPLATE-END
+#
+# HOST-EXEC: token = "host-exec" runs the context's own exec plugin on the
+# host — kubelogin with --login azurecli, `aws eks get-token`, or
+# aws-iam-authenticator — with an argv snug BUILDS from a fixed per-plugin
+# grammar (anything else in the file's args refuses), an environment of
+# exactly PATH=/usr/local/bin:/usr/bin:/bin and HOME (plus AWS_PROFILE from
+# identity.kube.aws_profile — the file's exec.env is never used), and takes
+# only the token and its expiry from the answer. A bare command is looked up
+# on that PATH only. The sandbox then acts as YOU, not as a ServiceAccount.
+# Refused while ~/.azure, ~/.kube/cache or ~/.aws is writable through a
+# grant: the plugin reads its configuration there, on the host, and a
+# writable ~/.aws/config is a credential_process the host would run.
+#
+# ABUSE (host-exec): a hostile process inside the sandbox can act as YOU on
+# the ONE pinned server for as long as the run lives, on whatever your RBAC
+# there allows. It never holds the token; but the token's own reach is its
+# issuer's, not snug's: a kubelogin token is valid as you at EVERY AKS
+# cluster in your tenant where you hold RBAC for its 60-90 minutes (Entra
+# documentation, not measured), an aws token is a presigned STS token for one
+# EKS cluster for about 15 minutes, and that is what a token leaked from the
+# host would reach. Prefer serviceaccount where you can create one: on an
+# exec user, the plugin's token only authenticates the host-side mint, and
+# the sandbox acts as the ServiceAccount.
+#
+# KUBE-HOSTEXEC-TEMPLATE-BEGIN
+#   [profile.aks-me]
+#   ro = ["{home}/bin/kubectl:/snug/bin/kubectl"]   # host-specific, like gh above
+#     [profile.aks-me.identity.kube]
+#     context = "aks-entra"                 # a context whose user is kubelogin -l azurecli
+#     server  = "https://aks-entra.example.azmk8s.io:443"
+#     token   = "host-exec"
+#     # aws_profile = "work"                # aws plugins only, in place of the file's exec.env
+# KUBE-HOSTEXEC-TEMPLATE-END
 
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude

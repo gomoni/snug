@@ -24,6 +24,15 @@ func main() {
 	dir := filepath.Dir(self)
 	f, _ := os.OpenFile(filepath.Join(dir, "calls"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	fmt.Fprintln(f, strings.Join(os.Args[1:], " "))
+	// Whether the mint file authenticates with the stub plugin's token, for
+	// the serviceaccount-through-an-exec-user test. Never the token itself.
+	for _, a := range os.Args[1:] {
+		if kc, ok := strings.CutPrefix(a, "--kubeconfig="); ok {
+			if b, err := os.ReadFile(kc); err == nil && strings.Contains(string(b), "stub-plugin-token-4567") {
+				fmt.Fprintln(f, "MINTFILE-HAS-PLUGIN-TOKEN")
+			}
+		}
+	}
 	f.Close()
 	mode, _ := os.ReadFile(filepath.Join(dir, "mode"))
 	life := time.Hour

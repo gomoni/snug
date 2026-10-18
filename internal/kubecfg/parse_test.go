@@ -174,3 +174,54 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// The shape `az aks get-credentials` writes for an Entra-integrated cluster,
+// after `kubelogin convert-kubeconfig -l azurecli`: block-sequence args, a null
+// env, and an installHint block scalar — the one block scalar the decoder
+// accepts, skipped rather than decoded.
+func TestParseKeepsAnExecEntryAsData(t *testing.T) {
+	f, err := Parse(mustRead(t, "aks-exec.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := f.Users[0].Exec
+	if e == nil {
+		t.Fatal("no exec entry")
+	}
+	want := &Exec{
+		APIVersion: "client.authentication.k8s.io/v1beta1", Command: "kubelogin",
+		Args: []string{"get-token", "--environment", "AzurePublicCloud", "--server-id",
+			"6dae42f8-4368-4678-94ff-3960e28e3630", "--client-id", "80faf920-1908-4b52-b5ef-a8e7bedfc67a",
+			"--tenant-id", "00000000-0000-0000-0000-000000000000", "--login", "azurecli"},
+		InteractiveMode: "IfAvailable", ProvideClusterInfo: "false",
+	}
+	if !reflect.DeepEqual(e, want) {
+		t.Errorf("exec = %+v\nwant   %+v", e, want)
+	}
+	k, err := Parse(mustRead(t, "kubectl-written.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range k.Users {
+		if u.Name == "eks" && !reflect.DeepEqual(u.Exec.EnvNames, []string{"AWS_PROFILE"}) {
+			t.Errorf("eks env names = %q", u.Exec.EnvNames)
+		}
+	}
+}
+
+// installHint is the only key a block scalar may follow; under any other key,
+// and as an arg, it still refuses.
+func TestParseRefusesABlockScalarOutsideInstallHint(t *testing.T) {
+	for _, doc := range []string{
+		"users:\n- name: u\n  user:\n    token: |\n      abc\n",
+		"users:\n- name: u\n  user:\n    exec:\n      command: |\n        kubelogin\n",
+		"users:\n- name: u\n  user:\n    exec:\n      args:\n      - |\n        get-token\n",
+	} {
+		if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "block scalar") {
+			t.Errorf("%q: err = %v, want a block-scalar refusal", doc, err)
+		}
+	}
+	if _, err := Parse([]byte("users:\n- name: u\n  user:\n    exec:\n      installHint: |\n        a: b\n        - c\n      command: kubelogin\n")); err != nil {
+		t.Errorf("an installHint whose prose looks like YAML: %v", err)
+	}
+}

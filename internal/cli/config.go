@@ -1069,7 +1069,16 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"anything inside can add an SSH key to the account, an effect that "+
 				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
-	if id.Kube.Context != "" {
+	if id.Kube.Context != "" && id.Kube.Token == policy.KubeTokenHostExec {
+		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as YOU, through its exec plugin",
+			"THE SANDBOX CAN ACT AS YOU on this one cluster while the run lives: snug runs the "+
+				"context's own kubelogin or aws plugin on the host and its proxy adds that token to every "+
+				"request from inside, on whatever YOUR RBAC allows. No token enters the sandbox; but the "+
+				"token itself is valid wherever its issuer says — a kubelogin token at every AKS cluster in "+
+				"your tenant — and a Role that reads Secrets or creates tokens or pods hands out credentials "+
+				"that outlive the run. pods/exec, pods/portforward and services/proxy reach the cluster's "+
+				"network, with or without @net.")...)
+	} else if id.Kube.Context != "" {
 		rows = append(rows, capRows("kube "+visibleValue(id.Kube.Context)+" as "+visibleValue(id.Kube.ServiceAccount),
 			"THE SANDBOX CAN ACT AS THIS SERVICEACCOUNT on this one cluster while the run "+
 				"lives: snug's proxy on the host adds the token to every request from inside, "+

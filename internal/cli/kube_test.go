@@ -176,7 +176,7 @@ func TestKubeDryRunMintsNothing(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", rt)
 	t.Setenv("PATH", t.TempDir()) // no kubectl anywhere
 	pol := &policy.Policy{Home: "/home/u", Mounts: map[string]policy.Mount{}, Env: map[string]policy.EnvVar{},
-		Kube: &policy.KubeBinding{Context: "aks-dev", SANamespace: "dev", SAName: "snug-agent"}}
+		Kube: &policy.KubeBinding{Context: "aks-dev", Mode: policy.KubeTokenServiceAccount, SANamespace: "dev", SAName: "snug-agent"}}
 	run, err := startKubeIdentity(pol, policy.OSEnviron{}, false, true)
 	if err != nil {
 		t.Fatalf("a dry run refused for a missing kubectl: %v", err)
@@ -268,5 +268,54 @@ func TestKubeMintDoesNotKillAnEarlierPdeathsigChild(t *testing.T) {
 		if pid, _ := syscall.Wait4(c.Process.Pid, &ws, syscall.WNOHANG, nil); pid != 0 {
 			t.Fatalf("a Pdeathsig child started before the mints exited: %v", ws)
 		}
+	}
+}
+
+// Only the token and its expiry leave a plugin's answer; a certificate, a
+// missing expiry or a version other than the file's refuses.
+func TestKubeExecParsesAnExecCredential(t *testing.T) {
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	run := func(body, api string) (string, error) {
+		cmd := exec.Command("/bin/sh", "-c", `printf '%s' "$1"; echo noise >&2`, "sh", body)
+		tok, _, err := runKubeExec(cmd, api)
+		return string(tok.Value), err
+	}
+	const v1, v1b = "client.authentication.k8s.io/v1", "client.authentication.k8s.io/v1beta1"
+	cred := func(api, status string) string {
+		return `{"apiVersion":"` + api + `","kind":"ExecCredential","status":{` + status + `}}`
+	}
+	for _, api := range []string{v1, v1b} {
+		got, err := run(cred(api, `"token":"tok-abc","expirationTimestamp":"`+exp+`","extra":"x"`), api)
+		if err != nil || got != "tok-abc" {
+			t.Errorf("%s: %q, %v", api, got, err)
+		}
+	}
+	for name, c := range map[string]struct{ body, api, want string }{
+		"no expiry":       {cred(v1, `"token":"tok-abc"`), v1, "expirationTimestamp"},
+		"client cert":     {cred(v1, `"token":"tok","expirationTimestamp":"`+exp+`","clientCertificateData":"x","clientKeyData":"y"`), v1, "client certificate"},
+		"version differs": {cred(v1b, `"token":"tok","expirationTimestamp":"`+exp+`"`), v1, "want ExecCredential"},
+		"not a bearer":    {cred(v1, `"token":"a b","expirationTimestamp":"`+exp+`"`), v1, "not a bearer"},
+		"not json":        {"hello", v1, "not an ExecCredential"},
+	} {
+		if _, err := run(c.body, c.api); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+	}
+}
+
+// A bare plugin command is looked up on KubePluginPATH only — never on the
+// PATH snug inherited — and a script there refuses.
+func TestKubePluginIsLookedUpOnTheMintPATHOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kubelogin"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got, err := lookPluginPATH(policy.OSEnviron{}, "kubelogin"); err == nil && strings.HasPrefix(got, dir) {
+		t.Errorf("found %s on the inherited PATH", got)
+	}
+	if err := checkHostBinaryIsELF("kube exec plugin", "kubelogin", filepath.Join(dir, "kubelogin")); err == nil ||
+		!strings.Contains(err.Error(), "it is a script") {
+		t.Errorf("a script plugin: %v", err)
 	}
 }

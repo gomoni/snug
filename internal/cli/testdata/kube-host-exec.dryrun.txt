@@ -1,0 +1,35 @@
+KUBE     context    aks-entra -> https://aks-entra.example.azmk8s.io:443
+                    server pinned by the profile; generated ~/.kube/config, read-only,
+                    with NO credential: kubectl talks to http://127.0.0.1:6443, snug's proxy
+                    on the host adds the bearer and forwards to that server only
+         as         YOU — the user of context aks-entra, through its kubelogin plugin
+         token      returned by the plugin on the host at start (this dry run ran
+                    nothing), again on expiry while this run lives, at most 64 times;
+                    its issuer decides its lifetime. It never enters the sandbox
+         plugin     NONE — a real run would REFUSE to start: kube exec plugin /usr/local/bin/kubelogin: open /usr/local/bin/kubelogin: no such file or directory
+                    kubelogin get-token
+                      --login azurecli
+                      --server-id 6dae42f8-4368-4678-94ff-3960e28e3630
+                      --tenant-id 00000000-0000-0000-0000-000000000000
+                      --environment AzurePublicCloud
+                    env PATH HOME, cwd /, own user+pid namespace, 30s timeout;
+                    the file's exec.env is never used. Only the token and its expiry
+                    are read from its answer
+         plugin token an Entra token for the AKS server audience
+                      6dae42f8-4368-4678-94ff-3960e28e3630: valid as you at EVERY
+                      AKS cluster in your tenant where you hold RBAC, for its
+                      lifetime (60-90 min per Entra documentation, not measured);
+                      snug sends it to https://aks-entra.example.azmk8s.io:443 only
+         refused    Authorization, Proxy-Authorization, Impersonate-*,
+                    X-Remote-*, a websocket bearer, trailers, CONNECT,
+                    absolute URIs, dot segments
+         absent     eks-demo, eks-iam, gke,
+                    the host user entry (exec plugin kubelogin), ~/.kube/cache,
+                    ~/.azure, ~/.aws
+         reach      whatever YOUR RBAC allows, on this one server,
+                    while this run lives; snug cannot see RBAC and claims nothing. No
+                    token of snug's is inside to carry away — but a Role that reads
+                    Secrets, creates tokens or creates pods hands out credentials
+                    that outlive the run. pods/exec, pods/portforward and
+                    services/proxy reach the cluster's network through the API
+                    server, with or without @net

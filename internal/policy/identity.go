@@ -60,22 +60,28 @@ func ParseSSHMode(s string) (SSHMode, error) {
 }
 
 // KubeTokenMode is how snug mints, on the host, the token its proxy adds to
-// what kubectl inside sends. T1 has one value; "" is UNSET, not a mode, and Resolve refuses a kube
-// block without one, so absence never picks a minting route.
+// what kubectl inside sends. "" is UNSET, not a mode, and Resolve refuses a
+// kube block without one, so absence never picks a minting route.
 type KubeTokenMode string
 
 // KubeTokenServiceAccount mints with the host's own kubectl, `kubectl create
 // token`, for the one ServiceAccount identity.kube.service_account names.
 const KubeTokenServiceAccount KubeTokenMode = "serviceaccount"
 
+// KubeTokenHostExec runs the host context's own exec plugin — kubelogin, aws
+// eks get-token, aws-iam-authenticator — on the host, with an argv snug
+// builds from a fixed per-plugin grammar, and its token is the proxy's bearer:
+// the sandbox acts as YOU on the pinned server.
+const KubeTokenHostExec KubeTokenMode = "host-exec"
+
 // ParseKubeTokenMode is the door into KubeTokenMode, with the same rule as
 // ParseSSHMode: a named set, and anything else unknown, quoting the set.
 func ParseKubeTokenMode(s string) (KubeTokenMode, error) {
 	switch KubeTokenMode(s) {
-	case KubeTokenServiceAccount, "":
+	case KubeTokenServiceAccount, KubeTokenHostExec, "":
 		return KubeTokenMode(s), nil
 	default:
-		return "", fmt.Errorf("unknown identity.kube.token %q (want serviceaccount)", s)
+		return "", fmt.Errorf("unknown identity.kube.token %q (want serviceaccount or host-exec)", s)
 	}
 }
 
@@ -176,6 +182,11 @@ type IdentityKube struct {
 	Token          KubeTokenMode `snug:"token"`
 	ServiceAccount string        `snug:"service_account"`
 	Kubeconfig     string        `snug:"kubeconfig,path"`
+	// AWSProfile is the AWS_PROFILE an aws exec plugin runs with. It is an
+	// identity — which AWS account — not program configuration, and it is
+	// here because the file's own exec.env is never used. Valid only with a
+	// plugin row that names AWS_PROFILE.
+	AWSProfile string `snug:"aws_profile"`
 }
 
 // DefaultKubeconfig is identity.kube.kubeconfig when a kube block omits it.

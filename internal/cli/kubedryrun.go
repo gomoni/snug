@@ -31,6 +31,14 @@ type reportKube struct {
 	Visible           []string // credential-bearing paths a grant makes visible anyway
 	Proxy             string   // the guest URL kubectl talks to
 	Refused           []string // what the proxy refuses from inside
+	Mode              string   // identity.kube.token
+	// The host context's exec plugin, when its user entry is one.
+	PluginRow     string
+	Plugin        string // the judged binary, empty when there is none
+	PluginProblem string // why there is none; a real run refuses on it
+	PluginArgv    []string
+	PluginEnv     []string // names only
+	PluginReach   string
 }
 
 // kubeProxyRefuses is what the proxy refuses from inside, for the screen. It
@@ -45,36 +53,83 @@ func buildKubeReport(p *policy.Policy) *reportKube {
 	if k == nil {
 		return nil
 	}
-	mintFile, _ := plannedSocket("kube-mint.json")
-	cache, _ := plannedSocket("kube-cache")
-	kubectl := p.KubeMintBinary
-	if kubectl == "" {
-		kubectl = "kubectl"
+	r := &reportKube{Mode: string(k.Mode)}
+	if k.Mode == policy.KubeTokenServiceAccount {
+		mintFile, _ := plannedSocket("kube-mint.json")
+		cache, _ := plannedSocket("kube-cache")
+		kubectl := p.KubeMintBinary
+		if kubectl == "" {
+			kubectl = "kubectl"
+		}
+		r.MintArgv = k.MintArgv(kubectl, mintFile, cache)
+		r.MintEnv = policy.KubeMintEnvNames()
 	}
 	cred := "your client certificate"
-	if len(k.HostUser.ClientCertData) == 0 {
+	switch {
+	case k.Plugin != nil:
+		cred = "the token your " + k.Plugin.Row + " plugin returns"
+	case len(k.HostUser.ClientCertData) == 0:
 		cred = "your static token"
+	}
+	if pl := k.Plugin; pl != nil {
+		bin := p.KubePluginBinary
+		if bin == "" {
+			bin = pl.Command
+		}
+		r.PluginRow, r.Plugin, r.PluginProblem = pl.Row, p.KubePluginBinary, p.KubePluginProblem
+		r.PluginArgv, r.PluginEnv, r.PluginReach = pl.KubeExecArgv(bin), pl.EnvNames(), pl.Reach
 	}
 	absent := append(append([]string{}, k.OtherContexts...), "the host user entry ("+strings.Join(k.HostUserShape, ", ")+")")
 	var visible []string
 	// Read off the policy, not asserted: a profile grant onto either path
 	// makes it visible whatever identity.kube does (red team: a host:guest
 	// bind onto ~/.azure was readable while this row said absent).
-	for _, rel := range []string{".kube/cache", ".azure"} {
+	for _, rel := range []string{".kube/cache", ".azure", ".aws"} {
 		if from, ok := guestVisible(p, p.Home+"/"+rel); ok {
 			visible = append(visible, "~/"+rel+" (granted by "+from+")")
 		} else {
 			absent = append(absent, "~/"+rel)
 		}
 	}
-	return &reportKube{
-		Context: k.Context, Server: k.Server, ServiceAccount: k.SANamespace + "/" + k.SAName,
-		Namespace: k.SANamespace, Kubectl: p.KubeMintBinary, KubectlProblem: p.KubeMintProblem,
-		MintArgv: k.MintArgv(kubectl, mintFile, cache), MintEnv: policy.KubeMintEnvNames(),
-		MintBudget: policy.KubeMintBudget, Requested: policy.KubeTokenDuration,
-		Credential: cred, Absent: absent, Visible: visible,
-		StaticTokenUnused: len(k.HostUser.ClientCertData) > 0 && slices.Contains(k.HostUserShape, "static token"),
-		Proxy:             policy.KubeProxyGuest, Refused: kubeProxyRefuses,
+	r.Context, r.Server, r.Namespace = k.Context, k.Server, k.SANamespace
+	if k.SAName != "" {
+		r.ServiceAccount = k.SANamespace + "/" + k.SAName
+	}
+	r.Kubectl, r.KubectlProblem = p.KubeMintBinary, p.KubeMintProblem
+	r.MintBudget, r.Requested = policy.KubeMintBudget, policy.KubeTokenDuration
+	r.Credential, r.Absent, r.Visible = cred, absent, visible
+	r.StaticTokenUnused = len(k.HostUser.ClientCertData) > 0 && slices.Contains(k.HostUserShape, "static token")
+	r.Proxy, r.Refused = policy.KubeProxyGuest, kubeProxyRefuses
+	return r
+}
+
+// flagLines breaks an argv at every flag, never by width: run-directory
+// paths carry this process's pid, so a wrap by width would move with the
+// pid's length.
+func flagLines(argv []string) []string {
+	var lines []string
+	for _, a := range argv {
+		a = visibleValue(a)
+		if len(lines) == 0 || strings.HasPrefix(a, "-") {
+			lines = append(lines, a)
+		} else {
+			lines[len(lines)-1] += " " + a
+		}
+	}
+	return lines
+}
+
+// describeArgv prints argv under label, one flag per line.
+func describeArgv(out io.Writer, label string, argv []string, problem bool) {
+	for i, line := range flagLines(argv) {
+		l := label
+		if i > 0 || problem {
+			l = strings.Repeat(" ", len(label))
+		}
+		if i > 0 {
+			line = "  " + line
+		}
+		fmt.Fprintf(out, "         %s %s\n", l, line)
 	}
 }
 
@@ -87,45 +142,48 @@ func describeKube(out io.Writer, k *reportKube) {
 	fmt.Fprintf(out, "                    server pinned by the profile; generated ~/.kube/config, read-only,\n")
 	fmt.Fprintf(out, "                    with NO credential: kubectl talks to %s, snug's proxy\n", k.Proxy)
 	fmt.Fprintf(out, "                    on the host adds the bearer and forwards to that server only\n")
-	fmt.Fprintf(out, "         as         ServiceAccount %s (namespace %s)\n", visibleValue(k.ServiceAccount), visibleValue(k.Namespace))
-	fmt.Fprintf(out, "         token      minted on the host at start (this dry run minted nothing), again on\n")
-	fmt.Fprintf(out, "                    expiry while this run lives, at most %d times; requested %s, the\n", k.MintBudget, k.Requested)
-	fmt.Fprintf(out, "                    cluster may cap or extend it. It never enters the sandbox\n")
-	if k.KubectlProblem != "" {
-		fmt.Fprintf(out, "         host mint  NONE — a real run would REFUSE to start: %s\n", visibleValue(k.KubectlProblem))
+	if k.ServiceAccount != "" {
+		fmt.Fprintf(out, "         as         ServiceAccount %s (namespace %s)\n", visibleValue(k.ServiceAccount), visibleValue(k.Namespace))
+		fmt.Fprintf(out, "         token      minted on the host at start (this dry run minted nothing), again on\n")
+		fmt.Fprintf(out, "                    expiry while this run lives, at most %d times; requested %s, the\n", k.MintBudget, k.Requested)
+		fmt.Fprintf(out, "                    cluster may cap or extend it. It never enters the sandbox\n")
+	} else {
+		fmt.Fprintf(out, "         as         YOU — the user of context %s, through its %s plugin\n", visibleValue(k.Context), k.PluginRow)
+		fmt.Fprintf(out, "         token      returned by the plugin on the host at start (this dry run ran\n")
+		fmt.Fprintf(out, "                    nothing), again on expiry while this run lives, at most %d times;\n", k.MintBudget)
+		fmt.Fprintf(out, "                    its issuer decides its lifetime. It never enters the sandbox\n")
 	}
-	argv := make([]string, len(k.MintArgv))
-	for i, a := range k.MintArgv {
-		argv[i] = visibleValue(a)
-	}
-	// A new line at every flag, never by width: the run-directory paths carry
-	// this process's pid, so a wrap by width would move with the pid's length.
-	var lines []string
-	for _, a := range argv {
-		if len(lines) == 0 || strings.HasPrefix(a, "-") {
-			lines = append(lines, a)
-		} else {
-			lines[len(lines)-1] += " " + a
+	if k.PluginRow != "" {
+		if k.PluginProblem != "" {
+			fmt.Fprintf(out, "         plugin     NONE — a real run would REFUSE to start: %s\n", visibleValue(k.PluginProblem))
+		}
+		describeArgv(out, "plugin    ", k.PluginArgv, k.PluginProblem != "")
+		fmt.Fprintf(out, "                    env %s, cwd /, own user+pid namespace, %s timeout;\n",
+			strings.Join(k.PluginEnv, " "), kubeMintTimeout)
+		fmt.Fprintf(out, "                    the file's exec.env is never used. Only the token and its expiry\n")
+		fmt.Fprintf(out, "                    are read from its answer\n")
+		for i, line := range wrapWords(k.PluginReach+"; snug sends it to "+k.Server+" only", 62) {
+			label := "plugin token"
+			if i > 0 {
+				label = "            "
+			}
+			fmt.Fprintf(out, "         %s %s\n", label, visibleValue(line))
 		}
 	}
-	for i, line := range lines {
-		label := "host mint "
-		if i > 0 || k.KubectlProblem != "" {
-			label = "          "
+	if len(k.MintArgv) > 0 {
+		if k.KubectlProblem != "" {
+			fmt.Fprintf(out, "         host mint  NONE — a real run would REFUSE to start: %s\n", visibleValue(k.KubectlProblem))
 		}
-		if i > 0 {
-			line = "  " + line
+		describeArgv(out, "host mint ", k.MintArgv, k.KubectlProblem != "")
+		fmt.Fprintf(out, "                    env %s, cwd /, own user+pid namespace, %s timeout\n",
+			strings.Join(k.MintEnv, " "), kubeMintTimeout)
+		fmt.Fprintf(out, "                    authenticates on the HOST as the user of context %s,\n", visibleValue(k.Context))
+		fmt.Fprintf(out, "                    with %s; that credential never enters the\n", k.Credential)
+		fmt.Fprintf(out, "                    sandbox, and if the host user is cluster-admin this pinned\n")
+		fmt.Fprintf(out, "                    argv is the whole bound on what the host mint does\n")
+		if k.StaticTokenUnused {
+			fmt.Fprintf(out, "                    the host user's static token is not used and not sent\n")
 		}
-		fmt.Fprintf(out, "         %s %s\n", label, line)
-	}
-	fmt.Fprintf(out, "                    env %s, cwd /, own user+pid namespace, %s timeout\n",
-		strings.Join(k.MintEnv, " "), kubeMintTimeout)
-	fmt.Fprintf(out, "                    authenticates on the HOST as the user of context %s,\n", visibleValue(k.Context))
-	fmt.Fprintf(out, "                    with %s; that credential never enters the\n", k.Credential)
-	fmt.Fprintf(out, "                    sandbox, and if the host user is cluster-admin this pinned\n")
-	fmt.Fprintf(out, "                    argv is the whole bound on what the host mint does\n")
-	if k.StaticTokenUnused {
-		fmt.Fprintf(out, "                    the host user's static token is not used and not sent\n")
 	}
 	for i, line := range wrapList(k.Refused, 60) {
 		label := "refused   "
@@ -144,7 +202,11 @@ func describeKube(out io.Writer, k *reportKube) {
 	for _, v := range k.Visible {
 		fmt.Fprintf(out, "         VISIBLE    %s — identity.kube does not keep it out\n", visibleValue(v))
 	}
-	fmt.Fprintf(out, "         reach      whatever %s's RoleBinding allows, on this one server,\n", visibleValue(k.ServiceAccount))
+	who := "YOUR RBAC allows"
+	if k.ServiceAccount != "" {
+		who = visibleValue(k.ServiceAccount) + "'s RoleBinding allows"
+	}
+	fmt.Fprintf(out, "         reach      whatever %s, on this one server,\n", who)
 	fmt.Fprintf(out, "                    while this run lives; snug cannot see RBAC and claims nothing. No\n")
 	fmt.Fprintf(out, "                    token of snug's is inside to carry away — but a Role that reads\n")
 	fmt.Fprintf(out, "                    Secrets, creates tokens or creates pods hands out credentials\n")

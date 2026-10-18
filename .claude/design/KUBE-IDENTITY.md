@@ -1,8 +1,10 @@
 # identity.kube — kubectl against one pinned cluster, no credential inside
 
 `[identity.kube]` lets `kubectl` (and any client-go tool) inside a sandbox
-reach ONE cluster as ONE ServiceAccount, and nothing inside ever holds a
-credential for it — no file, no token, no exec plugin. The abuse sentence is
+reach ONE cluster as ONE identity — a ServiceAccount (`token =
+"serviceaccount"`) or you, through the host context's own exec plugin
+(`token = "host-exec"`) — and nothing inside ever holds a credential for it:
+no file, no token, no exec plugin. The abuse sentence is
 the `KUBERNETES` comment in `internal/profile/profiles/base.toml`; it is the
 authority on what the hole costs, and this document does not restate it.
 
@@ -13,7 +15,8 @@ authority on what the hole costs, and this document does not restate it.
 | Resolve: refusals, `KubeBinding`, generated files | `internal/policy/kube.go` (`resolveKube`) |
 | guest address | `internal/policy/snugns.go` (`KubeProxyGuest`, `KubeProxyGuestPort`) |
 | topology | `internal/policy/topology.go` (`deriveTopology`'s `kube` input) |
-| host mint plan | `internal/policy/kube.go` (`MintKubeconfig`, `MintArgv`, `KubeMintEnv`, `ResolveKubeMintBinary`) |
+| host mint plan | `internal/policy/kube.go` (`MintKubeconfigAs`, `MintArgv`, `KubeMintEnv`, `ResolveKubeHostBinary`) |
+| exec-plugin grammar | `internal/policy/kubeexec.go` (`KubePlugin`, `kubePluginOf`, `KubePluginPATH`) |
 | token source | `internal/kubebroker` (`Source`) |
 | proxy | `internal/kubeproxy` |
 | run-time wiring | `internal/cli/kube.go` (`startKubeIdentity`, `kubeRun.listen`), `relays.go` |
@@ -112,8 +115,12 @@ Refused at Resolve, each naming the fix:
   host loopback, so this refusal (and the proxy dialer's repeat of it on
   resolved addresses) is what keeps identity.kube from being a grant to one
   host port;
-- a user entry that is an exec plugin (`token = "host-exec"` is #659), names
-  files, or carries `auth-provider`, `as*`, `username`/`password`, `tokenFile`;
+- a user entry that names files, or carries `auth-provider`, `as*`,
+  `username`/`password`, `tokenFile`, or a second credential beside `exec`;
+- an exec plugin outside §2a's grammar; `host-exec` on a user that is not an
+  exec plugin (a certificate or static-token user would make the proxy hold a
+  credential that lives forever and is often cluster root — `serviceaccount`
+  covers those users);
 - a `service_account` that is not `namespace/name` of Kubernetes names;
 - a host kubectl that is relative, in the target, writable through a grant,
   hard-linked, or not an ELF binary (distrobox-export, host-spawn, asdf shims).
@@ -123,6 +130,58 @@ a non-certificate block or trailing bytes refuse.
 
 When the host user has a client certificate AND a static token, only the
 certificate goes into the mint file; the token is never sent.
+
+## 2a. Exec plugins
+
+The decoder keeps an `exec:` entry as data: `apiVersion`, `command`, `args`,
+the NAMES under `env:` (never values), `interactiveMode`,
+`provideClusterInfo`, and every other key for a refusal. `installHint` is the
+one key a block scalar may follow; its lines are skipped by indentation and
+its content is never kept.
+
+`kubePluginOf` matches one row of a fixed grammar and BUILDS the argv; the
+file's slice is never run. Each row is a subcommand path plus flags, each flag
+at most once, every value shape-checked; a positional, an unknown or repeated
+flag, or a wrong shape refuses.
+
+| row | accepted | built |
+|---|---|---|
+| `kubelogin` | `get-token`; `--login azurecli` (required; every other mode refuses with the `kubelogin convert-kubeconfig -l azurecli` fix); `--server-id <uuid>` (required); `--tenant-id <uuid>`; `--environment <name>`; `--client-id <uuid>` (dropped) | `get-token --login azurecli --server-id S [--tenant-id T] [--environment E]` |
+| `aws` | `[--region R] eks get-token`; `--cluster-name C` (required); `--region R`; `--role-arn A`; `--output json` | `eks get-token --cluster-name C [--region R] [--role-arn A] --output json` |
+| `aws-iam-authenticator` | `token`; `-i`/`--cluster-id C` (required); `-r`/`--role A`; `--region R` | `token --cluster-id C [--role A] [--region R]` |
+| `gke-gcloud-auth-plugin` | refused: its token is `cloud-platform`-scoped and mints durable keys | — |
+
+- **Command.** A bare name is looked up on `KubePluginPATH`
+  (`/usr/local/bin:/usr/bin:/bin`) only — never snug's PATH, never `exec.env`'s.
+  The resolved file goes through `ResolveKubeHostBinary` (not in the target,
+  not writable through a grant, no second mount, no writable name on its
+  chain) and must be a one-link ELF (aws CLI v1, a Python script, refuses).
+  Helpers the plugin runs off that PATH (`az` for kubelogin) are judged for
+  writability only: az is a script everywhere.
+- **Environment.** Exactly `PATH=KubePluginPATH HOME=<host home>`, plus
+  `AWS_PROFILE` from `identity.kube.aws_profile` for an aws row. `exec.env`
+  is never used: a file naming `AWS_PROFILE` there refuses until the profile
+  names it, any other name refuses outright. HOME is the host home because
+  these are the host's own tools reading the host's own configuration — so
+  `~/.azure`, `~/.kube/cache` (kubelogin) and `~/.aws` (aws rows) writable
+  through THIS run's grants refuse: a payload writing `~/.aws/config` chooses
+  a `credential_process` the host runs.
+- **Answer.** `ExecCredential` whose `apiVersion` matches the file's (`v1`
+  or `v1beta1`). Only `status.token` (bearer-shaped, 16 KiB) and
+  `status.expirationTimestamp` (required: a token of unknown life is not
+  cached) are kept; a client certificate refuses; every other field and the
+  plugin's stderr stay on the host. `interactiveMode: Always` refuses.
+- **Run.** The same `kubeMintCmd` as the kubectl mint — own user+pid
+  namespace, Pdeathsig, cwd `/`, 30 s — so `az` under kubelogin dies with it
+  (`TestKubeHostExecLeavesNoGrandchildAfterSIGKILL`).
+- **Two uses.** Under `host-exec` the plugin's token is the proxy's bearer and
+  the sandbox acts as you. Under `serviceaccount` on an exec user, the plugin's
+  token goes into the per-run `kube-mint.json` as a static token for one
+  `kubectl create token`, and the sandbox acts as the ServiceAccount — the
+  narrowest form for AKS and EKS, and what the template recommends.
+- **Reach.** The dry run prints the plugin token's own scope, which the proxy
+  does not bound: a kubelogin token is valid at every AKS cluster in the
+  tenant where you hold RBAC (shared server audience).
 
 ## 3. Joins
 
@@ -135,7 +194,6 @@ refuse naming both.
 - **`az` inside.** Every buildable form hands over the tenant refresh token or
   an ARM token, and an ARM token mints durable keys. The narrow form is a
   dedicated identity the human creates, under their own profile. #660.
-- **`token = "host-exec"`** (kubelogin, `aws eks get-token`): #659.
 - **Host loopback clusters** (kind): the proxy would be one dialer check away
   from reaching them, which is exactly base.toml's unbuilt one-port grant;
   refused until that is its own decision with its own abuse sentence.

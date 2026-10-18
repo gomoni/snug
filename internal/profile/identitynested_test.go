@@ -209,7 +209,7 @@ user = "some-one"
 
 func TestKubeIdentityUnknownTokenValueRefusesAtLoad(t *testing.T) {
 	_, err := parse([]byte("[profile.x.identity.kube]\ncontext = \"aks-dev\"\ntoken = \"static\"\n"), "mine.toml", true)
-	if err == nil || !strings.Contains(err.Error(), `(want serviceaccount)`) || !strings.Contains(err.Error(), `"x"`) {
+	if err == nil || !strings.Contains(err.Error(), `(want serviceaccount or host-exec)`) || !strings.Contains(err.Error(), `"x"`) {
 		t.Fatalf("err = %v, want the unknown-token refusal naming the profile", err)
 	}
 }
