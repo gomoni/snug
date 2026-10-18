@@ -8,7 +8,8 @@ Run it as the payload of a sandbox whose profile declares one:
     description = "serve this directory to my own browser"
     listen_names  = ["web"]
 
-    $ snug -p webdemo ~/src/site -- python3 examples/http-door-server.py
+    $ cp scripts/payloads/http-door-server.py ~/src/site/
+    $ snug -p webdemo ~/src/site -- python3 http-door-server.py
     $ snug proxy ~/src/site        # in another terminal; prints the URL
 
 WHY THIS IS NOT `python3 -m http.server`. snug never forwards a port. It creates
