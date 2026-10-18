@@ -151,6 +151,26 @@ func TestPrepareIdentityRefusalIsNote(t *testing.T) {
 	}
 }
 
+func TestPrepareFoldRefusalIsNeverExcused(t *testing.T) {
+	w := testworld.New(t)
+	d := newDraft(w, "x")
+	d.Propose(draft.Action{Op: draft.OpIncludeProfile, Name: "a"}, "test")
+	d.Propose(draft.Action{Op: draft.OpIncludeProfile, Name: "b"}, "test")
+	warn := &probe.Warning{Profiles: []string{"a"}}
+	for _, msg := range []string{
+		`profiles \"a\" and \"b\" pin different identity.gh; select only one of them`,
+		`profile \"a\": identity.git.signing_key needs identity.ssh.agent`,
+		`profile \"a\": identity.ssh.host = \"x\" names a host and identity.gh.host does not`,
+		`profile \"a\" and profile \"b\" are both broken`,
+	} {
+		w.DryRunDoc = `{"snug":{"format":2,"outcome":"refused","policy_resolved":false},"refusal":{"message":"` + msg + `"}}`
+		p, err := Prepare(context.Background(), d, w.ProfDir, "/fake/snug", w.Run, nil, nil, warn)
+		if err != nil || len(p.Blocked) == 0 {
+			t.Errorf("%s: excused as a note: %+v %v", msg, p, err)
+		}
+	}
+}
+
 func TestPrepareNameDefinedElsewhereBlocks(t *testing.T) {
 	w := testworld.New(t)
 	other := ingest.Profile{Name: "foo", File: "accounts.toml", Dir: w.ProfDir}

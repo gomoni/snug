@@ -30,7 +30,7 @@ const (
 func idProfile(name, email string, include ...string) ingest.Profile {
 	return ingest.Profile{
 		Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d", Include: include,
-		Identity: ingest.ProfileIdentity{SSHHost: "github.com", Email: email, GHUser: name},
+		Identity: ingest.ProfileIdentity{SSHHost: "github.com", Email: email, GHUser: name, GHHost: "github.com"},
 	}
 }
 
@@ -522,7 +522,7 @@ func TestSpaceOnTheMainIdentityRowDoesNothing(t *testing.T) {
 func TestIdentitySubmenuGolden(t *testing.T) {
 	f := facts()
 	f.Profiles[0].Identity = ingest.ProfileIdentity{
-		SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", SigningKey: "{home}/.ssh/github_sign.pub",
+		SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", SSHAgent: "proxy", SigningKey: "{home}/.ssh/github_sign.pub",
 		GitName: "M V", Email: "m@example.org", GHUser: "vyskocilm", GHHost: "github.com",
 	}
 	f.SSH = ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))}
@@ -570,11 +570,11 @@ func TestIdentitySubmenuPicksAndGoesBack(t *testing.T) {
 
 func TestIdentitySubmenuShowsDetailAndWhy(t *testing.T) {
 	f := facts()
-	f.Profiles[0].Identity = ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", GitName: "M V", Email: "m@example.org", GHUser: "vyskocilm"}
+	f.Profiles[0].Identity = ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/github_auth.pub", SSHAgent: "proxy", GitName: "M V", Email: "m@example.org", GHUser: "vyskocilm", GHHost: "github.com"}
 	f.SSH = ingest.SSHFacts{Hosts: ingest.ParseSSHConfig(strings.NewReader("Host github.com\n  IdentityFile ~/.ssh/github_auth\n"))}
 	m := toIdentity(sized(New(config(f)), 100))
 	m = press(m, "enter")
-	for _, want := range []string{"none", "vyskocilm   suggested", "ssh   github.com  github_auth", "~/.ssh/config  Host github.com  → github_auth", "git   M V <m@example.org>", "gh    vyskocilm", "also includes: gh-cli", "plainsof"} {
+	for _, want := range []string{"none", "vyskocilm   suggested", "ssh   github.com  github_auth", "~/.ssh/config  Host github.com  → github_auth", "git   M V <m@example.org>", "gh    github.com/vyskocilm", "also includes: gh-cli", "plainsof"} {
 		if !strings.Contains(screen(m), want) {
 			t.Errorf("no %q in:\n%s", want, screen(m))
 		}
@@ -891,14 +891,14 @@ func TestSubmenuCursorReachesEverySwitchAndSpaceOnlyTogglesIt(t *testing.T) {
 			if it.Part == suggest.PartSigning {
 				before := m.sel.Block
 				m = press(m, "space")
-				if m.sel.PartOn(suggest.PartSigning) || !maps.Equal(before, m.sel.Block) {
-					t.Errorf("space on the sign line: on=%v blocks %v", m.sel.PartOn(suggest.PartSigning), m.sel.Block)
+				if m.sel.Parts[suggest.PartSigning] || !maps.Equal(before, m.sel.Block) {
+					t.Errorf("space on the sign line: on=%v blocks %v", m.sel.Parts[suggest.PartSigning], m.sel.Block)
 				}
 				if !strings.Contains(screen(m), "▸       [ ] sign github_sign") {
 					t.Errorf("the line does not show it is off:\n%s", screen(m))
 				}
 				m = press(m, "space")
-				if !m.sel.PartOn(suggest.PartSigning) {
+				if !m.sel.Parts[suggest.PartSigning] {
 					t.Errorf("a second space did not switch it back on")
 				}
 			}
@@ -919,8 +919,8 @@ func TestSpaceOnASourceLinePicksItWithoutTouchingSwitches(t *testing.T) {
 		t.Errorf("another block was changed: %v", m.sel.Block)
 	}
 	m = press(m, "j", "space")
-	if m.sel.Block[suggest.BlockSSH] != 1 || !m.sel.PartOn(suggest.PartSigning) {
-		t.Errorf("pick %d, sign %v", m.sel.Block[suggest.BlockSSH], m.sel.PartOn(suggest.PartSigning))
+	if m.sel.Block[suggest.BlockSSH] != 1 || !m.sel.Parts[suggest.PartSigning] {
+		t.Errorf("pick %d, sign %v", m.sel.Block[suggest.BlockSSH], m.sel.Parts[suggest.PartSigning])
 	}
 }
 
@@ -967,12 +967,12 @@ func TestDryRunReceivesTheSelection(t *testing.T) {
 
 // pins gives a profile a gh pin of its own.
 func ghProfile(name, user string) ingest.Profile {
-	return ingest.Profile{Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d", Identity: ingest.ProfileIdentity{GHUser: user}}
+	return ingest.Profile{Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d", Identity: ingest.ProfileIdentity{GHUser: user, GHHost: "github.com"}}
 }
 
 func sshProfile(name string) ingest.Profile {
 	return ingest.Profile{Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d",
-		Identity: ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/" + name + ".pub"}}
+		Identity: ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/" + name + ".pub", SSHAgent: "proxy"}}
 }
 
 // blocksFacts has a profile that pins ssh and gh and one that pins gh only,
@@ -980,7 +980,7 @@ func sshProfile(name string) ingest.Profile {
 func blocksFacts() ingest.Facts {
 	f := facts()
 	a := sshProfile("a")
-	a.Identity.GHUser = "a-user"
+	a.Identity.GHUser, a.Identity.GHHost = "a-user", "github.com"
 	f.Profiles = []ingest.Profile{a, ghProfile("b", "b-user")}
 	f.Repo = nil
 	return f
@@ -1009,7 +1009,7 @@ func TestIdentitySubmenuLockedGolden(t *testing.T) {
 	m := openMenu(blocksFacts())
 	m = pickLine(t, m, "ssh", "a")
 	m = pickLine(t, m, "gh", "none")
-	if name, locked := m.sel.Effective(suggest.BlockGH); name != "a" || !locked {
+	if name, _, _, locked := m.sel.Locked(suggest.BlockGH); name != "a" || !locked {
 		t.Fatalf("effective gh %q locked %v", name, locked)
 	}
 	if got := m.sel.Block[suggest.BlockGH]; got != 0 {
@@ -1020,7 +1020,7 @@ func TestIdentitySubmenuLockedGolden(t *testing.T) {
 
 func TestIdentitySubmenuMixedGolden(t *testing.T) {
 	f := blocksFacts()
-	f.Profiles[0].Identity.GHUser = ""
+	f.Profiles[0].Identity.GHUser, f.Profiles[0].Identity.GHHost = "", ""
 	m := openMenu(f)
 	m = pickLine(t, m, "ssh", "a")
 	m = pickLine(t, m, "gh", "b")
@@ -1042,7 +1042,7 @@ func TestIdentitySubmenuConflictGolden(t *testing.T) {
 	golden(t, "identity-menu-conflict", screen(m))
 	m = press(m, "esc")
 	m = sized(m, 200)
-	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "! not in the profile: "+want) && !strings.Contains(l, "not in the profile: "+want) {
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "snug refuses: "+want) || strings.Contains(l, "not in the profile") {
 		t.Errorf("main screen: %q", l)
 	}
 }
@@ -1089,5 +1089,40 @@ func TestGHBinaryRowIsUnderGHOnlyWhileGHHasASource(t *testing.T) {
 	m = pickLine(t, m, "gh", "none")
 	if count(m) != 0 {
 		t.Errorf("binary row with no gh source:\n%s", screen(m))
+	}
+}
+
+func TestIdentitySubmenuScrollStartsAtTheSectionHeader(t *testing.T) {
+	f := facts()
+	for i := range 3 {
+		f.Profiles = append(f.Profiles, idProfile(fmt.Sprintf("acct%02d", i), "x@example.org"))
+	}
+	m := toIdentity(New(config(f)))
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 14})
+	m = press(next.(Model), "enter")
+	for m.sel.IdentityItems()[m.idm.cursor].Block != suggest.BlockGit {
+		m = press(m, "j")
+	}
+	m = press(m, "j")
+	lines := strings.Split(screen(m), "\n")
+	if len(lines) > 14 {
+		t.Fatalf("%d lines on a 14 line terminal", len(lines))
+	}
+	if lines[2] != "  git" {
+		t.Errorf("the window should start at the git header:\n%s", screen(m))
+	}
+	if !strings.Contains(screen(m), "▸") {
+		t.Errorf("cursor not visible:\n%s", screen(m))
+	}
+}
+
+func TestLockedLineNamesTheProfileThatIncludesIt(t *testing.T) {
+	f := blocksFacts()
+	f.Profiles[0].Identity.GHUser, f.Profiles[0].Identity.GHHost = "", ""
+	f.Profiles[0].Include = []string{"b"}
+	m := openMenu(f)
+	m = pickLine(t, m, "ssh", "a")
+	if !strings.Contains(screen(m), "(•) none — locked: b (included by a) pins this: github.com/b-user") {
+		t.Errorf("no inherited lock line:\n%s", screen(m))
 	}
 }

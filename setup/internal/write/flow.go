@@ -118,18 +118,43 @@ func PrepareIdentity(d *draft.Draft, profileDir string, profiles []ingest.Profil
 	return p, err
 }
 
-// refusedIdentity returns the name of the profile in idWarn that snug's
-// refusal names and d includes, or "".
+// refusedIdentity returns the name of the profile in idWarn that d includes
+// and that snug's refusal names alone, or "". A refusal naming two included
+// profiles, or one that reads blocks together (see foldRefusal), returns "".
 func refusedIdentity(doc verify.Doc, d *draft.Draft, idWarn *probe.Warning) string {
 	if idWarn == nil || doc.Snug.Outcome == "ok" || doc.Refusal == nil {
 		return ""
 	}
-	for _, n := range idWarn.Profiles {
-		if slices.Contains(d.Include, n) && namesProfile(doc.Refusal.Message, n) {
-			return n
+	if foldRefusal(doc.Refusal.Message) {
+		return ""
+	}
+	named := ""
+	for _, n := range d.Include {
+		if !strings.HasPrefix(n, "@") && namesProfile(doc.Refusal.Message, n) {
+			if named != "" {
+				return ""
+			}
+			named = n
 		}
 	}
+	if named != "" && slices.Contains(idWarn.Profiles, named) {
+		return named
+	}
 	return ""
+}
+
+// foldRefusal reports whether msg is one of snug's refusals about identity
+// blocks read together: a block two profiles set differently, signing_key
+// without ssh from the same profile, or a host one block names and the other
+// does not. They are about the selection, not about one profile that is
+// broken on its own, so they are never excused.
+func foldRefusal(msg string) bool {
+	for _, frag := range []string{"pin different identity.", "identity.git.signing_key", "names a host and identity."} {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // namesProfile reports whether msg contains name as a whole word, so that

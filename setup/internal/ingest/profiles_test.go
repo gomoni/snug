@@ -63,7 +63,7 @@ func TestParseProfiles(t *testing.T) {
 	if !slices.Equal(v.Include, []string{"@sys", "@home", "@cwd-rw", "@parent-ro", "@net", "gh-cli"}) {
 		t.Errorf("include %v", v.Include)
 	}
-	want := ProfileIdentity{SSHKey: "{home}/.ssh/github_auth_id_ed25519.pub", SSHHost: "github.com", SigningKey: "{home}/.ssh/github_sign_id_ed25519.pub",
+	want := ProfileIdentity{SSHKey: "{home}/.ssh/github_auth_id_ed25519.pub", SSHHost: "github.com", SSHAgent: "proxy", SigningKey: "{home}/.ssh/github_sign_id_ed25519.pub",
 		GitName: "Michal Vyskocil", Email: "michal.vyskocil@gmail.com", GHUser: "vyskocilm", GHHost: "github.com"}
 	if v.Identity != want {
 		t.Errorf("identity %+v", v.Identity)

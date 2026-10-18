@@ -14,7 +14,7 @@ const home = "/home/alice"
 func profile(name, host, email string, include ...string) ingest.Profile {
 	return ingest.Profile{
 		Name: name, File: "accounts.toml", Dir: "/home/alice/.config/snug/profiles.d", Include: include,
-		Identity: ingest.ProfileIdentity{SSHHost: host, Email: email, GHUser: name},
+		Identity: ingest.ProfileIdentity{SSHHost: host, Email: email, GHUser: name, GHHost: host},
 	}
 }
 

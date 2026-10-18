@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gomoni/snug/setup/internal/draft"
 	"github.com/gomoni/snug/setup/internal/ingest"
 	"github.com/gomoni/snug/setup/internal/safe"
 )
@@ -57,18 +56,27 @@ type source struct {
 // pinValue is what a block holds, comparable the way snug compares blocks.
 type pinValue [3]string
 
-// member is one profile in the included set: its name and what it pins.
+// member is one profile of the expanded set: a profile picked in some block,
+// or one an included profile pulls in. snug expands includes transitively
+// before the identity fold, so an inherited block joins it as if picked.
 type member struct {
 	name string
 	kind sourceKind
 	id   ingest.ProfileIdentity
+	via  string // the picked profile that includes this one; "" for a picked one
 }
 
 // effective is the source a block really comes from.
 type effective struct {
 	name   string
 	kind   sourceKind
-	locked bool // the pick is none, and this profile is included for another block
+	via    string // locked or inherited: the picked profile that includes name
+	locked bool   // the pick is none, and this profile is in the expanded set for another block
+}
+
+type problem struct {
+	block Block
+	msg   string
 }
 
 // idState is the result of folding the picks the way snug folds the selected
@@ -76,7 +84,7 @@ type effective struct {
 type idState struct {
 	members  []member
 	eff      map[Block]effective
-	problems map[Block][]string
+	problems []problem
 }
 
 func (s Selection) srcAt(b Block, picks map[Block]int) source {
@@ -99,18 +107,26 @@ func (s Selection) normPath(p string) string {
 	return filepath.Clean(p)
 }
 
-func normHost(h string) string {
-	if h == "" {
-		return draft.GitHubHost
+// agentOf is identity.ssh.agent as snug normalises it: "proxy", or "" for
+// none and for an absent key. ok is false for a value snug refuses.
+func agentOf(raw string) (agent string, ok bool) {
+	switch raw {
+	case "proxy":
+		return "proxy", true
+	case "none", "":
+		return "", true
 	}
-	return h
+	return raw, false
 }
 
-// pinned reports whether id sets block b.
+// pinned reports whether id sets block b, the way snug reads a block: a block
+// with any field set is pinned, and an ssh block holding only agent = "none"
+// is not.
 func pinned(id ingest.ProfileIdentity, b Block) bool {
 	switch b {
 	case BlockSSH:
-		return id.SSHKey != "" || id.SSHHost != ""
+		a, _ := agentOf(id.SSHAgent)
+		return id.SSHKey != "" || id.SSHHost != "" || a != ""
 	case BlockGit:
 		return id.GitName != "" || id.Email != "" || id.SigningKey != ""
 	case BlockGH:
@@ -119,101 +135,190 @@ func pinned(id ingest.ProfileIdentity, b Block) bool {
 	return false
 }
 
+// blockValue is the whole normalised block, compared the way resolve.go
+// compares: every field, hosts as written.
 func (s Selection) blockValue(id ingest.ProfileIdentity, b Block) pinValue {
 	switch b {
 	case BlockSSH:
-		return pinValue{s.normPath(id.SSHKey), normHost(id.SSHHost)}
+		a, _ := agentOf(id.SSHAgent)
+		return pinValue{s.normPath(id.SSHKey), id.SSHHost, a}
 	case BlockGit:
 		return pinValue{id.GitName, id.Email, s.normPath(id.SigningKey)}
 	case BlockGH:
-		return pinValue{id.GHUser, normHost(id.GHHost)}
+		return pinValue{id.GHUser, id.GHHost}
 	}
 	return pinValue{}
 }
 
 // hostPins is what the new identity profile would set: only the blocks picked
-// from the host.
+// from the host. It names no host, because draft.Render writes none for
+// github.com. The signing key is written only with ssh also from the host.
 func (s Selection) hostPins(picks map[Block]int) ingest.ProfileIdentity {
 	var id ingest.ProfileIdentity
 	h := s.host
 	if h == nil {
 		return id
 	}
-	if p := h.block(BlockSSH); p != nil && s.srcAt(BlockSSH, picks).kind == srcHost {
-		id.SSHKey, id.SSHHost = p.pub, h.host
+	isHost := func(b Block) bool { return s.srcAt(b, picks).kind == srcHost }
+	if p := h.block(BlockSSH); p != nil && isHost(BlockSSH) {
+		id.SSHKey, id.SSHAgent = p.pub, "proxy"
 	}
-	if p := h.block(BlockGit); p != nil && s.srcAt(BlockGit, picks).kind == srcHost {
+	if p := h.block(BlockGit); p != nil && isHost(BlockGit) {
 		id.GitName, id.Email = p.a, p.b
-		if h.sign != nil && s.Parts[PartSigning] {
+		if h.sign != nil && s.Parts[PartSigning] && isHost(BlockSSH) {
 			id.SigningKey = h.sign.pub
 		}
 	}
-	if p := h.block(BlockGH); p != nil && s.srcAt(BlockGH, picks).kind == srcHost {
-		id.GHUser, id.GHHost = p.a, h.host
+	if p := h.block(BlockGH); p != nil && isHost(BlockGH) {
+		id.GHUser = p.a
 	}
 	return id
 }
 
-const signHostMsg = "sign needs the ssh and git parts on as well; switch them on, or sign off"
-
-// resolve folds picks the way snug folds the selected profiles: the included
-// set is every profile picked in any block, each block is compared across the
-// members that set it, and a block picked none comes from the one profile that
-// sets it, if there is one. Including a profile is never a subtraction, so a
-// none pick does not remove another profile's pin.
+// resolve folds picks the way snug folds the selected profiles: the picked
+// profiles and everything they include transitively are the set, each block is
+// compared across the members that set it, and a block picked none comes from
+// the one profile that sets it, if there is one. Including a profile is never
+// a subtraction, so a none pick does not remove another profile's pin.
+//
+// Rules that read two blocks run on the merged identity, as resolve.go's
+// refuseSigningWithoutAgent and refuseHalfNamedHost do. Not modelled:
+// refuseUnprincipledSigningEmail, refuseUnhostlikeHost,
+// refuseUnpinnedGhAccount, the text and key-path checks of Identity.CheckText,
+// and an include of a profile that is not one of the person's own.
 func (s Selection) resolve(picks map[Block]int) idState {
-	st := idState{eff: map[Block]effective{}, problems: map[Block][]string{}}
-	for _, b := range allBlocks {
-		src := s.srcAt(b, picks)
-		if src.kind == srcNone || slices.ContainsFunc(st.members, func(m member) bool { return m.name == src.name }) {
-			continue
+	st := idState{eff: map[Block]effective{}}
+	add := func(name string, kind sourceKind, via string) {
+		if slices.ContainsFunc(st.members, func(m member) bool { return m.name == name }) {
+			return
 		}
-		m := member{name: src.name, kind: src.kind}
-		if src.kind == srcHost {
+		m := member{name: name, kind: kind, via: via}
+		if kind == srcHost {
 			m.id = s.hostPins(picks)
-		} else if i := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == src.name }); i >= 0 {
+		} else if i := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name }); i >= 0 {
 			m.id = s.profiles[i].Identity
 		}
 		st.members = append(st.members, m)
 	}
 	for _, b := range allBlocks {
-		var owners []member
-		for _, m := range st.members {
-			if pinned(m.id, b) {
-				owners = append(owners, m)
+		if src := s.srcAt(b, picks); src.kind != srcNone {
+			add(src.name, src.kind, "")
+		}
+	}
+	for n := 0; n < len(st.members); n++ {
+		m := st.members[n]
+		if m.kind != srcProfile {
+			continue
+		}
+		root := m.via
+		if root == "" {
+			root = m.name
+		}
+		if i := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == m.name }); i >= 0 {
+			for _, inc := range s.profiles[i].Include {
+				if !strings.HasPrefix(inc, "@") {
+					add(inc, srcProfile, root)
+				}
 			}
 		}
-		conflict := false
-		if len(owners) > 1 {
-			sorted := slices.Clone(owners)
-			slices.SortFunc(sorted, func(x, y member) int { return strings.Compare(x.name, y.name) })
-			first := sorted[0]
-			for _, o := range sorted[1:] {
-				if s.blockValue(o.id, b) != s.blockValue(first.id, b) {
-					st.problems[b] = append(st.problems[b], fmt.Sprintf("profiles %q and %q pin different identity.%s", first.name, o.name, b))
-					conflict = true
+	}
+	owners := map[Block][]member{}
+	for _, b := range allBlocks {
+		for _, m := range st.members {
+			if pinned(m.id, b) {
+				owners[b] = append(owners[b], m)
+			}
+		}
+		slices.SortStableFunc(owners[b], func(x, y member) int { return strings.Compare(x.name, y.name) })
+	}
+	conflict := map[Block]bool{}
+	for _, b := range allBlocks {
+		if o := owners[b]; len(o) > 1 {
+			for _, other := range o[1:] {
+				if s.blockValue(other.id, b) != s.blockValue(o[0].id, b) {
+					st.problems = append(st.problems, problem{b, fmt.Sprintf("profiles %q and %q pin different identity.%s", o[0].name, other.name, b)})
+					conflict[b] = true
 					break
 				}
+			}
+		}
+		for _, m := range owners[b] {
+			if _, ok := agentOf(m.id.SSHAgent); b == BlockSSH && !ok {
+				st.problems = append(st.problems, problem{b, fmt.Sprintf("profile %q: unknown identity.ssh.agent %q (want proxy or none)", m.name, m.id.SSHAgent)})
 			}
 		}
 		switch src := s.srcAt(b, picks); {
 		case src.kind != srcNone:
 			st.eff[b] = effective{name: src.name, kind: src.kind}
-		case !conflict && len(owners) > 0:
-			st.eff[b] = effective{name: owners[0].name, kind: owners[0].kind, locked: true}
-		}
-	}
-	if g, ok := st.eff[BlockGit]; ok {
-		m := st.member(g.name)
-		if m.id.SigningKey != "" && !pinned(m.id, BlockSSH) {
-			msg := fmt.Sprintf("profile %q: signing_key needs identity.ssh from the same profile", g.name)
-			if g.kind == srcHost {
-				msg = signHostMsg
+		case !conflict[b] && len(owners[b]) > 0:
+			var first member
+			for _, m := range st.members {
+				if pinned(m.id, b) {
+					first = m
+					break
+				}
 			}
-			st.problems[BlockGit] = append(st.problems[BlockGit], msg)
+			st.eff[b] = effective{name: first.name, kind: first.kind, via: first.via, locked: true}
 		}
 	}
+	st.crossBlock(owners)
 	return st
+}
+
+// crossBlock applies the two rules that read more than one block.
+func (st *idState) crossBlock(owners map[Block][]member) {
+	git, ssh, gh := owners[BlockGit], owners[BlockSSH], owners[BlockGH]
+	if len(git) > 0 && git[0].id.SigningKey != "" {
+		agent, _ := agentOf("")
+		if len(ssh) > 0 {
+			agent, _ = agentOf(ssh[0].id.SSHAgent)
+		}
+		switch {
+		case agent == "":
+			who := "no selected profile sets identity.ssh"
+			if len(ssh) > 0 {
+				who = fmt.Sprintf("profile %q sets identity.ssh with no agent", ssh[0].name)
+			}
+			st.problems = append(st.problems, problem{BlockGit, fmt.Sprintf("profile %q: identity.git.signing_key needs identity.ssh.agent = \"proxy\", and %s", git[0].name, who)})
+		case !slices.ContainsFunc(git, func(g member) bool {
+			return slices.ContainsFunc(ssh, func(x member) bool { return x.name == g.name })
+		}):
+			st.problems = append(st.problems, problem{BlockGit, fmt.Sprintf("profiles %q and %q: identity.git.signing_key needs identity.ssh from the same profile", git[0].name, ssh[0].name)})
+		}
+	}
+	if len(ssh) == 0 && len(gh) == 0 {
+		return
+	}
+	var sshKey, sshHost, sshAgent, ghUser, ghHost string
+	if len(ssh) > 0 {
+		sshKey, sshHost = ssh[0].id.SSHKey, ssh[0].id.SSHHost
+		sshAgent, _ = agentOf(ssh[0].id.SSHAgent)
+	}
+	if len(gh) > 0 {
+		ghUser, ghHost = gh[0].id.GHUser, gh[0].id.GHHost
+	}
+	sshActive := sshKey != "" || sshAgent != ""
+	ghActive := ghUser != "" || ghHost != ""
+	switch {
+	case ghHost != "" && sshHost == "" && sshActive:
+		st.problems = append(st.problems, problem{BlockGH, halfNamed(gh[0].name, ssh[0].name, "gh", ghHost, "ssh")})
+	case sshHost != "" && ghHost == "" && ghActive:
+		other := ssh[0].name
+		if len(gh) > 0 {
+			other = gh[0].name
+		}
+		st.problems = append(st.problems, problem{BlockSSH, halfNamed(ssh[0].name, other, "ssh", sshHost, "gh")})
+	}
+}
+
+// halfNamed is resolve.go's halfNamedHost, shortened: one block names a host
+// and the other does not, and nothing is inherited between blocks.
+func halfNamed(named, missingOwner, block, host, missing string) string {
+	who := fmt.Sprintf("profile %q", named)
+	if missingOwner != named {
+		who = fmt.Sprintf("profiles %q and %q", named, missingOwner)
+	}
+	return fmt.Sprintf("%s: identity.%s.host = %q names a host and identity.%s.host does not; name it in both", who, block, host, missing)
 }
 
 func (st idState) member(name string) member {
@@ -225,11 +330,22 @@ func (st idState) member(name string) member {
 	return member{}
 }
 
-// message returns every problem of the state, in block order.
+// message returns every problem of the state.
 func (st idState) message() string {
 	var out []string
-	for _, b := range allBlocks {
-		out = append(out, st.problems[b]...)
+	for _, p := range st.problems {
+		out = append(out, p.msg)
+	}
+	return strings.Join(out, "; ")
+}
+
+// blockMessage returns the problems keyed to block b.
+func (st idState) blockMessage(b Block) string {
+	var out []string
+	for _, p := range st.problems {
+		if p.block == b {
+			out = append(out, p.msg)
+		}
 	}
 	return strings.Join(out, "; ")
 }
@@ -275,14 +391,6 @@ func (st idState) summary() string {
 	return strings.Join(parts, ", ")
 }
 
-// Effective returns the name of the profile block b comes from and whether the
-// pick is none, the profile being included for another block. The name is ""
-// when nothing sets the block.
-func (s Selection) Effective(b Block) (name string, locked bool) {
-	e := s.resolve(s.Block).eff[b]
-	return e.name, e.locked
-}
-
 // BlockChoices returns the sources block b can come from, in order: none, the
 // profiles of yours that pin it, then FromHost when the host describes it.
 func (s Selection) BlockChoices(b Block) []Choice {
@@ -296,21 +404,34 @@ func (s Selection) BlockChoices(b Block) []Choice {
 // BlockSuggested is the index of the source suggested for block b.
 func (s Selection) BlockSuggested(b Block) int { return s.blockDefault[b] }
 
-// Locked returns, for a block picked none but set by an included profile, the
-// profile and the value it pins; ok is false otherwise.
-func (s Selection) Locked(b Block) (name, value string, ok bool) {
+// Locked returns, for a block picked none but set by a profile of the
+// expanded set, that profile, the picked profile that includes it ("" when the
+// profile was picked itself), and the value it pins; ok is false otherwise.
+func (s Selection) Locked(b Block) (name, via, value string, ok bool) {
 	e := s.resolve(s.Block).eff[b]
 	if !e.locked {
-		return "", "", false
+		return "", "", "", false
 	}
-	return e.name, safe.Inline(s.pinText(e.name, e.kind, b)), true
+	return e.name, e.via, safe.Inline(s.pinText(e.name, e.kind, b)), true
+}
+
+// hostShown is hostPins with the host written out, for the screen.
+func (s Selection) hostShown(picks map[Block]int) ingest.ProfileIdentity {
+	id := s.hostPins(picks)
+	if id.SSHKey != "" {
+		id.SSHHost = s.host.host
+	}
+	if id.GHUser != "" {
+		id.GHHost = s.host.host
+	}
+	return id
 }
 
 // pinText is the one-line value profile name pins in block b.
 func (s Selection) pinText(name string, kind sourceKind, b Block) string {
 	var id ingest.ProfileIdentity
 	if kind == srcHost {
-		id = s.hostPins(s.Block)
+		id = s.hostShown(s.Block)
 	} else if i := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name }); i >= 0 {
 		id = s.profiles[i].Identity
 	}
@@ -344,11 +465,23 @@ func identityLine(id ingest.ProfileIdentity, b Block) string {
 }
 
 // BlockProblem returns what snug would refuse if block b came from choice i,
-// "" when nothing. Other blocks stay as picked.
+// "" when nothing. For the picked choice that is every problem keyed to the
+// block now; for any other it is the problems the pick would add, in any
+// block, so a line is marked for the conflict it would cause.
 func (s Selection) BlockProblem(b Block, i int) string {
+	cur := s.resolve(s.Block)
+	if i == s.Block[b] {
+		return cur.blockMessage(b)
+	}
 	picks := maps.Clone(s.Block)
 	picks[b] = i
-	return strings.Join(s.resolve(picks).problems[b], "; ")
+	var out []string
+	for _, p := range s.resolve(picks).problems {
+		if !slices.ContainsFunc(cur.problems, func(q problem) bool { return q.msg == p.msg }) {
+			out = append(out, p.msg)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // WithBlock returns a copy of s with block b coming from choice i. DESC
@@ -366,12 +499,13 @@ func (s Selection) WithBlock(b Block, i int) Selection {
 
 // Included returns the names of the profiles the project profile would
 // include for the identity: every profile picked in any block, the new one
-// from the host last.
+// from the host last. A profile only an included one pulls in is not listed;
+// snug expands it from the include.
 func (s Selection) Included() []string {
 	var out []string
 	st := s.resolve(s.Block)
 	for _, m := range st.members {
-		if m.kind == srcProfile {
+		if m.kind == srcProfile && m.via == "" {
 			out = append(out, m.name)
 		}
 	}
@@ -407,7 +541,7 @@ func (s Selection) identityChoice() Choice {
 		}
 		line := b.String() + ": " + e.name
 		if e.locked {
-			line += " (included for another block; none does not remove it)"
+			line += " (in the profile set for another block; none does not remove it)"
 		}
 		c.Facts = append(c.Facts, safe.Inline(line))
 		if e.kind == srcHost {

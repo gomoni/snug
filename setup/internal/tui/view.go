@@ -200,6 +200,9 @@ func (m Model) reason(id suggest.RowID, refused, notes map[suggest.RowID]string,
 	detail := notes[id]
 	if msg := refused[id]; msg != "" {
 		detail = "not in the profile: " + msg
+		if id == suggest.Identity {
+			detail = "snug refuses: " + msg
+		}
 	}
 	if !m.sel.Changed(id) {
 		why := m.choice(id).Why
@@ -244,6 +247,7 @@ func (m Model) renderIdentity(w int) string {
 	items := m.sel.IdentityItems()
 	var body []string
 	start := make([]int, len(items))
+	header := map[suggest.Block]int{}
 	section := suggest.Block(-1)
 	for n, it := range items {
 		if it.Block != section {
@@ -251,6 +255,7 @@ func (m Model) renderIdentity(w int) string {
 			if len(body) > 0 {
 				body = append(body, "")
 			}
+			header[it.Block] = len(body)
 			body = append(body, m.st("head", "  "+it.Block.String()))
 		}
 		start[n] = len(body)
@@ -271,15 +276,23 @@ func (m Model) renderIdentity(w int) string {
 				radio = "(•)"
 			}
 			head := radio + " " + safe.Inline(m.sel.BlockChoices(b)[i].Label)
+			name, via, val, locked := m.sel.Locked(b)
+			locked = locked && i == 0
+			if locked {
+				who := safe.Inline(name)
+				if via != "" {
+					who += " (included by " + safe.Inline(via) + ")"
+				}
+				head += " — locked: " + who + " pins this: " + val
+			}
 			if i == m.sel.BlockSuggested(b) {
 				head += "   suggested"
 			}
 			body = append(body, m.st("cursor", cur)+clip(head, w-2))
-			for _, l := range m.sel.IdentityDetail(b, i) {
-				body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
-			}
-			if name, val, ok := m.sel.Locked(b); ok && i == 0 {
-				body = append(body, m.st("dim", clip("        "+safe.Inline(name)+" is included and pins this: "+val, w)))
+			if !locked {
+				for _, l := range m.sel.IdentityDetail(b, i) {
+					body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
+				}
 			}
 			if iw := m.sel.SourceWarning(b, i); iw != "" {
 				body = append(body, "        "+m.st("warn", clip("! "+iw, w-8)))
@@ -298,7 +311,12 @@ func (m Model) renderIdentity(w int) string {
 	room := m.height - 3 - len(foot)
 	lo := 0
 	if room > 0 && len(body) > room {
-		lo = max(0, min(start[m.idm.cursor], len(body)-room))
+		at := start[m.idm.cursor]
+		lo = at
+		if h := header[items[m.idm.cursor].Block]; at-h < room {
+			lo = h
+		}
+		lo = max(0, min(lo, len(body)-room))
 		body = body[lo:min(lo+room, len(body))]
 	}
 	lines := []string{m.st("head", clip("snug-setup  "+safe.Inline(m.cfg.Target)+"  IDENTITY", w)), ""}

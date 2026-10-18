@@ -137,7 +137,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 	id := Row{Sure: true, Choices: []Choice{{Label: NoIdentity}}}
 	s.sources, s.blockDefault, s.host = identitySources(f)
 	s.Block = maps.Clone(s.blockDefault)
-	if s.host != nil && s.host.sign != nil {
+	if s.host != nil && s.host.sign != nil && s.srcAt(BlockSSH, s.Block).kind == srcHost && s.srcAt(BlockGit, s.Block).kind == srcHost {
 		s.Parts[PartSigning] = true
 	}
 	for _, t := range identityTools {
@@ -499,7 +499,7 @@ func (s Selection) IdentityDetail(b Block, i int) []string {
 			BlockGH:  "no gh login in the sandbox",
 		}[b]}
 	case srcHost:
-		return []string{safe.Inline(identityLine(s.hostPins(map[Block]int{b: i}), b))}
+		return []string{safe.Inline(identityLine(s.hostShown(map[Block]int{b: i}), b))}
 	}
 	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == src.name })
 	if pi < 0 {

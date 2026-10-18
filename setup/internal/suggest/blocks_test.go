@@ -15,9 +15,9 @@ func prof(name string, id ingest.ProfileIdentity) ingest.Profile {
 }
 
 var (
-	sshA = ingest.ProfileIdentity{SSHKey: "{home}/.ssh/a.pub", SSHHost: "github.com"}
-	ghA  = ingest.ProfileIdentity{GHUser: "a-user"}
-	ghB  = ingest.ProfileIdentity{GHUser: "b-user"}
+	sshA = ingest.ProfileIdentity{SSHKey: "{home}/.ssh/a.pub", SSHHost: "github.com", SSHAgent: "proxy"}
+	ghA  = ingest.ProfileIdentity{GHUser: "a-user", GHHost: "github.com"}
+	ghB  = ingest.ProfileIdentity{GHUser: "b-user", GHHost: "github.com"}
 	gitB = ingest.ProfileIdentity{GitName: "B", Email: "b@example.org"}
 )
 
@@ -25,7 +25,7 @@ func merge(ids ...ingest.ProfileIdentity) ingest.ProfileIdentity {
 	var out ingest.ProfileIdentity
 	for _, id := range ids {
 		if id.SSHKey != "" || id.SSHHost != "" {
-			out.SSHKey, out.SSHHost = id.SSHKey, id.SSHHost
+			out.SSHKey, out.SSHHost, out.SSHAgent = id.SSHKey, id.SSHHost, id.SSHAgent
 		}
 		if id.GitName != "" || id.Email != "" || id.SigningKey != "" {
 			out.GitName, out.Email, out.SigningKey = id.GitName, id.Email, id.SigningKey
@@ -115,8 +115,8 @@ func TestConflictBetweenTwoLockedPinsIsRefusedToo(t *testing.T) {
 	if !strings.Contains(refused[Identity], "pin different identity.gh") {
 		t.Errorf("a and b both pin gh and gh is picked none: %q", refused[Identity])
 	}
-	if name, _ := s.Effective(BlockGH); name != "" {
-		t.Errorf("no effective gh source while the pins disagree: %q", name)
+	if _, _, _, ok := s.Locked(BlockGH); ok {
+		t.Errorf("no effective gh source while the pins disagree")
 	}
 }
 
@@ -124,18 +124,18 @@ func TestNoneDoesNotRemoveAnIncludedProfilesPin(t *testing.T) {
 	ps := []ingest.Profile{prof("a", merge(sshA, ghA))}
 	s := noRemote(ps...)
 	s = s.WithBlock(BlockSSH, idx(t, s, BlockSSH, "a"))
-	name, locked := s.Effective(BlockGH)
+	name, _, _, locked := s.Locked(BlockGH)
 	if name != "a" || !locked {
 		t.Fatalf("effective gh %q locked %v: a is included for ssh and pins gh", name, locked)
 	}
 	if s.Block[BlockGH] != 0 {
 		t.Errorf("another block's pick was changed: %d", s.Block[BlockGH])
 	}
-	if n, v, ok := s.Locked(BlockGH); !ok || n != "a" || v != "a-user" {
-		t.Errorf("locked %q %q %v", n, v, ok)
+	if n, via, v, ok := s.Locked(BlockGH); !ok || n != "a" || via != "" || v != "github.com/a-user" {
+		t.Errorf("locked %q %q %q %v", n, via, v, ok)
 	}
 	picked := s.WithBlock(BlockGH, 0)
-	if name, _ := picked.Effective(BlockGH); name != "a" {
+	if name, _, _, _ := picked.Locked(BlockGH); name != "a" {
 		t.Errorf("picking none removed the pin: %q", name)
 	}
 	d, _ := Build(picked, hostFor(blocksTarget), ps)
@@ -191,7 +191,7 @@ func TestRevertRestoresBlocksAndParts(t *testing.T) {
 		t.Fatal("not changed")
 	}
 	back := changed.Revert(Identity)
-	if back.Changed(Identity) || !back.PartOn(PartSigning) {
+	if back.Changed(Identity) || !back.Parts[PartSigning] {
 		t.Errorf("revert left blocks %v parts %v", back.Block, back.Parts)
 	}
 	if !changed.Changed(Identity) {
@@ -247,5 +247,140 @@ func TestFromHostCountsAsAProfileInAConflict(t *testing.T) {
 	}
 	if id, _ := BuildIdentity(s, hostFor(hostTarget)); id == nil || !strings.Contains(id.Render(), "identity.gh") || strings.Contains(id.Render(), "identity.ssh") {
 		t.Errorf("the new profile holds only gh")
+	}
+}
+
+func refusal(s Selection, ps []ingest.Profile) string {
+	_, refused := Build(s, hostFor(blocksTarget), ps)
+	return refused[Identity]
+}
+
+func TestIncludesJoinTheFold(t *testing.T) {
+	ps := []ingest.Profile{
+		{Name: "A", File: "a.toml", Include: []string{"B"}, Identity: ingest.ProfileIdentity{SSHKey: "{home}/.ssh/k1.pub", SSHHost: "github.com", SSHAgent: "proxy"}},
+		prof("B", ghA),
+		prof("C", ghB),
+	}
+	s := noRemote(ps...)
+	s = s.WithBlock(BlockSSH, idx(t, s, BlockSSH, "A"))
+	name, via, val, ok := s.Locked(BlockGH)
+	if !ok || name != "B" || via != "A" || val != "github.com/a-user" {
+		t.Fatalf("locked %q via %q %q %v: B is pulled in by A", name, via, val, ok)
+	}
+	if got := s.Included(); !slices.Equal(got, []string{"A"}) {
+		t.Errorf("only the picked profile is included: %v", got)
+	}
+	if r := refusal(s, ps); r != "" {
+		t.Errorf("refused %q", r)
+	}
+	c := s.WithBlock(BlockGH, idx(t, s, BlockGH, "C"))
+	if want := `profiles "B" and "C" pin different identity.gh`; !strings.Contains(refusal(c, ps), want) {
+		t.Errorf("refused %q, want %q", refusal(c, ps), want)
+	}
+	if got := s.BlockProblem(BlockGH, idx(t, s, BlockGH, "C")); !strings.Contains(got, `"B" and "C"`) {
+		t.Errorf("C's line carries no problem: %q", got)
+	}
+}
+
+func TestAnSSHBlockHoldingOnlyAgentNoneIsNotOffered(t *testing.T) {
+	n := prof("N", ingest.ProfileIdentity{SSHAgent: "none"})
+	if got := noRemote(n).BlockChoices(BlockSSH); len(got) != 1 {
+		t.Errorf("an ssh block holding only agent = none pins nothing: %+v", got)
+	}
+}
+
+func TestSSHAgentDifferenceConflicts(t *testing.T) {
+	k := "{home}/.ssh/k.pub"
+	ps := []ingest.Profile{
+		prof("A", ingest.ProfileIdentity{SSHKey: k, SSHAgent: "proxy"}),
+		prof("B", ingest.ProfileIdentity{SSHKey: k, GitName: "B", Email: "b@example.org"}),
+		prof("C", ingest.ProfileIdentity{SSHKey: k, GHUser: "u", GHHost: "github.com"}),
+	}
+	// B and C are no conflict between them, A differs from both in the agent.
+	s := noRemote(ps...)
+	s = s.WithBlock(BlockSSH, idx(t, s, BlockSSH, "A")).WithBlock(BlockGit, idx(t, s, BlockGit, "B"))
+	if want := `profiles "A" and "B" pin different identity.ssh`; !strings.Contains(refusal(s, ps), want) {
+		t.Errorf("refused %q, want %q", refusal(s, ps), want)
+	}
+	same := noRemote(ps[1:]...)
+	same = same.WithBlock(BlockSSH, idx(t, same, BlockSSH, "B")).WithBlock(BlockGH, idx(t, same, BlockGH, "C"))
+	if r := refusal(same, ps[1:]); strings.Contains(r, "different identity.ssh") {
+		t.Errorf("identical blocks conflict: %q", r)
+	}
+}
+
+func TestSigningNeedsAgentAndASharedOwner(t *testing.T) {
+	k := "{home}/.ssh/k.pub"
+	git := ingest.ProfileIdentity{GitName: "X", Email: "x@example.org", SigningKey: "{home}/.ssh/s.pub"}
+	noAgent := prof("A", merge(ingest.ProfileIdentity{SSHKey: k}, git))
+	s := noRemote(noAgent)
+	s = s.WithBlock(BlockGit, idx(t, s, BlockGit, "A"))
+	if want := `identity.ssh.agent = "proxy"`; !strings.Contains(refusal(s, []ingest.Profile{noAgent}), want) {
+		t.Errorf("one profile, ssh without an agent: %q", refusal(s, []ingest.Profile{noAgent}))
+	}
+	work := prof("work", merge(ingest.ProfileIdentity{SSHKey: k, SSHAgent: "proxy"}, git))
+	workGit := prof("work-git", ingest.ProfileIdentity{GitName: "X", Email: "x@example.org", SigningKey: "{home}/.ssh/s.pub"})
+	ps := []ingest.Profile{work, workGit}
+	ok := noRemote(ps...)
+	ok = ok.WithBlock(BlockSSH, idx(t, ok, BlockSSH, "work")).WithBlock(BlockGit, idx(t, ok, BlockGit, "work-git"))
+	if r := refusal(ok, ps); r != "" {
+		t.Errorf("identical git blocks, one owner is also the ssh owner: %q", r)
+	}
+	other := prof("other", ingest.ProfileIdentity{SSHKey: "{home}/.ssh/o.pub", SSHAgent: "proxy"})
+	ps = []ingest.Profile{other, workGit}
+	bad := noRemote(ps...)
+	bad = bad.WithBlock(BlockSSH, idx(t, bad, BlockSSH, "other")).WithBlock(BlockGit, idx(t, bad, BlockGit, "work-git"))
+	if want := "signing_key needs identity.ssh from the same profile"; !strings.Contains(refusal(bad, ps), want) {
+		t.Errorf("no shared owner: %q", refusal(bad, ps))
+	}
+}
+
+func TestHostsAreComparedAsWritten(t *testing.T) {
+	ps := []ingest.Profile{
+		prof("A", ingest.ProfileIdentity{GHUser: "u", GHHost: "github.com"}),
+		prof("B", ingest.ProfileIdentity{GHUser: "u"}),
+	}
+	s := noRemote(ps...)
+	s = s.WithBlock(BlockGH, idx(t, s, BlockGH, "A")).WithBlock(BlockSSH, 0)
+	both := ingest.Profile{Name: "AB", Include: []string{"B"}, Identity: ingest.ProfileIdentity{GitName: "G", Email: "g@example.org"}}
+	ps = append(ps, both)
+	s = noRemote(ps...)
+	s = s.WithBlock(BlockGH, idx(t, s, BlockGH, "A")).WithBlock(BlockGit, idx(t, s, BlockGit, "AB"))
+	if want := `profiles "A" and "B" pin different identity.gh`; !strings.Contains(refusal(s, ps), want) {
+		t.Errorf(`"" and "github.com" are different values: %q`, refusal(s, ps))
+	}
+}
+
+func TestHalfNamedHostIsRefusedAcrossBlocks(t *testing.T) {
+	ps := []ingest.Profile{
+		prof("A", ingest.ProfileIdentity{SSHHost: "gitlab.com", SSHKey: "{home}/.ssh/k.pub", SSHAgent: "proxy"}),
+		prof("B", ingest.ProfileIdentity{GHUser: "u"}),
+	}
+	s := noRemote(ps...)
+	s = s.WithBlock(BlockSSH, idx(t, s, BlockSSH, "A")).WithBlock(BlockGH, idx(t, s, BlockGH, "B"))
+	got := refusal(s, ps)
+	if !strings.Contains(got, `profiles "A" and "B": identity.ssh.host = "gitlab.com" names a host and identity.gh.host does not`) {
+		t.Errorf("refused %q", got)
+	}
+	named := []ingest.Profile{ps[0], prof("B", ingest.ProfileIdentity{GHUser: "u", GHHost: "gitlab.com"})}
+	ok := noRemote(named...)
+	ok = ok.WithBlock(BlockSSH, idx(t, ok, BlockSSH, "A")).WithBlock(BlockGH, idx(t, ok, BlockGH, "B"))
+	if r := refusal(ok, named); r != "" {
+		t.Errorf("both blocks name the host: %q", r)
+	}
+}
+
+func TestALineIsMarkedForTheConflictItWouldCause(t *testing.T) {
+	ps := []ingest.Profile{
+		prof("A", merge(ingest.ProfileIdentity{SSHKey: "{home}/.ssh/k1.pub", SSHHost: "github.com", SSHAgent: "proxy"}, ghA)),
+		prof("B", ghB),
+	}
+	s := noRemote(ps...)
+	s = s.WithBlock(BlockGH, idx(t, s, BlockGH, "B"))
+	if got := s.BlockProblem(BlockSSH, idx(t, s, BlockSSH, "A")); !strings.Contains(got, `profiles "A" and "B" pin different identity.gh`) {
+		t.Errorf("ssh line for A carries %q", got)
+	}
+	if got := s.BlockProblem(BlockSSH, 0); got != "" {
+		t.Errorf("none causes nothing: %q", got)
 	}
 }

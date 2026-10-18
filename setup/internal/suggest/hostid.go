@@ -152,9 +152,6 @@ func uniqueName(base string, taken func(string) bool) string {
 	return n
 }
 
-// PartOn reports whether part p is switched on.
-func (s Selection) PartOn(p Part) bool { return s.Parts[p] }
-
 // WithPart returns a copy of s with part p switched on or off. s is not
 // modified.
 func (s Selection) WithPart(p Part, on bool) Selection {
@@ -273,7 +270,7 @@ func (s Selection) IdentityItems() []IdentItem {
 				why = append(why, "identity: "+draft.Abuse["identity"])
 			}
 			out = append(out, IdentItem{Block: b, Choice: i, Text: src.Label, Why: why})
-			if b == BlockGit && src.kind == srcHost && s.host.sign != nil {
+			if b == BlockGit && src.kind == srcHost && s.host.sign != nil && s.srcAt(BlockSSH, s.Block).kind == srcHost {
 				p := s.host.sign
 				out = append(out, IdentItem{Block: b, Choice: -1, IsPart: true, Part: PartSigning, Text: p.text + "  " + p.why, On: s.Parts[PartSigning], Why: []string{p.why, "identity: " + draft.Abuse["identity"]}})
 			}
@@ -305,7 +302,7 @@ func (s Selection) newDescription() string {
 	}
 	if pick(BlockGit) {
 		what = append(what, "its git author")
-		if s.host.sign != nil && s.Parts[PartSigning] {
+		if s.host.sign != nil && s.Parts[PartSigning] && pick(BlockSSH) {
 			what = append(what, "its signing key")
 		}
 	}
@@ -341,8 +338,8 @@ func BuildIdentity(s Selection, host draft.Host) (*draft.Draft, string) {
 	if pick(BlockGH) {
 		d.SetGH(h.host, h.gh.a)
 	}
-	if pick(BlockGit) && h.sign != nil && s.Parts[PartSigning] && !d.SetSigningKey(h.sign.pub) {
-		return d, signHostMsg
+	if pick(BlockGit) && pick(BlockSSH) && h.sign != nil && s.Parts[PartSigning] && !d.SetSigningKey(h.sign.pub) {
+		return d, "the signing key could not be set: it needs the ssh and git blocks"
 	}
 	d.Description = s.newDescription()
 	return d, ""

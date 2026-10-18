@@ -42,9 +42,11 @@ func ProfileDirs(xdgConfigHome, home string) []string {
 // keep their {home} spelling and nothing is opened.
 type ProfileIdentity struct {
 	SSHKey, SSHHost string
-	SigningKey      string
-	GitName, Email  string
-	GHUser, GHHost  string
+	// SSHAgent is identity.ssh.agent as written: "proxy", "none" or "".
+	SSHAgent       string
+	SigningKey     string
+	GitName, Email string
+	GHUser, GHHost string
 }
 
 // Pins reports whether the profile pins any identity.
@@ -194,7 +196,7 @@ func ParseProfiles(text string) ([]Profile, error) {
 		git, _ := id["git"].(map[string]any)
 		gh, _ := id["gh"].(map[string]any)
 		p.Identity = ProfileIdentity{
-			SSHKey: tomlStr(ssh["key"]), SSHHost: tomlStr(ssh["host"]),
+			SSHKey: tomlStr(ssh["key"]), SSHHost: tomlStr(ssh["host"]), SSHAgent: tomlStr(ssh["agent"]),
 			SigningKey: tomlStr(git["signing_key"]), GitName: tomlStr(git["name"]), Email: tomlStr(git["email"]),
 			GHUser: tomlStr(gh["user"]), GHHost: tomlStr(gh["host"]),
 		}

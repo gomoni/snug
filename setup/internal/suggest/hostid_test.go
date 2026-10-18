@@ -215,13 +215,13 @@ func TestFromHostName(t *testing.T) {
 func TestFromHostSwitchTogglesAndReverts(t *testing.T) {
 	s := Suggest(hostFacts(), home, hostTarget)
 	off := s.WithPart(PartSigning, false)
-	if !s.PartOn(PartSigning) || off.PartOn(PartSigning) {
-		t.Fatalf("WithPart must copy: original %v, copy %v", s.PartOn(PartSigning), off.PartOn(PartSigning))
+	if !s.Parts[PartSigning] || off.Parts[PartSigning] {
+		t.Fatalf("WithPart must copy: original %v, copy %v", s.Parts[PartSigning], off.Parts[PartSigning])
 	}
 	if !off.Changed(Identity) {
 		t.Errorf("a switched-off part must mark the row changed")
 	}
-	if off.Revert(Identity).Changed(Identity) || !off.Revert(Identity).PartOn(PartSigning) {
+	if off.Revert(Identity).Changed(Identity) || !off.Revert(Identity).Parts[PartSigning] {
 		t.Errorf("revert must switch the part back on")
 	}
 	if got := s.WithBlock(BlockGit, 0); got.Changed(Identity) != true || s.Block[BlockGit] != 1 {
@@ -283,23 +283,29 @@ func TestBuildFromHostWritesOnlyTheBlocksPickedFromIt(t *testing.T) {
 	}
 }
 
-func TestBuildFromHostSignNeedsSSHFromTheHost(t *testing.T) {
-	s := Suggest(hostFacts(), home, hostTarget).WithBlock(BlockSSH, 0)
+func TestFromHostSignIsHiddenAndUnwrittenWithoutSSHFromTheHost(t *testing.T) {
+	s := Suggest(hostFacts(), home, hostTarget)
+	if !s.Parts[PartSigning] {
+		t.Fatalf("sign is on by default when ssh and git both come from the host")
+	}
+	s = s.WithBlock(BlockSSH, 0)
+	for _, it := range s.IdentityItems() {
+		if it.IsPart && it.Part == PartSigning {
+			t.Errorf("the sign switch is shown without ssh from the host: %q", it.Text)
+		}
+	}
 	d, refused := Build(s, hostFor(hostTarget), nil)
-	if !strings.Contains(refused[Identity], "sign needs the ssh and git parts") {
-		t.Errorf("Build refused %v", refused)
+	if refused[Identity] != "" || d == nil {
+		t.Errorf("refused %v", refused)
 	}
-	if _, msg := BuildIdentity(s, hostFor(hostTarget)); !strings.Contains(msg, "sign needs the ssh and git parts") {
-		t.Errorf("BuildIdentity msg %q", msg)
+	id, msg := BuildIdentity(s, hostFor(hostTarget))
+	if msg != "" || strings.Contains(id.Render(), "signing_key") {
+		t.Errorf("hidden means not written (msg %q):\n%s", msg, id.Render())
 	}
-	if d == nil {
-		t.Errorf("no draft")
-	}
-	if got := s.BlockProblem(BlockGit, 1); !strings.Contains(got, "sign needs") {
-		t.Errorf("the git section's from host line must say so: %q", got)
-	}
-	if _, refused := Build(s.WithPart(PartSigning, false), hostFor(hostTarget), nil); refused[Identity] != "" {
-		t.Errorf("sign off, git alone from the host is writable: %v", refused)
+	f := hostFacts()
+	f.Profiles = []ingest.Profile{profile("work", "github.com", "m@example.org")}
+	if Suggest(f, home, hostTarget).Parts[PartSigning] {
+		t.Errorf("sign is on by default only when ssh and git are suggested from the host")
 	}
 }
 

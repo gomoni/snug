@@ -40,7 +40,8 @@ const usage = `usage: snug-setup [--print] [--profile-dir DIR] [--name NAME] [DI
 
   --print              print the suggestion as TOML on stdout and the warnings on stderr; no
                        screen, no prompt, nothing written. Unsure picks come out as commented
-                       include lines. An ambiguous identity (two profiles of yours match the
+                       include lines. When snug would refuse the identity, the TOML is still
+                       printed and the exit status is 1. An ambiguous identity (two profiles of yours match the
                        project equally) is left out, says so on stderr, and still exits 0.
   --profile-dir DIR    where the profile is written (default: $XDG_CONFIG_HOME/snug/profiles.d)
   --name NAME          the profile's name instead of the one suggested; with --print, the way
@@ -49,7 +50,7 @@ const usage = `usage: snug-setup [--print] [--profile-dir DIR] [--name NAME] [DI
 
 exit status:
   0    written, printed, or quit with nothing written
-  1    usage or startup error
+  1    usage or startup error, or --print of an identity snug refuses
   130  interrupted
 `
 
@@ -218,6 +219,10 @@ func (s *setup) printOnly() (int, error) {
 		fmt.Fprintf(os.Stderr, "! %s\n", w)
 	}
 	for id, msg := range refused {
+		if id == suggest.Identity {
+			fmt.Fprintf(os.Stderr, "! identity: snug refuses: %s\n", safe.Inline(msg))
+			continue
+		}
 		fmt.Fprintf(os.Stderr, "! %s: not in the profile: %s\n", strings.ToLower(rowName(id)), safe.Inline(msg))
 	}
 	out := d.Render()
@@ -230,6 +235,9 @@ func (s *setup) printOnly() (int, error) {
 		}
 	}
 	fmt.Print(out)
+	if refused[suggest.Identity] != "" {
+		return 1, errors.New("snug refuses the identity printed above; pick one source per block")
+	}
 	return 0, nil
 }
 
@@ -368,6 +376,10 @@ func (s *setup) reviewWrite(sel suggest.Selection, warns []probe.Warning, wrote 
 		return tui.Review{}, err
 	}
 	for r, msg := range refused {
+		if r == suggest.Identity {
+			p.Blocked = append(p.Blocked, fmt.Sprintf("identity: snug refuses: %s", safe.Inline(msg)))
+			continue
+		}
 		p.Blocked = append(p.Blocked, fmt.Sprintf("%s is on the screen but not in the profile: %s", strings.ToLower(rowName(r)), safe.Inline(msg)))
 	}
 	plans := []write.Plan{p}

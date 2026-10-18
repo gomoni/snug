@@ -272,3 +272,44 @@ func TestPrintNewFromHostWritesBothProfiles(t *testing.T) {
 		t.Errorf("the project profile carries the identity block:\n%s", o)
 	}
 }
+
+// TestPrintRefusedIdentityExitsNonZero: a profile of yours that snug would
+// refuse on its own (signing_key with an ssh block that has no agent) is the
+// suggestion; --print still prints the TOML, says snug refuses, and exits 1.
+func TestPrintRefusedIdentityExitsNonZero(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := project(t, "app", "README.md")
+	gitEnv := []string{"GIT_AUTHOR_NAME=A", "GIT_AUTHOR_EMAIL=m@example.org", "GIT_COMMITTER_NAME=A", "GIT_COMMITTER_EMAIL=m@example.org", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"}
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@github.com:acme/app.git"}, {"add", "."}, {"commit", "-q", "-m", "x"}} {
+		cmd := exec.Command(git, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), gitEnv...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	home := t.TempDir()
+	prof := filepath.Join(home, ".config", "snug", "profiles.d")
+	os.MkdirAll(prof, 0o755)
+	body := "[profile.work.identity.ssh]\nhost = \"github.com\"\nkey = \"{home}/.ssh/w.pub\"\n" +
+		"[profile.work.identity.git]\nname = \"A\"\nemail = \"m@example.org\"\nsigning_key = \"{home}/.ssh/s.pub\"\n"
+	os.WriteFile(filepath.Join(prof, "accounts.toml"), []byte(body), 0o644)
+	cmd := exec.Command(binary, "--print", dir)
+	cmd.Env = []string{"HOME=" + home, "PATH=" + filepath.Dir(git)}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err = cmd.Run()
+	ee, ok := err.(*exec.ExitError)
+	if !ok || ee.ExitCode() != 1 {
+		t.Fatalf("want exit 1, got %v", err)
+	}
+	if !strings.Contains(out.String(), "[profile.app]") || !strings.Contains(out.String(), `"work"`) {
+		t.Errorf("the TOML is still printed:\n%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "identity: snug refuses: ") || strings.Contains(errb.String(), "not in the profile") {
+		t.Errorf("stderr:\n%s", errb.String())
+	}
+}
