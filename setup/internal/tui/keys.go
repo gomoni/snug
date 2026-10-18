@@ -162,9 +162,9 @@ func (m Model) dryKey(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// identityKey: j/k move over choices and the switches under them, space picks
-// a choice or flips a switch, ? shows why, esc and q go back. Enter does
-// nothing: the menu is read-only apart from the pick and the switches.
+// identityKey: j/k move over the sources of every block and the switches,
+// space picks a source or flips a switch, ? shows why, esc and q go back. Enter
+// does nothing: the menu is read-only apart from the picks and the switches.
 func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
 	menu := *m.idm
 	items := m.sel.IdentityItems()
@@ -182,8 +182,9 @@ func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
 		if it.IsPart {
 			m.sel = m.sel.WithPart(it.Part, !it.On)
 		} else {
-			m.sel = m.sel.WithPick(suggest.Identity, it.Choice)
+			m.sel = m.sel.WithBlock(it.Block, it.Choice)
 		}
+		menu.cursor = min(menu.cursor, len(m.sel.IdentityItems())-1)
 	case "?":
 		menu.why = !menu.why
 	case "esc", "q", "ctrl+c":
@@ -195,14 +196,15 @@ func (m Model) identityKey(k string) (tea.Model, tea.Cmd) {
 }
 
 // cycle moves the current row to its next choice. Name and Desc have no
-// alternatives to cycle through.
+// alternatives to cycle through, and Identity is picked block by block in its
+// submenu.
 func (m *Model) cycle() {
 	if m.cursor >= len(m.sel.Rows) {
 		return
 	}
 	id := suggest.RowID(m.cursor)
 	switch id {
-	case suggest.Name, suggest.Desc:
+	case suggest.Name, suggest.Desc, suggest.Identity:
 		return
 	}
 	m.sel = m.sel.WithPick(id, (m.sel.Pick[id]+1)%len(m.sel.Rows[id].Choices))
@@ -250,10 +252,10 @@ func (m Model) dryRun() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// pickedItem is the submenu line of the picked choice.
+// pickedItem is the submenu line of the source picked for the first block.
 func (m Model) pickedItem() int {
 	for i, it := range m.sel.IdentityItems() {
-		if !it.IsPart && it.Choice == m.sel.Pick[suggest.Identity] {
+		if !it.IsPart && it.Block == suggest.BlockSSH && it.Choice == m.sel.Block[suggest.BlockSSH] {
 			return i
 		}
 	}

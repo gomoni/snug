@@ -1,21 +1,39 @@
 snug-setup  ~/work/snug-setup  IDENTITY
 
+  ssh
   ( ) none
-        no identity profile; the sandbox has no git author
+        no ssh key in the sandbox
 ▸ (•) vyskocilm   suggested
         ssh   github.com  github_auth
               ~/.ssh/config  Host github.com  → github_auth
-        sign  github_sign
-        git   M V <m@example.org>
-        gh    github.com/vyskocilm
-        also includes: gh-cli
   ( ) plainsof
         ssh   github.com
               ~/.ssh/config  Host github.com  → github_auth
+        ! profiles "plainsof" and "vyskocilm" pin different identity.ssh
+
+  git
+  ( ) none
+        no git author in the sandbox
+  (•) vyskocilm   suggested
+        git   M V <m@example.org>
+        sign  github_sign
+  ( ) plainsof
         git   <p@example.org>
+        ! profiles "plainsof" and "vyskocilm" pin different identity.git
+  ( ) from host
+        M V <m@example.org>
+        ! profiles "vyskocilm" and "vyskocilm-2" pin different identity.git
+
+  gh
+  ( ) none
+        no gh login in the sandbox
+  (•) vyskocilm   suggested
+        gh    github.com/vyskocilm
+        also includes: gh-cli
+  ( ) plainsof
         gh    plainsof
-  ( ) new from host
-        [x] git M V <m@example.org>  10 of the last 10 commits, and your profile vyskocilm
-        [x] gh github.com/vyskocilm  your profile vyskocilm
+        ! profiles "plainsof" and "vyskocilm" pin different identity.gh
+  ( ) from host
+        github.com/vyskocilm
 
  j/k move  space pick or toggle  ? why  esc back

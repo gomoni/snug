@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -502,11 +503,19 @@ func TestEnterOpensOnlyNameDescIdentity(t *testing.T) {
 	}
 }
 
-func TestSpaceStillCyclesIdentity(t *testing.T) {
+func TestSpaceOnTheMainIdentityRowDoesNothing(t *testing.T) {
 	m := toIdentity(sized(New(config(facts())), 100))
-	m = press(m, "space")
-	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "plainsof") {
+	before := m.Outcome().Sel
+	m = press(m, "space", "space")
+	after := m.Outcome().Sel
+	if !maps.Equal(before.Block, after.Block) || !maps.Equal(before.Parts, after.Parts) || m.anyChanged() {
+		t.Errorf("space changed the identity: %v -> %v", before.Block, after.Block)
+	}
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "vyskocilm") || strings.Contains(l, "*") {
 		t.Errorf("%q", l)
+	}
+	if !strings.Contains(screen(m), "enter open") {
+		t.Errorf("the footer must still say enter opens the menu:\n%s", screen(m))
 	}
 }
 
@@ -526,21 +535,24 @@ func TestIdentitySubmenuPicksAndGoesBack(t *testing.T) {
 	m := toIdentity(sized(New(config(facts())), 100))
 	m = press(m, "enter")
 	if m.idm == nil || m.idm.cursor != 1 {
-		t.Fatalf("menu not opened on the current pick: %+v", m.idm)
+		t.Fatalf("menu not opened on the first block's pick: %+v", m.idm)
 	}
 	m = press(m, "j", "space")
-	if m.Outcome().Sel.Pick[suggest.Identity] != 2 {
-		t.Fatalf("space did not pick: %d", m.Outcome().Sel.Pick[suggest.Identity])
+	if got := m.Outcome().Sel.Block[suggest.BlockSSH]; got != 2 {
+		t.Fatalf("space did not pick: %d", got)
+	}
+	if got := m.Outcome().Sel.Block[suggest.BlockGH]; got != 1 {
+		t.Fatalf("picking ssh moved the gh block to %d", got)
 	}
 	m = press(m, "enter")
-	if m.idm == nil || m.Outcome().Sel.Pick[suggest.Identity] != 2 {
+	if m.idm == nil || m.Outcome().Sel.Block[suggest.BlockSSH] != 2 {
 		t.Errorf("enter must do nothing in the menu")
 	}
 	m = press(m, "esc")
 	if m.idm != nil {
 		t.Fatalf("esc did not go back")
 	}
-	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "plainsof") || !strings.Contains(l, "* changed") || !strings.Contains(l, "u revert") {
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "ssh plainsof, git vyskocilm, gh vyskocilm") || !strings.Contains(l, "* changed") || !strings.Contains(l, "u revert") {
 		t.Errorf("%q", l)
 	}
 	if l := lineWith(t, m, "DESC"); !strings.Contains(l, "plainsof") {
@@ -624,7 +636,7 @@ func TestIdentityGhWarnings(t *testing.T) {
 	if !strings.Contains(screen(m2), want) || strings.Count(screen(m2), "gh not logged in") != 1 {
 		t.Errorf("submenu must list it under the entry only:\n%s", screen(m2))
 	}
-	m = press(toIdentity(m), "space")
+	m.sel = m.sel.WithBlock(suggest.BlockGH, 2)
 	if strings.Contains(screen(m), "gh not logged in") {
 		t.Errorf("plainsof is logged in:\n%s", screen(m))
 	}
@@ -849,69 +861,76 @@ func hostOnly() ingest.Facts {
 	return f
 }
 
-func TestIdentitySubmenuNewFromHostGolden(t *testing.T) {
+func TestIdentitySubmenuFromHostGolden(t *testing.T) {
 	m := toIdentity(sized(New(config(hostOnly())), 100))
 	m = press(m, "enter")
-	golden(t, "identity-menu-new-from-host", screen(m))
+	golden(t, "identity-menu-from-host", screen(m))
 }
 
-func TestNewFromHostIsTheRowValueAndNothingElseChanged(t *testing.T) {
+func TestFromHostIsTheRowValueAndNothingElseChanged(t *testing.T) {
 	m := sized(New(config(hostOnly())), 100)
-	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "new from host") || strings.Contains(l, "*") {
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "vyskocilm") || strings.Contains(l, "*") {
 		t.Errorf("%q", l)
 	}
 }
 
-func TestSubmenuCursorReachesEveryPartAndSpaceOnlyTogglesIt(t *testing.T) {
+func TestSubmenuCursorReachesEverySwitchAndSpaceOnlyTogglesIt(t *testing.T) {
 	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter")
 	if m.idm.cursor != 1 {
-		t.Fatalf("opens on the picked entry, got item %d", m.idm.cursor)
-	}
-	m = press(m, "j")
-	if it := m.sel.IdentityItems()[m.idm.cursor]; !it.IsPart || it.Part != suggest.PartSSH || !strings.HasPrefix(it.Text, "ssh github.com github_auth") {
-		t.Fatalf("first part is %+v", it)
-	}
-	m = press(m, "space")
-	if m.sel.PartOn(suggest.PartSSH) {
-		t.Errorf("space on a part line did not toggle it")
-	}
-	if m.sel.Pick[suggest.Identity] != 1 {
-		t.Errorf("space on a part line moved the pick to %d", m.sel.Pick[suggest.Identity])
-	}
-	if !strings.Contains(screen(m), "▸       [ ] ssh github.com github_auth") {
-		t.Errorf("the line does not show it is off:\n%s", screen(m))
-	}
-	m = press(m, "space")
-	if !m.sel.PartOn(suggest.PartSSH) {
-		t.Errorf("a second space did not switch it back on")
+		t.Fatalf("opens on the first block's pick, got item %d", m.idm.cursor)
 	}
 	var seen []suggest.Part
 	for range 12 {
+		at := m.idm.cursor
 		m = press(m, "j")
+		if m.idm.cursor == at {
+			break
+		}
 		if it := m.sel.IdentityItems()[m.idm.cursor]; it.IsPart {
 			seen = append(seen, it.Part)
+			if it.Part == suggest.PartSigning {
+				before := m.sel.Block
+				m = press(m, "space")
+				if m.sel.PartOn(suggest.PartSigning) || !maps.Equal(before, m.sel.Block) {
+					t.Errorf("space on the sign line: on=%v blocks %v", m.sel.PartOn(suggest.PartSigning), m.sel.Block)
+				}
+				if !strings.Contains(screen(m), "▸       [ ] sign github_sign") {
+					t.Errorf("the line does not show it is off:\n%s", screen(m))
+				}
+				m = press(m, "space")
+				if !m.sel.PartOn(suggest.PartSigning) {
+					t.Errorf("a second space did not switch it back on")
+				}
+			}
 		}
 	}
-	want := []suggest.Part{suggest.PartSigning, suggest.PartGit, suggest.PartGH, suggest.PartGHBinary}
-	if len(seen) < len(want) || fmt.Sprint(seen[:len(want)]) != fmt.Sprint(want) {
-		t.Errorf("parts reached %v, want %v", seen, want)
+	want := []suggest.Part{suggest.PartSigning, suggest.PartGHBinary}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Errorf("switches reached %v, want %v", seen, want)
 	}
 }
 
-func TestSpaceOnTheEntryLinePicksItWithoutTouchingParts(t *testing.T) {
+func TestSpaceOnASourceLinePicksItWithoutTouchingSwitches(t *testing.T) {
 	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "k", "space")
-	if m.sel.Pick[suggest.Identity] != 0 {
-		t.Fatalf("pick %d", m.sel.Pick[suggest.Identity])
+	if m.sel.Block[suggest.BlockSSH] != 0 {
+		t.Fatalf("pick %d", m.sel.Block[suggest.BlockSSH])
+	}
+	if m.sel.Block[suggest.BlockGit] != 1 || m.sel.Block[suggest.BlockGH] != 1 {
+		t.Errorf("another block was changed: %v", m.sel.Block)
 	}
 	m = press(m, "j", "space")
-	if m.sel.Pick[suggest.Identity] != 1 || !m.sel.PartOn(suggest.PartGit) {
-		t.Errorf("pick %d, git %v", m.sel.Pick[suggest.Identity], m.sel.PartOn(suggest.PartGit))
+	if m.sel.Block[suggest.BlockSSH] != 1 || !m.sel.PartOn(suggest.PartSigning) {
+		t.Errorf("pick %d, sign %v", m.sel.Block[suggest.BlockSSH], m.sel.PartOn(suggest.PartSigning))
 	}
 }
 
-func TestQuestionMarkOnAPartShowsItsReasonAndTheAbuseSentence(t *testing.T) {
-	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "j", "?")
-	for _, want := range []string{"Host github.com", "SIGNING ORACLE"} {
+func TestQuestionMarkOnASwitchShowsItsReasonAndTheAbuseSentence(t *testing.T) {
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter")
+	for m.sel.IdentityItems()[m.idm.cursor].Part != suggest.PartSigning || !m.sel.IdentityItems()[m.idm.cursor].IsPart {
+		m = press(m, "j")
+	}
+	m = press(m, "?")
+	for _, want := range []string{"SIGNING ORACLE", "git config user.signingkey"} {
 		if !strings.Contains(screen(m), want) {
 			t.Errorf("no %q in:\n%s", want, screen(m))
 		}
@@ -919,16 +938,17 @@ func TestQuestionMarkOnAPartShowsItsReasonAndTheAbuseSentence(t *testing.T) {
 }
 
 func TestQuestionMarkOnTheGHBinaryLineSaysItAddsNoAuthority(t *testing.T) {
-	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter", "j", "j", "j", "j", "j", "?")
-	if it := m.sel.IdentityItems()[m.idm.cursor]; it.Part != suggest.PartGHBinary {
-		t.Fatalf("cursor on %+v", it)
+	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "enter")
+	for !m.sel.IdentityItems()[m.idm.cursor].IsPart || m.sel.IdentityItems()[m.idm.cursor].Part != suggest.PartGHBinary {
+		m = press(m, "j")
 	}
+	m = press(m, "?")
 	if !strings.Contains(strings.Join(strings.Fields(screen(m)), " "), "the sandbox can run every gh command the staged token authorises; the binary adds no authority of its own.") {
 		t.Errorf("%s", screen(m))
 	}
 }
 
-func TestQuestionMarkOnTheMainIdentityRowCarriesTheAbuseForNewFromHost(t *testing.T) {
+func TestQuestionMarkOnTheMainIdentityRowCarriesTheAbuseForFromHost(t *testing.T) {
 	m := press(toIdentity(sized(New(config(hostOnly())), 100)), "?")
 	if !strings.Contains(screen(m), "SIGNING ORACLE") {
 		t.Errorf("%s", screen(m))
@@ -939,8 +959,135 @@ func TestDryRunReceivesTheSelection(t *testing.T) {
 	c := config(hostOnly())
 	var got suggest.Selection
 	c.DryRun = func(s suggest.Selection) (string, error) { got = s; return "x", nil }
-	press(toIdentity(sized(New(c), 100)), "enter", "j", "space", "esc", "d")
-	if got.Rows == nil || got.PartOn(suggest.PartSSH) {
-		t.Errorf("dry run saw a selection without the toggle: %v", got.Parts)
+	press(toIdentity(sized(New(c), 100)), "enter", "k", "space", "esc", "d")
+	if got.Rows == nil || got.Block[suggest.BlockSSH] != 0 {
+		t.Errorf("dry run saw a selection without the pick: %v", got.Block)
+	}
+}
+
+// pins gives a profile a gh pin of its own.
+func ghProfile(name, user string) ingest.Profile {
+	return ingest.Profile{Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d", Identity: ingest.ProfileIdentity{GHUser: user}}
+}
+
+func sshProfile(name string) ingest.Profile {
+	return ingest.Profile{Name: name, File: "accounts.toml", Dir: home + "/.config/snug/profiles.d",
+		Identity: ingest.ProfileIdentity{SSHHost: "github.com", SSHKey: "{home}/.ssh/" + name + ".pub"}}
+}
+
+// blocksFacts has a profile that pins ssh and gh and one that pins gh only,
+// and a remote that matches neither, so every block starts at none.
+func blocksFacts() ingest.Facts {
+	f := facts()
+	a := sshProfile("a")
+	a.Identity.GHUser = "a-user"
+	f.Profiles = []ingest.Profile{a, ghProfile("b", "b-user")}
+	f.Repo = nil
+	return f
+}
+
+func openMenu(f ingest.Facts) Model {
+	return press(toIdentity(sized(New(config(f)), 100)), "enter")
+}
+
+func pickLine(t *testing.T, m Model, section, label string) Model {
+	t.Helper()
+	for i, it := range m.sel.IdentityItems() {
+		if it.IsPart || it.Block.String() != section {
+			continue
+		}
+		if m.sel.BlockChoices(it.Block)[it.Choice].Label == label {
+			m.idm.cursor = i
+			return press(m, "space")
+		}
+	}
+	t.Fatalf("no %s line %q", section, label)
+	return m
+}
+
+func TestIdentitySubmenuLockedGolden(t *testing.T) {
+	m := openMenu(blocksFacts())
+	m = pickLine(t, m, "ssh", "a")
+	m = pickLine(t, m, "gh", "none")
+	if name, locked := m.sel.Effective(suggest.BlockGH); name != "a" || !locked {
+		t.Fatalf("effective gh %q locked %v", name, locked)
+	}
+	if got := m.sel.Block[suggest.BlockGH]; got != 0 {
+		t.Fatalf("gh pick %d: the pick stays none", got)
+	}
+	golden(t, "identity-menu-locked", screen(m))
+}
+
+func TestIdentitySubmenuMixedGolden(t *testing.T) {
+	f := blocksFacts()
+	f.Profiles[0].Identity.GHUser = ""
+	m := openMenu(f)
+	m = pickLine(t, m, "ssh", "a")
+	m = pickLine(t, m, "gh", "b")
+	golden(t, "identity-menu-mixed", screen(m))
+	m = press(m, "esc")
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "ssh a, gh b") || strings.Contains(l, "not in the profile") {
+		t.Errorf("a mixed pick is legal: %q", l)
+	}
+}
+
+func TestIdentitySubmenuConflictGolden(t *testing.T) {
+	m := openMenu(blocksFacts())
+	m = pickLine(t, m, "ssh", "a")
+	m = pickLine(t, m, "gh", "b")
+	want := `profiles "a" and "b" pin different identity.gh`
+	if !strings.Contains(screen(m), "! "+want) {
+		t.Errorf("no ! line:\n%s", screen(m))
+	}
+	golden(t, "identity-menu-conflict", screen(m))
+	m = press(m, "esc")
+	m = sized(m, 200)
+	if l := lineWith(t, m, "IDENTITY"); !strings.Contains(l, "! not in the profile: "+want) && !strings.Contains(l, "not in the profile: "+want) {
+		t.Errorf("main screen: %q", l)
+	}
+}
+
+func TestAConflictBlocksW(t *testing.T) {
+	f := blocksFacts()
+	c := config(f)
+	var sawRefused map[suggest.RowID]string
+	c.Plan = func(s suggest.Selection) (Review, error) {
+		_, sawRefused = c.Build(s)
+		return Review{Title: "t", Body: "b", Blocked: sawRefused[suggest.Identity] != "", Apply: func() error { return nil }}, nil
+	}
+	m := press(toIdentity(sized(New(c), 100)), "enter")
+	m = pickLine(t, m, "ssh", "a")
+	m = pickLine(t, m, "gh", "b")
+	m = press(m, "esc", "w")
+	if m.rev == nil || !m.rev.r.Blocked {
+		t.Fatalf("w must open a blocked review for a refused identity: %+v", sawRefused)
+	}
+	m = press(m, "y")
+	if m.Outcome().Result == Write {
+		t.Errorf("y wrote a refused identity")
+	}
+}
+
+func TestGHBinaryRowIsUnderGHOnlyWhileGHHasASource(t *testing.T) {
+	f := hostOnly()
+	m := openMenu(f)
+	count := func(m Model) int {
+		n := 0
+		for _, it := range m.sel.IdentityItems() {
+			if it.IsPart && it.Part == suggest.PartGHBinary {
+				if it.Block != suggest.BlockGH {
+					t.Errorf("binary row under %v", it.Block)
+				}
+				n++
+			}
+		}
+		return n
+	}
+	if count(m) != 1 {
+		t.Fatalf("no binary row with gh from the host")
+	}
+	m = pickLine(t, m, "gh", "none")
+	if count(m) != 0 {
+		t.Errorf("binary row with no gh source:\n%s", screen(m))
 	}
 }

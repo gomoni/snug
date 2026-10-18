@@ -1,0 +1,23 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ssh
+  ( ) none
+        no ssh key in the sandbox
+▸ (•) from host   suggested
+        github.com  github_auth
+
+  git
+  ( ) none
+        no git author in the sandbox
+  (•) from host   suggested
+        M V <m@example.org>
+        [x] sign github_sign  your git config user.signingkey
+
+  gh
+  ( ) none
+        no gh login in the sandbox
+  (•) from host   suggested
+        github.com/vyskocilm
+        [x] gh binary  ~/bin/gh → /snug/bin/gh (not in /usr)
+
+ j/k move  space pick or toggle  ? why  esc back

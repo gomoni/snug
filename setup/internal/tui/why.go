@@ -24,13 +24,16 @@ func (m Model) whyLines(width int) []string {
 	for _, f := range c.Facts {
 		add("", f)
 	}
-	for _, tok := range strings.Fields(c.Label) {
-		if a, ok := draft.Abuse[tok]; ok {
-			add(tok+": ", a)
+	if id == suggest.Identity {
+		if m.sel.UsesHost() {
+			add("identity: ", draft.Abuse["identity"])
 		}
-	}
-	if c.Label == suggest.NewFromHost {
-		add("identity: ", draft.Abuse["identity"])
+	} else {
+		for _, tok := range strings.Fields(c.Label) {
+			if a, ok := draft.Abuse[tok]; ok {
+				add(tok+": ", a)
+			}
+		}
 	}
 	if c.Label == suggest.Off {
 		for i, ch := range m.sel.Rows[id].Choices {

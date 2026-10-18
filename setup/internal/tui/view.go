@@ -114,7 +114,7 @@ func (m Model) render() string {
 		text := safe.Inline(filepath.Base(wn.File)) + ": " + wn.Line
 		warns = append(warns, m.st("cursor", cur)+m.st("warn", clip("! "+text, w-2-utf8.RuneCountInString(suffix))+suffix))
 	}
-	if iw := m.sel.IdentityWarning(m.sel.Pick[suggest.Identity]); iw != "" {
+	if iw := m.sel.IdentityWarning(); iw != "" {
 		warns = append(warns, "  "+m.st("warn", clip("! "+iw, w-2)))
 	}
 	for _, n := range m.cfg.Notes {
@@ -186,6 +186,9 @@ func (m Model) value(id suggest.RowID) string {
 	case suggest.Name, suggest.Desc:
 		return safe.Inline(m.sel.Text[id])
 	}
+	if id == suggest.Identity {
+		return m.sel.Current(id).Label
+	}
 	r := m.sel.Rows[id]
 	return r.Choices[m.sel.Pick[id]].Label
 }
@@ -233,15 +236,23 @@ func (m Model) word(id suggest.RowID) string {
 	return "changed"
 }
 
-// renderIdentity is the IDENTITY submenu: every choice of the row with the
-// pinned values of the profile under it, the switches the cursor can reach,
-// and a window of those lines that keeps the cursor visible.
+// renderIdentity is the IDENTITY submenu: a section per block with every
+// source of the block, the pinned values of each profile under it, the
+// switches the cursor can reach, and a window of those lines that keeps the
+// cursor visible.
 func (m Model) renderIdentity(w int) string {
-	r := m.sel.Rows[suggest.Identity]
 	items := m.sel.IdentityItems()
 	var body []string
 	start := make([]int, len(items))
+	section := suggest.Block(-1)
 	for n, it := range items {
+		if it.Block != section {
+			section = it.Block
+			if len(body) > 0 {
+				body = append(body, "")
+			}
+			body = append(body, m.st("head", "  "+it.Block.String()))
+		}
 		start[n] = len(body)
 		cur := "  "
 		if m.idm.cursor == n {
@@ -254,21 +265,27 @@ func (m Model) renderIdentity(w int) string {
 			}
 			body = append(body, m.st("cursor", cur)+m.st("dim", clip("      "+box+" "+safe.Inline(it.Text), w-2)))
 		} else {
-			i := it.Choice
+			b, i := it.Block, it.Choice
 			radio := "( )"
-			if m.sel.Pick[suggest.Identity] == i {
+			if m.sel.Block[b] == i {
 				radio = "(•)"
 			}
-			head := radio + " " + safe.Inline(r.Choices[i].Label)
-			if i == r.Suggested {
+			head := radio + " " + safe.Inline(m.sel.BlockChoices(b)[i].Label)
+			if i == m.sel.BlockSuggested(b) {
 				head += "   suggested"
 			}
 			body = append(body, m.st("cursor", cur)+clip(head, w-2))
-			for _, l := range m.sel.IdentityDetail(i) {
+			for _, l := range m.sel.IdentityDetail(b, i) {
 				body = append(body, m.st("dim", clip("        "+safe.Inline(l), w)))
 			}
-			if iw := m.sel.IdentityWarning(i); iw != "" {
+			if name, val, ok := m.sel.Locked(b); ok && i == 0 {
+				body = append(body, m.st("dim", clip("        "+safe.Inline(name)+" is included and pins this: "+val, w)))
+			}
+			if iw := m.sel.SourceWarning(b, i); iw != "" {
 				body = append(body, "        "+m.st("warn", clip("! "+iw, w-8)))
+			}
+			if pr := m.sel.BlockProblem(b, i); pr != "" {
+				body = append(body, "        "+m.st("warn", clip("! "+pr, w-8)))
 			}
 		}
 		if m.idm.why && m.idm.cursor == n {

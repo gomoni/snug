@@ -1,0 +1,25 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ssh
+  ( ) none   suggested
+        no ssh key in the sandbox
+  (•) a
+        ssh   github.com  a
+
+  git
+  (•) none   suggested
+        no git author in the sandbox
+
+  gh
+▸ (•) none   suggested
+        no gh login in the sandbox
+        a is included and pins this: a-user
+  ( ) a
+        gh    a-user
+        ! a: gh not logged in as a-user on github.com — gh auth login --hostname github.com
+  ( ) b
+        gh    b-user
+        ! b: gh not logged in as b-user on github.com — gh auth login --hostname github.com
+        ! profiles "a" and "b" pin different identity.gh
+
+ j/k move  space pick or toggle  ? why  esc back

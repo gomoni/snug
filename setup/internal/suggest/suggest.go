@@ -37,7 +37,8 @@ const (
 const (
 	// Off is the label of the "not selected" choice of a toggle row.
 	Off = "—"
-	// NoIdentity is the label of Identity's "no identity profile" choice.
+	// NoIdentity is the label of a block's "no source" choice, and the value
+	// of the Identity row while no block has one.
 	NoIdentity = "none"
 
 	baseWithParent = "@sys @home @target-rw @parent-ro"
@@ -54,8 +55,10 @@ type Choice struct {
 // Row is one part of the profile.
 type Row struct {
 	ID        RowID
-	Suggested int      // index into Choices
-	Choices   []Choice // Name and Desc: one Choice, whose value is edited as text
+	Suggested int // index into Choices
+	// Name and Desc: one Choice, whose value is edited as text. Identity: one
+	// Choice, whose label Current computes from Selection.Block.
+	Choices []Choice
 	// Sure is false for a pick that only the person can know the need for
 	// (a toggle shown as an unfilled or filled circle); Suggested is then its
 	// "off" choice.
@@ -72,8 +75,11 @@ type Selection struct {
 	Rows []Row
 	Pick map[RowID]int    // current choice per row
 	Text map[RowID]string // Name and Desc, current text
-	// Parts are the switches inside an Identity choice; partsDefault is what
-	// Revert returns them to.
+	// Block is the picked source per identity block, an index into
+	// BlockChoices; blockDefault and partsDefault are what Revert returns
+	// Block and Parts to.
+	Block map[Block]int
+	// Parts are the switches of the IDENTITY submenu.
 	Parts map[Part]bool
 
 	profiles     []ingest.Profile
@@ -86,6 +92,8 @@ type Selection struct {
 	descName     string
 	home         string
 	host         *hostIdentity
+	sources      map[Block][]source
+	blockDefault map[Block]int
 	partsDefault map[Part]bool
 	binaries     map[string]ingest.Binary
 }
@@ -104,8 +112,8 @@ type netPart struct {
 //
 // Abuse: the target chooses its remote, authors, file names and project names,
 // so it can steer a row toward any value that already exists on the host and
-// nowhere else. Identity offers the person's own profiles that pin an
-// identity and NewFromHost, whose every value is one of the host's keys, gh
+// nowhere else. Each identity block offers the person's own profiles that pin
+// it and FromHost, whose every value is one of the host's keys, gh
 // logins or git author chosen by ingest.Suggest; the other rows offer built-in
 // names. A name taken from the target reaches the screen only as a reason,
 // through safe.Inline. Nothing the target says turns an unsure pick on.
@@ -114,6 +122,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		Pick:         map[RowID]int{},
 		Text:         map[RowID]string{},
 		Parts:        map[Part]bool{},
+		Block:        map[Block]int{},
 		home:         home,
 		binaries:     f.Binaries,
 		profiles:     slices.Clone(f.Profiles),
@@ -125,12 +134,11 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 	prop := ingest.Propose(f.Target)
 	s.env = prop.Env
 
-	id, hi := identityRow(f)
-	s.host = hi
-	if hi != nil {
-		for _, p := range hi.parts {
-			s.Parts[p.id] = true
-		}
+	id := Row{Sure: true, Choices: []Choice{{Label: NoIdentity}}}
+	s.sources, s.blockDefault, s.host = identitySources(f)
+	s.Block = maps.Clone(s.blockDefault)
+	if s.host != nil && s.host.sign != nil {
+		s.Parts[PartSigning] = true
 	}
 	for _, t := range identityTools {
 		s.Parts[t.part] = true
@@ -152,7 +160,7 @@ func Suggest(f ingest.Facts, home, target string) Selection {
 		envRow(prop),
 	}
 	s.descName = descName(f.Target, target)
-	rows[Desc] = Row{Choices: []Choice{{Label: s.descFor(id.Choices[id.Suggested].Label), Why: "from project and identity"}}, Sure: true}
+	rows[Desc] = Row{Choices: []Choice{{Label: s.derivedDesc(), Why: "from project and identity"}}, Sure: true}
 	s.Rows = rows
 	for i := range s.Rows {
 		s.Rows[i].ID = RowID(i)
@@ -208,18 +216,16 @@ func descName(t ingest.TargetFacts, target string) string {
 }
 
 func (s Selection) descFor(identity string) string {
-	if identity == NewFromHost && s.host != nil {
-		identity = s.host.name
-	}
-	if identity == NoIdentity {
+	if identity == "" {
 		return s.descName
 	}
 	return s.descName + ", " + identity
 }
 
-// derivedDesc is the DESC text for the current IDENTITY pick.
+// derivedDesc is the DESC text for the current identity: the name of the
+// source of the first block that has one.
 func (s Selection) derivedDesc() string {
-	return s.descFor(s.Rows[Identity].Choices[s.Pick[Identity]].Label)
+	return s.descFor(s.resolve(s.Block).firstName())
 }
 
 func baseRow(parentIsHome bool) Row {
@@ -235,59 +241,65 @@ func baseRow(parentIsHome bool) Row {
 	return r
 }
 
-// identityRow returns the Identity row and, when the host describes one, the
-// identity NewFromHost writes. NewFromHost comes after the profiles of yours,
-// and is the suggestion only when none of them is: no profile matches the
-// remote, and the match is not a tie between two.
-func identityRow(f ingest.Facts) (Row, *hostIdentity) {
-	r := Row{Sure: true, Choices: []Choice{{Label: NoIdentity}}}
-	for _, p := range f.Profiles {
-		if !p.Identity.Pins() || slices.ContainsFunc(r.Choices, func(c Choice) bool { return c.Label == p.Name }) {
-			continue
-		}
-		r.Choices = append(r.Choices, Choice{Label: p.Name, Facts: []string{"defined in " + safe.Inline(p.File)}})
-	}
+// identitySources returns, per block, the sources it can come from and the
+// index suggested, and the identity FromHost writes. A block's sources are
+// none, the profiles of yours that pin it, and FromHost when the host has the
+// block. A profile that matches the remote is suggested for every block it
+// pins and the other blocks get none. FromHost is suggested for every block
+// the host has only when no profile of yours matches and the match is not a
+// tie between two.
+func identitySources(f ingest.Facts) (map[Block][]source, map[Block]int, *hostIdentity) {
 	pick := ingest.Suggest(ingest.SuggestInput{Repo: f.Repo, SSH: f.SSH, Keys: f.Keys, Profiles: f.Profiles, Authors: f.Authors, GH: f.GH, GitSigningKey: f.GitSigningKey})
 	taken := func(n string) bool {
 		return slices.ContainsFunc(f.Profiles, func(p ingest.Profile) bool { return strings.EqualFold(p.Name, n) }) ||
 			slices.ContainsFunc(f.Files, func(pf ingest.ProfileFile) bool { return strings.EqualFold(pf.Name, n+".toml") })
 	}
 	hi := newHostIdentity(f, pick, taken)
+	noWhy := ""
+	matched := ""
 	noMatch := false
 	switch {
 	case pick == nil:
-		r.Choices[0].Why = "no git remote"
+		noWhy = "no git remote"
 	case len(pick.Conflict) >= 2:
-		r.Choices[0].Why = strings.Join(pick.Conflict, " or ") + " — pick one"
+		noWhy = strings.Join(pick.Conflict, " or ") + " — pick one"
 	case pick.Profile.Value != "":
-		i := slices.IndexFunc(r.Choices, func(c Choice) bool { return c.Label == pick.Profile.Value })
-		if i < 0 {
-			break
-		}
-		r.Suggested = i
-		rm := pick.Remote
-		r.Choices[i].Why = "remote " + safe.Inline(rm.Host+":"+rm.Owner+"/"+rm.Repo)
-		r.Choices[i].Facts = append(r.Choices[i].Facts, safe.Inline(pick.Profile.Why))
+		matched = pick.Profile.Value
 	default:
-		r.Choices[0].Why = "no profile of yours matches the remote"
+		noWhy = "no profile of yours matches the remote"
 		noMatch = true
 	}
-	if hi == nil {
-		return r, nil
+	sources := map[Block][]source{}
+	def := map[Block]int{}
+	for _, b := range allBlocks {
+		list := []source{{Choice: Choice{Label: NoIdentity, Why: noWhy}}}
+		for _, p := range f.Profiles {
+			if !pinned(p.Identity, b) || slices.ContainsFunc(list, func(c source) bool { return c.Label == p.Name }) {
+				continue
+			}
+			c := source{Choice: Choice{Label: p.Name, Facts: []string{"defined in " + safe.Inline(p.File)}}, kind: srcProfile, name: p.Name}
+			if p.Name == matched {
+				rm := pick.Remote
+				c.Why = "remote " + safe.Inline(rm.Host+":"+rm.Owner+"/"+rm.Repo)
+				c.Facts = append(c.Facts, safe.Inline(pick.Profile.Why))
+				def[b] = len(list)
+			}
+			list = append(list, c)
+		}
+		if hi != nil && hi.block(b) != nil {
+			p := hi.block(b)
+			c := source{Choice: Choice{Label: FromHost, Why: "from your host", Facts: []string{
+				safe.Inline(strings.SplitN(p.text, " ", 2)[0] + ": " + p.why),
+				"writes the profile " + safe.Inline(hi.name) + " beside the project's",
+			}}, kind: srcHost, name: hi.name}
+			if noMatch {
+				def[b] = len(list)
+			}
+			list = append(list, c)
+		}
+		sources[b] = list
 	}
-	var names []string
-	c := Choice{Label: NewFromHost}
-	for _, p := range hi.parts {
-		names = append(names, strings.SplitN(p.text, " ", 2)[0])
-		c.Facts = append(c.Facts, safe.Inline(strings.SplitN(p.text, " ", 2)[0]+": "+p.why))
-	}
-	c.Facts = append(c.Facts, "writes the profile "+safe.Inline(hi.name)+" beside the project's")
-	c.Why = "from your host: " + strings.Join(names, " ")
-	r.Choices = append(r.Choices, c)
-	if noMatch {
-		r.Suggested = len(r.Choices) - 1
-	}
-	return r, hi
+	return sources, def, hi
 }
 
 func agentRow(t ingest.TargetFacts) Row {
@@ -347,7 +359,8 @@ func envRow(p ingest.Proposal) Row {
 
 // Current returns the Choice row id shows now: its picked Choice, or, for an
 // unsure row still at its suggestion, the candidate it offers, with the text
-// of Name and Desc filled in. The Network choice names only the
+// of Name and Desc filled in. Identity's label is the summary of its blocks'
+// effective sources. The Network choice names only the
 // reasons whose source is on at the moment: no "container images" while
 // Containers is off.
 func (s Selection) Current(id RowID) Choice {
@@ -356,6 +369,9 @@ func (s Selection) Current(id RowID) Choice {
 		c := s.Rows[id].Choices[0]
 		c.Label = s.Text[id]
 		return c
+	}
+	if id == Identity {
+		return s.identityChoice()
 	}
 	r := s.Rows[id]
 	c := r.Choices[s.Pick[id]]
@@ -393,16 +409,11 @@ func (s Selection) netReasons() (string, []string) {
 	return strings.Join(whys, ", "), facts
 }
 
-// WithPick returns a copy of s with row id at choice i. DESC follows an
-// IDENTITY change as long as its text is still the one derived from the
-// IDENTITY pick it had. s is not modified.
+// WithPick returns a copy of s with row id at choice i. Identity has no
+// choices to pick; WithBlock picks its sources. s is not modified.
 func (s Selection) WithPick(id RowID, i int) Selection {
-	follow := s.Text[Desc] == s.derivedDesc()
-	s.Pick, s.Text = maps.Clone(s.Pick), maps.Clone(s.Text)
+	s.Pick = maps.Clone(s.Pick)
 	s.Pick[id] = i
-	if follow {
-		s.Text[Desc] = s.derivedDesc()
-	}
 	return s
 }
 
@@ -415,7 +426,8 @@ func (s Selection) WithText(id RowID, text string) Selection {
 }
 
 // Changed reports whether row id differs from its suggestion. Desc differs from the text derived from the
-// current Identity pick, not from the one at the start.
+// current identity, not from the one at the start. Identity differs when a
+// block's source or a switch is not what it was suggested.
 func (s Selection) Changed(id RowID) bool {
 	switch id {
 	case Name:
@@ -423,8 +435,8 @@ func (s Selection) Changed(id RowID) bool {
 	case Desc:
 		return s.Text[id] != s.derivedDesc()
 	}
-	if id == Identity && s.partsChanged() {
-		return true
+	if id == Identity {
+		return !maps.Equal(s.Block, s.blockDefault) || !maps.Equal(s.Parts, s.partsDefault)
 	}
 	return s.Pick[id] != s.Rows[id].Suggested
 }
@@ -438,11 +450,15 @@ func (s Selection) Revert(id RowID) Selection {
 	case Desc:
 		return s.WithText(id, s.derivedDesc())
 	}
-	s = s.WithPick(id, s.Rows[id].Suggested)
 	if id == Identity {
-		s.Parts = maps.Clone(s.partsDefault)
+		follow := s.Text[Desc] == s.derivedDesc()
+		s.Block, s.Parts, s.Text = maps.Clone(s.blockDefault), maps.Clone(s.partsDefault), maps.Clone(s.Text)
+		if follow {
+			s.Text[Desc] = s.derivedDesc()
+		}
+		return s
 	}
-	return s
+	return s.WithPick(id, s.Rows[id].Suggested)
 }
 
 // RevertAll returns a copy of s with every row back at its suggestion. s is
@@ -468,31 +484,33 @@ func (s Selection) Notes() map[RowID]string {
 }
 
 // IdentityDetail returns the read-only lines the IDENTITY submenu shows under
-// choice i of the Identity row: what that profile pins, as written in its
-// file, then the ~/.ssh/config Host block that gives the pinned host its key,
-// then the profiles it includes other than built-ins. Nothing is opened; a
-// hostile value cannot reach the screen except through safe.Inline.
-func (s Selection) IdentityDetail(i int) []string {
-	name := s.Rows[Identity].Choices[i].Label
-	if name == NoIdentity {
-		return []string{"no identity profile; the sandbox has no git author"}
+// source i of block b: what that profile pins in the block, as written in its
+// file, for ssh the ~/.ssh/config Host block that gives the pinned host its
+// key, for git the signing key, and for gh the profiles it includes other
+// than built-ins. Nothing is opened; a hostile value cannot reach the screen
+// except through safe.Inline.
+func (s Selection) IdentityDetail(b Block, i int) []string {
+	src := s.sources[b][i]
+	switch src.kind {
+	case srcNone:
+		return []string{map[Block]string{
+			BlockSSH: "no ssh key in the sandbox",
+			BlockGit: "no git author in the sandbox",
+			BlockGH:  "no gh login in the sandbox",
+		}[b]}
+	case srcHost:
+		return []string{safe.Inline(identityLine(s.hostPins(map[Block]int{b: i}), b))}
 	}
-	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name && p.Identity.Pins() })
+	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == src.name })
 	if pi < 0 {
 		return nil
 	}
 	p := s.profiles[pi]
 	id := p.Identity
 	var out []string
-	if id.SSHHost != "" || id.SSHKey != "" {
-		var parts []string
-		if id.SSHHost != "" {
-			parts = append(parts, id.SSHHost)
-		}
-		if id.SSHKey != "" {
-			parts = append(parts, keyStem(id.SSHKey))
-		}
-		out = append(out, "ssh   "+safe.Inline(strings.Join(parts, "  ")))
+	switch b {
+	case BlockSSH:
+		out = append(out, "ssh   "+safe.Inline(identityLine(id, b)))
 		host := id.SSHHost
 		if host == "" {
 			host = "github.com"
@@ -504,32 +522,24 @@ func (s Selection) IdentityDetail(i int) []string {
 			}
 			out = append(out, cfg+"→ "+safe.Inline(stem))
 		}
-	}
-	if id.SigningKey != "" {
-		out = append(out, "sign  "+safe.Inline(keyStem(id.SigningKey)))
-	}
-	if id.GitName != "" || id.Email != "" {
-		who := id.GitName
-		if id.Email != "" {
-			who = strings.TrimSpace(who + " <" + id.Email + ">")
+	case BlockGit:
+		if id.GitName != "" || id.Email != "" {
+			out = append(out, "git   "+safe.Inline(identityLine(id, b)))
 		}
-		out = append(out, "git   "+safe.Inline(who))
-	}
-	if id.GHUser != "" {
-		gh := id.GHUser
-		if id.GHHost != "" {
-			gh = id.GHHost + "/" + gh
+		if id.SigningKey != "" {
+			out = append(out, "sign  "+safe.Inline(keyStem(id.SigningKey)))
 		}
-		out = append(out, "gh    "+safe.Inline(gh))
-	}
-	var tools []string
-	for _, inc := range p.Include {
-		if !strings.HasPrefix(inc, "@") {
-			tools = append(tools, inc)
+	case BlockGH:
+		out = append(out, "gh    "+safe.Inline(identityLine(id, b)))
+		var tools []string
+		for _, inc := range p.Include {
+			if !strings.HasPrefix(inc, "@") {
+				tools = append(tools, inc)
+			}
 		}
-	}
-	if len(tools) > 0 {
-		out = append(out, "also includes: "+safe.Inline(strings.Join(tools, " ")))
+		if len(tools) > 0 {
+			out = append(out, "also includes: "+safe.Inline(strings.Join(tools, " ")))
+		}
 	}
 	return out
 }
@@ -538,14 +548,33 @@ func keyStem(p string) string {
 	return strings.TrimSuffix(path.Base(p), ".pub")
 }
 
-// IdentityWarning returns what the host's own gh says against choice i of the
-// Identity row, "" when nothing: the profile pins a gh login that `gh auth
+// IdentityWarning returns what the host's own gh says against the effective
+// gh source, "" when nothing: the profile pins a gh login that `gh auth
 // status` does not list, or gh is not installed so the login was not checked.
 // It is a fact about the host, found without snug, and refuses nothing.
-func (s Selection) IdentityWarning(i int) string {
-	name := s.Rows[Identity].Choices[i].Label
-	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name && p.Identity.Pins() })
-	if name == NoIdentity || pi < 0 || s.profiles[pi].Identity.GHUser == "" {
+func (s Selection) IdentityWarning() string {
+	e, ok := s.resolve(s.Block).eff[BlockGH]
+	if !ok || e.kind != srcProfile {
+		return ""
+	}
+	return s.ghWarning(e.name)
+}
+
+// SourceWarning is IdentityWarning for source i of block b: only a profile in
+// the gh section can have one.
+func (s Selection) SourceWarning(b Block, i int) string {
+	if b != BlockGH {
+		return ""
+	}
+	if src := s.sources[b][i]; src.kind == srcProfile {
+		return s.ghWarning(src.name)
+	}
+	return ""
+}
+
+func (s Selection) ghWarning(name string) string {
+	pi := slices.IndexFunc(s.profiles, func(p ingest.Profile) bool { return p.Name == name })
+	if pi < 0 || s.profiles[pi].Identity.GHUser == "" {
 		return ""
 	}
 	id := s.profiles[pi].Identity

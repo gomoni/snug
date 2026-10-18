@@ -35,7 +35,28 @@ func label(s Selection, id RowID) string {
 	case Name, Desc:
 		return s.Text[id]
 	}
+	if id == Identity {
+		return s.Current(id).Label
+	}
 	return s.Rows[id].Choices[s.Pick[id]].Label
+}
+
+// noIdentity picks none for every block.
+func noIdentity(s Selection) Selection {
+	for _, b := range allBlocks {
+		s = s.WithBlock(b, 0)
+	}
+	return s
+}
+
+// idx is the index of the source called name in block b.
+func idx(t *testing.T, s Selection, b Block, name string) int {
+	t.Helper()
+	i := slices.IndexFunc(s.BlockChoices(b), func(c Choice) bool { return c.Label == name })
+	if i < 0 {
+		t.Fatalf("block %v offers no %q: %+v", b, name, s.BlockChoices(b))
+	}
+	return i
 }
 
 func TestSuggestClaudeImpliesNet(t *testing.T) {
@@ -60,7 +81,7 @@ func TestSuggestIdentityPrefersExistingProfile(t *testing.T) {
 	if got := label(s, Identity); got != "vyskocilm" {
 		t.Fatalf("identity %q", got)
 	}
-	if why := s.Rows[Identity].Choices[s.Pick[Identity]].Why; why != "remote github.com:gomoni/snug" {
+	if why := s.Current(Identity).Why; why != "remote github.com:gomoni/snug" {
 		t.Errorf("why %q", why)
 	}
 	if got := s.Text[Desc]; !strings.HasSuffix(got, ", vyskocilm") {
@@ -77,17 +98,18 @@ func TestSuggestIdentityConflictPicksNone(t *testing.T) {
 	if got := label(s, Identity); got != "none" {
 		t.Fatalf("identity %q", got)
 	}
-	if why := s.Rows[Identity].Choices[0].Why; why != "vyskocilm or plainsof — pick one" {
+	if why := s.Current(Identity).Why; why != "vyskocilm or plainsof — pick one" {
 		t.Errorf("why %q", why)
 	}
-	if slices.ContainsFunc(s.Rows[Identity].Choices, func(c Choice) bool { return c.Label == "vyskocilm" }) == false {
-		t.Errorf("both profiles must stay choosable: %+v", s.Rows[Identity].Choices)
+	for _, b := range allBlocks {
+		idx(t, s, b, "vyskocilm")
+		idx(t, s, b, "plainsof")
 	}
 }
 
 func TestSuggestNoRemoteSaysSo(t *testing.T) {
 	s := Suggest(ingest.Facts{}, home, "/home/alice/work/app")
-	if why := s.Rows[Identity].Choices[0].Why; why != "no git remote" {
+	if why := s.Current(Identity).Why; why != "no git remote" {
 		t.Errorf("why %q", why)
 	}
 }
@@ -205,9 +227,11 @@ func TestSuggestNeverInventsValues(t *testing.T) {
 	f.Repo.Remotes = append(f.Repo.Remotes, ingest.ParseRemoteURL("git@evil.example:evil/evil.git"))
 	s := Suggest(f, home, "/home/alice/work/app")
 	allowed := []string{"none", "vyskocilm"}
-	for _, c := range s.Rows[Identity].Choices {
-		if !slices.Contains(allowed, c.Label) {
-			t.Errorf("identity offered %q", c.Label)
+	for _, b := range allBlocks {
+		for _, c := range s.BlockChoices(b) {
+			if !slices.Contains(allowed, c.Label) {
+				t.Errorf("%v offered %q", b, c.Label)
+			}
 		}
 	}
 }
@@ -229,20 +253,16 @@ func TestIdentityDetailListsWhatTheProfilePins(t *testing.T) {
 		Repo:     repoFacts("git@github.com:gomoni/snug.git", "m@example.org"),
 	}
 	s := Suggest(f, home, "/home/alice/work/snug")
-	i := slices.IndexFunc(s.Rows[Identity].Choices, func(c Choice) bool { return c.Label == "vyskocilm" })
-	got := strings.Join(s.IdentityDetail(i), "\n")
-	want := strings.Join([]string{
-		"ssh   github.com  github_auth",
-		"      ~/.ssh/config  Host github.com  → github_auth",
-		"sign  github_sign",
-		"git   Michal V <m@example.org>",
-		"gh    github.com/vyskocilm",
-		"also includes: gh-cli",
-	}, "\n")
-	if got != want {
-		t.Errorf("detail:\n%s\nwant:\n%s", got, want)
+	for b, want := range map[Block][]string{
+		BlockSSH: {"ssh   github.com  github_auth", "      ~/.ssh/config  Host github.com  → github_auth"},
+		BlockGit: {"git   Michal V <m@example.org>", "sign  github_sign"},
+		BlockGH:  {"gh    github.com/vyskocilm", "also includes: gh-cli"},
+	} {
+		if got := s.IdentityDetail(b, idx(t, s, b, "vyskocilm")); !slices.Equal(got, want) {
+			t.Errorf("%v detail:\n%q\nwant:\n%q", b, got, want)
+		}
 	}
-	if d := s.IdentityDetail(0); len(d) != 1 || !strings.Contains(d[0], "no git author") {
+	if d := s.IdentityDetail(BlockGit, 0); len(d) != 1 || !strings.Contains(d[0], "no git author") {
 		t.Errorf("none: %q", d)
 	}
 }
@@ -252,9 +272,11 @@ func TestIdentityDetailHostTextIsCleaned(t *testing.T) {
 	p.Identity.SSHHost = "git\x1b[2Jhub.com"
 	p.Identity.Email = "m@\u202eexample.org"
 	s := Suggest(ingest.Facts{Profiles: []ingest.Profile{p}}, home, "/home/alice/work/snug")
-	for _, l := range s.IdentityDetail(1) {
-		if strings.ContainsAny(l, "\x1b\u202e") {
-			t.Errorf("forging rune in %q", l)
+	for _, b := range allBlocks {
+		for _, l := range s.IdentityDetail(b, 1) {
+			if strings.ContainsAny(l, "\x1b\u202e") {
+				t.Errorf("forging rune in %q", l)
+			}
 		}
 	}
 }
@@ -340,18 +362,21 @@ func TestDescFollowsIdentityUnlessEdited(t *testing.T) {
 	if s.Text[Desc] != "app, vyskocilm" {
 		t.Fatalf("desc %q", s.Text[Desc])
 	}
-	none := s.WithPick(Identity, 0)
+	none := noIdentity(s)
 	if none.Text[Desc] != "app" || none.Changed(Desc) {
 		t.Errorf("identity none: desc %q changed %v", none.Text[Desc], none.Changed(Desc))
 	}
 	if s.Text[Desc] != "app, vyskocilm" {
 		t.Errorf("WithPick modified its receiver")
 	}
-	back := none.WithPick(Identity, s.Pick[Identity])
+	back := none
+	for _, b := range allBlocks {
+		back = back.WithBlock(b, s.Block[b])
+	}
 	if back.Text[Desc] != "app, vyskocilm" {
 		t.Errorf("identity back: %q", back.Text[Desc])
 	}
-	mine := s.WithText(Desc, "my own words").WithPick(Identity, 0)
+	mine := noIdentity(s.WithText(Desc, "my own words"))
 	if mine.Text[Desc] != "my own words" || !mine.Changed(Desc) {
 		t.Errorf("an edited desc was overwritten: %q", mine.Text[Desc])
 	}
@@ -380,15 +405,22 @@ func TestIdentityWarningNeedsTheSameHostAndUser(t *testing.T) {
 		GH:          []hostfacts.GHAccount{{Host: "github.com", User: "vyskocilm"}},
 	}
 	s := Suggest(f, home, "/home/alice/work/snug")
-	if got := s.IdentityWarning(0); got != "" {
+	if got := s.IdentityWarning(); got != "" {
+		t.Errorf("nothing picked, nothing to warn about: %q", got)
+	}
+	s = s.WithBlock(BlockGH, 1)
+	if got := noIdentity(s).IdentityWarning(); got != "" {
 		t.Errorf("none has no gh login: %q", got)
 	}
 	want := "vyskocilm: gh not logged in as vyskocilm on ghe.example.com — gh auth login --hostname ghe.example.com"
-	if got := s.IdentityWarning(1); got != want {
+	if got := s.IdentityWarning(); got != want {
 		t.Errorf("%q", got)
 	}
+	if got := s.SourceWarning(BlockGH, 1); got != want {
+		t.Errorf("the gh section's own line: %q", got)
+	}
 	s.gh = append(s.gh, hostfacts.GHAccount{Host: "GHE.example.com", User: "vyskocilm"})
-	if got := s.IdentityWarning(1); got != "" {
+	if got := s.IdentityWarning(); got != "" {
 		t.Errorf("logged in, still warned: %q", got)
 	}
 }

@@ -5,7 +5,7 @@ include = [
   "@net",
 ]
 
-# identity: the sandbox acts as this one account; a second account is a second profile.
+# identity: each block is its own pin; two profiles setting one block differently are refused.
 [profile.work.identity.ssh]
 key = "{home}/.ssh/id_work.pub" # the PUBLIC half
 agent = "proxy"

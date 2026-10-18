@@ -158,7 +158,7 @@ func (d *Draft) Render() string {
 	}
 	sshHost, ghHost := d.hosts()
 	if d.SSH != nil || d.GH != nil || d.Git != nil {
-		b.WriteString("\n# identity: the sandbox acts as this one account; a second account is a second profile.\n")
+		b.WriteString("\n# identity: each block is its own pin; two profiles setting one block differently are refused.\n")
 	}
 	if d.SSH != nil {
 		fmt.Fprintf(&b, "[profile.%s.identity.ssh]\n", n)

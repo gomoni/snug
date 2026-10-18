@@ -62,7 +62,7 @@ func TestBuildGitOnlyWithoutIdentity(t *testing.T) {
 	if !slices.Contains(d.Includes(), "vyskocilm") {
 		t.Errorf("identity set: %v", d.Includes())
 	}
-	s.Pick[Identity] = 0
+	s = noIdentity(s)
 	d, _ = Build(s, hostFor(target), f.Profiles)
 	if slices.Contains(d.Includes(), "vyskocilm") {
 		t.Errorf("identity none: %v", d.Includes())

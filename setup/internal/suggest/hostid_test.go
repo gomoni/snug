@@ -46,21 +46,38 @@ func statted(t *testing.T, target string) draft.Host {
 	return h
 }
 
+// labels is the sources of the ssh block, which has one of each kind the
+// tests ask about whenever the host or a profile of yours pins ssh.
 func labels(s Selection) []string {
 	var out []string
-	for _, c := range s.Rows[Identity].Choices {
+	for _, c := range s.BlockChoices(BlockSSH) {
 		out = append(out, c.Label)
 	}
 	return out
 }
 
-func TestNewFromHostIsSuggestedWhenNoProfileMatches(t *testing.T) {
-	s := Suggest(hostFacts(), home, hostTarget)
-	if got := labels(s); !slices.Equal(got, []string{"none", "new from host"}) {
-		t.Fatalf("choices %q", got)
+func allLabels(s Selection) []string {
+	var out []string
+	for _, b := range allBlocks {
+		for _, c := range s.BlockChoices(b) {
+			out = append(out, c.Label)
+		}
 	}
-	if got := label(s, Identity); got != NewFromHost {
-		t.Fatalf("picked %q, want the new entry suggested", got)
+	return out
+}
+
+func TestFromHostIsSuggestedWhenNoProfileMatches(t *testing.T) {
+	s := Suggest(hostFacts(), home, hostTarget)
+	for _, b := range allBlocks {
+		if got := s.BlockChoices(b); len(got) != 2 || got[0].Label != "none" || got[1].Label != FromHost {
+			t.Fatalf("%v choices %+v", b, got)
+		}
+		if s.Block[b] != 1 {
+			t.Errorf("%v picked %d, want from host suggested", b, s.Block[b])
+		}
+	}
+	if got := label(s, Identity); got != "vyskocilm" {
+		t.Fatalf("row %q, want the new profile's name", got)
 	}
 	if got := s.Text[Desc]; got != "app, vyskocilm" {
 		t.Errorf("desc %q: DESC names the new profile, not the choice's label", got)
@@ -70,11 +87,11 @@ func TestNewFromHostIsSuggestedWhenNoProfileMatches(t *testing.T) {
 	}
 }
 
-func TestNewFromHostIsOfferedAfterProfilesButNotSuggestedOverThem(t *testing.T) {
+func TestFromHostIsOfferedAfterProfilesButNotSuggestedOverThem(t *testing.T) {
 	f := hostFacts()
 	f.Profiles = []ingest.Profile{profile("work", "github.com", "m@example.org")}
 	s := Suggest(f, home, hostTarget)
-	if got := labels(s); !slices.Equal(got, []string{"none", "work", "new from host"}) {
+	if got := labels(s); !slices.Equal(got, []string{"none", "work", FromHost}) {
 		t.Fatalf("choices %q", got)
 	}
 	if got := label(s, Identity); got != "work" {
@@ -82,75 +99,87 @@ func TestNewFromHostIsOfferedAfterProfilesButNotSuggestedOverThem(t *testing.T) 
 	}
 }
 
-func TestNewFromHostIsNotSuggestedOnATie(t *testing.T) {
+func TestFromHostIsNotSuggestedOnATie(t *testing.T) {
 	f := hostFacts()
 	f.Profiles = []ingest.Profile{profile("a", "github.com", "m@example.org"), profile("b", "github.com", "m@example.org")}
 	s := Suggest(f, home, hostTarget)
 	if got := label(s, Identity); got != "none" {
 		t.Errorf("picked %q; a tie between profiles must leave none, not the new entry", got)
 	}
-	if !slices.Contains(labels(s), NewFromHost) {
+	if !slices.Contains(labels(s), FromHost) {
 		t.Errorf("the entry is still offered: %q", labels(s))
 	}
 }
 
-func TestNewFromHostNeedsAGitHubRemote(t *testing.T) {
+func TestFromHostNeedsAGitHubRemote(t *testing.T) {
 	f := hostFacts()
 	f.Repo = repoFacts("git@gitlab.com:vyskocilm/app.git", "m@example.org")
-	if got := labels(Suggest(f, home, hostTarget)); slices.Contains(got, NewFromHost) {
+	if got := allLabels(Suggest(f, home, hostTarget)); slices.Contains(got, FromHost) {
 		t.Errorf("offered for a gitlab.com remote: %q", got)
 	}
 	f = hostFacts()
 	f.Repo = nil
-	if got := labels(Suggest(f, home, hostTarget)); slices.Contains(got, NewFromHost) {
+	if got := allLabels(Suggest(f, home, hostTarget)); slices.Contains(got, FromHost) {
 		t.Errorf("offered with no repository: %q", got)
 	}
 }
 
-func TestNewFromHostPartsAreTheFoundFacts(t *testing.T) {
+func TestFromHostBlocksAreTheFoundFacts(t *testing.T) {
 	s := Suggest(hostFacts(), home, hostTarget)
-	var lines []string
+	for b, want := range map[Block]string{
+		BlockSSH: "github.com  github_auth",
+		BlockGit: "Michal V <m@example.org>",
+		BlockGH:  "github.com/vyskocilm",
+	} {
+		if got := s.IdentityDetail(b, idx(t, s, b, FromHost)); !slices.Equal(got, []string{want}) {
+			t.Errorf("%v: %q, want %q", b, got, want)
+		}
+	}
+	var switches []string
 	for _, it := range s.IdentityItems() {
 		if it.IsPart {
 			if !it.On {
-				t.Errorf("part %q is off by default", it.Text)
+				t.Errorf("switch %q is off by default", it.Text)
 			}
-			lines = append(lines, strings.SplitN(it.Text, "  ", 2)[0])
+			switches = append(switches, strings.SplitN(it.Text, "  ", 2)[0])
 		}
 	}
-	want := []string{"ssh github.com github_auth", "sign github_sign", "git Michal V <m@example.org>", "gh github.com/vyskocilm"}
-	if !slices.Equal(lines, want) {
-		t.Errorf("parts %q, want %q", lines, want)
+	if !slices.Equal(switches, []string{"sign github_sign"}) {
+		t.Errorf("switches %q", switches)
 	}
 }
 
-func TestNewFromHostOmitsWhatHostDoesNotSay(t *testing.T) {
+func TestFromHostOmitsWhatHostDoesNotSay(t *testing.T) {
 	f := hostFacts()
 	f.GH, f.Authors, f.GitSigningKey = nil, nil, ""
 	f.Repo = repoFacts("git@github.com:vyskocilm/app.git", "stranger@example.net")
 	s := Suggest(f, home, hostTarget)
-	var got []string
-	for _, it := range s.IdentityItems() {
-		if it.IsPart {
-			got = append(got, strings.SplitN(it.Text, "  ", 2)[0])
+	if got := s.BlockChoices(BlockSSH); len(got) != 2 || got[1].Label != FromHost {
+		t.Errorf("ssh %+v", got)
+	}
+	for _, b := range []Block{BlockGit, BlockGH} {
+		if got := s.BlockChoices(b); len(got) != 1 {
+			t.Errorf("%v offers %+v: the commits' own author is not a host fact", b, got)
 		}
 	}
-	if !slices.Equal(got, []string{"ssh github.com github_auth"}) {
-		t.Errorf("parts %q: the commits' own author is not a host fact", got)
+	for _, it := range s.IdentityItems() {
+		if it.IsPart {
+			t.Errorf("switch %q without a part to switch", it.Text)
+		}
 	}
 }
 
-func TestNewFromHostNothingFoundOffersNothing(t *testing.T) {
+func TestFromHostNothingFoundOffersNothing(t *testing.T) {
 	f := hostFacts()
 	f.GH, f.Authors, f.GitSigningKey, f.Keys = nil, nil, "", nil
 	f.SSH = ingest.SSHFacts{}
 	f.Repo = repoFacts("git@github.com:vyskocilm/app.git", "stranger@example.net")
-	if got := labels(Suggest(f, home, hostTarget)); slices.Contains(got, NewFromHost) {
+	if got := allLabels(Suggest(f, home, hostTarget)); slices.Contains(got, FromHost) {
 		t.Errorf("offered with no part: %q", got)
 	}
 }
 
-func TestNewFromHostName(t *testing.T) {
+func TestFromHostName(t *testing.T) {
 	cases := []struct {
 		name  string
 		edit  func(*ingest.Facts)
@@ -183,28 +212,24 @@ func TestNewFromHostName(t *testing.T) {
 	}
 }
 
-func TestNewFromHostSpacePartsToggleAndRevert(t *testing.T) {
+func TestFromHostSwitchTogglesAndReverts(t *testing.T) {
 	s := Suggest(hostFacts(), home, hostTarget)
-	off := s.WithPart(PartGit, false)
-	if !s.PartOn(PartGit) || off.PartOn(PartGit) {
-		t.Fatalf("WithPart must copy: original %v, copy %v", s.PartOn(PartGit), off.PartOn(PartGit))
+	off := s.WithPart(PartSigning, false)
+	if !s.PartOn(PartSigning) || off.PartOn(PartSigning) {
+		t.Fatalf("WithPart must copy: original %v, copy %v", s.PartOn(PartSigning), off.PartOn(PartSigning))
 	}
 	if !off.Changed(Identity) {
 		t.Errorf("a switched-off part must mark the row changed")
 	}
-	if off.Revert(Identity).Changed(Identity) || !off.Revert(Identity).PartOn(PartGit) {
+	if off.Revert(Identity).Changed(Identity) || !off.Revert(Identity).PartOn(PartSigning) {
 		t.Errorf("revert must switch the part back on")
 	}
-	other := off.WithPick(Identity, 0)
-	if other.Changed(Identity) != true {
-		t.Errorf("picking none moves off the suggestion")
-	}
-	if got := s.WithPick(Identity, 0).WithPart(PartGit, false); got.Changed(Identity) != true {
-		t.Errorf("changed")
+	if got := s.WithBlock(BlockGit, 0); got.Changed(Identity) != true || s.Block[BlockGit] != 1 {
+		t.Errorf("picking none moves off the suggestion, and WithBlock must copy")
 	}
 }
 
-func TestBuildNewFromHostGolden(t *testing.T) {
+func TestBuildFromHostGolden(t *testing.T) {
 	s := Suggest(hostFacts(), home, hostTarget)
 	d, refused := Build(s, hostFor(hostTarget), nil)
 	id, msg := BuildIdentity(s, hostFor(hostTarget))
@@ -234,8 +259,8 @@ func TestBuildNewFromHostGolden(t *testing.T) {
 	}
 }
 
-func TestBuildNewFromHostOnlyTheOnParts(t *testing.T) {
-	s := Suggest(hostFacts(), home, hostTarget).WithPart(PartGH, false).WithPart(PartSigning, false)
+func TestBuildFromHostWritesOnlyTheBlocksPickedFromIt(t *testing.T) {
+	s := Suggest(hostFacts(), home, hostTarget).WithBlock(BlockGH, 0).WithPart(PartSigning, false)
 	id, msg := BuildIdentity(s, hostFor(hostTarget))
 	if msg != "" {
 		t.Fatalf("msg %q", msg)
@@ -243,7 +268,7 @@ func TestBuildNewFromHostOnlyTheOnParts(t *testing.T) {
 	out := id.Render()
 	for _, bad := range []string{"identity.gh", "signing_key"} {
 		if strings.Contains(out, bad) {
-			t.Errorf("%s written though its part is off:\n%s", bad, out)
+			t.Errorf("%s written though not picked:\n%s", bad, out)
 		}
 	}
 	for _, good := range []string{"identity.ssh", "identity.git", `{home}/.ssh/github_auth.pub`} {
@@ -251,43 +276,44 @@ func TestBuildNewFromHostOnlyTheOnParts(t *testing.T) {
 			t.Errorf("%s missing:\n%s", good, out)
 		}
 	}
+	s = s.WithBlock(BlockGit, 0)
+	id, _ = BuildIdentity(s, hostFor(hostTarget))
+	if out := id.Render(); strings.Contains(out, "identity.git") || !strings.Contains(out, "identity.ssh") {
+		t.Errorf("only ssh was picked from the host:\n%s", out)
+	}
 }
 
-func TestBuildNewFromHostRefusesWhatItCannotWrite(t *testing.T) {
-	s := Suggest(hostFacts(), home, hostTarget)
-	for _, c := range []struct {
-		name string
-		s    Selection
-		want string
-	}{
-		{"sign without ssh", s.WithPart(PartSSH, false), "sign needs the ssh and git parts"},
-		{"sign without git", s.WithPart(PartGit, false), "sign needs the ssh and git parts"},
-		{"nothing on", s.WithPart(PartSSH, false).WithPart(PartSigning, false).WithPart(PartGit, false).WithPart(PartGH, false), "would pin nothing"},
-	} {
-		d, refused := Build(c.s, hostFor(hostTarget), nil)
-		if !strings.Contains(refused[Identity], c.want) {
-			t.Errorf("%s: Build refused %v", c.name, refused)
-		}
-		if _, msg := BuildIdentity(c.s, hostFor(hostTarget)); !strings.Contains(msg, c.want) {
-			t.Errorf("%s: BuildIdentity msg %q", c.name, msg)
-		}
-		if d == nil {
-			t.Errorf("%s: no draft", c.name)
-		}
+func TestBuildFromHostSignNeedsSSHFromTheHost(t *testing.T) {
+	s := Suggest(hostFacts(), home, hostTarget).WithBlock(BlockSSH, 0)
+	d, refused := Build(s, hostFor(hostTarget), nil)
+	if !strings.Contains(refused[Identity], "sign needs the ssh and git parts") {
+		t.Errorf("Build refused %v", refused)
+	}
+	if _, msg := BuildIdentity(s, hostFor(hostTarget)); !strings.Contains(msg, "sign needs the ssh and git parts") {
+		t.Errorf("BuildIdentity msg %q", msg)
+	}
+	if d == nil {
+		t.Errorf("no draft")
+	}
+	if got := s.BlockProblem(BlockGit, 1); !strings.Contains(got, "sign needs") {
+		t.Errorf("the git section's from host line must say so: %q", got)
+	}
+	if _, refused := Build(s.WithPart(PartSigning, false), hostFor(hostTarget), nil); refused[Identity] != "" {
+		t.Errorf("sign off, git alone from the host is writable: %v", refused)
 	}
 }
 
 func TestBuildIdentityIsNilForOtherChoices(t *testing.T) {
-	s := Suggest(hostFacts(), home, hostTarget).WithPick(Identity, 0)
+	s := noIdentity(Suggest(hostFacts(), home, hostTarget))
 	if d, msg := BuildIdentity(s, hostFor(hostTarget)); d != nil || msg != "" {
 		t.Errorf("none picked: %v %q", d, msg)
 	}
 }
 
-func TestNewFromHostWhyCarriesReasonAndAbuse(t *testing.T) {
+func TestFromHostWhyCarriesReasonAndAbuse(t *testing.T) {
 	s := Suggest(hostFacts(), home, hostTarget)
 	for _, it := range s.IdentityItems() {
-		if it.Choice != 1 || it.IsPart && it.Part == PartGHBinary {
+		if !it.IsPart && it.Text != FromHost || it.IsPart && it.Part == PartGHBinary {
 			continue
 		}
 		joined := strings.Join(it.Why, "\n")
@@ -302,7 +328,7 @@ func TestNewFromHostWhyCarriesReasonAndAbuse(t *testing.T) {
 
 func binaryLine(s Selection) (IdentItem, bool) {
 	for _, it := range s.IdentityItems() {
-		if it.IsPart && it.Part == PartGHBinary && it.Choice == s.Pick[Identity] {
+		if it.IsPart && it.Part == PartGHBinary {
 			return it, true
 		}
 	}
@@ -372,9 +398,9 @@ func TestGHBinaryStagesWhereTheLinkPoints(t *testing.T) {
 
 func TestGHBinaryNeedsAPinnedGH(t *testing.T) {
 	f := withGH(hostFacts(), home+"/bin/gh", home+"/bin/gh")
-	s := Suggest(f, home, hostTarget).WithPart(PartGH, false)
+	s := Suggest(f, home, hostTarget).WithBlock(BlockGH, 0)
 	if it, ok := binaryLine(s); ok {
-		t.Errorf("line shown with the gh part off: %q", it.Text)
+		t.Errorf("line shown with no gh source: %q", it.Text)
 	}
 	d, _ := Build(s, statted(t, hostTarget), nil)
 	if strings.Contains(d.Render(), "/snug/bin") {
@@ -412,8 +438,8 @@ func TestGHBinaryAlreadyIncludedByTheIdentity(t *testing.T) {
 		t.Errorf("project profile restages or re-includes:\n%s", d.Render())
 	}
 	found := false
-	for i := range s.Rows[Identity].Choices {
-		for _, l := range s.IdentityDetail(i) {
+	for i := range s.BlockChoices(BlockGH) {
+		for _, l := range s.IdentityDetail(BlockGH, i) {
 			found = found || l == "also includes: gh-cli"
 		}
 	}

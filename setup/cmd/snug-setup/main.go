@@ -211,10 +211,10 @@ func (s *setup) printOnly() (int, error) {
 	for _, n := range s.notes() {
 		fmt.Fprintf(os.Stderr, "! %s\n", safe.Inline(n))
 	}
-	if r := s.sel.Rows[suggest.Identity]; s.sel.Pick[suggest.Identity] == 0 && strings.HasSuffix(r.Choices[0].Why, "— pick one") {
-		fmt.Fprintf(os.Stderr, "identity: %s\n", r.Choices[0].Why)
+	if c := s.sel.Current(suggest.Identity); c.Label == suggest.NoIdentity && strings.HasSuffix(c.Why, "— pick one") {
+		fmt.Fprintf(os.Stderr, "identity: %s\n", c.Why)
 	}
-	if w := s.sel.IdentityWarning(s.sel.Pick[suggest.Identity]); w != "" {
+	if w := s.sel.IdentityWarning(); w != "" {
 		fmt.Fprintf(os.Stderr, "! %s\n", w)
 	}
 	for id, msg := range refused {
@@ -356,10 +356,10 @@ func mustGetwd() string {
 func (s *setup) reviewWrite(sel suggest.Selection, warns []probe.Warning, wrote func(write.Plan, *draft.Draft)) (tui.Review, error) {
 	d, refused := s.build(sel)
 	id, _ := suggest.BuildIdentity(sel, s.host())
-	name := sel.IdentityProfile()
+	included := sel.Included()
 	var idWarn *probe.Warning
 	for i := range warns {
-		if name != "" && slices.Contains(warns[i].Profiles, name) {
+		if slices.ContainsFunc(included, func(n string) bool { return slices.Contains(warns[i].Profiles, n) }) {
 			idWarn = &warns[i]
 		}
 	}

@@ -15,10 +15,13 @@ import (
 // a guarantee the file does not keep, so the caller puts the message on that
 // row's reason line. Build never retries or substitutes a refused op.
 //
-// With NewFromHost picked the project includes the new profile by name and
-// BuildIdentity makes its draft; a pinned gh that is not under /usr gets its
-// binary staged, or the person's profile that stages it included. Both land
-// in the project profile, never in the identity's.
+// The project includes every profile picked in any block, and the new profile
+// by name when a block is picked FromHost; BuildIdentity makes its draft. A
+// refusal snug would give for the blocks together (two profiles setting one
+// block differently, signing_key without ssh from the same profile) lands on
+// the Identity row. A pinned gh that is not under /usr gets its binary
+// staged, or the person's profile that stages it included. Both land in the
+// project profile, never in the identity's.
 //
 // A hostile target cannot reach this: every value Build passes to the draft is
 // a built-in name, a profile name taken from the person's own profiles or
@@ -48,20 +51,17 @@ func Build(s Selection, host draft.Host, profiles []ingest.Profile) (*draft.Draf
 	if strings.Contains(choice(Base), "@parent-ro") {
 		use(Base, "@parent-ro")
 	}
-	identity := choice(Identity)
 	for _, row := range []RowID{Agent, Network, Containers} {
 		if l := choice(row); strings.HasPrefix(l, "@") {
 			use(row, l)
 		}
 	}
-	if identity != NoIdentity {
-		name := s.IdentityProfile()
+	st := s.resolve(s.Block)
+	for _, name := range s.Included() {
 		propose(Identity, draft.Action{Op: draft.OpIncludeProfile, Name: name})
-		if s.picksNew() {
+		if st.member(name).kind == srcHost {
 			d.NoteProfile(name, s.newDescription())
-			if _, msg := BuildIdentity(s, host); msg != "" {
-				refused[Identity] = msg
-			}
+			continue
 		}
 		for _, p := range profiles {
 			if p.Name == name {
@@ -69,22 +69,28 @@ func Build(s Selection, host draft.Host, profiles []ingest.Profile) (*draft.Draf
 				break
 			}
 		}
-		for _, t := range identityTools {
-			if !s.Parts[t.part] {
-				continue
-			}
-			switch st := s.toolStaging(s.Pick[Identity], t); st.kind {
-			case stageInclude:
-				propose(Identity, draft.Action{Op: draft.OpIncludeProfile, Name: st.profile})
-				for _, p := range profiles {
-					if p.Name == st.profile {
-						d.NoteProfile(st.profile, p.Description)
-						break
-					}
+	}
+	if msg := st.message(); msg != "" {
+		if prev := refused[Identity]; prev != "" {
+			msg = prev + "; " + msg
+		}
+		refused[Identity] = msg
+	}
+	for _, t := range identityTools {
+		if !s.Parts[t.part] {
+			continue
+		}
+		switch sg := s.toolStaging(t); sg.kind {
+		case stageInclude:
+			propose(Identity, draft.Action{Op: draft.OpIncludeProfile, Name: sg.profile})
+			for _, p := range profiles {
+				if p.Name == sg.profile {
+					d.NoteProfile(sg.profile, p.Description)
+					break
 				}
-			case stageBinary:
-				propose(Identity, draft.Action{Op: draft.OpStageBinary, Host: st.spelled, Name: t.binary})
 			}
+		case stageBinary:
+			propose(Identity, draft.Action{Op: draft.OpStageBinary, Host: sg.spelled, Name: t.binary})
 		}
 	}
 	if choice(Env) != Off {
