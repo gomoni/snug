@@ -112,14 +112,6 @@ func tomlKeys(t reflect.Type, prefix string) []string {
 
 var keyRow = regexp.MustCompile("(?m)^\\| `([a-z_.]+)` \\|")
 
-// unsettledKeys are key prefixes the decoder accepts but the book leaves out
-// on purpose, because their design is not settled yet.
-var unsettledKeys = []string{"identity.kube."}
-
-func unsettled(k string) bool {
-	return slices.ContainsFunc(unsettledKeys, func(p string) bool { return strings.HasPrefix(k, p) })
-}
-
 // TestBookProfileKeysTableListsEveryKey compares the key table in
 // docs/src/reference/profile-keys.md with the keys the strict decoder
 // accepts, in both directions.
@@ -135,7 +127,7 @@ func TestBookProfileKeysTableListsEveryKey(t *testing.T) {
 	}
 	accepted := tomlKeys(reflect.TypeOf(rawProfile{}), "")
 	for _, k := range accepted {
-		if !slices.Contains(documented, k) && !unsettled(k) {
+		if !slices.Contains(documented, k) {
 			t.Errorf("%s does not list %q, which a profile may write", page, k)
 		}
 	}

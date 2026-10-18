@@ -14,7 +14,6 @@ in `environ.types`. See [Environment](../environment.md#declaring-a-type).
 | name | kind | separator | empty element | path | verbs |
 |---|---|---|---|---|---|
 | `ANTHROPIC_BASE_URL` | scalar |  |  |  | `set` `inherit` |
-| `AZURE_CONFIG_DIR` | scalar |  |  | yes | `set` `inherit` |
 | `BASH_ENV` | scalar |  |  |  | `set` `inherit` |
 | `BROWSER` | scalar |  |  |  | `set` `inherit` |
 | `CARGO_HOME` | scalar |  |  | yes | `set` `inherit` |
@@ -26,7 +25,6 @@ in `environ.types`. See [Environment](../environment.md#declaring-a-type).
 | `GOFLAGS` | list | space |  |  | none |
 | `GOPATH` | list | `:` |  | yes | `merge` `prepend` `sanitise` |
 | `INFOPATH` | list | `:` | system location | yes | `merge` `prepend` `sanitise` |
-| `KUBECONFIG` | scalar |  |  | yes | `set` `inherit` |
 | `LD_LIBRARY_PATH` | list | `:` or `;` | current directory | yes | none |
 | `LD_PRELOAD` | list | `:` or space |  | yes | none |
 | `LESSOPEN` | scalar |  |  |  | `set` `inherit` |
@@ -77,6 +75,5 @@ reads them in place of what snug wrote.
 | `identity.ssh.agent` is `"proxy"` | `SSH_AUTH_SOCK` |  |
 | `identity.gh.user` is set | `GH_CONFIG_DIR` `GH_HOST` | `GH_ENTERPRISE_TOKEN` `GH_TOKEN` `GITHUB_ENTERPRISE_TOKEN` `GITHUB_TOKEN` |
 | an `identity.ssh` or `identity.git` block | `GIT_CONFIG_GLOBAL` |  |
-| an `identity.kube` block | `KUBECONFIG` |  |
 | `listen_names` is set | `LISTEN_FDNAMES` `LISTEN_FDS` `LISTEN_PID` |  |
 | `login` includes `"claude"` | `BROWSER` |  |
