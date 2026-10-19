@@ -107,7 +107,8 @@ func start(t *testing.T, up *upstream, pfx string, mod func(*Config)) *pfix {
 			f.tokens.Add(1)
 			return policy.Secret(testToken), nil
 		},
-		Audit: func(s string) { f.amu.Lock(); f.audit = append(f.audit, s); f.amu.Unlock() },
+		Audit:    func(s string) { f.amu.Lock(); f.audit = append(f.audit, s); f.amu.Unlock() },
+		HostNets: noHostNets,
 	}
 	if mod != nil {
 		mod(&cfg)
@@ -426,7 +427,7 @@ func TestKubeProxyDialerRefusesLoopbackHostAndMetadata(t *testing.T) {
 		var dialled atomic.Bool
 		f := start(t, up, "", func(c *Config) {
 			c.Server, _ = url.Parse("https://kube.example:6443")
-			c.HostAddrs = []netip.Addr{netip.MustParseAddr("192.0.2.10")}
+			c.HostNets = hostNets("192.0.2.10/32")
 			c.Lookup = func(context.Context, string) ([]netip.Addr, error) {
 				return []netip.Addr{addr}, nil
 			}
@@ -627,24 +628,24 @@ func TestKubeProxyPreflightRefusesAServerOnThisHost(t *testing.T) {
 		}
 		server, _ := url.Parse("https://kubernetes.docker.internal:6443")
 		err := Preflight(context.Background(), Config{Server: server,
-			HostAddrs: []netip.Addr{netip.MustParseAddr("192.0.2.10")},
-			Lookup:    func(context.Context, string) ([]netip.Addr, error) { return addrs, nil }})
+			HostNets: hostNets("192.0.2.10/32"),
+			Lookup:   func(context.Context, string) ([]netip.Addr, error) { return addrs, nil }})
 		if err == nil || !strings.Contains(err.Error(), "cluster on this host") {
 			t.Errorf("%v: Preflight = %v, want the on-this-host refusal", answer, err)
 		}
 	}
 	for _, lit := range []string{"https://127.0.0.1:6443", "https://[::1]:6443"} {
 		server, _ := url.Parse(lit)
-		if err := Preflight(context.Background(), Config{Server: server}); err == nil {
+		if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets}); err == nil {
 			t.Errorf("%s: Preflight accepted a loopback literal", lit)
 		}
 	}
 	server, _ := url.Parse("https://aks-dev.example.azmk8s.io:443")
-	if err := Preflight(context.Background(), Config{Server: server,
+	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
 		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{public}, nil }}); err != nil {
 		t.Errorf("a public server: %v", err)
 	}
-	if err := Preflight(context.Background(), Config{Server: server,
+	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
 		Lookup: func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no such host") }}); err == nil {
 		t.Error("a name that does not resolve was accepted")
 	}
@@ -665,5 +666,120 @@ func TestKubeProxyDialerRefusesAMixedAnswer(t *testing.T) {
 	}
 	if n := up.count(); n != 0 {
 		t.Errorf("%d requests reached a server", n)
+	}
+}
+
+func noHostNets() ([]netip.Prefix, error) { return nil, nil }
+
+func hostNets(ps ...string) func() ([]netip.Prefix, error) {
+	return func() ([]netip.Prefix, error) {
+		var out []netip.Prefix
+		for _, p := range ps {
+			out = append(out, netip.MustParsePrefix(p))
+		}
+		return out, nil
+	}
+}
+
+func preflightAnswer(t *testing.T, nets func() ([]netip.Prefix, error), a string) error {
+	t.Helper()
+	server, _ := url.Parse("https://kube.example:6443")
+	addr := netip.MustParseAddr(a)
+	return Preflight(context.Background(), Config{Server: server, HostNets: nets,
+		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{addr}, nil }})
+}
+
+// Red-team round on #671: an address on a subnet attached to a host
+// interface passed, because it is not one the host owns. A kind node on a
+// docker bridge, a minikube VM on libvirt's, and a machine on the laptop's
+// own LAN are each one hop from the host; the maintainer's decision is to
+// refuse every on-link subnet, the LAN included.
+func TestKubeProxyRefusesASubnetAttachedToThisHost(t *testing.T) {
+	nets := hostNets("192.168.1.120/24", "172.18.0.1/16", "192.168.39.1/24", "2001:db8:1::5/64")
+	for _, a := range []string{"192.168.1.1", "192.168.1.77", "172.18.0.2", "192.168.39.10", "2001:db8:1::99",
+		"::ffff:172.18.0.2"} {
+		if err := preflightAnswer(t, nets, a); err == nil || !strings.Contains(err.Error(), "a subnet attached to this host") {
+			t.Errorf("%s: Preflight = %v, want the attached-subnet refusal", a, err)
+		}
+	}
+	for _, a := range []string{"203.0.113.7", "192.168.2.1", "2001:db8:2::1"} {
+		if err := preflightAnswer(t, nets, a); err != nil {
+			t.Errorf("%s, off every attached subnet: %v", a, err)
+		}
+	}
+}
+
+// Red-team round on #671: the class checks read only the address as
+// written, so an IPv6 spelling that a translator or relay delivers to
+// loopback or a metadata service passed, and so did 0.0.0.0/8.
+func TestKubeProxyRefusesIPv6SpellingsOfLocalAddresses(t *testing.T) {
+	for _, a := range []string{
+		"64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "64:ff9b::6464:64c8", "64:ff9b:1::7f00:1",
+		"2002:7f00:1::1", "2002:a9fe:a9fe::1", "::7f00:1", "::a9fe:a9fe", "::ffff:0:7f00:1",
+		"64:ff9b::c000:20a", "0.1.2.3", "0.255.255.255",
+	} {
+		if err := preflightAnswer(t, hostNets("192.0.2.10/32"), a); err == nil {
+			t.Errorf("%s: Preflight accepted it", a)
+		}
+	}
+	// A DNS64 answer for a public cluster is how an IPv6-only network
+	// reaches it, and stays usable.
+	if err := preflightAnswer(t, noHostNets, "64:ff9b::cb00:7107"); err != nil {
+		t.Errorf("NAT64 spelling of 203.0.113.7: %v", err)
+	}
+}
+
+// Red-team round on #671: the proxy read the host's addresses once, when it
+// started, so a bridge or an address the host gained during the run (kind
+// create, a VPN coming up) was dialled. HostNets is read on every vet.
+func TestKubeProxyRereadsHostNetsOnEveryDial(t *testing.T) {
+	up := newUpstream(t, nil)
+	var nets atomic.Value
+	nets.Store([]netip.Prefix(nil))
+	f := start(t, up, "", func(c *Config) {
+		c.HostNets = func() ([]netip.Prefix, error) { return nets.Load().([]netip.Prefix), nil }
+	})
+	// The upstream is on loopback; vet it as the cluster's public address.
+	stand := netip.MustParseAddr("198.51.100.5")
+	f.p.vet = func(a netip.Addr) string {
+		if a.IsLoopback() {
+			return f.p.refusedAddr(stand)
+		}
+		return f.p.refusedAddr(a)
+	}
+	req := "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+	if status, _ := raw(t, f.addr, req); !strings.HasPrefix(status, "200") {
+		t.Fatalf("before the bridge: %s, want 200", status)
+	}
+	nets.Store([]netip.Prefix{netip.MustParsePrefix("198.51.100.1/24")})
+	f.p.tr.CloseIdleConnections() // a new connection, not the pooled one
+	if status, _ := raw(t, f.addr, req); !strings.HasPrefix(status, "502") {
+		t.Errorf("after the host gained 198.51.100.1/24: %s, want 502", status)
+	}
+	if n := up.count(); n != 1 {
+		t.Errorf("%d requests reached the server, want 1", n)
+	}
+}
+
+// A HostNets that fails refuses the dial: an empty list would read as "this
+// host owns nothing", which is the silent downgrade.
+func TestKubeProxyRefusesWhenHostNetsFail(t *testing.T) {
+	failing := func() ([]netip.Prefix, error) { return nil, errors.New("netlink: boom") }
+	if err := preflightAnswer(t, failing, "203.0.113.7"); err == nil || !strings.Contains(err.Error(), "could not be listed") {
+		t.Errorf("Preflight with failing HostNets: %v", err)
+	}
+	server, _ := url.Parse("https://kube.example:6443")
+	if err := Preflight(context.Background(), Config{Server: server}); err == nil {
+		t.Error("Preflight without HostNets accepted")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if _, err := New(Config{Listener: ln, Server: server, Token: func(context.Context) (policy.Secret, error) {
+		return policy.Secret("x"), nil
+	}}); err == nil || !strings.Contains(err.Error(), "HostNets") {
+		t.Errorf("New without HostNets: %v", err)
 	}
 }

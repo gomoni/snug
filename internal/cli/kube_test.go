@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -65,9 +66,9 @@ func TestKubeCredentialShapesStartNothingAndWriteNothing(t *testing.T) {
 // A server on this host — loopback, or an address this host owns — refuses
 // the run before the sandbox exists, whatever credential the context holds.
 func TestKubeRunRefusesAServerOnThisHost(t *testing.T) {
-	old := kubeHostAddresses
-	kubeHostAddresses = func() ([]string, error) { return []string{"192.0.2.10"}, nil }
-	defer func() { kubeHostAddresses = old }()
+	old := kubeHostNets
+	kubeHostNets = func() ([]netip.Prefix, error) { return []netip.Prefix{netip.MustParsePrefix("192.0.2.10/32")}, nil }
+	defer func() { kubeHostNets = old }()
 	for _, server := range []string{"https://127.0.0.1:6443", "https://[::1]:6443", "https://192.0.2.10:6443"} {
 		pol := &policy.Policy{Home: "/home/u", Kube: &policy.KubeBinding{Context: "kind-kind", Server: server,
 			Credential: policy.KubeCredentialToken, HostUser: policy.KubeHostUser{Token: policy.Secret("tok")}}}
@@ -82,9 +83,9 @@ func TestKubeRunRefusesAServerOnThisHost(t *testing.T) {
 // with no host-owned refusal list. It refuses the run instead, before the
 // socket is bound.
 func TestKubeListenRefusesWhenHostAddressesFail(t *testing.T) {
-	old := kubeHostAddresses
-	kubeHostAddresses = func() ([]string, error) { return nil, errors.New("netlink: boom") }
-	defer func() { kubeHostAddresses = old }()
+	old := kubeHostNets
+	kubeHostNets = func() ([]netip.Prefix, error) { return nil, errors.New("netlink: boom") }
+	defer func() { kubeHostNets = old }()
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)

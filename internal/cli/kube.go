@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"sync"
@@ -32,8 +31,8 @@ func hostAddressesForResolve() []string {
 	return a
 }
 
-// kubeHostAddresses is sandbox.HostAddresses; a test replaces it.
-var kubeHostAddresses = sandbox.HostAddresses
+// kubeHostNets is sandbox.HostPrefixes; a test replaces it.
+var kubeHostNets = sandbox.HostPrefixes
 
 // kubePreflight is kubeproxy.Preflight; a test replaces it.
 var kubePreflight = kubeproxy.Preflight
@@ -105,20 +104,13 @@ func kubeServerIsRemote(server string) error {
 	if err != nil {
 		return fmt.Errorf("identity.kubectl: server %s: %w", policy.VisibleText(server), err)
 	}
-	owned, err := kubeHostAddresses()
-	if err != nil {
+	if _, err := kubeHostNets(); err != nil {
 		return fmt.Errorf("identity.kubectl: listing this host's addresses to check server %s: %w",
 			policy.VisibleText(server), err)
 	}
-	var hosts []netip.Addr
-	for _, h := range owned {
-		if a, err := netip.ParseAddr(h); err == nil {
-			hosts = append(hosts, a)
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := kubePreflight(ctx, kubeproxy.Config{Server: u, HostAddrs: hosts}); err != nil {
+	if err := kubePreflight(ctx, kubeproxy.Config{Server: u, HostNets: kubeHostNets}); err != nil {
 		return fmt.Errorf("identity.kubectl: %w. Not starting", err)
 	}
 	return nil
@@ -145,8 +137,7 @@ func (r *kubeRun) listen(fs []*os.File) error {
 	// The dialer's host-owned refusal runs outside the seal, so an
 	// enumeration that fails refuses the run rather than leaving it empty
 	// (red team: it was swallowed into an empty list).
-	owned, err := kubeHostAddresses()
-	if err != nil {
+	if _, err := kubeHostNets(); err != nil {
 		return fmt.Errorf("identity.kubectl: listing this host's addresses for the proxy's dialer: %w", err)
 	}
 	fd := int(f.Fd())
@@ -176,15 +167,9 @@ func (r *kubeRun) listen(fs []*os.File) error {
 			return errors.New("identity.kubectl: the cluster's certificate-authority-data holds no certificate")
 		}
 	}
-	var hosts []netip.Addr
-	for _, h := range owned {
-		if a, err := netip.ParseAddr(h); err == nil {
-			hosts = append(hosts, a)
-		}
-	}
 	cfg := kubeproxy.Config{
 		Listener: ln, Server: server, CAs: pool, TLSName: k.TLSServerName,
-		ClientCert: r.cert, HostAddrs: hosts, Audit: r.audit,
+		ClientCert: r.cert, HostNets: kubeHostNets, Audit: r.audit,
 	}
 	if r.token != nil {
 		tok := *r.token

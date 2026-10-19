@@ -56,8 +56,13 @@ type Config struct {
 	// ClientCert is presented in the TLS handshake with the pinned server.
 	// With it, the request is forwarded with its headers as sent.
 	ClientCert *tls.Certificate
-	// HostAddrs are the addresses this host owns, refused by the dialer.
-	HostAddrs []netip.Addr
+	// HostNets lists every prefix on every host interface, unmapped and
+	// without a zone: the host's own addresses and the subnets attached to
+	// them. The dialer calls it on
+	// every vet, not once, because an address or a bridge added after start
+	// is as much the host as one that was there before. Required; an error
+	// refuses the dial.
+	HostNets func() ([]netip.Prefix, error)
 	// MaxConns bounds concurrent connections from inside; 0 is 64.
 	MaxConns int
 	// Lookup resolves the server's name; nil is net.DefaultResolver. A seam.
@@ -105,6 +110,9 @@ func New(cfg Config) (*Proxy, error) {
 	}
 	if (cfg.Token == nil) == (cfg.ClientCert == nil) {
 		return nil, errors.New("kube proxy: exactly one of Token and ClientCert is required")
+	}
+	if cfg.HostNets == nil {
+		return nil, errors.New("kube proxy: HostNets is required")
 	}
 	if cfg.Server.Scheme != "https" || cfg.Server.Host == "" {
 		return nil, fmt.Errorf("kube proxy: server %s is not https", policy.VisibleText(cfg.Server.String()))
@@ -326,9 +334,41 @@ var metadataAddrs = []netip.Addr{
 	netip.MustParseAddr("168.63.129.16"),   // Azure platform (WireServer)
 }
 
+// Transition prefixes that carry an IPv4 address in their low bits: a
+// translator or a tunnel relay on the path delivers to that IPv4 address, so
+// it is vetted as if it had been written directly.
+var (
+	nat64WellKnown = netip.MustParsePrefix("64:ff9b::/96")   // RFC 6052
+	nat64LocalUse  = netip.MustParsePrefix("64:ff9b:1::/48") // RFC 8215
+	sixToFour      = netip.MustParsePrefix("2002::/16")      // RFC 3056
+	// IPv4-compatible (::a.b.c.d, deprecated) and IPv4-translated
+	// (::ffff:0:a.b.c.d, SIIT) name an IPv4 host and no remote cluster.
+	v4Compatible = netip.MustParsePrefix("::/96")
+	v4Translated = netip.MustParsePrefix("::ffff:0:0:0/96")
+	// 0.0.0.0/8 is "this network" (RFC 1122): never a remote server.
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+)
+
+// embeddedV4 returns the IPv4 address a transition prefix carries.
+func embeddedV4(a netip.Addr) (netip.Addr, bool) {
+	b := a.As16()
+	switch {
+	case nat64WellKnown.Contains(a), nat64LocalUse.Contains(a):
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case sixToFour.Contains(a):
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
+	}
+	return netip.Addr{}, false
+}
+
 // refusedAddr names why the dialer will not reach a, or "" when it will.
 func (p *Proxy) refusedAddr(a netip.Addr) string {
-	a = a.Unmap()
+	a = a.Unmap().WithZone("")
+	if v4, ok := embeddedV4(a); ok {
+		if why := p.refusedAddr(v4); why != "" {
+			return fmt.Sprintf("%s, embedded as %s", why, v4)
+		}
+	}
 	switch {
 	case a.IsLoopback():
 		return "loopback"
@@ -338,30 +378,46 @@ func (p *Proxy) refusedAddr(a netip.Addr) string {
 		return "link-local (169.254.169.254 is a cloud metadata service)"
 	case a.IsMulticast(), a.IsInterfaceLocalMulticast():
 		return "multicast"
+	case thisNetwork.Contains(a):
+		return "\"this network\" (0.0.0.0/8)"
+	case v4Compatible.Contains(a), v4Translated.Contains(a):
+		return "an IPv6 spelling of an IPv4 address"
 	}
 	for _, m := range metadataAddrs {
 		if a == m {
 			return "a cloud metadata endpoint"
 		}
 	}
-	for _, h := range p.cfg.HostAddrs {
-		if h.Unmap() == a {
+	nets, err := p.cfg.HostNets()
+	if err != nil {
+		return fmt.Sprintf("this host's interfaces could not be listed to check it: %v", err)
+	}
+	for _, n := range nets {
+		if n.Addr() == a {
 			return "an address this host owns"
+		}
+	}
+	for _, n := range nets {
+		if n = n.Masked(); n.Contains(a) {
+			// A bridge (kind, minikube, libvirt, podman, docker) puts a
+			// cluster's nodes one hop from this host; so does the LAN.
+			return fmt.Sprintf("on %s, a subnet attached to this host", n)
 		}
 	}
 	return ""
 }
 
 // Preflight resolves cfg.Server's name on the host and refuses it when ANY
-// address it names is one the dialer refuses: loopback, this host's own, link-
-// local, multicast or cloud metadata. A cluster on this host — kind, k3s,
+// address it names is one the dialer refuses: loopback, this host's own, one
+// on a subnet attached to this host, link-local, multicast, cloud metadata,
+// or an IPv6 spelling of any of them. A cluster on this host — kind, k3s,
 // minikube, Docker Desktop's kubernetes.docker.internal — runs its nodes on
 // this host, so the credential's reach there is the host's, not a remote
 // cluster's. internal/cli runs it before the sandbox is created; the dialer
 // repeats it on every connection, because a record can change after start.
 func Preflight(ctx context.Context, cfg Config) error {
-	if cfg.Server == nil {
-		return errors.New("kube proxy: Server is required")
+	if cfg.Server == nil || cfg.HostNets == nil {
+		return errors.New("kube proxy: Server and HostNets are required")
 	}
 	p := &Proxy{cfg: cfg}
 	if p.cfg.Lookup == nil {

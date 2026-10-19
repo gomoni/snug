@@ -192,8 +192,11 @@ sandbox, so nothing inside can leak them.
 
 snug does not start the sandbox for:
 
-- a `server` on this host. loopback, host's own addresses, link-local and
-  cloud-metadata addresses are all refused. This would be an easy sandbox escape.
+- a `server` on this host or one hop from it. loopback, host's own addresses,
+  any address on a subnet attached to a host interface (kind, minikube or
+  libvirt bridges, and your LAN), link-local and cloud-metadata addresses, and
+  their IPv6 spellings (NAT64, 6to4) are all refused. This would be an easy
+  sandbox escape. A cluster on your own LAN is refused too.
 - `insecure-skip-tls-verify` or `proxy-url` in the cluster entry.
 - a certificate, key or CA given by path.
 - a kubeconfig the sandbox could read or write through any grant.
