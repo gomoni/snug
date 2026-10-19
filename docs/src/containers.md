@@ -55,6 +55,32 @@ proxy forwards only a part: `podman build`, `podman run -d`, `podman wait`,
 `podman logs` and `podman rm` work, but `podman run` without `-d` is refused,
 because it attaches to the container and the proxy does not forward attach.
 
+- `docker build` works: snug sets `DOCKER_BUILDKIT=0`, so the classic
+  builder is used and its options pass the proxy's filter. This is a
+  default, not a bound: a process inside can set `DOCKER_BUILDKIT=1`, and
+  the BuildKit session it then opens is not filtered.
+- `docker cp` is refused. The engine would read and write the container's
+  files outside the sandbox.
+- If the host's `podman` is a shim that forwards to the host (distrobox's
+  `distrobox-host-exec`, `host-spawn`, `flatpak-spawn`), it cannot work in the
+  sandbox. snug stages a `podman` in front of it on `PATH` that forwards
+  docker-compatible subcommands to `docker` and refuses the rest with a
+  message that starts `snug:` (exit 125). `/usr/bin/podman` itself is
+  untouched.
+
+## Image signatures
+
+The engine checks images against a signature policy built from the host's
+`policy.json`:
+
+- `insecureAcceptAnything`, `reject` and `signedBy` carry over. Key files a
+  `signedBy` names are copied for the engine.
+- A requirement snug cannot carry over, such as `sigstoreSigned` or
+  `signedBaseLayer`, refuses the run and names the requirement and the file.
+- A host with no `policy.json` gets a policy that accepts any image.
+- The policy applies to pulls. An image already in the target's storage keeps
+  running under a stricter policy.
+
 ## Storage per target directory
 
 Every target directory gets its own container storage. Images, containers

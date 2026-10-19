@@ -459,7 +459,7 @@ type Policy struct {
 
 	// Env is keyed by EnvVar.Name. It carries structure rather than strings
 	// because provenance per entry is a product requirement, not a debugging
-	// aid — see env.go and ENVIRONMENT-VARIABLES.md §2.8.
+	// aid — see env.go and ENVIRONMENT-VARIABLES.md §2.9.
 	Env      map[string]EnvVar
 	Net      NetPolicy
 	Identity *Identity

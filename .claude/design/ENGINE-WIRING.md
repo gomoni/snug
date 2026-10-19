@@ -1,28 +1,16 @@
 # The container engine in the sandbox's netns — wiring as built
 
-`host-bridge`, **2026-08-18**. Settles the one architecture question
-`go-implementer` handed back: how the **long-lived** container engine composes
-with the **one-shot** stage so it inherits the stage's user namespace **U**,
-joins the sandbox's network namespace **N**, and serves proxied requests for
-the whole run — with the engine confined to `policy.EngineCapBounding` and torn
-down on every path.
+How the **long-lived** container engine composes with the **one-shot** stage:
+it inherits the stage's user namespace **U**, joins the sandbox's network
+namespace **N**, serves proxied requests for the whole run, is confined to
+`policy.EngineCapBounding`, and is torn down on every path.
 
-> **Section numbers are load-bearing** — twenty-four Go comments across
-> `internal/stage`, `internal/engine`, `internal/sandbox` and `internal/cli`
-> cite them, and nothing checks a section number. Do not renumber; append.
+> **Section numbers are load-bearing** — Go comments across `internal/stage`,
+> `internal/engine`, `internal/sandbox` and `internal/cli` cite them, and
+> nothing checks a section number. Do not renumber; append.
 >
-> This is a record of a design pass, so the tense is as written. **Where it and
-> the code disagree, the code is right and the disagreement is a bug here.**
-
-Everything upstream of the runtime was already landed and is NOT reopened here:
-`policy.EngineCapBounding` (12 caps, measured floor), `deriveTopology` raising
-`Netns→NetnsStage`/`Subuid→SubuidFull` for podman, `stage.Start`'s
-`SubuidFull` delegated-map handshake (`newuidmap`/`newgidmap`, done),
-`internal/stage/capdrop.go`'s `dropCapsToExactly` (defined, **not yet called**),
-the `--dry-run` engine block, and `TestContainerBindFilterMatchesPolicyVisibility`
-(the invariant-6 gate, present). What is missing is the fork itself: today
-`startContainers` (`internal/cli/container.go`) **refuses** a real run, and
-`internal/engine.Engine.Start` execs podman on the **host** network.
+> **Where this and the code disagree, the code is right and the disagreement
+> is a bug here.**
 
 ---
 
@@ -77,7 +65,7 @@ Reasoning, in priority order:
 
 3. **`--dry-run` honesty is unconditional.** Eager lets the screen state "a
    per-sandbox engine runs in this sandbox's netns" as a fact of every real run.
-   The engine's package doc comment (`internal/engine/engine.go`) currently says
+   The engine's package doc comment (`internal/engine/engine.go`) says
    "starts LAZILY"; that sentence flips to eager, and `--dry-run` gains the
    explicit cost line (see §5).
 
@@ -378,9 +366,8 @@ table alone.**
 The policy pass already rewrote the engine and CONTAINERS blocks. Two additions
 this wiring pass owns:
 
-- The engine's package doc and any screen line implying **lazy** flips to
-  **eager**: "a per-sandbox engine is started *with the sandbox* (before the
-  payload), in this sandbox's netns" — with the cost stated: an offline
+- The screen says the engine is eager: "a per-sandbox engine is started *with the
+  sandbox* (before the payload), in this sandbox's netns" — with the cost stated: an offline
   `@podman-socket` run boots an engine it may never use.
 - The preflight results (P5's `--cgroups=disabled` selection, P6's
   `ptrace_scope` value) appear on the screen, since `--dry-run` runs the probes.
@@ -402,10 +389,8 @@ Layered, none assuming the engine is *directly* snug's child, matching on the
 exit, panic, SIGKILL, OOM — cascades SIGKILL down to the engine. `Pdeathsig`
 survives the `execve` into podman because that exec **drops** caps (no widening
 ⇒ no secureexec ⇒ pdeath_signal preserved — the same measured fact that keeps
-P1's own `Pdeathsig` alive across `setup→serve`). This **replaces** the engine's
-old lifeline-as-teardown: the lifeline existed because a *wrapper* engine was not
-snug's child, and **preflight P1 now refuses wrappers**, so the engine is always
-a real stage child. No engine-orphan window, and because the engine's death
+P1's own `Pdeathsig` alive across `setup→serve`). Teardown does not rest on a lifeline: preflight P1 refuses wrapper engines, so
+the engine is always a real stage child. No engine-orphan window, and because the engine's death
 destroys its mount ns, its private-tree copy and any mount in it vanish with it.
 
 **Keep the lifeline, repurposed.** podman `system service --time <idle>` is
@@ -442,8 +427,8 @@ containers by label and stops each with `t=1`, concurrently, inside one
 one-second budget; `internal/stage`'s `runOneSandbox` calls it after it has
 reaped the payload and before it sends `"exited"`.
 
-**"After it has reaped the payload" is the whole condition, and it now covers
-more exits than it used to.** A payload that handles `Ctrl-C` and exits inside
+**"After it has reaped the payload" is the whole condition, and it covers
+more than a plain exit.** A payload that handles `Ctrl-C` and exits inside
 the second `snug` gives it for that (`payloadGraceBudget`,
 `internal/sandbox/teardown.go`; README "What dies when") has exited *normally*
 — `Stage.Wait` returns an ordinary
@@ -468,7 +453,7 @@ Two mechanisms:
 - **SIGKILL path:** the pipe-triggered reaper (`internal/engine/reaper.go`)
   stays: P0 holds a pipe; on EOF a detached `/bin/sh` removes the run
   directory (containers.conf, registries.conf, auth.json, resolv.conf, the
-  generated home/, and the socket) — no `podman stop` any more, for the same
+  generated home/, and the socket) — no `podman stop`, for the same
   reason as the clean path's. It carries its paths in the **environment**,
   not argv, so the by-path verification sweep does not mistake the reaper
   for a leak. `rm -rf` on the run directory rather than a per-file removal

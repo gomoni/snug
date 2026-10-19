@@ -3,10 +3,9 @@
 **This is an instance of [GENERATED-CONFIG.md](GENERATED-CONFIG.md), which owns
 the rule; this document holds the git-specific measurements.**
 
-**Status: built.** An `[identity]` block with a `git` table generates
-`~/.gitconfig`. Nothing else does: snug never binds the host's git config and
-never reads it. The measurements below were made on git 2.55 on the development
-host and are what the design rests on — re-run them before changing any of it.
+User-facing behaviour (the pin, the stub at `/etc/gitconfig`, the system scope)
+is in `docs/src/identity.md`. This file holds the measurements and the reasoning
+behind it, made on git 2.55 and to be re-run before changing any of it.
 
 ---
 
@@ -16,7 +15,8 @@ host and are what the design rests on — re-run them before changing any of it.
 **command table**, and a read-only bind of a command table does not restrain it
 — it supplies it. So snug authors the file the sandbox sees from the three
 values a human pinned in `[identity.git]` — `name`, `email`, `signing_key` — and
-every other git setting is a file the human wrote for the sandbox (§3).
+every other git setting is a file the human wrote for the sandbox and granted
+read-only at `/etc/gitconfig` (the book's "Other git settings").
 
 ## 1. What the file actually is
 
@@ -56,45 +56,6 @@ file as data with secrets in it rather than as the command table §1 shows it is
 and *"unwisely put in"* reads as a user error when the executable keys are the
 file's purpose. **A comment cannot fail.** The test can.
 
-## 3. Every other git setting is a stub the human wrote
-
-snug's TOML is not a configuration surface for the programs inside the sandbox.
-A setting the pin does not cover — `init.defaultBranch`, `pull.rebase`, a
-`core.autocrlf` — lives in a small git config file the human writes on the host
-for the sandbox, granted read-only like any other path. The file is
-human-authored, outside the sandboxed material (invariant 3), and contains what
-its author put in it; that is a different thing from binding the host's own
-`~/.gitconfig`, which is the command table of §1 grown over years.
-
-## 4. Where the stub goes
-
-**Where to put it is decided by `GIT_CONFIG_GLOBAL`, and the obvious places do
-not work.** With an identity selected, snug points `GIT_CONFIG_GLOBAL` at the
-generated `~/.gitconfig`, and git then reads **only** that file at global scope.
-A stub granted at `~/.gitconfig` is displaced by the generated file (the
-provenance says `replaces:`); a stub at `~/.config/git/config` is never read. A
-profile cannot set `GIT_CONFIG_GLOBAL` either: snug owns it in any selection
-with an identity (`conditionalEnvs`).
-
-The scope that works is **system**, one below global: grant the stub
-read-only AT `/etc/gitconfig`. `@sys` does not grant that path, so nothing else
-occupies the scope, and a pinned value still wins over the stub, because global
-outranks system.
-
-```toml
-# ABUSE: whatever this file says, git inside does — an alias or core.sshCommand
-# written here runs. It is the file you wrote, so it says what you wrote.
-[profile.git-prefs]
-ro = ["{home}/.config/snug/sandbox.gitconfig:/etc/gitconfig"]
-```
-
-Measured beside an identity on git 2.55: `git config --show-scope --get
-init.defaultBranch` reports `system` and the stub's value, `user.email` reports
-`global` and the pin's; the same stub at `{home}/.config/git/config` is not
-read, and at `{home}/.gitconfig` the dry-run shows `identity:me+replaces:glob`.
-`TestSystemScopeStubReachesGitBesideAnIdentity` (test/integration) holds the
-first of those.
-
 ## 5. What snug authors, and from what
 
 From the pin, and nothing else. Adding a row is a policy change, and the
@@ -112,7 +73,15 @@ There is no `init.defaultBranch` and there will be no
 `identity.git.default_branch`. An identity is a PIN — who the sandbox acts as —
 and a key per program setting that someone finds convenient turns it into a
 configuration file for every tool in the sandbox, written in snug's grammar and
-validated by snug's code. §3 is where those settings go.
+validated by snug's code.
+
+`GIT_CONFIG_GLOBAL` is owned by snug in any selection with an identity
+(`conditionalEnvs`), and a stub at the system scope works precisely because
+global outranks system. `TestSystemScopeStubReachesGitBesideAnIdentity`
+(test/integration) holds it; a stub at `~/.gitconfig` is displaced
+(`replaces:` in the provenance) and one at `~/.config/git/config` is never read.
+git merges two global files, which is why the variable, not one generated file,
+is the mechanism.
 
 **The signing keys are authored, never carried.** `commit.gpgsign = true` from
 a host config, with a signing key that is not inside the sandbox, makes **every
@@ -172,38 +141,6 @@ host fields to letters, digits, `.` and `-`, because the same value is also
 unquoted syntax in ssh's `Host` line and gh's `hosts.yml`
 (`TestRefuseUnhostlikeHostCatchesSyntax`).
 
-## 6. What a human sees
-
-```
-$ snug -p work <dir> --dry-run
-  data   /home/u/.gitconfig                             identity:work
-  GIT_CONFIG_GLOBAL /home/u/.gitconfig                  (snug)
-```
-
-`GIT_CONFIG_GLOBAL` is not decoration. git merges **two** global files
-(`~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`), so generating one of them is
-not enough; setting the variable replaces both. Without an identity, snug writes
-neither the file nor the variable, and git inside has no author: `git commit`
-fails with git's own "Please tell me who you are".
-
-## 7. Known deviations from git
-
-Stated because a divergence nobody wrote down is a bug report waiting to happen:
-
-- **Values are re-quoted.** snug writes `key = "value"` with `\` and `"`
-  escaped, because a raw `#`, `;`, leading space or `\` changes meaning, and a
-  raw `"` in `user.name` makes `git version` itself fail inside the sandbox.
-- **System config** (`/etc/gitconfig`) is not granted: `@sys` does not list it.
-  It is root-owned host policy, and the sandbox is not the host. The system
-  scope is therefore empty unless a profile grants a stub at that path (§4).
-
-## 8. What this does NOT do
-
-It does not verify that `identity.git.email` matches the account the ssh key
-authenticates as. Nothing does — see https://github.com/gomoni/snug/issues/30.
-The three commands that answer the question are in the README, next to the
-profile that needs them.
-
 ## 9. What a generated config does not bound
 
 The generated file bounds what snug says to git inside the sandbox. It does not
@@ -255,10 +192,8 @@ front of it and, more completely, by an exported `BASH_FUNC_git%%` shell
 function, which precedes `PATH` lookup entirely; a classic-BPF seccomp filter
 cannot dereference `envp` to see the variable at all (the same wall `clone3`
 hit); `LD_PRELOAD` needs cgo, which `.claude/design/NOCGO.md` rules out, and is
-itself one of the names snug annotates and never authors — that table refuses
-nothing since ENVIRONMENT-VARIABLES.md §2.9, but it was never what stopped snug
-writing `LD_PRELOAD` either: snug writes only `SnugOwnedEnv` and the
-feature-conditional names beside it. See issue #26 for
+itself one of the names snug annotates and never authors: snug writes only
+`SnugOwnedEnv` and the feature-conditional names beside it. See issue #26 for
 the full measurement set.
 
 **What snug does own, and asserts mechanically:** the environment snug itself

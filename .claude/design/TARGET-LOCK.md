@@ -36,9 +36,9 @@ when it exists (what `$XDG_RUNTIME_DIR` normally *is*), else the deterministic
 `/tmp/snug-<uid>` — and **never** from `$XDG_RUNTIME_DIR`/`$TMPDIR`. That is the
 whole point of `targetLockBase()` and the reason it does not reuse
 `runtimeBase()` (which does read those env vars): a lock whose entire purpose is
-cross-run agreement cannot let a mutable env var move it. Two runs on one target
-that disagreed on `$XDG_RUNTIME_DIR` once flock'd two different inodes and both
-believed they had answered the question (issue #122, found by red-team). The
+cross-run agreement cannot let a mutable env var move it. Two runs on one target that disagree on `$XDG_RUNTIME_DIR` would flock two
+different inodes and both believe they had answered the question (issue #122,
+found by red-team). The
 per-run `run-<pid>/lock` stays env-derived: it never needs cross-run agreement,
 so it does not share this hazard. If the per-uid directory cannot be established
 the run **refuses** rather than falling back to a per-env path (invariant 5, fail
@@ -101,8 +101,5 @@ realpath), so it can neither release the lock nor steer snug to lock an
 unrelated path. Same-uid host tampering with the runtime directory is outside
 the threat model, exactly as for `runtimeDir` (#61).
 
-## 5. What this is not
-
-Not a policy grant and not a deny rule — there is nothing to deny; it is a
-run-path record, and it lives in `internal/cli`, never in the pure
-`internal/policy`.
+It is a run-path record, not a policy grant: it lives in `internal/cli`, never
+in the pure `internal/policy`.

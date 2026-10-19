@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestSystemScopeStubReachesGitBesideAnIdentity holds GIT-CONFIG.md §4: with an
+// TestSystemScopeStubReachesGitBesideAnIdentity holds GIT-CONFIG.md §5: with an
 // identity selected, a human-written git stub works only at system scope
 // (read-only AT /etc/gitconfig), and the pinned identity still outranks it.
 //

@@ -1,13 +1,8 @@
 # The Claude login bridge — `login = ["claude"]`
 
-Claude Code's `/login` opens a browser on an authorize URL whose callback is
-`http://localhost:<port>/callback`, a listener inside the sandbox's own network
-namespace. The host browser cannot reach that listener and the sandbox has no
-browser, so without help `/login` inside works only by pasting the code from
-the manual URL claude prints. The login bridge is the narrow hole that lets the
-browser flow complete: the sandbox may hand snug **one** URL of **one** pinned
-shape, snug opens a URL it rebuilt from its own constants in the host user's
-browser, and relays **one** rebuilt callback request back in.
+User-facing behaviour is in `docs/src/claude.md` (`login`). This document holds
+what a contributor needs: where the pieces live, why each is shaped as it is,
+and what was measured.
 
 Owner: `host-bridge`. Code:
 
@@ -52,35 +47,19 @@ costs, and this document does not restate it.
 The sandbox keeps its private netns. pasta's argv does not change: nothing is
 forwarded into the namespace, and host loopback stays unreachable from inside.
 
-## 2. How it is granted
+## 2. Grant internals
 
-- **An ordinary feature key, `login = ["claude"]`**: a list of provider
-  names, unioned across profiles as a set (`LoginSet`), so two profiles naming
-  `claude` turn it on once and the result does not depend on fold order. An
-  empty list is off. `claude` is the only provider; each one is its own
-  `LoginProvider` value with its own pinned predicate. `ParseLoginProvider`
-  refuses any other element quoting the accepted set (`unknown login provider
-  "…" (want claude)`) at profile parse time and so in `snug profile show` as
-  well.
-- **No builtin sets it, `@claude` included.** `@claude` is what every Claude
-  run selects; the hole exists only where a user profile spells
-  `login = ["claude"]` itself, never by riding along with
-  `-p @claude -p @net`.
-- No CLI flag. The key is a TOML value only.
-- **Resolve refuses** the key on in a selection
-  - without egress: `profile "X" sets login = ["claude"], but nothing in
-    this selection grants the network: the callback is relayed into the
-    sandbox's own network namespace and the token exchange needs the internet.
-    Add -p @net.`
-  - without a visible `/bin/sh` (`shellIsVisible`): `BrowserBridgeShellError`,
-    which names the shell and `@sys`.
-- With the key on, Resolve stages the shim as a `KindData`, read-only, 0755
-  mount at `/snug/bin/snug-browser` and authors `BROWSER` pointing at it.
-  `BROWSER` is a `conditionalEnvs` row: a profile that `set`s or `inherit`s
-  `BROWSER` in a selection with the key on is a conflict naming both
-  (ENVIRONMENT-VARIABLES.md §1.1). `browser` is not in
-  `ClaudeSettingAllowlist`, so the generated `settings.json` never carries
-  Claude Code's `settings.browser`, which would outrank `$BROWSER`.
+- `LoginSet` unions provider lists as a set, so the result does not depend on
+  fold order; `ParseLoginProvider` refuses any other element at profile parse.
+- No builtin sets the key, `@claude` included: the hole exists only where a user
+  profile spells it, never by riding along with `-p @claude -p @net`.
+- `BROWSER` is a `conditionalEnvs` row (ENVIRONMENT-VARIABLES.md §1.1).
+  `browser` is not in `ClaudeSettingAllowlist`, so the generated `settings.json`
+  never carries Claude Code's `settings.browser`, which would outrank `$BROWSER`.
+- Resolve stages the shim as a `KindData`, read-only, 0755 mount at
+  `/snug/bin/snug-browser`; the FIFO `--bind` is added after Resolve, so the
+  golden bwrap diff against `@claude @net` is exactly the shim mount and
+  `--setenv BROWSER`, and the pasta argv is byte-equal to `@claude @net`'s.
 
 ## 3. Transport sandbox → snug, and the predicate
 
@@ -264,19 +243,11 @@ anywhere.
 
 ## 7. Limits
 
-`internal/loginbridge/limits.go`; the screens read the same constants.
-
-| constant | value | what it bounds |
-|---|---|---|
-| `MaxLiveFlows` | 1 | one pending login at a time |
-| `SupersedeAfter` | 30 s | a new open replaces a pending flow only once that flow is 30 s old, and never one whose callback is relayed or in flight |
-| `MaxOpensPerRun` | 5 | browser tabs the sandbox can cause; counted when a flow starts, whatever the opener then does |
-| `MaxRelaysPerRun` | 3 | callbacks relayed, = relay sockets asked of the stage; `Handle` refuses once either is used up |
-| `FlowTTL` | 10 min | how long the host port is held for a flow that saw no callback |
-| `OpenerPatience` | 30 s | how long snug waits for `xdg-open` to exit |
-
-A flow that ends early — the opener failed, or a callback was relayed — frees
-the slot at once; the 30 s applies only to replacing a live one.
+`internal/loginbridge/limits.go`; the screens read the same constants. A flow
+that ends early frees its slot at once; `SupersedeAfter` applies only to
+replacing a live one. `MaxRelaysPerRun` equals the relay sockets asked of the
+stage. `MaxOpensPerRun` is counted when a flow starts, whatever the opener then
+does.
 
 The 8 connection slots bound concurrency, not persistence: a process of the
 same uid can re-fill them each 10 s head deadline until `FlowTTL`, delaying
@@ -319,53 +290,13 @@ reaches it as a same-uid client. Such a page needs its own cross-site check
 A confirmation in snug's terminal is not an option: the payload shares that tty
 and can draw a fake prompt and read the keystroke first (THREAT-MODEL §3.6).
 
-## 9. Screens and refusals
+## 9. Screens
 
-**Preflight** (`browserPreflight`, real runs only; exit 77):
-
-- no `xdg-open` on PATH → `login = ["claude"] opens your browser with
-  xdg-open, and there is none on PATH. Install xdg-utils — or drop login =
-  ["claude"] from the profile that sets it: /login inside still works by
-  opening the URL claude prints and pasting the code`
-- neither `DISPLAY` nor `WAYLAND_DISPLAY` → `login = ["claude"] needs a
-  graphical session to open your browser, and neither DISPLAY nor
-  WAYLAND_DISPLAY is set in snug's environment. Run snug from your desktop
-  session — or drop …` with the same fallback.
-
-**Runtime**, stderr, sandbox-derived text through `VisibleText`:
-
-- open refusals (predicate or `Handle`): `snug: login bridge: refused an open
-  request from the sandbox — <reason>. Nothing was opened.` First 5, then
-  `further refusals suppressed.` `Handle`'s reasons: shutting down; `this run
-  has used its 5 login opens; restart snug`; `this run has relayed its 3 login
-  callbacks; restart snug`; `a login is pending (opened <n>s ago)`; `nothing
-  inside listens on 127.0.0.1:<P>`; the port-in-use and bind errors of §6.
-- listener notices (refused peers, bad heads, 404s, relay failures): their own
-  count, first 5, then `further connection refusals suppressed.`
-- a flow abandoned at the TTL says snug released the port; an opener failure
-  names the paste fallback; a delivered callback prints the sandbox's status
-  code.
-
-**`--dry-run`**: FILESYSTEM rows for `/snug/bin/snug-browser` (generated, ro)
-and `/snug/browser.fifo` (run-scoped); `BROWSER` with snug provenance; in
-NETWORK, `renderBrowserBridge` — the pinned base, client id and seven scopes,
-the callback listener, the opener path (or `NONE — a real run would REFUSE to
-start: …` when preflight would fail) and the limits; in TOPOLOGY,
-`describeBrowserTopology` — `xdg-open` per login, detached, the browser it
-starts is yours and may outlive the run. It is not in `longLivedProcesses`:
-it is per login, and counting it would make a process count `ps` cannot
-confirm. JSON: `browser_bridge {login, opener, opener_error, fifo, max_opens,
-max_relays}`, `login` the provider list (`["claude"]`), absent with the key
-off.
-
-**`--explain`**: a paragraph in the network section, and the "no process snug
-did not start" sentence qualified with "except the browser xdg-open starts for
-a login".
-
-**Golden argv.** The Resolve-level bwrap diff against `@claude @net` is exactly
-the shim's data mount and `--setenv BROWSER`; the FIFO `--bind` is added after
-Resolve. The pasta argv is byte-equal to `@claude @net`'s: no `-t`, no
-`--host-lo-to-ns-lo`.
+Sandbox-derived text on stderr goes through `VisibleText`. The `--dry-run`
+rows (`renderBrowserBridge`, `describeBrowserTopology`) are pinned by
+`TestGoldenBrowserBridgeScreens` and `TestGoldenBrowserBridgeJSON`. The opener is
+not in `longLivedProcesses`: it is per login, and counting it would make a
+process count `ps` cannot confirm.
 
 ## 10. Teardown
 
@@ -439,70 +370,6 @@ Kernel facts the design rests on, measured on the development host:
 - `bwrap --bind <host fifo> /x.fifo --unshare-all -- /bin/sh -c 'printf "%s\n"
   … > /x.fifo'` exited 0 and the host reader got the line.
 
-## 13. Tests
-
-Pure, CI (`internal/loginbridge`): `TestTheMeasuredURLRebuildsByteForByte`,
-`TestAuthorizeRefusals`, `TestParseAuthorizeEmptyLine`, `TestParseCallbackAccepts`,
-`TestParseCallbackAcceptsPercentEscapedCode`, `TestCallbackRefusals`,
-`TestParseCallbackCodeLengthBounds`, `TestTheRelayedRequestCarriesNoBrowserHeader`,
-`TestTheBrowserGetsSnugsPageNotTheSandboxs`, `TestAnotherUIDIsRefused`,
-`TestAnUnresolvablePeerIsRefused`, `TestBadHostHeaderIsRefused`,
-`TestHostPortInUseOpensNothing`, `TestFlowLimits`,
-`TestOpenerGetsTheRebuiltURLAndHostEnv`, `TestPeerUIDFindsTheClientRow`,
-`TestParseStatus`.
-
-Policy and profile: `TestBrowserBridgeNeedsEgress`, `TestBrowserBridgeNeedsAShell`,
-`TestBrowserBridgeStagesTheShimAndBROWSER`, `TestWithoutBrowserThereIsNoShimOrBROWSER`,
-`TestBrowserIsAConditionalName`, `TestKeyAbsenceNeverWidens` (browser row),
-`TestUnknownFeatureModeIsRefusedAtParseTime` (browser rows).
-
-Stage (`internal/stage/relay_test.go`): `TestNetreadyHandsBackSocketsInN`,
-`TestNetreadyRefusesMoreThanThreeRelaySockets`, `TestP1HoldsNoRelaySocketAfterNetready`,
-`TestNoP1ThreadIsLeftInN`, `TestRelaySocketsAreCloexecInP0`,
-`TestNetreadyWithoutRelaySocketsIsUnchangedOnTheWire`,
-`TestWaitNetReadyRefusesSocketsItDidNotAskFor`.
-
-CLI: `TestBrowserPreflightRefusals`, `TestBrowserPreflightExitsPolicy`,
-`TestLoginReaderRefusalsAreCappedAndSanitised`,
-`TestLoginReaderOverlongLineIsOneRefusalAndResyncs`,
-`TestLoginReaderAcceptedLineHitsHandOff`, `TestLoginReaderCountsAHandlerRefusalWithItsOwn`,
-`TestLoginBridgeFIFOIsPrivateBoundAndClosesCleanly`,
-`TestRunWithoutTheKeyHasNoBridgeAndAsksForNoRelaySockets`,
-`TestDryRunArgvCarriesTheBrowserFIFOBind`, `TestGoldenBwrapClaudeLogin`,
-`TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER`,
-`TestClaudeLoginPastaArgvEqualsClaudeNet`, `TestGoldenBrowserBridgeScreens`,
-`TestGoldenBrowserBridgeJSON`, `TestBrowserBridgeRowsAreAbsentWhenTheKeyIsOff`,
-`TestBrowserBridgeDryRunShowsTheFilesystemRowsAndEnv`,
-`TestBrowserBridgeScreenShowsARefusalTheRunWouldMake`,
-`TestAnUnknownModeInAProfileIsRefusedNotNarrowed` (browser row),
-`TestAFeatureKeyAuthorsAndNeverBindsAHostPath` (`k-browser`).
-
-Integration (`test/integration/loginbridge_test.go`, `SNUG_REQUIRE_SANDBOX=1`),
-with `testdata/loginprobe` as the sandbox half of `/login` and
-`testdata/fakeopener` as a host `xdg-open` playing the browser:
-`TestTheLoginBridgeRelaysOneRebuiltCallback`, `TestTheLoginBridgeRefusesANonClaudeURL`,
-`TestTheLoginBridgeRefusesAPortNothingListensOn`, `TestAWrongStateGets404AndTheFlowSurvives`,
-`TestTheLoginBridgeLeavesHostLoopbackClosed`, `TestWithoutTheLoginKeyThereIsNoBridge`,
-`TestTheLoginBridgeDiesWithSnug`, `TestTheLoginBridgeRefusesWithoutADisplay`,
-`TestTheShimAndFIFOAreReadOnlyOrScoped`, `TestAContainerCannotReachTheLoginBridgeListener`.
-
-Hardening (`loginbridgehardening_test.go`): `TestASecondFIFOReaderInsideCostsOnlyTheBridge`,
-`TestAFIFOFloodFromInsideNeitherGrowsSnugNorBlocksItsExit`,
-`TestTheFIFOPathCannotBeReplacedFromInside`, `TestSandboxChosenBytesNeverReachSnugsScreenRaw`,
-`TestSIGKILLOfThePayloadMidFlowReleasesTheHostPort`,
-`TestSIGKILLOfTheStageMidFlowCollapsesTheRun`. In combination
-(`loginbridgecombos_test.go`): `TestAnHTTPDoorAndTheLoginBridgeInOneSelection`,
-`TestTwoRunsWithTheBridgeNeverShareAFlow`, `TestTheLoginBridgeBesideTheSSHAgentProxy`,
-`TestDryRunNamesTheMountsAndEnvironmentARealRunHas`,
-`TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn`,
-`TestAfterANormalExitTheHostHoldsNothingOfTheRun`,
-`TestAfterAPayloadCrashTheHostHoldsNothingOfTheRun`,
-`TestAfterSIGKILLOfSnugNoHelperOrNamespaceOfTheRunSurvives`. The run directory
-no grant may reach (`runtimedirgrant_test.go`):
-`TestASandboxGrantedAPeersRuntimeDirIsRefused`,
-`TestDryRunRefusesTmpTargetWithoutXDGRuntimeDir`.
-
-Not CI-able (`scripts/`): `0035-claude-login-through-the-browser.sh` (the real
-claude and browser; the host credential file byte-identical before and after;
-prints measurements (b) and (e)) and `0036-another-uid-cannot-deliver-the-callback.sh`
+Not CI-able, in `scripts/`: `0035-claude-login-through-the-browser.sh` (the real
+claude and browser) and `0036-another-uid-cannot-deliver-the-callback.sh`
 (needs a second uid).

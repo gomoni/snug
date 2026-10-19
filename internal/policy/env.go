@@ -15,7 +15,7 @@ import (
 // entry sits, or what a filter dropped on the way — and every one of those is
 // something --dry-run has to show, because a human deciding whether to trust
 // the sandbox reads that screen and nothing else.
-// See .claude/design/ENVIRONMENT-VARIABLES.md §2.8.
+// See docs/src/environment.md and .claude/design/ENVIRONMENT-VARIABLES.md §2.9.
 
 // EnvVerb is who put an entry here and under what rule.
 //

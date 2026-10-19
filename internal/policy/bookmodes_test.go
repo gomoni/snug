@@ -9,7 +9,7 @@ import (
 // TestBookProfileKeysListExactlyTheParsedModes checks the `values` column of
 // docs/src/reference/profile-keys.md for every enumerated key against the
 // parser that decides it, in both directions — the same sameSet the Profile
-// comments and INDEX.md are held to.
+// comments are held to.
 func TestBookProfileKeysListExactlyTheParsedModes(t *testing.T) {
 	const page = "../../docs/src/reference/profile-keys.md"
 	data, err := os.ReadFile(page)
