@@ -13,6 +13,7 @@ import (
 
 	"github.com/gomoni/snug/internal/kubeproxy"
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 func TestKubeDryRunRunsNothing(t *testing.T) {
@@ -67,7 +68,9 @@ func TestKubeCredentialShapesStartNothingAndWriteNothing(t *testing.T) {
 // the run before the sandbox exists, whatever credential the context holds.
 func TestKubeRunRefusesAServerOnThisHost(t *testing.T) {
 	old := kubeHostNets
-	kubeHostNets = func() ([]netip.Prefix, error) { return []netip.Prefix{netip.MustParsePrefix("192.0.2.10/32")}, nil }
+	kubeHostNets = func() ([]sandbox.HostNet, error) {
+		return []sandbox.HostNet{{Prefix: netip.MustParsePrefix("192.0.2.10/32"), Iface: "eth0", Kind: "physical", Allowed: true}}, nil
+	}
 	defer func() { kubeHostNets = old }()
 	for _, server := range []string{"https://127.0.0.1:6443", "https://[::1]:6443", "https://192.0.2.10:6443"} {
 		pol := &policy.Policy{Home: "/home/u", Kube: &policy.KubeBinding{Context: "kind-kind", Server: server,
@@ -84,7 +87,7 @@ func TestKubeRunRefusesAServerOnThisHost(t *testing.T) {
 // socket is bound.
 func TestKubeListenRefusesWhenHostAddressesFail(t *testing.T) {
 	old := kubeHostNets
-	kubeHostNets = func() ([]netip.Prefix, error) { return nil, errors.New("netlink: boom") }
+	kubeHostNets = func() ([]sandbox.HostNet, error) { return nil, errors.New("netlink: boom") }
 	defer func() { kubeHostNets = old }()
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

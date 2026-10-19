@@ -192,11 +192,21 @@ sandbox, so nothing inside can leak them.
 
 snug does not start the sandbox for:
 
-- a `server` on this host or one hop from it. loopback, host's own addresses,
-  any address on a subnet attached to a host interface (kind, minikube or
-  libvirt bridges, and your LAN), link-local and cloud-metadata addresses, and
-  their IPv6 spellings (NAT64, 6to4) are all refused. This would be an easy
-  sandbox escape. A cluster on your own LAN is refused too.
+- a `server` on this host. Loopback, the host's own addresses, link-local and
+  cloud-metadata addresses and their IPv6 spellings (NAT64, 6to4) are refused,
+  and so is any address that lies on a subnet of a host interface snug does
+  not trust as a remote network, or that a specific route of the host's
+  routing table (not the default route) sends out through one. That would be an easy sandbox escape: a kind, minikube or
+  libvirt cluster runs its nodes on this host. A cluster on a physical LAN,
+  behind a layer-3 VPN or beyond the default gateway is allowed.
+  The allowed interfaces are the whole list: a physical NIC (not enslaved to a
+  bridge or bond), a `wwan` modem, a `tun` interface in layer-3 mode and a
+  `wireguard` interface. Everything else is refused: `bridge`, `veth`, `tap`
+  (a `tun` in layer-2 mode), `macvlan`, `macvtap`, `ipvlan`, `ipvtap`, `vxlan`,
+  `geneve`, `dummy`, `vrf`, `bond`, `team`, `vlan`, `gre`, `gretap`, `ipip`,
+  `sit`, `erspan`, and any kind not named here. A LAN uplink enslaved to a
+  bridge, or a vlan or bond uplink, therefore refuses a LAN cluster; a cluster
+  on the internet is still reached through the default route.
 - `insecure-skip-tls-verify` or `proxy-url` in the cluster entry.
 - a certificate, key or CA given by path.
 - a kubeconfig the sandbox could read or write through any grant.

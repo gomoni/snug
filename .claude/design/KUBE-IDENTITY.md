@@ -76,13 +76,14 @@ kubectl ──http──> 127.0.0.1:6443 ══ socket created in N by the stage
   `Proxy: nil` (no `HTTPS_PROXY` from snug's environment), TLS against the
   re-encoded CA and `tls-server-name`. The dialer resolves the server's name,
   refuses the whole answer when any address in it is loopback, unspecified,
-  `0.0.0.0/8`, link-local, multicast, host-owned, on a subnet attached to a
-  host interface (a kind or minikube bridge, libvirt, podman, docker, and the
-  LAN itself), cloud metadata (`fd00:ec2::254`, `100.100.100.200`,
+  `0.0.0.0/8`, link-local, multicast, host-owned, on a subnet of a host
+  interface off the allow list (a kind or minikube bridge, libvirt, podman,
+  docker), routed out through such an interface, cloud metadata (`fd00:ec2::254`, `100.100.100.200`,
   `168.63.129.16`), or an IPv6 spelling of any of them (NAT64 `64:ff9b::/96`
   and `64:ff9b:1::/48`, 6to4 `2002::/16`, IPv4-compatible `::/96`,
   IPv4-translated `::ffff:0:0:0/96`), and dials a vetted IP. The host's
-  prefixes (`sandbox.HostPrefixes`) are read on every dial, so a bridge that
+  links and prefixes (`sandbox.HostLinks`) and the route lookup
+  (`sandbox.RouteIface`) are read on every dial, so a bridge that
   appears mid-run is refused from its first new connection
   (`TestKubeProxyRereadsHostNetsOnEveryDial`); a pooled connection opened
   before it keeps the peer it was vetted against.
@@ -93,6 +94,8 @@ kubectl ──http──> 127.0.0.1:6443 ══ socket created in N by the stage
   there is acting on the host (`TestKubeRunRefusesAServerOnThisHost`,
   `TestKubeProxyPreflightRefusesAServerOnThisHost`,
   `TestKubeProxyRefusesASubnetAttachedToThisHost`,
+  `TestKubeProxyRefusesWhenTheRouteLeavesViaAHostBridge`,
+  `TestHostLinksClassifiesVirtualKinds`,
   `TestKubeProxyRefusesIPv6SpellingsOfLocalAddresses`). No read or write timeout (a
   watch would die); 64 connections; `Close` ends hijacked tunnels too.
 - **The credential** is read once, at start, from the decoded host file into
@@ -183,14 +186,40 @@ differ in any key, `credential` included, refuse naming both.
 - **`az` inside.** Every buildable form hands over the tenant refresh token or
   an ARM token, and an ARM token mints durable keys. The narrow form is a
   dedicated identity the human creates, under their own profile. #660.
-- **Clusters on this host or one hop from it** (kind, k3s, minikube, a VM on
-  a host bridge, a cluster on the same LAN): their nodes run on this host or
-  beside it, so the cluster's RBAC is the host's boundary, and reaching one is
-  base.toml's unbuilt one-port grant. Refused at Resolve for a loopback or
-  host-owned literal and at start, and on every dial, for any address on a
-  subnet attached to a host interface. The cost: a cluster on the laptop's own
-  LAN, or reached over a VPN whose interface carries the cluster's prefix, is
-  refused too; narrowing it is #677.
+- **Clusters on this host, and beside it.** A cluster on this host (kind,
+  k3s, minikube, a VM on a host bridge) runs its nodes here, so the cluster's
+  RBAC is the host's boundary, and reaching one is base.toml's unbuilt
+  one-port grant. A cluster beside it, on a physical LAN or behind a layer-3
+  VPN, is a remote cluster that the host happens to share a network with, and
+  is allowed.
+
+  A destination is refused when it is loopback, host-owned (over every link),
+  link-local, metadata or a transition spelling of one; or when the route
+  lookup for it (`RTM_GETROUTE` with `RTM_F_FIB_MATCH`) matches a SPECIFIC
+  route (`rtm_dst_len` > 0) that leaves by an interface off the allow list;
+  or when it lies inside a prefix carried by such an interface. A failed
+  lookup refuses. The allow list is the whole list: a physical NIC (no
+  `IFLA_INFO_KIND`, a `/sys/class/net/<if>/device`, not loopback, not
+  enslaved), `wwan`, `tun` with `IFF_POINTOPOINT`, `wireguard`. Refused and
+  named: bridge, veth, tap (a `tun` without `IFF_POINTOPOINT`), macvlan,
+  macvtap, ipvlan, ipvtap, vxlan, geneve, dummy, vrf, bond, team, vlan, gre,
+  gretap, ipip, sit, erspan; a kind not named is refused too.
+
+  A hostile process inside the sandbox can use this to act as you on a cluster
+  reached over a physical LAN or a layer-3 VPN, and through its pods reach
+  this host's LAN- or VPN-facing listeners as any neighbour on that network
+  can.
+
+  Costs: an uplink enslaved to `br0` refuses a LAN cluster; a vlan or bond
+  uplink is refused; gre and ipip tunnels are refused. Residuals: a wireguard
+  or tun interface that is really a tunnel to a local VM is indistinguishable
+  from a VPN; an address DNAT'ed by the host's netfilter (k3s's `10.43.0.1` to
+  host `:6443`) passes, because the route lookup does not consult netfilter,
+  so the server stays pinned by the human who wrote the profile. A default
+  route is the network beyond the gateway and is not judged by its interface,
+  so a host whose uplink is enslaved to `br0` still reaches an internet
+  cluster; a host whose default gateway is itself a local VM or container is
+  not detected.
 
 ## 4a. Residual, stated
 

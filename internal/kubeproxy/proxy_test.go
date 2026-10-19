@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 const testToken = "tok-0123456789abcdef"
@@ -108,7 +109,7 @@ func start(t *testing.T, up *upstream, pfx string, mod func(*Config)) *pfix {
 			return policy.Secret(testToken), nil
 		},
 		Audit:    func(s string) { f.amu.Lock(); f.audit = append(f.audit, s); f.amu.Unlock() },
-		HostNets: noHostNets,
+		HostNets: noHostNets, Route: physicalRoute,
 	}
 	if mod != nil {
 		mod(&cfg)
@@ -628,24 +629,24 @@ func TestKubeProxyPreflightRefusesAServerOnThisHost(t *testing.T) {
 		}
 		server, _ := url.Parse("https://kubernetes.docker.internal:6443")
 		err := Preflight(context.Background(), Config{Server: server,
-			HostNets: hostNets("192.0.2.10/32"),
-			Lookup:   func(context.Context, string) ([]netip.Addr, error) { return addrs, nil }})
+			HostNets: hostNets("192.0.2.10/32"), Route: physicalRoute,
+			Lookup: func(context.Context, string) ([]netip.Addr, error) { return addrs, nil }})
 		if err == nil || !strings.Contains(err.Error(), "cluster on this host") {
 			t.Errorf("%v: Preflight = %v, want the on-this-host refusal", answer, err)
 		}
 	}
 	for _, lit := range []string{"https://127.0.0.1:6443", "https://[::1]:6443"} {
 		server, _ := url.Parse(lit)
-		if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets}); err == nil {
+		if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: physicalRoute}); err == nil {
 			t.Errorf("%s: Preflight accepted a loopback literal", lit)
 		}
 	}
 	server, _ := url.Parse("https://aks-dev.example.azmk8s.io:443")
-	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
+	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: physicalRoute,
 		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{public}, nil }}); err != nil {
 		t.Errorf("a public server: %v", err)
 	}
-	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
+	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: physicalRoute,
 		Lookup: func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no such host") }}); err == nil {
 		t.Error("a name that does not resolve was accepted")
 	}
@@ -669,43 +670,161 @@ func TestKubeProxyDialerRefusesAMixedAnswer(t *testing.T) {
 	}
 }
 
-func noHostNets() ([]netip.Prefix, error) { return nil, nil }
+func noHostNets() ([]sandbox.HostNet, error) { return nil, nil }
 
-func hostNets(ps ...string) func() ([]netip.Prefix, error) {
-	return func() ([]netip.Prefix, error) {
-		var out []netip.Prefix
+// physicalRoute answers every route lookup with an allowed uplink, so a test
+// about the address classes or the attached subnets is not also about routing.
+func physicalRoute(netip.Addr) (sandbox.HostNet, error) {
+	return sandbox.HostNet{Iface: "wlp3s0", Kind: "physical", Allowed: true}, nil
+}
+
+func link(iface, kind string, allowed bool, ps ...string) func() ([]sandbox.HostNet, error) {
+	return func() ([]sandbox.HostNet, error) {
+		var out []sandbox.HostNet
 		for _, p := range ps {
-			out = append(out, netip.MustParsePrefix(p))
+			out = append(out, sandbox.HostNet{Prefix: netip.MustParsePrefix(p), Iface: iface, Kind: kind, Allowed: allowed})
 		}
 		return out, nil
 	}
 }
 
-func preflightAnswer(t *testing.T, nets func() ([]netip.Prefix, error), a string) error {
+// hostNets is ps on a bridge, which the dialer refuses.
+func hostNets(ps ...string) func() ([]sandbox.HostNet, error) {
+	return link("br-1a2b", "bridge", false, ps...)
+}
+
+func preflightAnswer(t *testing.T, nets func() ([]sandbox.HostNet, error), a string) error {
 	t.Helper()
 	server, _ := url.Parse("https://kube.example:6443")
 	addr := netip.MustParseAddr(a)
-	return Preflight(context.Background(), Config{Server: server, HostNets: nets,
+	return Preflight(context.Background(), Config{Server: server, HostNets: nets, Route: physicalRoute,
 		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{addr}, nil }})
 }
 
-// Red-team round on #671: an address on a subnet attached to a host
-// interface passed, because it is not one the host owns. A kind node on a
-// docker bridge, a minikube VM on libvirt's, and a machine on the laptop's
-// own LAN are each one hop from the host; the maintainer's decision is to
-// refuse every on-link subnet, the LAN included.
+// A subnet on a link that is not on the allow list is one hop from this host
+// as a cluster's nodes; a subnet on a physical NIC or a layer-3 VPN is a
+// network the host is only a neighbour on. Each refusal row has its positive
+// control in the pass table.
 func TestKubeProxyRefusesASubnetAttachedToThisHost(t *testing.T) {
-	nets := hostNets("192.168.1.120/24", "172.18.0.1/16", "192.168.39.1/24", "2001:db8:1::5/64")
-	for _, a := range []string{"192.168.1.1", "192.168.1.77", "172.18.0.2", "192.168.39.10", "2001:db8:1::99",
-		"::ffff:172.18.0.2"} {
-		if err := preflightAnswer(t, nets, a); err == nil || !strings.Contains(err.Error(), "a subnet attached to this host") {
-			t.Errorf("%s: Preflight = %v, want the attached-subnet refusal", a, err)
-		}
+	refused := []struct {
+		name, iface, kind, prefix, addr, want string
+	}{
+		{"docker bridge", "br-1a2b", "bridge", "172.18.0.1/16", "172.18.0.2", "(bridge)"},
+		{"libvirt bridge", "virbr0", "bridge", "192.168.39.1/24", "192.168.39.10", "(bridge)"},
+		{"tap", "tap0", "tap", "192.168.50.1/24", "192.168.50.9", "(tap)"},
+		{"veth", "veth1", "veth", "10.88.0.1/16", "10.88.0.4", "(veth)"},
+		{"unknown kind", "foo0", "frobnicate", "10.7.0.1/24", "10.7.0.9", "a link kind snug does not treat as a remote network"},
+		{"gre", "gre1", "gre", "10.8.0.1/24", "10.8.0.9", "a link kind snug does not treat as a remote network"},
+		{"bridge with an enslaved NIC", "br0", "bridge", "192.168.1.120/24", "192.168.1.77", "(bridge)"},
+		{"no kind, no device", "vboxnet0", "virtual", "192.168.56.1/24", "192.168.56.101", "(virtual)"},
+		{"enslaved physical", "enp3s0", "enslaved physical", "192.168.1.120/24", "192.168.1.77", "(enslaved physical)"},
+		{"v6 on a bridge", "br-1a2b", "bridge", "2001:db8:1::5/64", "2001:db8:1::99", "(bridge)"},
+		{"v4-mapped on a bridge", "br-1a2b", "bridge", "172.18.0.1/16", "::ffff:172.18.0.2", "(bridge)"},
 	}
-	for _, a := range []string{"203.0.113.7", "192.168.2.1", "2001:db8:2::1"} {
-		if err := preflightAnswer(t, nets, a); err != nil {
-			t.Errorf("%s, off every attached subnet: %v", a, err)
+	for _, c := range refused {
+		t.Run("refuses "+c.name, func(t *testing.T) {
+			err := preflightAnswer(t, link(c.iface, c.kind, false, c.prefix), c.addr)
+			if err == nil || !strings.Contains(err.Error(), "a subnet on "+c.iface) || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s on %s: Preflight = %v, want the subnet refusal naming %s and %q", c.addr, c.prefix, err, c.iface, c.want)
+			}
+		})
+	}
+	passes := []struct{ name, iface, kind, prefix, addr string }{
+		{"LAN on a physical NIC", "wlp3s0", "physical", "192.168.1.120/24", "192.168.1.77"},
+		{"layer-3 tun", "tun0", "tun", "10.1.0.5/24", "10.1.2.3"},
+		{"wireguard", "wg0", "wireguard", "10.1.0.5/16", "10.1.2.3"},
+		{"v6 LAN on a physical NIC", "wlp3s0", "physical", "2001:db8:1::5/64", "2001:db8:1::99"},
+	}
+	for _, c := range passes {
+		t.Run("passes "+c.name, func(t *testing.T) {
+			if err := preflightAnswer(t, link(c.iface, c.kind, true, c.prefix), c.addr); err != nil {
+				t.Errorf("%s on %s (%s): %v", c.addr, c.prefix, c.kind, err)
+			}
+		})
+	}
+	t.Run("off every refused subnet", func(t *testing.T) {
+		nets := link("br-1a2b", "bridge", false, "172.18.0.1/16")
+		if err := preflightAnswer(t, nets, "203.0.113.7"); err != nil {
+			t.Errorf("203.0.113.7 beside a bridge: %v", err)
 		}
+	})
+}
+
+func routeVia(iface, kind string, allowed bool) func(netip.Addr) (sandbox.HostNet, error) {
+	return func(netip.Addr) (sandbox.HostNet, error) {
+		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed}, nil
+	}
+}
+
+// routeDefaultVia is a default route (rtm_dst_len 0) out of the interface.
+func routeDefaultVia(iface, kind string, allowed bool) func(netip.Addr) (sandbox.HostNet, error) {
+	return func(netip.Addr) (sandbox.HostNet, error) {
+		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed, Default: true}, nil
+	}
+}
+
+func preflightRoute(t *testing.T, route func(netip.Addr) (sandbox.HostNet, error), a string) error {
+	t.Helper()
+	server, _ := url.Parse("https://kube.example:6443")
+	addr := netip.MustParseAddr(a)
+	return Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: route,
+		Lookup: func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{addr}, nil }})
+}
+
+// 10.10.0.0/16 via a gateway on a bridge is on no attached subnet, so only the
+// route lookup sees that the packet leaves through the bridge. The same
+// address through a physical uplink is the positive control.
+func TestKubeProxyRefusesWhenTheRouteLeavesViaAHostBridge(t *testing.T) {
+	err := preflightRoute(t, routeVia("br-x", "bridge", false), "10.10.3.4")
+	if err == nil || !strings.Contains(err.Error(), "leaves via br-x (bridge)") {
+		t.Errorf("route via a bridge: %v, want the route refusal", err)
+	}
+	if err := preflightRoute(t, routeVia("wlp3s0", "physical", true), "10.10.3.4"); err != nil {
+		t.Errorf("route via a physical uplink: %v", err)
+	}
+	// An uplink enslaved to br0 carries the default route: the internet
+	// beyond it is not a cluster on this host. A specific route (the case
+	// above) through the same bridge is refused.
+	if err := preflightRoute(t, routeDefaultVia("br0", "bridge", false), "203.0.113.7"); err != nil {
+		t.Errorf("default route via a bridge: %v, want it admitted", err)
+	}
+	failing := func(netip.Addr) (sandbox.HostNet, error) { return sandbox.HostNet{}, errors.New("netlink: boom") }
+	if err := preflightRoute(t, failing, "10.10.3.4"); err == nil || !strings.Contains(err.Error(), "route") {
+		t.Errorf("failing route lookup: %v, want a refusal", err)
+	}
+}
+
+func TestKubeProxyUnknownLinkKindRefuses(t *testing.T) {
+	err := preflightRoute(t, routeVia("xfrm0", "xfrm", false), "10.10.3.4")
+	if err == nil || !strings.Contains(err.Error(), "a link kind snug does not treat as a remote network") {
+		t.Errorf("unknown kind: %v", err)
+	}
+	if err := preflightRoute(t, routeVia("wg0", "wireguard", true), "10.10.3.4"); err != nil {
+		t.Errorf("positive control, wireguard: %v", err)
+	}
+}
+
+// A vboxnet-like link has no IFLA_INFO_KIND and no backing device; the
+// classifier names it "virtual" and the dialer refuses it like any bridge.
+func TestKubeProxyNoKindWithoutDeviceIsVirtual(t *testing.T) {
+	err := preflightAnswer(t, link("vboxnet0", "virtual", false, "192.168.56.1/24"), "192.168.56.101")
+	if err == nil || !strings.Contains(err.Error(), "vboxnet0 (virtual)") {
+		t.Errorf("no-kind link without a device: %v", err)
+	}
+	if err := preflightAnswer(t, link("enp3s0", "physical", true, "192.168.56.1/24"), "192.168.56.101"); err != nil {
+		t.Errorf("positive control, the same subnet on a physical NIC: %v", err)
+	}
+}
+
+// A tap is the kernel's tun kind without IFF_POINTOPOINT: a layer-2 segment a
+// VM sits on, not a VPN.
+func TestKubeProxyTapIsNotAVPN(t *testing.T) {
+	err := preflightAnswer(t, link("tap0", "tap", false, "10.1.0.1/24"), "10.1.0.9")
+	if err == nil || !strings.Contains(err.Error(), "tap0 (tap)") {
+		t.Errorf("tap: %v", err)
+	}
+	if err := preflightAnswer(t, link("tun0", "tun", true, "10.1.0.1/24"), "10.1.0.9"); err != nil {
+		t.Errorf("positive control, tun with POINTOPOINT: %v", err)
 	}
 }
 
@@ -735,9 +854,9 @@ func TestKubeProxyRefusesIPv6SpellingsOfLocalAddresses(t *testing.T) {
 func TestKubeProxyRereadsHostNetsOnEveryDial(t *testing.T) {
 	up := newUpstream(t, nil)
 	var nets atomic.Value
-	nets.Store([]netip.Prefix(nil))
+	nets.Store([]sandbox.HostNet(nil))
 	f := start(t, up, "", func(c *Config) {
-		c.HostNets = func() ([]netip.Prefix, error) { return nets.Load().([]netip.Prefix), nil }
+		c.HostNets = func() ([]sandbox.HostNet, error) { return nets.Load().([]sandbox.HostNet), nil }
 	})
 	// The upstream is on loopback; vet it as the cluster's public address.
 	stand := netip.MustParseAddr("198.51.100.5")
@@ -751,7 +870,7 @@ func TestKubeProxyRereadsHostNetsOnEveryDial(t *testing.T) {
 	if status, _ := raw(t, f.addr, req); !strings.HasPrefix(status, "200") {
 		t.Fatalf("before the bridge: %s, want 200", status)
 	}
-	nets.Store([]netip.Prefix{netip.MustParsePrefix("198.51.100.1/24")})
+	nets.Store([]sandbox.HostNet{{Prefix: netip.MustParsePrefix("198.51.100.1/24"), Iface: "br-new", Kind: "bridge"}})
 	f.p.tr.CloseIdleConnections() // a new connection, not the pooled one
 	if status, _ := raw(t, f.addr, req); !strings.HasPrefix(status, "502") {
 		t.Errorf("after the host gained 198.51.100.1/24: %s, want 502", status)
@@ -764,13 +883,16 @@ func TestKubeProxyRereadsHostNetsOnEveryDial(t *testing.T) {
 // A HostNets that fails refuses the dial: an empty list would read as "this
 // host owns nothing", which is the silent downgrade.
 func TestKubeProxyRefusesWhenHostNetsFail(t *testing.T) {
-	failing := func() ([]netip.Prefix, error) { return nil, errors.New("netlink: boom") }
+	failing := func() ([]sandbox.HostNet, error) { return nil, errors.New("netlink: boom") }
 	if err := preflightAnswer(t, failing, "203.0.113.7"); err == nil || !strings.Contains(err.Error(), "could not be listed") {
 		t.Errorf("Preflight with failing HostNets: %v", err)
 	}
 	server, _ := url.Parse("https://kube.example:6443")
 	if err := Preflight(context.Background(), Config{Server: server}); err == nil {
 		t.Error("Preflight without HostNets accepted")
+	}
+	if err := Preflight(context.Background(), Config{Server: server, HostNets: noHostNets}); err == nil {
+		t.Error("Preflight without Route accepted")
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/gomoni/snug/internal/policy"
+	"github.com/gomoni/snug/internal/sandbox"
 )
 
 // Config is the proxy's fixed shape. Listener and Server are required, and
@@ -57,12 +58,16 @@ type Config struct {
 	// With it, the request is forwarded with its headers as sent.
 	ClientCert *tls.Certificate
 	// HostNets lists every prefix on every host interface, unmapped and
-	// without a zone: the host's own addresses and the subnets attached to
-	// them. The dialer calls it on
+	// without a zone, each with its interface classified: the host's own
+	// addresses and the subnets attached to them. The dialer calls it on
 	// every vet, not once, because an address or a bridge added after start
 	// is as much the host as one that was there before. Required; an error
 	// refuses the dial.
-	HostNets func() ([]netip.Prefix, error)
+	HostNets func() ([]sandbox.HostNet, error)
+	// Route names the interface a packet to the address would leave by.
+	// Called on every vet, after the class checks. Required; an error refuses
+	// the dial, because an address with no route is one nothing vetted.
+	Route func(netip.Addr) (sandbox.HostNet, error)
 	// MaxConns bounds concurrent connections from inside; 0 is 64.
 	MaxConns int
 	// Lookup resolves the server's name; nil is net.DefaultResolver. A seam.
@@ -111,8 +116,8 @@ func New(cfg Config) (*Proxy, error) {
 	if (cfg.Token == nil) == (cfg.ClientCert == nil) {
 		return nil, errors.New("kube proxy: exactly one of Token and ClientCert is required")
 	}
-	if cfg.HostNets == nil {
-		return nil, errors.New("kube proxy: HostNets is required")
+	if cfg.HostNets == nil || cfg.Route == nil {
+		return nil, errors.New("kube proxy: HostNets and Route are required")
 	}
 	if cfg.Server.Scheme != "https" || cfg.Server.Host == "" {
 		return nil, fmt.Errorf("kube proxy: server %s is not https", policy.VisibleText(cfg.Server.String()))
@@ -393,31 +398,59 @@ func (p *Proxy) refusedAddr(a netip.Addr) string {
 		return fmt.Sprintf("this host's interfaces could not be listed to check it: %v", err)
 	}
 	for _, n := range nets {
-		if n.Addr() == a {
+		if n.Prefix.Addr() == a {
 			return "an address this host owns"
 		}
 	}
 	for _, n := range nets {
-		if n = n.Masked(); n.Contains(a) {
-			// A bridge (kind, minikube, libvirt, podman, docker) puts a
-			// cluster's nodes one hop from this host; so does the LAN.
-			return fmt.Sprintf("on %s, a subnet attached to this host", n)
+		if !n.Allowed && n.Prefix.Masked().Contains(a) {
+			return fmt.Sprintf("on %s, a subnet on %s: %s", n.Prefix.Masked(), describeLink(n), notRemote(n))
 		}
+	}
+	// A default route is the network beyond the gateway, whatever interface
+	// the gateway is reached by; only a specific route names a place.
+	out, err := p.cfg.Route(a)
+	if err != nil {
+		return fmt.Sprintf("the route to it could not be looked up to check it: %v", err)
+	}
+	if !out.Allowed && !out.Default {
+		return fmt.Sprintf("the route to %s leaves via %s: %s", a, describeLink(out), notRemote(out))
 	}
 	return ""
 }
 
+func describeLink(n sandbox.HostNet) string { return fmt.Sprintf("%s (%s)", n.Iface, n.Kind) }
+
+// hostSegments are the refused kinds that are a segment inside this host, the
+// place a local cluster's nodes live. The other refused kinds (gre, vlan,
+// bond, unknown ones) may carry a remote network, but snug cannot tell, and
+// says so.
+var hostSegments = map[string]bool{
+	"bridge": true, "veth": true, "tap": true, "macvlan": true, "macvtap": true,
+	"ipvlan": true, "ipvtap": true, "dummy": true, "vrf": true, "virtual": true,
+	"enslaved physical": true, "loopback": true,
+}
+
+// notRemote says why a link that is not on the allow list is refused.
+func notRemote(n sandbox.HostNet) string {
+	if hostSegments[n.Kind] {
+		return "a cluster there runs its nodes on this host"
+	}
+	return "a link kind snug does not treat as a remote network"
+}
+
 // Preflight resolves cfg.Server's name on the host and refuses it when ANY
 // address it names is one the dialer refuses: loopback, this host's own, one
-// on a subnet attached to this host, link-local, multicast, cloud metadata,
+// on a subnet of a link that is not on the allow list (a bridge, a veth, a tap
+// and the like) or routed out through one, link-local, multicast, cloud metadata,
 // or an IPv6 spelling of any of them. A cluster on this host — kind, k3s,
 // minikube, Docker Desktop's kubernetes.docker.internal — runs its nodes on
 // this host, so the credential's reach there is the host's, not a remote
 // cluster's. internal/cli runs it before the sandbox is created; the dialer
 // repeats it on every connection, because a record can change after start.
 func Preflight(ctx context.Context, cfg Config) error {
-	if cfg.Server == nil || cfg.HostNets == nil {
-		return errors.New("kube proxy: Server and HostNets are required")
+	if cfg.Server == nil || cfg.HostNets == nil || cfg.Route == nil {
+		return errors.New("kube proxy: Server, HostNets and Route are required")
 	}
 	p := &Proxy{cfg: cfg}
 	if p.cfg.Lookup == nil {

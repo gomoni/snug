@@ -39,13 +39,14 @@ func (r *recorder) calls() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.
 // upstream's port. standIn is the one loopback address the vet lets through
 // (the httptest upstream lives on it); every other address gets the real
 // refusedAddr, with the host prefixes nets.
-func startNamed(t *testing.T, up *upstream, rec *recorder, nets func() ([]netip.Prefix, error), mod func(*Config)) *pfix {
+func startNamed(t *testing.T, up *upstream, rec *recorder, nets func() ([]sandbox.HostNet, error), mod func(*Config)) *pfix {
 	t.Helper()
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(up.srv.URL, "https://"))
 	f := start(t, up, "", func(c *Config) {
 		c.Server, _ = url.Parse("https://kube.example:" + port)
 		c.Lookup = rec.lookup
 		c.HostNets = nets
+		c.Route = physicalRoute
 		if mod != nil {
 			mod(c)
 		}
@@ -156,7 +157,7 @@ func TestKubeProxyPreflightRefusesNamesThisMachineResolvesLocally(t *testing.T) 
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			err = Preflight(ctx, Config{Server: server, HostNets: sandbox.HostPrefixes})
+			err = Preflight(ctx, Config{Server: server, HostNets: sandbox.HostLinks, Route: sandbox.RouteIface})
 			if err == nil {
 				t.Errorf("%q was ACCEPTED by Preflight", name)
 				return
@@ -184,7 +185,7 @@ func TestKubeProxyPreflightRefusesLiteralServerForms(t *testing.T) {
 			continue
 		}
 		called := false
-		err = Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
+		err = Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: physicalRoute,
 			Lookup: func(context.Context, string) ([]netip.Addr, error) { called = true; return nil, fmt.Errorf("nxdomain") }})
 		if err == nil {
 			t.Errorf("%s: Preflight accepted it", host)
@@ -321,7 +322,7 @@ func TestKubeProxyIDNNamesDoNotReachALocalAddress(t *testing.T) {
 			continue
 		}
 		var seen string
-		err = Preflight(context.Background(), Config{Server: server, HostNets: noHostNets,
+		err = Preflight(context.Background(), Config{Server: server, HostNets: noHostNets, Route: physicalRoute,
 			Lookup: func(_ context.Context, h string) ([]netip.Addr, error) {
 				seen = h
 				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
@@ -333,7 +334,7 @@ func TestKubeProxyIDNNamesDoNotReachALocalAddress(t *testing.T) {
 			t.Errorf("%q: resolver was asked for %q, want the name as written (%q)", host, seen, server.Hostname())
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err = Preflight(ctx, Config{Server: server, HostNets: sandbox.HostPrefixes})
+		err = Preflight(ctx, Config{Server: server, HostNets: sandbox.HostLinks, Route: sandbox.RouteIface})
 		cancel()
 		if err == nil {
 			t.Errorf("%q: ACCEPTED with the real resolver", host)

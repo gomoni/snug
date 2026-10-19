@@ -31,8 +31,11 @@ func hostAddressesForResolve() []string {
 	return a
 }
 
-// kubeHostNets is sandbox.HostPrefixes; a test replaces it.
-var kubeHostNets = sandbox.HostPrefixes
+// kubeHostNets is sandbox.HostLinks; a test replaces it.
+var kubeHostNets = sandbox.HostLinks
+
+// kubeRoute is sandbox.RouteIface; a test replaces it.
+var kubeRoute = sandbox.RouteIface
 
 // kubePreflight is kubeproxy.Preflight; a test replaces it.
 var kubePreflight = kubeproxy.Preflight
@@ -110,7 +113,7 @@ func kubeServerIsRemote(server string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := kubePreflight(ctx, kubeproxy.Config{Server: u, HostNets: kubeHostNets}); err != nil {
+	if err := kubePreflight(ctx, kubeproxy.Config{Server: u, HostNets: kubeHostNets, Route: kubeRoute}); err != nil {
 		return fmt.Errorf("identity.kubectl: %w. Not starting", err)
 	}
 	return nil
@@ -169,7 +172,7 @@ func (r *kubeRun) listen(fs []*os.File) error {
 	}
 	cfg := kubeproxy.Config{
 		Listener: ln, Server: server, CAs: pool, TLSName: k.TLSServerName,
-		ClientCert: r.cert, HostNets: kubeHostNets, Audit: r.audit,
+		ClientCert: r.cert, HostNets: kubeHostNets, Route: kubeRoute, Audit: r.audit,
 	}
 	if r.token != nil {
 		tok := *r.token
