@@ -497,6 +497,8 @@ Install the real package. For a shell that reaches the host's engine on purpose,
 `podman system connection add host unix:///run/user/$(id -u)/podman/podman.sock`
 plus an alias — never a symlink at `/usr/bin/podman`, and never a global
 `CONTAINER_HOST`, since snug execs `podman` to run its own engine.
+A `podman` resolving to `podman-remote` is refused the same way: a client
+build has no engine to run.
 
 `snug doctor` checks for them, so a host missing one says so before the first
 container rather than during it:
