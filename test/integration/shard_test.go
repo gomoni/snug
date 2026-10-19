@@ -160,19 +160,22 @@ func selectShard() error {
 	}
 	re := "^(" + strings.Join(quoted, "|") + ")$"
 
+	// The notes below go to STDERR: some tests re-exec this binary as their
+	// payload and parse its stdout (TestHostLinksClassifiesVirtualKinds), and
+	// the child inherits $SNUG_TEST_SHARD, so a stdout note lands in their JSON.
 	switch shard {
 	case "engine":
 		if prev := flag.Lookup("test.run").Value.String(); prev != "" {
 			return fmt.Errorf("%s=engine selects with -run, and -run %q is already set", shardEnv, prev)
 		}
-		fmt.Printf("%s=engine: %d test(s) reach an engine gate\n", shardEnv, len(tests))
+		fmt.Fprintf(os.Stderr, "%s=engine: %d test(s) reach an engine gate\n", shardEnv, len(tests))
 		return flag.Set("test.run", re)
 	case "sandbox":
 		skip := re
 		if prev := flag.Lookup("test.skip").Value.String(); prev != "" {
 			skip = prev + "|" + re
 		}
-		fmt.Printf("%s=sandbox: skipping %d engine test(s), which the engine job runs\n", shardEnv, len(tests))
+		fmt.Fprintf(os.Stderr, "%s=sandbox: skipping %d engine test(s), which the engine job runs\n", shardEnv, len(tests))
 		return flag.Set("test.skip", skip)
 	default:
 		return fmt.Errorf("%s=%q: the shards are \"engine\" and \"sandbox\"; unset it to run both", shardEnv, shard)
