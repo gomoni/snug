@@ -190,7 +190,7 @@ differ in any key, `credential` included, refuse naming both.
   host-owned literal and at start, and on every dial, for any address on a
   subnet attached to a host interface. The cost: a cluster on the laptop's own
   LAN, or reached over a VPN whose interface carries the cluster's prefix, is
-  refused too.
+  refused too; narrowing it is #677.
 
 ## 4a. Residual, stated
 

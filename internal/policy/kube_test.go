@@ -593,3 +593,36 @@ func TestKubeServerIsPinnedByTheProfile(t *testing.T) {
 	wantKubeRefusal(t, kubeCase{file: moved}, "identity.kubectl.server is", "attacker.example", "another run")
 	wantKubeRefusal(t, kubeCase{kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert}}, "needs identity.kubectl.server", `server = "https://aks-dev.example.azmk8s.io:443"`)
 }
+
+// Fails if a literal spelling of a local address slips past Resolve when the
+// table says Resolve holds it, or is refused by Resolve when the table says
+// it is Preflight's. The table is the layer map: Resolve checks only
+// loopback, unspecified and host-owned literals after Unmap, plus localhost
+// names; every other class (link-local, 0.0.0.0/8, NAT64, 6to4) is
+// internal/kubeproxy's Preflight, pinned by
+// TestKubeProxyPreflightRefusesLiteralServerForms there. It does not run
+// Preflight, so a literal in the "preflight" column is not proven refused
+// end to end by this test.
+func TestKubeLiteralServerFormsAreRefusedByOneLayer(t *testing.T) {
+	for _, tc := range []struct {
+		host      string
+		atResolve bool
+	}{
+		{"[::ffff:127.0.0.1]", true}, {"[::]", true}, {"0.0.0.0", true}, {"127.0.0.1", true},
+		{"LOCALHOST", true}, {"localhost.", true}, {"Api.LocalHost.", true},
+		{"[fe80::1%25eth0]", false}, {"[64:ff9b::7f00:1]", false}, {"0.1.2.3", false},
+		{"[2002:7f00:1::1]", false}, {"[::ffff:169.254.169.254]", false},
+	} {
+		srv := "https://" + tc.host + ":6443"
+		// The profile pins the same server, so the pin cannot be what refuses.
+		_, err := kubeResolve(t, kubeCase{
+			kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert, Server: srv},
+			file: strings.Replace(kubeFixture(t), "https://aks-dev.example.azmk8s.io:443", srv, 1)})
+		if tc.atResolve && (err == nil || !strings.Contains(err.Error(), "host's loopback")) {
+			t.Errorf("%s: Resolve = %v, want the loopback refusal", tc.host, err)
+		}
+		if !tc.atResolve && err != nil {
+			t.Errorf("%s: Resolve refused (%v); the table says Preflight holds it, update the table", tc.host, err)
+		}
+	}
+}
