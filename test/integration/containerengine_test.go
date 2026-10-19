@@ -141,6 +141,7 @@ func resolveHostEngineOnce() engineResolution {
 // this" as "there is nothing to test here".
 func hostEngine(t *testing.T) string {
 	t.Helper()
+	refuseOutsideEngineShard(t)
 	r := resolveHostEngineOnce()
 	if r.isShim {
 		t.Fatalf("podman (named %q) resolves to %s, a host-escape helper (%s) that forwards to "+
@@ -442,6 +443,7 @@ var (
 // must NOT count toward the floor (issue #393 §4).
 func requireRealEngine(t *testing.T, env []string) {
 	t.Helper()
+	refuseOutsideEngineShard(t)
 	requireSandbox(t)
 	requirePython(t)
 	// No requireInternet. This gate carried one until issue #235, from when

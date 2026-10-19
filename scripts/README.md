@@ -329,20 +329,20 @@ Needs `docker` or `podman` and a host where
 `kernel.apparmor_restrict_unprivileged_userns` is 0 — the script refuses in one
 second, naming the sysctl, rather than letting bwrap fail twenty tests later. It
 launches `registry.opensuse.org/opensuse/tumbleweed:latest`, installs podman
-6.x, and runs the suite as a NON-ROOT user with a delegated subuid range. There
-is no root run and no `--privileged`.
+6.x, and runs the suite's engine shard (`SNUG_TEST_SHARD=engine`, the tests that
+reach an engine gate; `test/integration/shard_test.go`) as a NON-ROOT user with a
+delegated subuid range. There is no root run and no `--privileged`.
 
 Expect, near the end:
 
 ```
-engine tests: 42 ran, floor 42 — podman version 6.0.2 at /usr/bin/podman
+engine tests: 46 ran, floor 46 — podman version 6.0.2 at /usr/bin/podman
 ```
 
-`SNUG_ENGINE_FLOOR` is a MINIMUM, not a total, and it is **per environment**: 42
-in this container, 33 for a bare `make integration-sandbox` on this development
-host, where the engine cannot start a container at all (#401) and a chunk of the
-engine tests legitimately skip. So a count above the floor is normal and a count
-below it fails the run.
+`SNUG_ENGINE_FLOOR` is a MINIMUM, not a total, and it is **per environment**: the
+value `test/engine-container.sh` passes for this container, the `Makefile`
+default for a development host. Each carries its own measurement. So a count above
+the floor is normal and a count below it fails the run.
 
 What must never appear is a low count with a green exit — that is the defect this
 whole section exists to make impossible, and `SNUG_REQUIRE_ENGINE=1` plus the
