@@ -2226,6 +2226,34 @@ func dropEnv(env []string, name string) []string {
 	return out
 }
 
+// killPodmanPause kills the rootless pause process a host podman recorded
+// under a test's private XDG_RUNTIME_DIR (issue #678). It is a child of
+// nobody this test waits on, so without this every run leaves one behind.
+// The pid is read from a file, so the process is checked to still be a pause
+// process before it is killed rather than trusting a pid that may have been
+// reused.
+func killPodmanPause(t *testing.T, xdg string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(xdg, "libpod", "tmp", "pause.pid"))
+	if err != nil {
+		return // podman never started a pause process
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 1 {
+		t.Errorf("pause.pid under %s holds %q, not a pid", xdg, data)
+		return
+	}
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return // already gone
+	}
+	if argv0 := filepath.Base(strings.SplitN(string(cmdline), "\x00", 2)[0]); argv0 != "catatonit" && argv0 != "podman" {
+		t.Errorf("pause.pid under %s names pid %d, which is %q and not a pause process; not killing it", xdg, pid, argv0)
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
 // assertPreflightRefusal is the common shape P1/P3 both check: the payload
 // marker never appears (the payload never ran), snug exits non-zero, the
 // message names fix, and no stage-shaped process is left behind.
@@ -3279,19 +3307,32 @@ func assertHostileConfInjectsWithoutSnug(t *testing.T, home, probe, marker strin
 	}
 
 	store, runroot := t.TempDir(), t.TempDir()
+	xdg := shortRuntimeDir(t)
 	// XDG_CONFIG_HOME is REMOVED, not merely left alone: it takes precedence
 	// over $HOME/.config, so a developer's own value would silently redirect
 	// podman away from the planted file and quietly disarm this control.
 	// CONTAINERS_CONF is removed for the obvious reason — its presence is the
 	// very thing under test.
+	//
+	// XDG_RUNTIME_DIR is this test's own (issue #678). --root and --runroot do
+	// not move the rootless pause process: podman records it in
+	// $XDG_RUNTIME_DIR/libpod/tmp/pause.pid. Inside a distrobox that directory
+	// is the HOST's tmpfs, and a podman in the box's nested user namespace
+	// cannot join the host's pause, so it started its own and overwrote the
+	// host's pause.pid — every later host podman then joined the box's
+	// namespaces. A private directory means a pause process of our own, which
+	// the cleanup below has to kill, because nothing else will.
 	run := func(args ...string) (string, error) {
 		cmd := exec.Command(podman, append([]string{"--root", store, "--runroot", runroot}, args...)...)
-		cmd.Env = append(dropEnv(dropEnv(os.Environ(), "CONTAINERS_CONF"), "XDG_CONFIG_HOME"),
-			"HOME="+home)
+		cmd.Env = append(dropEnv(dropEnv(dropEnv(os.Environ(), "CONTAINERS_CONF"), "XDG_CONFIG_HOME"), "XDG_RUNTIME_DIR"),
+			"HOME="+home, "XDG_RUNTIME_DIR="+xdg)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	t.Cleanup(func() { run("system", "reset", "--force") })
+	t.Cleanup(func() {
+		run("system", "reset", "--force")
+		killPodmanPause(t, xdg)
+	})
 
 	tag := "snugtest-hostconf-control:1"
 	if out, err := run("import", "--change", `ENTRYPOINT=["/confprobe"]`, tarPath, tag); err != nil {

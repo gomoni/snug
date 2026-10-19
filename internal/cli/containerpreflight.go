@@ -511,7 +511,7 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 		// is the last point before the value leaves this function — see this
 		// function's own doc comment for what this discharges and why it is
 		// a no-op on this development host.
-		return pol.ResolveEngineBinary(env, custom)
+		return refuseRemoteOnlyEngine(pol.ResolveEngineBinary(env, custom))
 	}
 	if shim, ok := DetectHostShim("podman"); ok {
 		return "", fmt.Errorf("podman resolves to %s, a host-escape helper (%s) that forwards "+
@@ -533,7 +533,33 @@ func preflightPodmanBinary(env policy.Environ, pol *policy.Policy) (string, erro
 	}
 	// Same resolution and judgement, same reasoning, as the $SNUG_PODMAN
 	// return above.
-	return pol.ResolveEngineBinary(env, path)
+	return refuseRemoteOnlyEngine(pol.ResolveEngineBinary(env, path))
+}
+
+// refuseRemoteOnlyEngine refuses an engine binary that resolves to
+// podman-remote (issue #678). podman-remote is a CLIENT build with no engine
+// in it: it has no `system service`, so it cannot be what snug execs as the
+// engine, and without this check it was accepted here and then failed in its
+// own words once exec'd. A client-only `podman -> podman-remote` symlink is a
+// common distrobox setup, which is why it gets a refusal naming the fix rather
+// than podman-remote's error.
+//
+// Judged on the RESOLVED name, which is what ResolveEngineBinary hands back:
+// the symlink is spelled `podman`, and only its target says what it is. This
+// is the engine path only — a podman-remote CLIENT inside the sandbox talks to
+// $CONTAINER_HOST, which is snug's proxy, and is not refused anywhere.
+func refuseRemoteOnlyEngine(resolved string, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(filepath.Base(resolved), "podman-remote") {
+		return "", fmt.Errorf("the container engine resolves to %s, a podman-remote client build "+
+			"with no engine in it — snug runs its own engine with `podman system service`, "+
+			"which podman-remote does not have.\n"+
+			"      Fix: install the distribution podman package, or point $SNUG_PODMAN at a "+
+			"full podman binary.", resolved)
+	}
+	return resolved, nil
 }
 
 // preflightCgroupsDisabled is P5: a real (if approximate) probe of whether
