@@ -178,11 +178,16 @@ jobs:
         include:
           - suite: integration-sandbox
             label: real sandbox behaviour
+            # The engine tests run in the `engine` job and only there (#675).
+            # This runner has no working engine, so here they only ever
+            # skipped; the shard says so up front instead of probing for one.
+            # The signals entry leaves it empty, which runs its -run selection
+            # unchanged.
+            shard: sandbox
           - suite: integration-signals
             label: sandbox startup signal races
     # apt and setup-go dominate the fixed cost; the variable half is still at
-    # most ~70s HERE, because this runner has no container engine (#395) and
-    # the engine tier skips.
+    # most ~70s HERE, because the engine tier is not in this job's shard.
     #
     # 8 -> 12 by issue #401, and NOT because CI got slower. The Makefile's
     # integration-sandbox bound went 4m -> 8m (the pin un-skips the engine
@@ -352,6 +357,8 @@ jobs:
           # test failing when it does not. Splitting it would be deleting the
           # coverage with extra steps.
           SNUG_TEST_NET: '1'
+          # Read by TestMain (test/integration/shard_test.go); empty runs both.
+          SNUG_TEST_SHARD: ${{ matrix.shard }}
         run: make ${{ matrix.suite }}
 
 

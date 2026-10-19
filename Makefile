@@ -342,6 +342,12 @@ SNUG_ENGINE_FLOOR ?= 46
 #        Set by test/engine-container.sh, which owns that environment.
 SNUG_SANDBOX_TIMEOUT ?= 8m
 
+# $SNUG_TEST_SHARD, when set, narrows this target to half the package: "engine"
+# for the tests that reach a container engine, "sandbox" for the rest. TestMain
+# reads it, classifies the tests from their own source and turns it into
+# -run/-skip (test/integration/shard_test.go). Unset, which is how a human runs
+# it, everything runs. CI sets "sandbox" in the ubuntu job and "engine" in the
+# Tumbleweed one, so no test runs in both and none in neither (#675).
 integration-sandbox:
 	@SNUG_TEST_NET=$${SNUG_TEST_NET:-$${SNUG_REQUIRE_SANDBOX:+1}} \
 		go test -tags integration -timeout $(SNUG_SANDBOX_TIMEOUT) -v \
@@ -349,7 +355,9 @@ integration-sandbox:
 		| tee $(SANDBOX_LOG); \
 	status=$${PIPESTATUS[0]}; \
 	ran=$$(grep -o 'snug-engine-ran: [^ ]*' $(SANDBOX_LOG) | sort -u | wc -l); \
-	if [ "$$ran" -ge "$(SNUG_ENGINE_FLOOR)" ] && grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
+	if [ "$$SNUG_TEST_SHARD" = sandbox ]; then \
+		echo "engine tests: not in this run, SNUG_TEST_SHARD=sandbox"; \
+	elif [ "$$ran" -ge "$(SNUG_ENGINE_FLOOR)" ] && grep -q 'snug-engine-version:' $(SANDBOX_LOG); then \
 		version=$$(grep -m1 'snug-engine-version:' $(SANDBOX_LOG) | sed 's/.*snug-engine-version: //'); \
 		echo "engine tests: $$ran ran, floor $(SNUG_ENGINE_FLOOR) — $$version"; \
 	elif grep -q 'snug-engine-none:' $(SANDBOX_LOG); then \

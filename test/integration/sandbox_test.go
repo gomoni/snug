@@ -73,6 +73,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -207,6 +208,12 @@ func budget(t *testing.T, d ...time.Duration) {
 const payloadMarker = "__snug_payload_ran__"
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if err := selectShard(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	dir, err := os.MkdirTemp("", "snug-integration")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3553,6 +3560,7 @@ func TestDryRunShowsARefusedPolicy(t *testing.T) {
 // end-to-end proof rather than being the only coverage.
 func requireEngine(t *testing.T) {
 	t.Helper()
+	refuseOutsideEngineShard(t)
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("SKIP: podman is not installed; the build checks need a real engine")
 	}

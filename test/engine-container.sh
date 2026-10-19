@@ -352,6 +352,12 @@ provision() {
 	# tests done and still progressing (run 32943468831). The job bound above it
 	# is 30 minutes, so the three bounds still nest.
 	#
+	# SNUG_TEST_SHARD=engine runs ONLY the tests that reach an engine gate
+	# (test/integration/shard_test.go classifies them from the source). Every
+	# other test runs in the ubuntu `integration` job, and running them here too
+	# was most of this job's wall clock (#675). The floor below still holds: it
+	# counts markers, and a shard that skipped would not reach it.
+	#
 	# SNUG_REQUIRE_ENGINE is what makes this mean anything: "no usable real
 	# container engine" becomes t.Fatal instead of t.Skip, and the floor in
 	# `make integration-sandbox` fails the run when fewer than
@@ -366,6 +372,7 @@ provision() {
 		SNUG_REQUIRE_SANDBOX=1 \
 		SNUG_REQUIRE_ENGINE=1 \
 		SNUG_TEST_NET=1 \
+		SNUG_TEST_SHARD=engine \
 		bash -c 'cd /src && make build && ./bin/snug doctor; make integration-sandbox'
 }
 
