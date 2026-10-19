@@ -27,6 +27,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
+	"golang.org/x/sys/unix"
 )
 
 const testToken = "tok-0123456789abcdef"
@@ -675,7 +676,7 @@ func noHostNets() ([]sandbox.HostNet, error) { return nil, nil }
 // physicalRoute answers every route lookup with an allowed uplink, so a test
 // about the address classes or the attached subnets is not also about routing.
 func physicalRoute(netip.Addr) (sandbox.HostNet, error) {
-	return sandbox.HostNet{Iface: "wlp3s0", Kind: "physical", Allowed: true}, nil
+	return sandbox.HostNet{Iface: "wlp3s0", Kind: "physical", Allowed: true, Unicast: true}, nil
 }
 
 func link(iface, kind string, allowed bool, ps ...string) func() ([]sandbox.HostNet, error) {
@@ -752,14 +753,38 @@ func TestKubeProxyRefusesASubnetAttachedToThisHost(t *testing.T) {
 
 func routeVia(iface, kind string, allowed bool) func(netip.Addr) (sandbox.HostNet, error) {
 	return func(netip.Addr) (sandbox.HostNet, error) {
-		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed}, nil
+		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed, Unicast: true}, nil
 	}
 }
 
 // routeDefaultVia is a default route (rtm_dst_len 0) out of the interface.
 func routeDefaultVia(iface, kind string, allowed bool) func(netip.Addr) (sandbox.HostNet, error) {
 	return func(netip.Addr) (sandbox.HostNet, error) {
-		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed, Default: true}, nil
+		return sandbox.HostNet{Iface: iface, Kind: kind, Allowed: allowed, Default: true, Unicast: true}, nil
+	}
+}
+
+// A local, broadcast or anycast entry names a configured device but the kernel
+// delivers to this host: an address created by no RTM_NEWADDR is still the host.
+func TestKubeProxyRefusesALocallyDeliveredRoute(t *testing.T) {
+	route := func(unicast bool, typ uint8) func(netip.Addr) (sandbox.HostNet, error) {
+		return func(netip.Addr) (sandbox.HostNet, error) {
+			return sandbox.HostNet{Iface: "eth0", Kind: "physical", Allowed: true, Unicast: unicast, RouteBits: 16, RouteType: typ}, nil
+		}
+	}
+	for typ, name := range map[uint8]string{unix.RTN_LOCAL: "local", unix.RTN_BROADCAST: "broadcast",
+		unix.RTN_ANYCAST: "anycast", 99: "type 99"} {
+		err := preflightRoute(t, route(false, typ), "10.77.1.1")
+		if err == nil || !strings.Contains(err.Error(), "is a "+name+" route on eth0") {
+			t.Errorf("%s route: %v, want the locally-delivered refusal", name, err)
+		}
+	}
+	if err := preflightRoute(t, route(true, unix.RTN_UNICAST), "10.77.1.1"); err != nil {
+		t.Errorf("positive control, the same entry as unicast: %v", err)
+	}
+	zero := func(netip.Addr) (sandbox.HostNet, error) { return sandbox.HostNet{Allowed: true, Default: true}, nil }
+	if err := preflightRoute(t, zero, "10.77.1.1"); err == nil {
+		t.Error("a HostNet with Unicast unset was admitted")
 	}
 }
 

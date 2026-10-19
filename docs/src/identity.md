@@ -196,7 +196,8 @@ snug does not start the sandbox for:
   cloud-metadata addresses and their IPv6 spellings (NAT64, 6to4) are refused,
   and so is any address that lies on a subnet of a host interface snug does
   not trust as a remote network, or that a specific route of the host's
-  routing table (not the default route) sends out through one. That would be an easy sandbox escape: a kind, minikube or
+  routing table (not the default route) sends out through one, or whose route
+  the kernel delivers to this host (local, broadcast, anycast, multipath). That would be an easy sandbox escape: a kind, minikube or
   libvirt cluster runs its nodes on this host. A cluster on a physical LAN,
   behind a layer-3 VPN or beyond the default gateway is allowed.
   The allowed interfaces are the whole list: a physical NIC (not enslaved to a

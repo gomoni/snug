@@ -36,7 +36,7 @@ func TestHostLinksHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := hostLinksPayload{Nets: nets, Routes: map[string]sandbox.HostNet{}, Preflight: map[string]string{}}
-	for _, a := range []string{"10.1.0.5", "10.2.0.5", "10.3.0.5", "10.4.0.5", "10.5.0.5", "10.6.0.5", "10.99.0.5", "8.8.8.8"} {
+	for _, a := range []string{"10.1.0.5", "10.2.0.5", "10.3.0.5", "10.4.0.5", "10.5.0.5", "10.6.0.5", "10.99.0.5", "10.77.1.1", "8.8.8.8"} {
 		r, err := sandbox.RouteIface(netip.MustParseAddr(a))
 		if err != nil {
 			t.Fatalf("RouteIface(%s): %v", a, err)
@@ -92,6 +92,7 @@ for l in br0 veth0 tap0 tun0 wg0 dummy0; do
   ip addr add 10.$n.0.1/24 dev $l
   ip link set $l up
 done
+ip route add local 10.77.0.0/16 dev dummy0
 ip route add 10.99.0.0/16 via 10.1.0.2 dev br0
 ip route add default via 10.1.0.2 dev br0
 exec "$0" -test.run '^TestHostLinksHelper$' -test.count=1
@@ -155,6 +156,16 @@ exec "$0" -test.run '^TestHostLinksHelper$' -test.count=1
 	}
 	if def.Iface != "br0" || def.RouteBits != 0 || !def.Default {
 		t.Errorf("route to 8.8.8.8: %+v, want br0 as the default route (RouteBits 0)", def)
+	}
+	local := got.Routes["10.77.1.1"]
+	if local.Unicast || local.Iface != "dummy0" {
+		t.Errorf("route to 10.77.1.1: %+v, want a non-unicast entry on dummy0", local)
+	}
+	if !specific.Unicast || !def.Unicast {
+		t.Errorf("positive control: unicast routes read as specific=%+v default=%+v", specific, def)
+	}
+	if why := got.Preflight["10.77.1.1"]; !strings.Contains(why, "is a local route on dummy0") {
+		t.Errorf("Preflight of 10.77.1.1 = %q, want the locally-delivered refusal", why)
 	}
 	if why := got.Preflight["10.99.0.5"]; !strings.Contains(why, "leaves via br0 (bridge)") {
 		t.Errorf("Preflight of 10.99.0.5 = %q, want the route-egress refusal", why)

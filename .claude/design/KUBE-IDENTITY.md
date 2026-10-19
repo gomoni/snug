@@ -195,8 +195,10 @@ differ in any key, `credential` included, refuse naming both.
 
   A destination is refused when it is loopback, host-owned (over every link),
   link-local, metadata or a transition spelling of one; or when the route
-  lookup for it (`RTM_GETROUTE` with `RTM_F_FIB_MATCH`) matches a SPECIFIC
-  route (`rtm_dst_len` > 0) that leaves by an interface off the allow list;
+  lookup for it (`RTM_GETROUTE` with `RTM_F_FIB_MATCH`) matches a route
+  whose `rtm_type` is not unicast (local, broadcast, anycast: the kernel
+  delivers it to this host whatever device the entry names, and no address
+  record shows it), or a SPECIFIC route (`rtm_dst_len` > 0) that leaves by an interface off the allow list;
   or when it lies inside a prefix carried by such an interface. A failed
   lookup refuses. The allow list is the whole list: a physical NIC (no
   `IFLA_INFO_KIND`, a `/sys/class/net/<if>/device`, not loopback, not
@@ -215,7 +217,9 @@ differ in any key, `credential` included, refuse naming both.
   or tun interface that is really a tunnel to a local VM is indistinguishable
   from a VPN; an address DNAT'ed by the host's netfilter (k3s's `10.43.0.1` to
   host `:6443`) passes, because the route lookup does not consult netfilter,
-  so the server stays pinned by the human who wrote the profile. A default
+  so the server stays pinned by the human who wrote the profile. A multipath
+  route is refused too, because the answer names no single output interface:
+  an over-refusal. A default
   route is the network beyond the gateway and is not judged by its interface,
   so a host whose uplink is enslaved to `br0` still reaches an internet
   cluster; a host whose default gateway is itself a local VM or container is

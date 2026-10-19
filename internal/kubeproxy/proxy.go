@@ -35,6 +35,7 @@ import (
 
 	"github.com/gomoni/snug/internal/policy"
 	"github.com/gomoni/snug/internal/sandbox"
+	"golang.org/x/sys/unix"
 )
 
 // Config is the proxy's fixed shape. Listener and Server are required, and
@@ -413,10 +414,26 @@ func (p *Proxy) refusedAddr(a netip.Addr) string {
 	if err != nil {
 		return fmt.Sprintf("the route to it could not be looked up to check it: %v", err)
 	}
+	if !out.Unicast {
+		return fmt.Sprintf("the route to %s is a %s route on %s: the kernel delivers it to this host",
+			a, routeTypeName(out.RouteType), out.Iface)
+	}
 	if !out.Allowed && !out.Default {
 		return fmt.Sprintf("the route to %s leaves via %s: %s", a, describeLink(out), notRemote(out))
 	}
 	return ""
+}
+
+func routeTypeName(t uint8) string {
+	switch t {
+	case unix.RTN_LOCAL:
+		return "local"
+	case unix.RTN_BROADCAST:
+		return "broadcast"
+	case unix.RTN_ANYCAST:
+		return "anycast"
+	}
+	return fmt.Sprintf("type %d", t)
 }
 
 func describeLink(n sandbox.HostNet) string { return fmt.Sprintf("%s (%s)", n.Iface, n.Kind) }

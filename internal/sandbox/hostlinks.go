@@ -32,6 +32,13 @@ type HostNet struct {
 	// filled in keeps the route-egress refusal.
 	RouteBits int
 	Default   bool
+	// Unicast is set by RouteIface only, true when the matched entry's
+	// rtm_type is RTN_UNICAST. Every other type (local, broadcast, anycast,
+	// ...) is delivered to this host whatever device the entry names, and the
+	// zero value is false so a HostNet nobody filled in is refused.
+	Unicast bool
+	// RouteType is rtm_type of the matched entry.
+	RouteType uint8
 }
 
 // linkInfo is the part of a netlink link message classifyLink reads, plus the
@@ -161,7 +168,7 @@ func joinAddrs(links map[uint32]classifiedLink, recs []addrRec) ([]HostNet, erro
 // as written. It fails when the kernel has no route, which reads as "refuse".
 func RouteIface(a netip.Addr) (HostNet, error) {
 	a = a.Unmap().WithZone("")
-	oif, bits, err := routeOIF(a, unix.RTM_F_FIB_MATCH)
+	oif, bits, typ, err := routeOIF(a, unix.RTM_F_FIB_MATCH)
 	if err != nil {
 		return HostNet{}, fmt.Errorf("route lookup for %s: %w", a, err)
 	}
@@ -173,7 +180,8 @@ func RouteIface(a netip.Addr) (HostNet, error) {
 	if !ok {
 		return HostNet{}, fmt.Errorf("route lookup for %s: output interface %d is not in the link list", a, oif)
 	}
-	return HostNet{Iface: l.Iface, Kind: l.Kind, Allowed: l.Allowed, RouteBits: bits, Default: bits == 0}, nil
+	return HostNet{Iface: l.Iface, Kind: l.Kind, Allowed: l.Allowed, RouteBits: bits, Default: bits == 0,
+		Unicast: typ == unix.RTN_UNICAST, RouteType: typ}, nil
 }
 
 type classifiedLink struct {
@@ -256,18 +264,19 @@ func cstring(b []byte) string {
 	return string(b)
 }
 
-// routeOIF returns the output interface and the matched entry's rtm_dst_len.
+// routeOIF returns the output interface, the matched entry's rtm_dst_len and
+// its rtm_type.
 // With RTM_F_FIB_MATCH the kernel answers with the FIB entry that matched;
 // without it, the answer is the resolved route to the single address.
-func routeOIF(a netip.Addr, flags uint32) (uint32, int, error) {
+func routeOIF(a netip.Addr, flags uint32) (uint32, int, uint8, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	defer unix.Close(fd)
 	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO,
 		&unix.Timeval{Sec: 5}); err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	fam := uint8(unix.AF_INET)
 	if a.Is6() {
@@ -289,23 +298,23 @@ func routeOIF(a netip.Addr, flags uint32) (uint32, int, error) {
 	msg = append(msg, attr...)
 	binary.NativeEndian.PutUint32(msg[0:], uint32(len(msg)))
 	if _, err := unix.Write(fd, msg); err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	buf := make([]byte, 1<<16)
 	n, err := unix.Read(fd, buf)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	msgs, err := syscall.ParseNetlinkMessage(buf[:n])
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	for _, m := range msgs {
 		switch m.Header.Type {
 		case unix.NLMSG_ERROR:
 			if len(m.Data) >= 4 {
 				if e := int32(binary.NativeEndian.Uint32(m.Data)); e != 0 {
-					return 0, 0, syscall.Errno(-e)
+					return 0, 0, 0, syscall.Errno(-e)
 				}
 			}
 		case unix.RTM_NEWROUTE:
@@ -313,9 +322,9 @@ func routeOIF(a netip.Addr, flags uint32) (uint32, int, error) {
 				continue
 			}
 			if v := attrs(m.Data[unix.SizeofRtMsg:])[unix.RTA_OIF]; len(v) == 4 {
-				return binary.NativeEndian.Uint32(v), int(m.Data[1]), nil
+				return binary.NativeEndian.Uint32(v), int(m.Data[1]), m.Data[7], nil
 			}
 		}
 	}
-	return 0, 0, errors.New("the kernel's answer names no output interface")
+	return 0, 0, 0, errors.New("the kernel's answer names no output interface")
 }
