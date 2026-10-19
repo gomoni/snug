@@ -429,9 +429,11 @@ dns = true
 # the pinned server and nowhere else. snug protects the HOST — your credential
 # stays out and goes to one server — and not the cluster: what that credential
 # may do there is the cluster's RBAC, and every request kubectl sends is
-# forwarded as sent, `--as` included. A server on this host (kind, k3s,
-# minikube: loopback or an address the host owns, after resolving its name) is
-# refused before the sandbox starts, because those nodes run on this host.
+# forwarded as sent, `--as` included. A server on this host or one hop from it
+# (kind, k3s, minikube: loopback, an address the host owns, or one on a subnet
+# attached to a host interface — a bridge, and the LAN too — after resolving
+# its name) is refused before the sandbox starts and on every dial, because
+# those nodes run on this host or beside it.
 #
 # credential picks the ONE credential of the context's user entry the proxy
 # presents:

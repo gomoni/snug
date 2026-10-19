@@ -76,14 +76,24 @@ kubectl ──http──> 127.0.0.1:6443 ══ socket created in N by the stage
   `Proxy: nil` (no `HTTPS_PROXY` from snug's environment), TLS against the
   re-encoded CA and `tls-server-name`. The dialer resolves the server's name,
   refuses the whole answer when any address in it is loopback, unspecified,
-  link-local, multicast, host-owned or cloud metadata (`fd00:ec2::254`,
-  `100.100.100.200`, `168.63.129.16`), and dials a vetted IP.
+  `0.0.0.0/8`, link-local, multicast, host-owned, on a subnet attached to a
+  host interface (a kind or minikube bridge, libvirt, podman, docker, and the
+  LAN itself), cloud metadata (`fd00:ec2::254`, `100.100.100.200`,
+  `168.63.129.16`), or an IPv6 spelling of any of them (NAT64 `64:ff9b::/96`
+  and `64:ff9b:1::/48`, 6to4 `2002::/16`, IPv4-compatible `::/96`,
+  IPv4-translated `::ffff:0:0:0/96`), and dials a vetted IP. The host's
+  prefixes (`sandbox.HostPrefixes`) are read on every dial, so a bridge that
+  appears mid-run is refused from its first new connection
+  (`TestKubeProxyRereadsHostNetsOnEveryDial`); a pooled connection opened
+  before it keeps the peer it was vetted against.
   `kubeproxy.Preflight` runs the same check once in `startKubeIdentity`,
   before the sandbox exists, so a server on this host refuses the run rather
   than answering 502 inside: a cluster on this host (kind, k3s, minikube,
   `kubernetes.docker.internal`) runs its nodes on this host, and acting as you
   there is acting on the host (`TestKubeRunRefusesAServerOnThisHost`,
-  `TestKubeProxyPreflightRefusesAServerOnThisHost`). No read or write timeout (a
+  `TestKubeProxyPreflightRefusesAServerOnThisHost`,
+  `TestKubeProxyRefusesASubnetAttachedToThisHost`,
+  `TestKubeProxyRefusesIPv6SpellingsOfLocalAddresses`). No read or write timeout (a
   watch would die); 64 connections; `Close` ends hijacked tunnels too.
 - **The credential** is read once, at start, from the decoded host file into
   snug's memory, and is never written: no run-directory file, no environment,
@@ -173,10 +183,14 @@ differ in any key, `credential` included, refuse naming both.
 - **`az` inside.** Every buildable form hands over the tenant refresh token or
   an ARM token, and an ARM token mints durable keys. The narrow form is a
   dedicated identity the human creates, under their own profile. #660.
-- **Clusters on this host** (kind, k3s, minikube): their nodes run on this
-  host, so the cluster's RBAC is the host's boundary, and reaching one is
-  base.toml's unbuilt one-port grant. Refused at Resolve for a literal and at
-  start for a name.
+- **Clusters on this host or one hop from it** (kind, k3s, minikube, a VM on
+  a host bridge, a cluster on the same LAN): their nodes run on this host or
+  beside it, so the cluster's RBAC is the host's boundary, and reaching one is
+  base.toml's unbuilt one-port grant. Refused at Resolve for a loopback or
+  host-owned literal and at start, and on every dial, for any address on a
+  subnet attached to a host interface. The cost: a cluster on the laptop's own
+  LAN, or reached over a VPN whose interface carries the cluster's prefix, is
+  refused too.
 
 ## 4a. Residual, stated
 
