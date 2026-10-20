@@ -43,29 +43,6 @@ it has already expired. Run `claude` on the host to refresh it, or log in again
 inside with `/login` (see [`login`](#login)). A login made inside is not saved
 on the host; the next run starts from the host token again.
 
-## `settings.json`
-
-`~/.claude/settings.json` can name programs to run, so snug never binds it.
-It reads the host's file as data and writes a new one with only these keys,
-when the host has them: `model`, `theme`, `editorMode`, `verbose`,
-`alwaysThinkingEnabled`, `autoCompactEnabled`, `includeCoAuthoredBy`,
-`prefersReducedMotion`, `spinnerTipsEnabled`, `skipWorkflowUsageWarning`.
-Every other key is dropped, including keys snug has never heard of.
-
-- A value that does not look like a plain name (a `model` holding an ARN or a
-  path, for example) is dropped and snug says so.
-- The file is read as strict JSON, up to 1 MiB. Comments, a trailing comma or
-  a larger file carry nothing, and snug says why.
-- The sandbox can write the generated file; the write goes nowhere and the
-  host's file is untouched. Anything written there lasts for the run, so it is
-  not a boundary.
-- `/etc/claude-code/managed-settings.json` is not visible inside, so an
-  organisation's managed policy does not apply.
-
-The same filter applies to the target's `.claude/settings.json` and
-`.claude/settings.local.json`, see below. A target file that is a symlink or a
-directory refuses the run.
-
 ## The target opens without the trust dialog
 
 Claude Code normally asks "Quick safety check" before it opens a directory
@@ -127,12 +104,6 @@ login = ["claude"]
   snug: login bridge: refused an open request from the sandbox — not the Claude login URL snug pins (scheme, host or path): https://example.com/. Nothing was opened.
   ```
 
-- The shim is a `/bin/sh` script, so the selection must have a shell inside
-  (`@sys`); otherwise the run is refused. A profile that sets `BROWSER` in the
-  same selection is a conflict.
-- One login is pending at a time, at most three callbacks are relayed per run,
-  and a login not finished within 10 minutes is dropped and its port released.
-- The browser `xdg-open` starts is yours and may outlive the run.
 - snug answers the browser's callback itself and passes the sandbox only the
   code and state, never a cookie.
 
