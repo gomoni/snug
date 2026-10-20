@@ -51,8 +51,8 @@ func TestTheLoginBridgeRelaysOneRebuiltCallback(t *testing.T) {
 	}
 	port := loginPort(t, out)
 
-	if v, _ := loginField(out, "BROWSER"); v != "/snug/bin/snug-browser" {
-		t.Errorf("BROWSER inside is %q, want /snug/bin/snug-browser:\n%s", v, out)
+	if v, _ := loginField(out, "BROWSER"); v != "/snug/lib/snug/browser" {
+		t.Errorf("BROWSER inside is %q, want /snug/lib/snug/browser:\n%s", v, out)
 	}
 	if v, _ := loginField(out, "SHIM-RC"); v != "0" {
 		t.Errorf("the shim exited %q, want 0:\n%s", v, out)
@@ -377,8 +377,8 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 	}
 }
 
-// TestWithoutTheLoginKeyThereIsNoBridge fails if BROWSER, the FIFO or the
-// shim exist in a run whose profiles do not set login = ["claude"]. The
+// TestWithoutTheLoginKeyThereIsNoBridge fails if BROWSER, the FIFO, the
+// wrapper or the browser link exist in a run whose profiles do not set login = ["claude"]. The
 // same script runs again with the key on and must see all three, which is what
 // shows the script looks at the right paths.
 func TestWithoutTheLoginKeyThereIsNoBridge(t *testing.T) {
@@ -388,16 +388,17 @@ func TestWithoutTheLoginKeyThereIsNoBridge(t *testing.T) {
 
 	const script = `if [ -n "${BROWSER+set}" ]; then echo "BROWSER=set:$BROWSER"; else echo "BROWSER=unset"; fi
 if [ -e /snug/browser.fifo ]; then echo FIFO=present; else echo FIFO=absent; fi
-if [ -e /snug/bin/snug-browser ]; then echo SHIM=present; else echo SHIM=absent; fi
+if [ -e /snug/lib/snug/wrapper ]; then echo WRAPPER=present; else echo WRAPPER=absent; fi
+if [ -L /snug/lib/snug/browser ]; then echo LINK=present; else echo LINK=absent; fi
 `
 	off := runEnv(t, f.env, loginKeylessArgs, f.proj, script).mustRun(t)
-	for _, want := range []string{"BROWSER=unset", "FIFO=absent", "SHIM=absent"} {
+	for _, want := range []string{"BROWSER=unset", "FIFO=absent", "WRAPPER=absent", "LINK=absent"} {
 		if !strings.Contains(off.out, want) {
 			t.Errorf("without the key, want %q:\n%s", want, off.out)
 		}
 	}
 	on := runEnv(t, f.env, loginBridgeArgs, f.proj, script).mustRun(t)
-	for _, want := range []string{"BROWSER=set:/snug/bin/snug-browser", "FIFO=present", "SHIM=present"} {
+	for _, want := range []string{"BROWSER=set:/snug/lib/snug/browser", "FIFO=present", "WRAPPER=present", "LINK=present"} {
 		if !strings.Contains(on.out, want) {
 			t.Errorf("control: with the key, want %q:\n%s", want, on.out)
 		}
@@ -533,28 +534,33 @@ func TestTheLoginBridgeRefusesWithoutADisplay(t *testing.T) {
 	}
 }
 
-// TestTheShimAndFIFOAreReadOnlyOrScoped fails if the sandbox can rewrite or
-// replace the shim that BROWSER names, or if the FIFO is anything but a 0600
-// FIFO owned by the run's uid. It does not show who else on the host can open
-// the FIFO: that is the run directory's own mode, not asserted here.
-func TestTheShimAndFIFOAreReadOnlyOrScoped(t *testing.T) {
+// TestTheWrapperAndFIFOAreReadOnlyOrScoped fails if the sandbox can rewrite or
+// replace the wrapper that BROWSER leads to, add a name beside it, or move the
+// directory it sits in, or if the FIFO is anything but a 0600 FIFO owned by
+// the run's uid. The wrapper is checked to still be an ELF afterwards, so a
+// refused write is not mistaken for one that happened to be a no-op. It does
+// not show who else on the host can open the FIFO: that is the run
+// directory's own mode, not asserted here.
+func TestTheWrapperAndFIFOAreReadOnlyOrScoped(t *testing.T) {
 	budget(t, 30*time.Second)
 	requireLoginBridgeEnv(t)
 	f := newLoginFixture(t, "callback")
 
 	const script = `echo "UID $(id -u)"
-stat -c 'SHIM %a %u' /snug/bin/snug-browser
+stat -c 'WRAPPER %a %u' /snug/lib/snug/wrapper
 stat -c 'FIFO %F %a %u' /snug/browser.fifo
-(printf x >> /snug/bin/snug-browser) 2>&1
+(printf x >> /snug/lib/snug/wrapper) 2>&1
 echo "APPEND-RC $?"
-(rm -f /snug/bin/snug-browser) 2>&1
+(rm -f /snug/lib/snug/browser) 2>&1
 echo "RM-RC $?"
-(touch /snug/bin/another) 2>&1
+(touch /snug/lib/snug/another) 2>&1
 echo "TOUCH-RC $?"
-(chmod 0777 /snug/bin/snug-browser) 2>&1
+(chmod 0777 /snug/lib/snug/wrapper) 2>&1
 echo "CHMOD-RC $?"
-head -c 20 /snug/bin/snug-browser
-echo
+(mv /snug/lib /snug/lib2) 2>&1
+echo "MV-RC $?"
+echo "MAGIC $(head -c 4 /snug/lib/snug/wrapper | tail -c 3)"
+[ -L /snug/lib/snug/browser ] && echo LINK-INTACT
 `
 	r := runEnv(t, f.env, loginBridgeArgs, f.proj, script).mustRun(t)
 	t.Logf("%s", r.out)
@@ -563,13 +569,13 @@ echo
 	if uid != strconv.Itoa(os.Getuid()) {
 		t.Errorf("inside, id -u is %q, want the run's uid %d", uid, os.Getuid())
 	}
-	if shim, _ := loginField(r.out, "SHIM"); shim == "" {
-		t.Errorf("control: stat of the shim printed nothing, so the write checks below ran against nothing:\n%s", r.out)
+	if w, _ := loginField(r.out, "WRAPPER"); w == "" {
+		t.Errorf("control: stat of the wrapper printed nothing, so the write checks below ran against nothing:\n%s", r.out)
 	}
 	if fifo, _ := loginField(r.out, "FIFO"); fifo != fmt.Sprintf("fifo 600 %d", os.Getuid()) {
 		t.Errorf("the FIFO is %q, want %q", fifo, fmt.Sprintf("fifo 600 %d", os.Getuid()))
 	}
-	for _, name := range []string{"APPEND", "RM", "TOUCH", "CHMOD"} {
+	for _, name := range []string{"APPEND", "RM", "TOUCH", "CHMOD", "MV"} {
 		rc, _ := loginField(r.out, name+"-RC")
 		if rc == "" || rc == "0" {
 			t.Errorf("%s inside succeeded or never ran (rc %q):\n%s", name, rc, r.out)
@@ -578,8 +584,11 @@ echo
 	if !strings.Contains(r.out, "Read-only file system") {
 		t.Errorf("the write was not refused as read-only:\n%s", r.out)
 	}
-	if !strings.Contains(r.out, "#!/bin/sh") {
-		t.Errorf("the shim is not intact after the attempts (first bytes not a shell shebang):\n%s", r.out)
+	if m, _ := loginField(r.out, "MAGIC"); m != "ELF" {
+		t.Errorf("the wrapper is not intact after the attempts (bytes 2-4 are %q, want ELF):\n%s", m, r.out)
+	}
+	if !strings.Contains(r.out, "LINK-INTACT") {
+		t.Errorf("the browser link is gone after the attempts:\n%s", r.out)
 	}
 }
 

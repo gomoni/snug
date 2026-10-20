@@ -33,6 +33,9 @@ var ErrGrantRefused = errors.New("grant refused")
 // ok=false with a nil error means m is Optional and the path is absent, which
 // is the -try semantics the path form had: omit the mount.
 func openBindSource(m policy.Mount) (f *os.File, ok bool, err error) {
+	if m.Host == policy.SelfExeHost {
+		return openSelfExe()
+	}
 	fd, err := openat2(unix.AT_FDCWD, m.Host, &unix.OpenHow{
 		Flags:   unix.O_PATH | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_NO_SYMLINKS,
@@ -56,6 +59,35 @@ func openBindSource(m policy.Mount) (f *os.File, ok bool, err error) {
 		return nil, false, fmt.Errorf("opening the grant source %s (granted at %s): %w",
 			policy.VisibleText(m.Host), policy.VisibleText(m.Guest), err)
 	}
+}
+
+// openSelfExe opens the executable this snug is running, for
+// policy.WrapperGuest. A plain open FOLLOWS the magic link, which is the point:
+// openat2's RESOLVE_NO_SYMLINKS would refuse it with ELOOP, and nothing can
+// write /proc/self/exe, so the swap that rule closes does not exist here. Every
+// bind source is opened in the snug the user ran, before either topology
+// forks, so this is that image in both.
+//
+// An image replaced or removed on disk since this snug started (an upgrade) has
+// no links left, and bwrap refuses to bind it with "Can't find source path
+// /proc/self/fd/N". Refused here instead, with the cause.
+func openSelfExe() (*os.File, bool, error) {
+	fd, err := unix.Open(policy.SelfExeHost, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, false, fmt.Errorf("opening snug's own executable for %s: %w", policy.WrapperGuest, err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		unix.Close(fd)
+		return nil, false, fmt.Errorf("stat of snug's own executable: %w", err)
+	}
+	if st.Nlink == 0 {
+		unix.Close(fd)
+		return nil, false, fmt.Errorf("snug's own executable was replaced or removed on disk after this " +
+			"snug started (an upgrade in progress?), and bwrap cannot bind a deleted file for " +
+			policy.WrapperGuest + "; run snug again")
+	}
+	return os.NewFile(uintptr(fd), policy.SelfExeHost), true, nil
 }
 
 var (

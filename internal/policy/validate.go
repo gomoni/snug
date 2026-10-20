@@ -237,6 +237,15 @@ func (p *Policy) Validate(env Environ) error {
 				"         ro = [\"/host/path/tool:%s/tool\"]",
 				provenance(m), describeNode(m), g, SnugDir, StagedBinDir, StagedBinDir)
 		}
+		// SelfExeHost names snug's own executable and is bound at exactly one
+		// place, by snug. Resolve's canonical-host check skips it and the
+		// launcher opens it following the magic link, so a second spelling of
+		// it anywhere would inherit both exemptions.
+		isSelf, atWrapper := m.Host == SelfExeHost, m.Authored && g == WrapperGuest
+		if m.Kind == KindBind && (isSelf || atWrapper) && !(isSelf && atWrapper && m.Access == AccessRO) {
+			return fmt.Errorf("snug bug: %s is snug's own executable and is bound only read-only at "+
+				"%s, by snug (got %s at %s)", SelfExeHost, WrapperGuest, describeNode(m), VisibleText(g))
+		}
 		// RULE 5: no profile may bind FROM /proc, /dev or /sys, at any access.
 		// The abuse each one carries is in kernelTrees, below.
 		//

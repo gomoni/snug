@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,5 +216,94 @@ func TestOpenat2UnavailableRefuses(t *testing.T) {
 		t.Fatalf("control: the real openat2 failed here: ok=%v err=%v", ok, err)
 	} else {
 		f.Close()
+	}
+}
+
+// TestOpenBindSourceSelfExeFollowsMagicLink fails if SelfExeHost is opened the
+// way every other bind source is (openat2 with RESOLVE_NO_SYMLINKS, which
+// refuses the magic link), or if the descriptor is anything but the inode this
+// process is running. Compared by device and inode against the path
+// os.Executable reports, so a descriptor on some other file fails it.
+func TestOpenBindSourceSelfExeFollowsMagicLink(t *testing.T) {
+	f, ok, err := openBindSource(policy.Mount{Host: policy.SelfExeHost, Guest: policy.WrapperGuest, Kind: policy.KindBind})
+	if err != nil || !ok {
+		t.Fatalf("openBindSource(%s) = ok %v, err %v", policy.SelfExeHost, ok, err)
+	}
+	defer f.Close()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got unix.Stat_t
+	if err := unix.Stat(exe, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fstat(int(f.Fd()), &got); err != nil {
+		t.Fatal(err)
+	}
+	if want.Dev != got.Dev || want.Ino != got.Ino {
+		t.Errorf("descriptor is dev %d ino %d, this process runs dev %d ino %d (%s)",
+			got.Dev, got.Ino, want.Dev, want.Ino, exe)
+	}
+	if got.Mode&unix.S_IFMT != unix.S_IFREG {
+		t.Errorf("descriptor is not a regular file: mode %o", got.Mode)
+	}
+}
+
+// selfExeChildEnv marks the re-executed copy of this test binary, which
+// unlinks its own image and then opens it.
+const selfExeChildEnv = "SNUG_TEST_SELFEXE_UNLINKED"
+
+// TestOpenBindSourceSelfExeRefusesADeletedImage fails if snug binds its own
+// executable after the file was removed or replaced on disk: bwrap cannot bind
+// a file with no links ("Can't find source path /proc/self/fd/N"), and the
+// refusal belongs here with the cause. The child removes its own image, which
+// is the state an upgrade in progress leaves. Control: before the unlink the
+// same open succeeds, in the same child.
+func TestOpenBindSourceSelfExeRefusesADeletedImage(t *testing.T) {
+	if os.Getenv(selfExeChildEnv) == "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, ok, err := openBindSource(policy.Mount{Host: policy.SelfExeHost, Guest: policy.WrapperGuest, Kind: policy.KindBind})
+		if err != nil || !ok {
+			t.Fatalf("control: before the unlink, open = ok %v, err %v", ok, err)
+		}
+		f.Close()
+		if err := os.Remove(exe); err != nil {
+			t.Fatal(err)
+		}
+		_, ok, err = openBindSource(policy.Mount{Host: policy.SelfExeHost, Guest: policy.WrapperGuest, Kind: policy.KindBind})
+		if ok || err == nil {
+			t.Fatalf("a deleted image opened: ok %v, err %v", ok, err)
+		}
+		if !strings.Contains(err.Error(), "replaced or removed") {
+			t.Fatalf("refusal does not say what happened: %v", err)
+		}
+		t.Log("REFUSED-DELETED-IMAGE")
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(t.TempDir(), "sandbox.test")
+	if err := os.WriteFile(copyPath, src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(copyPath, "-test.run=^TestOpenBindSourceSelfExeRefusesADeletedImage$", "-test.v")
+	cmd.Env = append(os.Environ(), selfExeChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "REFUSED-DELETED-IMAGE") {
+		t.Fatalf("the child never reached the refusal (marker missing):\n%s", out)
 	}
 }

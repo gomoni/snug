@@ -364,7 +364,14 @@ func (p *Policy) BwrapFlags(uid, gid int, fds FDs) []string {
 // procfs path does not survive being bound under it: bwrap refuses the mount
 // as a race. Nothing can rename an entry inside procfs, so there is no swap
 // for a descriptor to close.
+//
+// SelfExeHost is the exception, and the reason is what a path would name: bwrap
+// resolving /proc/self/exe in its OWN process would bind bwrap's executable,
+// not snug's. The launcher opens it as a descriptor in snug instead.
 func BindByPath(host string) bool {
+	if host == SelfExeHost {
+		return false
+	}
 	return host == "/proc" || strings.HasPrefix(host, "/proc/")
 }
 

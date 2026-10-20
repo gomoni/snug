@@ -13,8 +13,8 @@ import (
 // verb — while a selection that turns the feature on refuses it, on --dry-run
 // and on a run alike, because the verdict is Resolve's and both paths call it.
 //
-// The LISTEN_PID arm is the #621 red team's F1: the staged door script exports
-// it, so a profile's value rendered on --dry-run while the payload got its own
+// The LISTEN_PID arm is the #621 red team's F1: the door's entry sets it
+// inside (internal/wrapper), so a profile's value rendered on --dry-run while the payload got its own
 // pid. Only the real binary exercises the profile loader, the builtins and
 // Resolve together, which is why this lives here and not beside the unit tests.
 func TestConditionalEnvThroughTheRealBinary(t *testing.T) {

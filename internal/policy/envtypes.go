@@ -777,8 +777,7 @@ var envNotes = map[string]envNote{
 	// builds rather than through snug itself: a descriptor placed in ExtraFiles
 	// arrives inside at the same number with cloexec=false and acceptconn=1, and
 	// bwrap closes only the descriptors it consumes. The end-to-end path through
-	// snug is asserted by the integration test named at HTTPDoorShimPath's
-	// caller, not by this row.
+	// snug is asserted by test/integration/httpdoor_test.go, not by this row.
 	"LISTEN_FDS": both(shapeOpaque, "a socket-activated server takes this many listening descriptors "+
 		"from fd 3 on as its own; listen_names makes snug write it with the descriptors behind it "+
 		"(measured: the descriptor arrives at fd 3 with acceptconn=1)"),
@@ -1655,10 +1654,11 @@ var envNotes = map[string]envNote{
 	// the LISTEN_FDS descriptors only when LISTEN_PID is its own pid. Tried:
 	// no sd_listen_fds consumer on the host. What WAS measured, by the #621
 	// red-team round: a profile's LISTEN_PID=1 beside listen_names rendered on
-	// --dry-run and reached the payload as its own pid, because the staged
-	// script (httpDoorShim) exports it after bwrap's --setenv.
+	// --dry-run and reached the payload as its own pid, because the door's
+	// entry (internal/wrapper) replaces it after bwrap's --setenv.
 	"LISTEN_PID": both(shapeOpaque, "a socket-activated server takes the LISTEN_FDS descriptors only "+
-		"if this is its own pid; listen_names makes snug's staged script export it"),
+		"if this is its own pid; listen_names makes snug's door entry ("+DoorExecVerb+") set it, "+
+		"replacing any value a profile wrote"),
 	// MEASURED INSIDE A RUNNING SANDBOX — redteam host round 2, which is also the
 	// round that upgraded this row from "documented". /usr/bin/npm is still the
 	// broken libalternatives shim on this host ("npm-default: No such file or

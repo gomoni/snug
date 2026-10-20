@@ -8,7 +8,8 @@ Owner: `host-bridge`. Code:
 
 | piece | where |
 |---|---|
-| the key, the shim, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginSet`), `resolve.go`, `browserbridge.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserShimGuest`) |
+| the key, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginSet`), `resolve.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserGuest`, `WrapperGuest`) |
+| the client inside | `internal/wrapper` (`Browser`), dispatched from `internal/cli/main.go` on `argv[0]` |
 | the predicate and rebuild (pure) | `internal/loginbridge/authorize.go`, `callback.go`, `query.go`, `pinned.go` |
 | limits | `internal/loginbridge/limits.go` |
 | host listener, relay | `internal/loginbridge/bridge.go`, `procnet.go` |
@@ -23,9 +24,10 @@ costs, and this document does not restate it.
 
 ## 1. The flow
 
-1. Inside, `BROWSER=/snug/bin/snug-browser`. Claude Code execs it with the
-   authorize URL as its one argument; the shim writes that line to
-   `/snug/browser.fifo`.
+1. Inside, `BROWSER=/snug/lib/snug/browser`, a symlink to snug's own
+   executable at `/snug/lib/snug/wrapper`. Claude Code execs it with the
+   authorize URL as its one argument; snug, seeing that `argv[0]`, writes the
+   URL as one line to `/snug/browser.fifo`.
 2. snug (P0) reads the line and runs it through `loginbridge.ParseAuthorize`:
    one pinned shape, everything else refused with a named reason (§3).
 3. `Bridge.Handle` checks the limits (§7), checks that something inside listens
@@ -56,18 +58,20 @@ forwarded into the namespace, and host loopback stays unreachable from inside.
 - `BROWSER` is a `conditionalEnvs` row (ENVIRONMENT-VARIABLES.md §1.1).
   `browser` is not in `ClaudeSettingAllowlist`, so the generated `settings.json`
   never carries Claude Code's `settings.browser`, which would outrank `$BROWSER`.
-- Resolve stages the shim as a `KindData`, read-only, 0755 mount at
-  `/snug/bin/snug-browser`; the FIFO `--bind` is added after Resolve, so the
-  golden bwrap diff against `@claude @net` is exactly the shim mount and
-  `--setenv BROWSER`, and the pasta argv is byte-equal to `@claude @net`'s.
+- Resolve binds snug's running executable read-only by descriptor at
+  `/snug/lib/snug/wrapper` (`Host` is `/proc/self/exe`, opened in P0), links
+  `/snug/lib/snug/browser` to it, and sets `BROWSER`. No shell is needed, so
+  the selection needs no `@sys`. The FIFO `--bind` is added after Resolve, so
+  the golden bwrap diff against `@claude @net` is exactly the wrapper bind, the
+  symlink, their `--dir`s and `--setenv BROWSER`, and the pasta argv is
+  byte-equal to `@claude @net`'s.
 
 ## 3. Transport sandbox → snug, and the predicate
 
-### 3.1 A FIFO, because the client is `/bin/sh`
+### 3.1 A FIFO
 
-The only client snug can count on inside is `/bin/sh` — `curl` and `python3`
-are not guaranteed by `@sys` — and `sh` cannot speak AF_UNIX. A FIFO needs only
-`>`.
+The transport carries one line, one way, and nothing is answered. A FIFO is
+exactly that; a socket would add a direction snug never uses.
 
 - P0 creates `browser.fifo`, mode 0600, in the per-run directory
   (`runDir.Socket`), opens it `O_RDWR|O_CLOEXEC` — a FIFO opened read-write
@@ -75,8 +79,9 @@ are not guaranteed by `@sys` — and `sh` cannot speak AF_UNIX. A FIFO needs onl
   exits — and binds it at `/snug/browser.fifo` with `Policy.BindSocket`
   (RunScoped, after Resolve). `--dry-run` binds the planned path the same way
   (`planBrowserFIFO`), so its argv carries the same `--bind`.
-- The shim (`browserBridgeShim`) refuses anything but exactly one argument and
-  `printf '%s\n' "$1" > /snug/browser.fifo`. **The shim is not the bound; the
+- The client (`wrapper.Browser`) refuses anything but exactly one argument
+  under 4096 bytes with no newline or NUL, and writes it plus `\n` to
+  `/snug/browser.fifo` in one `write(2)`. **The client is not the bound; the
   predicate is.** Anything inside may write the FIFO directly.
 - The reader (`readLoginLines`) takes newline-terminated lines of at most 4096
   bytes; a longer one is discarded up to the next newline and counts as one

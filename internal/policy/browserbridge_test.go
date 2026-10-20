@@ -24,27 +24,10 @@ func TestBrowserBridgeNeedsEgress(t *testing.T) {
 	}
 }
 
-// TestBrowserBridgeNeedsAShell: the shim BROWSER points at is a `/bin/sh`
-// script, so a selection with no shell inside is refused at Resolve rather
-// than failing later when Claude Code execs $BROWSER.
-func TestBrowserBridgeNeedsAShell(t *testing.T) {
-	reg := testRegistry()
-	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
-	_, err := Resolve(reg, []ProfileName{"@target-rw", "bridge"}, testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("login = [\"claude\"] with no shell resolved")
-	}
-	for _, want := range []string{"/bin/sh", "@sys"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal does not say %q: %v", want, err)
-		}
-	}
-}
-
-// TestBrowserBridgeStagesTheShimAndBROWSER pins the positive case: with both
-// egress and a shell, Resolve stages the read-only shim and points BROWSER at
-// it, and nothing else.
-func TestBrowserBridgeStagesTheShimAndBROWSER(t *testing.T) {
+// TestBrowserBridgeStagesTheWrapperAndBROWSER pins the positive case: with
+// egress, Resolve points BROWSER at the symlink BrowserGuest, which leads to
+// the one authored wrapper bind, and stages no data script.
+func TestBrowserBridgeStagesTheWrapperAndBROWSER(t *testing.T) {
 	reg := testRegistry()
 	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
 	p, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge"}, testCtx(), newFakeEnv())
@@ -54,22 +37,26 @@ func TestBrowserBridgeStagesTheShimAndBROWSER(t *testing.T) {
 	if want := (LoginSet(0)).With(LoginClaude); p.Login != want {
 		t.Fatalf("p.Login = %v, want %v", p.Login, want)
 	}
-	m, ok := p.Mounts[BrowserShimGuest]
-	if !ok || m.Kind != KindData || m.Access != AccessRO || !m.Authored {
-		t.Fatalf("no authored read-only KindData mount at %s: %+v", BrowserShimGuest, m)
+	m, ok := p.Mounts[BrowserGuest]
+	if !ok || m.Kind != KindSymlink || m.Host != WrapperGuest || !m.Authored {
+		t.Fatalf("no authored symlink %s -> %s: %+v", BrowserGuest, WrapperGuest, m)
+	}
+	w, ok := p.Mounts[WrapperGuest]
+	if !ok || w.Kind != KindBind || w.Access != AccessRO || !w.Authored || w.Host != SelfExeHost {
+		t.Fatalf("no authored read-only bind of %s at %s: %+v", SelfExeHost, WrapperGuest, w)
 	}
 	v, ok := p.Env["BROWSER"]
-	if !ok || len(v.Entries) != 1 || v.Entries[0].Value != BrowserShimGuest || v.Entries[0].Verb != VerbSnug {
-		t.Fatalf("BROWSER not authored to %s: %+v", BrowserShimGuest, v)
+	if !ok || len(v.Entries) != 1 || v.Entries[0].Value != BrowserGuest || v.Entries[0].Verb != VerbSnug {
+		t.Fatalf("BROWSER not authored to %s: %+v", BrowserGuest, v)
 	}
 }
 
 // TestWithoutBrowserThereIsNoShimOrBROWSER: a selection with @net and @sys but
-// no login key stages neither the shim nor BROWSER — the hole exists only
+// no login key stages neither the browser link nor BROWSER — the hole exists only
 // where a profile spells the key itself.
 func TestWithoutBrowserThereIsNoShimOrBROWSER(t *testing.T) {
 	p := mustResolve(t, "@sys", "@target-rw", "netty")
-	if _, ok := p.Mounts[BrowserShimGuest]; ok {
+	if _, ok := p.Mounts[BrowserGuest]; ok {
 		t.Error("the shim is staged without login = [\"claude\"] anywhere in the selection")
 	}
 	if _, ok := p.Env["BROWSER"]; ok {
@@ -120,7 +107,7 @@ func TestLoginIsAUnion(t *testing.T) {
 	if got := ab.Login.Names(); len(got) != 1 || got[0] != "claude" {
 		t.Errorf("Names() = %q, want [claude]", got)
 	}
-	if !reflect.DeepEqual(ab.Mounts[BrowserShimGuest], ba.Mounts[BrowserShimGuest]) ||
+	if !reflect.DeepEqual(ab.Mounts[BrowserGuest], ba.Mounts[BrowserGuest]) ||
 		!reflect.DeepEqual(ab.Env["BROWSER"], ba.Env["BROWSER"]) {
 		t.Error("the shim or BROWSER depends on fold order")
 	}
@@ -134,7 +121,7 @@ func TestLoginIsAUnion(t *testing.T) {
 	if p.Login != 0 {
 		t.Errorf("login = [] resolved to %v, want empty", p.Login)
 	}
-	if _, ok := p.Mounts[BrowserShimGuest]; ok {
+	if _, ok := p.Mounts[BrowserGuest]; ok {
 		t.Error("login = [] staged the shim")
 	}
 }

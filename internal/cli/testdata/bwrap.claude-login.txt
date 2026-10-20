@@ -16,6 +16,10 @@
 --dir /snug
 --perms 0755
 --dir /snug/bin
+--perms 0755
+--dir /snug/lib
+--perms 0755
+--dir /snug/lib/snug
 --symlink usr/bin /bin
 --dev /dev
 --remount-ro /dev
@@ -27,10 +31,10 @@
 --symlink usr/sbin /sbin
 --size 1073741824
 --tmpfs /tmp
---ro-bind-fd 21 /usr
+--ro-bind-fd 20 /usr
 --ro-bind-data 10 /etc/group
---ro-bind-fd 22 /etc/ld.so.cache
---ro-bind-fd 23 /etc/ld.so.conf
+--ro-bind-fd 21 /etc/ld.so.cache
+--ro-bind-fd 22 /etc/ld.so.conf
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
 --ro-bind-data 13 /etc/resolv.conf
@@ -50,20 +54,20 @@
 --tmpfs /home/u/.local
 --size 1073741824
 --tmpfs /home/u/proj
---ro-bind-fd 24 /snug/bin/claude
---perms 0755
---ro-bind-data 18 /snug/bin/snug-browser
---ro-bind-data 19 /home/u/.claude/CLAUDE.md
+--ro-bind-fd 23 /snug/bin/claude
+--ro-bind-data 18 /home/u/.claude/CLAUDE.md
 --perms 0600
---file 20 /home/u/.claude/settings.json
+--file 19 /home/u/.claude/settings.json
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind-fd 25 /home/u/proj/sub
+--bind-fd 24 /home/u/proj/sub
+--symlink /snug/lib/snug/wrapper /snug/lib/snug/browser
+--ro-bind-fd 25 /snug/lib/snug/wrapper
 --remount-ro /
 --clearenv
---setenv BROWSER /snug/bin/snug-browser
+--setenv BROWSER /snug/lib/snug/browser
 --setenv HOME /home/u
 --setenv LOGNAME u
 --setenv NO_COLOR 

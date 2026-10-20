@@ -176,6 +176,11 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 				fmt.Fprintln(out, frag)
 			}
 		}
+		if m.Authored && m.Guest == policy.WrapperGuest {
+			for _, frag := range wrapMark("  ← " + policy.WrapperNote) {
+				fmt.Fprintln(out, frag)
+			}
+		}
 		if m.Authored {
 			if note := policy.ProcfsNote(m.Guest); note != "" {
 				for _, frag := range wrapMark("  ← " + note) {
@@ -2072,9 +2077,9 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 		// "THAT IS A SANDBOX ESCAPE" sentence for exactly the selections that
 		// declare a door and no network, while the real run and --explain both
 		// printed it: three renderings of one policy, two of which named an
-		// escape (red team, issue #541). The only trace left here was
-		// /snug/bin/http-door-handover in COMMANDS, which does not say what it
-		// is.
+		// escape (red team, issue #541). The only other trace of a door is the
+		// wrapper's FILESYSTEM row and the command's prefix, neither of which
+		// says what a door is.
 		renderHTTPDoors(out, p)
 	case policy.NetEgress:
 		fmt.Fprintf(out, "NETWORK  egress — private netns (one per sandbox) with a pasta helper.\n")

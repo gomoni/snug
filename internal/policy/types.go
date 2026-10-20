@@ -779,11 +779,10 @@ func ParsePodmanMode(s string) (PodmanMode, error) {
 type LoginProvider uint8
 
 const (
-	// LoginClaude is Claude Code's `/login`: snug stages
-	// /snug/bin/snug-browser and points BROWSER at it, so Claude Code execs
-	// the shim with the login URL as its one argument instead of a real
-	// opener. Resolve refuses it outside a selection that also grants egress
-	// and a shell — see resolve.go.
+	// LoginClaude is Claude Code's `/login`: snug points BROWSER at
+	// BrowserGuest, so Claude Code execs snug's own wrapper with the login URL
+	// as its one argument instead of a real opener. Resolve refuses it outside
+	// a selection that also grants egress — see resolve.go.
 	LoginClaude LoginProvider = iota
 )
 

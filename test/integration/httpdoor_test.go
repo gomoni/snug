@@ -32,8 +32,8 @@ import (
 //
 // The third is what stops the first two passing on a socket that exists and goes
 // nowhere. LISTEN_PID is the one a naive implementation gets wrong: snug cannot
-// predict a pid inside a fresh pid namespace, so a staged script sets it with
-// `exec`, and a wrong value makes every conforming library SILENTLY ignore the
+// predict a pid inside a fresh pid namespace, so snug's own wrapper sets it and
+// execs the payload, and a wrong value makes every conforming library SILENTLY ignore the
 // descriptor — a door that reaches a sandbox where nothing ever accepts.
 
 func buildDoorProbe(t *testing.T) string {
@@ -104,7 +104,7 @@ listen_names = ["web"]
 	if pid != mine {
 		t.Errorf("LISTEN_PID = %q but the payload's own pid is %q. A conforming client ignores "+
 			"the descriptor on mismatch, silently, so the door would reach a sandbox where "+
-			"nothing ever accepts. The staged `exec` handover is what makes these equal",
+			"nothing ever accepts. The wrapper's exec handover (internal/wrapper) is what makes these equal",
 			pid, mine)
 	}
 
@@ -155,7 +155,7 @@ listen_names = ["web"]
 }
 
 // The negative arm. Without a door, nothing in the sandbox names one — no
-// LISTEN_FDS, no handover script on the command, no socket. Without this, every
+// LISTEN_FDS, no wrapper on the command, no socket. Without this, every
 // assertion above could pass on a build that set the variables unconditionally.
 func TestWithoutAnHTTPDoorNothingNamesOne(t *testing.T) {
 	budget(t)
@@ -163,7 +163,7 @@ func TestWithoutAnHTTPDoorNothingNamesOne(t *testing.T) {
 
 	proj, _ := target(t)
 	out, code := cli(t, baseEnv(), proj, "--", "/bin/sh", "-c",
-		`echo "FDS=[${LISTEN_FDS-unset}] NAMES=[${LISTEN_FDNAMES-unset}] PID=[${LISTEN_PID-unset}]"; ls /snug/bin 2>&1 || true`)
+		`echo "FDS=[${LISTEN_FDS-unset}] NAMES=[${LISTEN_FDNAMES-unset}] PID=[${LISTEN_PID-unset}]"; if [ -e /usr ]; then echo CTL-TEST-WORKS; fi; if [ -e /snug/lib/snug/wrapper ]; then echo WRAPPER-PRESENT; else echo WRAPPER-ABSENT; fi`)
 	if code != 0 {
 		t.Fatalf("snug exited %d:\n%s", code, out)
 	}
@@ -173,8 +173,13 @@ func TestWithoutAnHTTPDoorNothingNamesOne(t *testing.T) {
 		t.Errorf("a sandbox with no http door still carries the socket-activation variables, "+
 			"so a payload would look for a descriptor nothing handed it:\n%s", out)
 	}
-	if strings.Contains(out, "http-door-handover") {
-		t.Errorf("the handover script is staged for a run that declared no door:\n%s", out)
+	// POSITIVE CONTROL: the test expression works (it finds /usr), so
+	// WRAPPER-ABSENT is a finding of absence and not of a broken `[`.
+	if !strings.Contains(out, "CTL-TEST-WORKS") {
+		t.Fatalf("control: `[ -e /usr ]` did not find /usr:\n%s", out)
+	}
+	if !strings.Contains(out, "WRAPPER-ABSENT") {
+		t.Errorf("snug's wrapper is staged for a run that declared no door:\n%s", out)
 	}
 }
 
