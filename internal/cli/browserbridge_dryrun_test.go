@@ -246,14 +246,14 @@ func TestBrowserBridgeRowsAreAbsentWhenTheKeyIsOff(t *testing.T) {
 }
 
 // TestBrowserBridgeDryRunShowsTheFilesystemRowsAndEnv covers the rows that
-// are not in the NETWORK block: the generated shim, the planned FIFO and
+// are not in the NETWORK block: the wrapper, its browser link, the planned FIFO and
 // BROWSER with snug provenance.
 func TestBrowserBridgeDryRunShowsTheFilesystemRowsAndEnv(t *testing.T) {
 	env := newBridgeEnv(false)
 	p := resolveBridge(t, env, true)
 	human := bridgeHuman(t, env, p)
 	for _, want := range []string{
-		policy.BrowserShimGuest, policy.BrowserFIFOGuest,
+		policy.BrowserGuest, policy.WrapperGuest, policy.BrowserFIFOGuest,
 		"BROWSER", "browser bridge  login = [\"claude\"]", "opener          /usr/bin/xdg-open",
 		"org:create_api_key", "login opener",
 	} {

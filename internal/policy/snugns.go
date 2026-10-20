@@ -36,8 +36,9 @@ import "strings"
 // and snug creates the directory on the sandbox's own root tmpfs.
 const SnugDir = "/snug"
 
-// StagedBinDir is the ONE directory snug puts executables in, and the only
-// directory of snug's own making that ever goes on PATH.
+// StagedBinDir is the directory snug puts COMMANDS in, and the only directory
+// of snug's own making that ever goes on PATH. snug's own helpers, which are
+// not commands, are in SnugLibDir instead.
 //
 // It is under SnugDir, alongside the container proxy socket and the ssh-agent
 // proxy socket — all snug's own, all unwritable from inside once --remount-ro /
@@ -59,6 +60,56 @@ const SnugDir = "/snug"
 // one by name.
 const StagedBinDir = SnugDir + "/bin"
 
+// SnugLibDir holds snug's own helpers that are NOT commands. Nothing here is
+// on PATH, so nothing here can shadow, or be shadowed by, a command name. It is
+// a plain directory on the root tmpfs, read-only under --remount-ro / exactly as
+// StagedBinDir is, and Validate's rule 4b refuses every profile mount inside it:
+// stagedFileUnderSnugDir admits nothing outside StagedBinDir.
+const SnugLibDir = SnugDir + "/lib/snug"
+
+// WrapperGuest is snug's OWN running executable, bound read-only by descriptor
+// whenever a selection opens an http door or sets login = ["claude"]. It is the
+// door's entry (DoorExecVerb) and, through BrowserGuest, the login bridge's
+// BROWSER (internal/wrapper).
+//
+// Both used to be /bin/sh scripts, so a feature with nothing to do with a shell
+// refused a selection that granted none, and ran whatever /bin/sh a profile
+// bound (issue #669). snug is cgo-free and cmd/snug/nocgo.go refuses to compile
+// otherwise, so this image needs no libc and no loader inside.
+//
+// A hostile process inside the sandbox can use this to read and execute snug's
+// own static binary. It runs with the payload's uid, namespaces, seccomp filter
+// and descriptors, from a read-only nosuid bind, so every verb in it — the
+// hidden re-exec verbs included — reaches only what the payload could already
+// reach by writing the same bytes to its writable /tmp and running them. What
+// it learns is snug's code, which is public, and the host path snug is
+// installed at, which /proc/self/mountinfo shows as the bind's root, as for
+// every bind.
+const WrapperGuest = SnugLibDir + "/wrapper"
+
+// WrapperNote is the line --dry-run puts under WrapperGuest's row, whose host
+// side reads /proc/self/exe and would otherwise look like a procfs grant.
+const WrapperNote = "snug's own running executable, bound by descriptor; the payload can read " +
+	"and run it. Not on PATH: it is the http door's entry (" + DoorExecVerb + ") and, as " +
+	BrowserGuest + ", the login bridge's BROWSER"
+
+// BrowserGuest is a symlink to WrapperGuest, and BROWSER names it. It is not
+// "wrapper <verb>" because a consumer may exec $BROWSER as one path without
+// splitting it into words; snug's Main dispatches on this exact argv[0].
+const BrowserGuest = SnugLibDir + "/browser"
+
+// SelfExeHost is the Host of exactly one mount, WrapperGuest, and Validate
+// refuses it anywhere else. The launcher opens it FOLLOWING the magic link
+// (internal/sandbox/bindsrc.go), so the bind is the inode the snug the user ran
+// is executing — not whatever is at its install path by the time bwrap runs.
+// A profile cannot write it: a profile's bind host goes through EvalSymlinks,
+// which follows the link to snug's real path.
+const SelfExeHost = "/proc/self/exe"
+
+// DoorExecVerb is the wrapper's http-door entry: it sets LISTEN_PID to its own
+// pid and execs the payload, so the pid it names is the payload's.
+const DoorExecVerb = "__door-exec"
+
 // KubeProxyGuestPort and KubeProxyGuest are where identity.kubectl's proxy
 // listens inside the sandbox: its OWN loopback, on a socket the stage creates
 // in the sandbox's network namespace and snug binds before bwrap is forked. A
@@ -77,15 +128,11 @@ const (
 const (
 	ContainerSocketGuest = SnugDir + "/podman.sock"
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
-	// BrowserFIFOGuest is where snug binds the FIFO the login-bridge shim
-	// writes to — a profile's login = ["claude"] only, never present
-	// otherwise. sh can `>` a FIFO but cannot speak AF_UNIX, which is why this
-	// is a FIFO and not a third socket beside the two above (issue #455).
+	// BrowserFIFOGuest is where snug binds the FIFO BrowserGuest writes to —
+	// a profile's login = ["claude"] only, never present otherwise. A FIFO
+	// rather than a third socket beside the two above (issue #455): it carries
+	// one line one way, and the host side reading it is the boundary.
 	BrowserFIFOGuest = SnugDir + "/browser.fifo"
-
-	// BrowserShimGuest is /snug/bin/snug-browser, the `/bin/sh` script
-	// login = ["claude"] points BROWSER at.
-	BrowserShimGuest = StagedBinDir + "/snug-browser"
 )
 
 // EngineDir is the ONE place inside SnugDir a GRAFT may land: the engine's own

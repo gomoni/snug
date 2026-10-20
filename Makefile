@@ -1,3 +1,7 @@
+# snug is cgo-free (.claude/design/NOCGO.md); cmd/snug/nocgo.go refuses to
+# compile otherwise, so every go command here runs with it off.
+export CGO_ENABLED := 0
+
 BIN := bin/snug
 FIXTURE := bin/snug-fixture
 

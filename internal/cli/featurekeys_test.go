@@ -26,8 +26,7 @@ var featureKeyProfiles = map[policy.ProfileName]*policy.Profile{
 	"k-nss":           {Name: "k-nss", NSS: true},
 	// login = ["claude"] alone refuses at Resolve for want of egress
 	// (issue #455), so this fixture carries `network` itself rather than
-	// composing with k-net — the base "rt" profile already grants /usr, which
-	// is the shell this key also needs.
+	// composing with k-net.
 	"k-login": {Name: "k-login", Login: []string{"claude"}, Network: "egress", DNS: true},
 }
 
@@ -79,6 +78,14 @@ func TestAFeatureKeyAuthorsAndNeverBindsAHostPath(t *testing.T) {
 				continue
 			}
 			authored++
+			// The one bind a feature key may author is snug's own executable at
+			// WrapperGuest: its host is a descriptor on snug itself, not a host
+			// path anyone's profile could have named, and Validate refuses
+			// SelfExeHost anywhere else. Anything else a key binds still fails.
+			if m.Kind == policy.KindBind && m.Authored && guest == policy.WrapperGuest &&
+				m.Host == policy.SelfExeHost && m.Access == policy.AccessRO {
+				continue
+			}
 			if m.Kind == policy.KindBind || !m.Authored {
 				t.Errorf("%s alone added %s (kind %s, host %q, authored %v): a feature key "+
 					"authors; a host path is granted by a profile's ro/rw line", key, guest, m.Kind, m.Host, m.Authored)

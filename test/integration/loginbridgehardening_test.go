@@ -165,7 +165,7 @@ n=0
 for c in "rm -f /snug/browser.fifo" "rm -rf /snug/browser.fifo" "mv /snug/browser.fifo /tmp/gone" \
   "mv /tmp/r4 /snug/browser.fifo" "ln -sf /tmp/r4 /snug/browser.fifo" "ln -f /tmp/r4 /snug/browser.fifo" \
   "mkfifo /snug/browser.fifo" "mkfifo /snug/other.fifo" "touch /snug/shadow" "mkdir /snug/d" \
-  "ln -s /tmp/r4 /snug/browser.fifo2" "rm -f /snug/bin/snug-browser" "mv /snug/bin /snug/bin2"; do
+  "ln -s /tmp/r4 /snug/browser.fifo2" "rm -f /snug/lib/snug/browser" "mv /snug/lib /snug/lib2"; do
   n=$((n+1))
   sh -c "$c" >/dev/null 2>&1
   echo "ATTACK-$n RC $? $c"

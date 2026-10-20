@@ -40,8 +40,8 @@ import (
 // refuse `inherit DOCKER_HOST` on a host that exports it and admit it on one
 // that does not — §4.4 again, arriving through the other claimant.
 type conditionalEnv struct {
-	// names are the variables snug writes for the feature — by AuthorEnv, or by
-	// an `export` in a script it stages (LISTEN_PID).
+	// names are the variables snug writes for the feature — by AuthorEnv, or
+	// inside the sandbox by its own wrapper (LISTEN_PID, internal/wrapper).
 	names []string
 	// outranks are variables snug does NOT write but whose value the tool reads
 	// IN PLACE OF what snug wrote: GH_TOKEN beats the token in the hosts.yml
@@ -130,7 +130,8 @@ var conditionalEnvs = []conditionalEnv{
 
 // ConditionalEnvNames is every name snug writes for a feature, sorted.
 // Exported for internal/cli's ownership test, which asserts the names snug
-// writes — AuthorEnv calls and `export`s in staged scripts — equal SnugOwnedEnv
+// writes — AuthorEnv calls, `export`s in staged scripts and the wrapper's
+// os.Setenv — equal SnugOwnedEnv
 // plus these, so a new conditional writer is a row here or a failing build.
 func ConditionalEnvNames() []string {
 	var out []string

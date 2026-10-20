@@ -29,6 +29,20 @@ import (
 const reportName = "doorprobe-report.txt"
 
 func main() {
+	// "doorprobe exit N" is the wrapper tests' exit-code payload: it announces
+	// itself with its argv and the LISTEN_PID it was handed, then exits N, so
+	// a test can tell "the payload ran and returned N" from "something else
+	// returned N".
+	if len(os.Args) == 3 && os.Args[1] == "exit" {
+		n, err := strconv.Atoi(os.Args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "doorprobe: bad exit code %q\n", os.Args[2])
+			os.Exit(125)
+		}
+		fmt.Printf("EXIT-PROBE-RAN argv=%q pid=%d listen_pid=%s\n", os.Args, os.Getpid(), os.Getenv("LISTEN_PID"))
+		os.Exit(n)
+	}
+
 	var report []string
 	say := func(format string, args ...any) {
 		line := fmt.Sprintf(format, args...)

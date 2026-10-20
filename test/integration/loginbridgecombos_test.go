@@ -63,8 +63,8 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	with := loginDryRun(t, f.env, f.proj, append(append([]string{}, base...), "-p", "login")...)
 	wOps, wProf := loginArgvOps(t, without)
 	bOps, bProf := loginArgvOps(t, with)
-	if !slices.Contains(wOps, "--perms 0755 --ro-bind-data <fd> /snug/bin/http-door-handover") {
-		t.Fatalf("control: the door's handover script is not in the argv without the bridge, so "+
+	if !slices.Contains(wOps, "--ro-bind-fd /proc/self/exe /snug/lib/snug/wrapper") {
+		t.Fatalf("control: the door's wrapper bind is not in the argv without the bridge, so "+
 			"'the door is unchanged' would be about an argv with no door:\n%s", strings.Join(wOps, "\n"))
 	}
 	if !slices.Contains(wOps, "--setenv LISTEN_FDS 1") && !strings.Contains(strings.Join(wOps, "\n"), "LISTEN_FDS") {
@@ -73,14 +73,14 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	rest := bOps
 	for _, add := range []string{
 		"--bind-fd " + rt + "/snug/run-N/browser.fifo /snug/browser.fifo",
-		"--perms 0755 --ro-bind-data <fd> /snug/bin/snug-browser",
-		"--setenv BROWSER /snug/bin/snug-browser",
+		"--symlink /snug/lib/snug/wrapper /snug/lib/snug/browser",
+		"--setenv BROWSER /snug/lib/snug/browser",
 	} {
 		rest = loginRemoveOnce(t, rest, add)
 	}
 	if strings.Join(rest, "\n") != strings.Join(wOps, "\n") {
-		t.Errorf("adding the bridge to a door selection changed more than the FIFO bind, the shim "+
-			"and BROWSER.\nwithout the bridge:\n%s\nwith it, those three removed:\n%s",
+		t.Errorf("adding the bridge to a door selection changed more than the FIFO bind, the browser "+
+			"link and BROWSER (the wrapper bind is the door's and is shared).\nwithout the bridge:\n%s\nwith it, those three removed:\n%s",
 			strings.Join(wOps, "\n"), strings.Join(rest, "\n"))
 	}
 	if bProf != wProf+",login" {
@@ -96,9 +96,9 @@ func TestAnHTTPDoorAndTheLoginBridgeInOneSelection(t *testing.T) {
 	for _, m := range with.Mounts {
 		have, ok := wm[m.Guest]
 		switch {
-		case !ok && (m.Guest == "/snug/bin/snug-browser" || m.Guest == "/snug/browser.fifo"):
+		case !ok && (m.Guest == "/snug/lib/snug/browser" || m.Guest == "/snug/browser.fifo"):
 		case !ok:
-			t.Errorf("the bridge added a mount at %s (%s/%s) besides the shim and the FIFO", m.Guest, m.Kind, m.Access)
+			t.Errorf("the bridge added a mount at %s (%s/%s) besides the browser link and the FIFO", m.Guest, m.Kind, m.Access)
 		case have != m.Kind+"/"+m.Access:
 			t.Errorf("the bridge changed %s from %s to %s/%s", m.Guest, have, m.Kind, m.Access)
 		}
@@ -352,7 +352,7 @@ echo "AGENT-SRC $(awk -v p="$SSH_AUTH_SOCK" '$5 == p {print $4}' /proc/self/moun
 	if !ok || agentPath == "" {
 		t.Fatalf("control: no agent socket is named inside, so the proxy is not in this run:\n%s", out)
 	}
-	if agentPath == "/snug/browser.fifo" || agentPath == "/snug/bin/snug-browser" {
+	if agentPath == "/snug/browser.fifo" || agentPath == "/snug/lib/snug/browser" {
 		t.Errorf("the agent socket is at the bridge's path %s", agentPath)
 	}
 	for _, want := range []string{"AGENT-IS-SOCKET", "FIFO-IS-FIFO"} {
@@ -468,7 +468,7 @@ func TestDryRunNamesTheMountsAndEnvironmentARealRunHas(t *testing.T) {
 
 			r := runEnv(t, f.env, tc.args, f.proj, `awk '{print "MP " $5}' /proc/self/mountinfo
 awk '$5 == "/snug/browser.fifo" {print "FIFO-SRC " $4}' /proc/self/mountinfo
-awk '$5 == "/snug/bin/snug-browser" {print "SHIM-MOUNT " $6}' /proc/self/mountinfo
+awk '$5 == "/snug/lib/snug/wrapper" {print "WRAPPER-MOUNT " $6}' /proc/self/mountinfo
 echo "BROWSER-IS $BROWSER"
 `).mustRun(t)
 			real := loginMountpoints(r.out)
@@ -508,16 +508,19 @@ echo "BROWSER-IS $BROWSER"
 			if !strings.HasSuffix(loginRunDirRE.ReplaceAllString(src, "run-N"), "/snug/run-N/browser.fifo") {
 				t.Errorf("inside, the FIFO is bound from %q, not from a run directory's browser.fifo", src)
 			}
-			if opts, _ := loginField(r.out, "SHIM-MOUNT"); !strings.HasPrefix(opts, "ro,") {
-				t.Errorf("inside, the shim mount options are %q, want read-only as --dry-run says", opts)
+			if opts, _ := loginField(r.out, "WRAPPER-MOUNT"); !strings.HasPrefix(opts, "ro,") || !strings.Contains(opts, "nosuid") {
+				t.Errorf("inside, the wrapper mount options are %q, want read-only and nosuid as --dry-run says", opts)
 			}
-			if !slices.Contains(ops, "--perms 0755 --ro-bind-data <fd> /snug/bin/snug-browser") {
-				t.Errorf("--dry-run's argv lacks the shim's read-only data mount")
+			if !slices.Contains(ops, "--ro-bind-fd /proc/self/exe /snug/lib/snug/wrapper") {
+				t.Errorf("--dry-run's argv lacks the wrapper's read-only bind")
 			}
-			if v, _ := loginField(r.out, "BROWSER-IS"); v != "/snug/bin/snug-browser" {
+			if !slices.Contains(ops, "--symlink /snug/lib/snug/wrapper /snug/lib/snug/browser") {
+				t.Errorf("--dry-run's argv lacks the browser link")
+			}
+			if v, _ := loginField(r.out, "BROWSER-IS"); v != "/snug/lib/snug/browser" {
 				t.Errorf("BROWSER inside is %q", v)
 			}
-			if !slices.Contains(ops, "--setenv BROWSER /snug/bin/snug-browser") {
+			if !slices.Contains(ops, "--setenv BROWSER /snug/lib/snug/browser") {
 				t.Errorf("--dry-run's argv lacks BROWSER")
 			}
 			if dry.BrowserBridge == nil || !reflect.DeepEqual(dry.BrowserBridge.Login, []string{"claude"}) {

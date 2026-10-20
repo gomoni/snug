@@ -727,26 +727,15 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		}
 	}
 
-	// The http door's descriptor handover. Staged in StagedBinDir like every
-	// other executable snug puts in front of the payload, and PREPENDED to the
-	// command: it is the sandbox's entry, and it execs the payload, so the
-	// process tree gains nothing and the payload keeps the pid LISTEN_PID names.
+	// The http door's descriptor handover. The sandbox's entry becomes snug's
+	// own wrapper (WrapperGuest, bound below), which sets LISTEN_PID and execs
+	// the payload: no fork, so the process tree gains nothing and the payload
+	// keeps the pid LISTEN_PID names.
 	//
-	// Ordering matters against HasStagedBin, which decides whether
-	// StagedBinDir joins PATH: this mount makes it non-empty, so a door alone
-	// puts snug's own directory first on the payload's PATH. That is already the
-	// rule for the podman stub above, and the directory is EROFS under
-	// --remount-ro / either way.
+	// Nothing here is under StagedBinDir, so a door alone does not put snug's
+	// staging directory on the payload's PATH.
 	if len(p.ListenNames) > 0 {
-		if !p.shellIsVisible() {
-			return nil, HTTPDoorShellError(p.ListenNames, httpDoorShimShell)
-		}
-		perm := uint32(0755)
-		p.Replace(Mount{
-			Guest: HTTPDoorShimPath(), Kind: KindData, Access: AccessRO,
-			Perms: &perm, Content: []byte(httpDoorShim), From: []string{"(snug)"},
-		})
-		p.Command = append([]string{HTTPDoorShimPath()}, p.Command...)
+		p.Command = append([]string{WrapperGuest, DoorExecVerb}, p.Command...)
 
 		// The systemd socket-activation protocol, and the spelling is copied
 		// rather than invented for one reason: Go, python's
@@ -755,9 +744,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		// descriptor half, so no dependency is added.
 		//
 		// LISTEN_PID is deliberately NOT here — it is the one value snug cannot
-		// know from outside, and the staged script sets it from the payload's own
-		// pid. These two travel in the audited argv where a human reading
-		// --dry-run can see them.
+		// know from outside, and the wrapper sets it from the payload's own pid,
+		// replacing any value a profile wrote. These two travel in the audited
+		// argv where a human reading --dry-run can see them.
 		p.AuthorEnv("LISTEN_FDS", strconv.Itoa(len(p.ListenNames)))
 		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
 	}
@@ -776,15 +765,19 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				"own network namespace and the token exchange needs the internet. Add -p "+
 				"@net.", loginOwner, p.Login)
 		}
-		if !p.shellIsVisible() {
-			return nil, BrowserBridgeShellError(httpDoorShimShell)
-		}
-		perm := uint32(0755)
 		p.Replace(Mount{
-			Guest: BrowserShimGuest, Kind: KindData, Access: AccessRO,
-			Perms: &perm, Content: []byte(browserBridgeShim), From: []string{"(snug)"},
+			Guest: BrowserGuest, Kind: KindSymlink, Host: WrapperGuest, From: []string{"(snug)"},
 		})
-		p.AuthorEnv("BROWSER", BrowserShimGuest)
+		p.AuthorEnv("BROWSER", BrowserGuest)
+	}
+
+	// snug's own executable, once for both features above, so Replace never
+	// records snug replacing itself. A selection with neither has no wrapper.
+	if len(p.ListenNames) > 0 || p.Login.Has(LoginClaude) {
+		p.Replace(Mount{
+			Guest: WrapperGuest, Kind: KindBind, Access: AccessRO,
+			Host: SelfExeHost, From: []string{"(snug)"},
+		})
 	}
 
 	// 4. Mounts snug authors ITSELF, in every sandbox. /proc needs the pid
@@ -1069,7 +1062,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// about a swapped link. Refused here instead, where the cause is a snug bug
 	// and not a concurrent sandbox.
 	for _, m := range p.SortedMounts() {
-		if m.Kind != KindBind || BindByPath(m.Host) {
+		if m.Kind != KindBind || BindByPath(m.Host) || m.Host == SelfExeHost {
 			continue
 		}
 		if real, err := env.EvalSymlinks(m.Host); err != nil || real != m.Host {

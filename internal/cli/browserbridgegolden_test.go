@@ -20,7 +20,7 @@ var browserLoginProfile = &policy.Profile{Name: "login", Login: []string{"claude
 // TestGoldenBwrapClaudeLogin pins the bwrap argv for `@claude @net login`
 // against the real builtin profiles, the same shape TestGoldenClaudeArgv
 // uses. The diff against @claude @net alone (asserted below) is the review
-// artifact: it must be exactly the shim's data mount and the BROWSER setenv.
+// artifact: it must be exactly the wrapper bind, its browser link and the BROWSER setenv.
 func TestGoldenBwrapClaudeLogin(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
@@ -38,8 +38,8 @@ func TestGoldenBwrapClaudeLogin(t *testing.T) {
 	if err := claudeFiles(p, ctx.Home, nil); err != nil {
 		t.Fatalf("claudeFiles: %v", err)
 	}
-	if _, ok := p.Mounts[policy.BrowserShimGuest]; !ok {
-		t.Fatal("control: the login-bridge shim is not staged — this golden would pin an argv " +
+	if _, ok := p.Mounts[policy.BrowserGuest]; !ok {
+		t.Fatal("control: the login-bridge BROWSER link is not staged — this golden would pin an argv " +
 			"that never exercises login = [\"claude\"]")
 	}
 
@@ -62,11 +62,11 @@ func TestGoldenBwrapClaudeLogin(t *testing.T) {
 	}
 }
 
-// TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER is the review artifact
+// TestBrowserBridgeGoldenDiffIsExactlyTheWrapperAndBROWSER is the review artifact
 // §7 of the spec asks for: the ONLY difference between `@claude @net` and
-// `@claude @net login` is the shim's data mount and the BROWSER setenv —
+// `@claude @net login` is the wrapper bind, the browser link and the BROWSER setenv —
 // nothing about @claude's or @net's own grants moves when the bridge turns on.
-func TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER(t *testing.T) {
+func TestBrowserBridgeGoldenDiffIsExactlyTheWrapperAndBROWSER(t *testing.T) {
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER(t *testing.T) {
 		if _, ok := without.Mounts[guest]; ok {
 			continue
 		}
-		if guest != policy.BrowserShimGuest {
+		if guest != policy.BrowserGuest && guest != policy.WrapperGuest {
 			t.Errorf("login adds an unexpected mount at %s (kind %s, host %q)", guest, wm.Kind, wm.Host)
 		}
 	}
@@ -107,8 +107,8 @@ func TestBrowserBridgeGoldenDiffIsExactlyTheShimAndBROWSER(t *testing.T) {
 
 	wantArgs := strings.Join(with.BwrapArgs(1000, 1000), " ")
 	baseArgs := strings.Join(without.BwrapArgs(1000, 1000), " ")
-	if !strings.Contains(wantArgs, "--setenv BROWSER "+policy.BrowserShimGuest) {
-		t.Errorf("the argv does not setenv BROWSER to the shim: %s", wantArgs)
+	if !strings.Contains(wantArgs, "--setenv BROWSER "+policy.BrowserGuest) {
+		t.Errorf("the argv does not setenv BROWSER to the browser link: %s", wantArgs)
 	}
 	if strings.Contains(baseArgs, "--setenv BROWSER") {
 		t.Error("@claude @net alone already sets BROWSER — the fixture no longer isolates the change")

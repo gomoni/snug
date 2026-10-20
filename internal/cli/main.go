@@ -20,6 +20,7 @@ import (
 	"github.com/gomoni/snug/internal/profile"
 	"github.com/gomoni/snug/internal/sandbox"
 	"github.com/gomoni/snug/internal/stage"
+	"github.com/gomoni/snug/internal/wrapper"
 )
 
 // Exit codes are sysexits-flavoured so snug's own failures stay distinguishable
@@ -79,6 +80,22 @@ func (c config) startsNothing() bool { return c.dryRun || c.explain }
 // than threading an exit code back through an extra return.
 func Main() {
 	argv := os.Args[1:]
+
+	// Inside a sandbox, as policy.WrapperGuest or the policy.BrowserGuest link to
+	// it. Keyed on the exact argv[0] bwrap and BROWSER's consumer exec, so the
+	// image there runs these two modes and never the CLI: a consumer handing
+	// $BROWSER a URL must not reach target resolution with it.
+	switch os.Args[0] {
+	case policy.BrowserGuest:
+		os.Exit(wrapper.Browser(policy.BrowserFIFOGuest, argv, os.Stderr))
+	case policy.WrapperGuest:
+		if len(argv) > 0 && argv[0] == policy.DoorExecVerb {
+			os.Exit(wrapper.DoorExec(argv[1:], os.Stderr))
+		}
+		fmt.Fprintf(os.Stderr, "snug: %s is snug's in-sandbox helper; it runs only as the http "+
+			"door's entry (%s CMD [ARGS...])\n", policy.WrapperGuest, policy.DoorExecVerb)
+		os.Exit(2)
+	}
 
 	// Hidden verbs, dispatched before ANYTHING else — flag parsing, profile
 	// loading, none of it. They are not subcommands: they do not appear in

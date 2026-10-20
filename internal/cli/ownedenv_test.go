@@ -47,7 +47,7 @@ func TestSnugOwnedEnvIsExactlyWhatSnugWrites(t *testing.T) {
 	// the set exists to constrain what profiles may write, and a test fixture is
 	// not part of the sandbox's environment.
 	found := map[string]bool{}
-	for _, dir := range []string{filepath.Join("..", "policy"), "."} {
+	for _, dir := range []string{filepath.Join("..", "policy"), filepath.Join("..", "wrapper"), "."} {
 		for _, name := range goFilesIn(t, dir) {
 			collectAuthoredNames(t, filepath.Join(dir, name), found)
 		}
@@ -116,8 +116,8 @@ func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
 		t.Fatalf("parsing %s: %v", path, err)
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
-		// A script snug stages is a writer too: httpDoorShim's
-		// `export LISTEN_PID=$$` sets a name no AuthorEnv call mentions, and
+		// A script snug stages is a writer too: the old door shim's
+		// `export LISTEN_PID=$$` set a name no AuthorEnv call mentions, and
 		// the #621 red team found it in neither list — a profile's LISTEN_PID
 		// rendered on --dry-run and the payload got the script's. Only a line
 		// that STARTS with `export` counts, so prose about one does not.
@@ -134,7 +134,30 @@ func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || (sel.Sel.Name != "AuthorEnv" && sel.Sel.Name != "AuthorEnvList") {
+		if !ok {
+			return true
+		}
+		// The wrapper snug runs INSIDE the sandbox writes LISTEN_PID with
+		// os.Setenv, where a staged script used to `export` it. Same rule as
+		// below: the name must be a literal. Scoped to os.Setenv so an
+		// unrelated Setenv method elsewhere cannot widen the set.
+		if x, isIdent := sel.X.(*ast.Ident); isIdent && x.Name == "os" && sel.Sel.Name == "Setenv" {
+			if len(call.Args) == 0 {
+				t.Fatalf("%s: os.Setenv call with no arguments", path)
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				t.Fatalf("%s: os.Setenv is called with a computed variable name; a computed "+
+					"name cannot be checked against policy.SnugOwnedEnv, so write the literal", path)
+			}
+			name, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				t.Fatalf("%s: cannot read the name in os.Setenv(%s)", path, lit.Value)
+			}
+			into[name] = true
+			return true
+		}
+		if sel.Sel.Name != "AuthorEnv" && sel.Sel.Name != "AuthorEnvList" {
 			return true
 		}
 		if len(call.Args) == 0 {
