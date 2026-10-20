@@ -517,7 +517,7 @@ func wrapList(items []string, width int) []string {
 // it nearly retracted a true finding here.
 //
 // AND THE EVIDENCE WAS ALREADY IN THE REPOSITORY, which is the part worth
-// keeping: ENVIRONMENT-VARIABLES.md §4.1 lists what `snug <dir> -- env` printed
+// keeping: a design document listed what `snug <dir> -- env` printed
 // — "HOME LANG LOGNAME PATH PS1 PWD SHELL SNUG …", PWD among them — measured, in
 // a document, while this comment two directories away said the block was the
 // whole of it. Nobody read the two together. A measurement filed under one

@@ -200,7 +200,7 @@ Measured, not recalled. Each one changed a design decision.
   `$XDG_CONFIG_HOME/git/config`. Generating the first is not enough; setting
   `GIT_CONFIG_GLOBAL` replaces both outright, which is why snug sets it whenever
   it generates that file. Verified by execution, both directions.
-  `.claude/design/GIT-CONFIG.md` §6.
+  `.claude/design/GIT-CONFIG.md` §5.
 - **`gh` rewrites its token file on first use** — it migrates a file-stored token
   and writes the config back, so a read-only `hosts.yml` fails with "failed to
   write config after migration" (gh 2.96). The staged copy is deliberately

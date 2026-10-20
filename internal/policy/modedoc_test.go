@@ -4,8 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -13,14 +11,13 @@ import (
 
 // The value lists for `network` and `podman` are written out in three
 // places a profile author reads — the doc comment on each Profile field, and
-// the lattice table in INDEX.md §2.3 — and each drifted from the parser
+// the book — and each drifted from the parser
 // independently: `network` was documented as `isolated < egress < host` in
 // both while ParseNetMode refused "host", and the Podman comment omitted
 // "build". These tests fail when a documented value is refused, or an accepted
-// value is undocumented, in either place.
+// value is undocumented, in the comments (the book is held by bookmodes_test.go).
 //
-// What they do not cover: prose outside the Profile comments and the §2.3
-// table. A value named in a paragraph elsewhere is not graded.
+// What they do not cover: prose outside the Profile comments. A value named in a paragraph elsewhere is not graded.
 
 type modeParser struct {
 	key    string
@@ -134,38 +131,5 @@ func TestProfileFieldCommentsListExactlyTheParsedModes(t *testing.T) {
 			documented = append(documented, q[1])
 		}
 		sameSet(t, "profile.go's Profile."+field+" comment", m.key, documented, m.values(), m.parse)
-	}
-}
-
-var latticeRow = regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| `([^`]+)` \\|")
-
-func TestINDEXLatticeTableListsExactlyTheParsedModes(t *testing.T) {
-	index := filepath.Join("..", "..", ".claude", "design", "INDEX.md")
-	body, err := os.ReadFile(index)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", index, err)
-	}
-	rows := map[string]string{}
-	for _, m := range latticeRow.FindAllStringSubmatch(string(body), -1) {
-		if strings.Contains(m[2], " < ") {
-			rows[m[1]] = m[2]
-		}
-	}
-	for _, m := range modeParsers {
-		domain, ok := rows[m.key]
-		if !ok {
-			t.Errorf("INDEX.md has no `| `%s` | `a < b` |` row in §2.3's lattice table; "+
-				"if the table was reshaped, update latticeRow rather than deleting the check", m.key)
-			continue
-		}
-		documented := strings.Split(domain, " < ")
-		accepted := m.values()
-		sameSet(t, "INDEX.md §2.3", m.key, documented, accepted, m.parse)
-		// The table claims an ORDER, and the join is max over the constants'
-		// order, so the order is part of the claim.
-		if strings.Join(documented, " < ") != strings.Join(accepted, " < ") {
-			t.Errorf("INDEX.md §2.3 orders %s as %q; the constants join by max in the order %q",
-				m.key, domain, strings.Join(accepted, " < "))
-		}
 	}
 }

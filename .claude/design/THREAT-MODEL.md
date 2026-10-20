@@ -1,15 +1,13 @@
 # snug — threat model: goals and non-goals
 
 **Status: authoritative.** This is the document that says what snug is *for*.
-Part 1 sketched goals and part 2 non-goals. When a claim elsewhere in the tree
-disagrees with this file about what snug protects, this file is right and the
-other claim is stale — fix it.
+When a claim elsewhere in the tree disagrees with this file about what snug
+protects, this file is right and the other claim is stale — fix it.
 
 ## 0 What this document is
 
-snug began as `agent-sandbox.sh`: a way to run `claude` without handing it
-`~/.ssh` and access to other files. The asset it protects has not changed
-since.
+snug protects one asset, so a program can run without being handed `~/.ssh`
+and access to other files:
 
 > It protects access to the user's filesystem unless an explicit named hole is
 > dug in.
@@ -102,22 +100,13 @@ that keeps some slice of host state out of the sandbox unless a profile — a
 
 ### 2.1 Access to $HOME is not granted by default
 
-`snug` never grants access to most of `$HOME` via a bubblewrap-based sandbox.
-That means `~/.ssh`, `~/.aws` and similar are never available. The same
-principle covers `~/Documents` or `~/Downloads`.
+User documentation: `docs/src/filesystem.md`, `docs/src/builtins.md` (`@parent-ro`).
 
-Access is supposed to be minimal (`rw` only to the target dir) and explicit —
-reading the target's parent, and with it every sibling project, takes selecting
-`@parent-ro`, which a bare `snug <dir>` does not.
 
 ### 2.2 Access to secrets is proxied
 
-A Linux development system without `ssh` is not very useful. The case of `ssh`
-is solved by a builtin `ssh-agent` which exposes a subset of ssh keys to the
-containment.
+User documentation: `docs/src/identity.md`, `docs/src/claude.md`.
 
-The same happens to `claude` tokens and settings: snug reinterprets most
-well-known files — settings, hooks and so on.
 
 ### 2.3 Exposing secrets
 
@@ -131,11 +120,9 @@ As an extra, access to the Linux filesystem is filtered and controlled.
 
 ### 2.5 Disallowing container escape
 
-Normal `docker` or `podman` cannot work inside the sandbox and would be the
-easiest escape vector.
-
-`snug` solves this by providing a private `podman` engine, which uses the same
-network namespace as the main sandbox.
+User documentation: `docs/src/containers.md`. Attacker side: a plain `docker` or
+`podman` socket inside the sandbox is the easiest escape vector, which is why
+the engine is private and sits behind a filtering proxy (G6).
 
 ## 3 Non-goals
 
@@ -154,12 +141,9 @@ runtime: `snug` runs *one* command tree.
 
 ### 3.1 Network security
 
-There is no proxy deployed, and code inside the sandbox can have unrestricted
-network access.
-
-So code can download bad podman images, mine bitcoin, try to hack HuggingFace
-(DO NOT DO IT), or try to escape the containment using claude's remote
-abilities. And `snug` itself is not going to prevent this.
+The sandbox has no filtering network proxy (`docs/src/network.md`). Code
+inside can download bad podman images, mine bitcoin, or try to escape the
+containment using claude's remote abilities; snug does not prevent this.
 
 **The remote abilities deserve naming, because they are the one non-goal on this
 page that reaches beyond this machine.** With `@claude`, the sandbox holds a
@@ -246,11 +230,6 @@ a bad OCI image) that a subsequent run then uses is not considered a breach.
 Unless such payloads allow a containment escape, they are fine from the tool's
 point of view.
 
-A run that pulls or builds a bad image leaves it in the store, and a later run
-on the same target may use it. That gains no host reach the later run's own
-policy did not already grant, which is why it is a non-goal rather than a
-threat. The store is keyed on the target alone, so selecting fewer profiles
-does not give you a clean one — deleting the store directory does.
 
 What a profile cannot do is reach that state itself. A grant over the store
 root (`$XDG_DATA_HOME/snug`, `~/.local/share/snug`) — read-only or writable,
@@ -293,8 +272,8 @@ not refused; `--dry-run` says so on its sibling-sandbox screen.
 In other words, feel free to grant access to the D-Bus socket — just do not be
 surprised when this leads to a containment escape.
 
-**There are two places an attacker could stand, and conflating them has
-already cost review rounds.** Inside the sandbox is T1–T4 (§2.0); everything
+**There are two places an attacker could stand, and conflating them
+misreads every finding.** Inside the sandbox is T1–T4 (§2.0); everything
 in snug is aimed there. Outside it, writing profiles, is a human — invariant 3
 puts the trusted profile set outside the sandboxed material precisely so that
 this human, and not the payload, decides what is granted, and snug has no
@@ -320,9 +299,7 @@ of them is a veto over what a human may want:
   opposite of what it claims.
 
 What is NOT in that list is any refusal of the form *"this grant is
-dangerous, so you may not have it"*. Issue #44 removed the one place snug had
-drifted into saying it: three environment denylists, converted to
-annotations.
+dangerous, so you may not have it"*: dangerous values are annotated, not refused.
 
 **What replaces the refusal is disclosure.** The roster
 (`internal/policy/envtypes.go`) is **what snug KNOWS, not what it permits**,

@@ -1,60 +1,22 @@
-# The supervisor stage — the design, as built
+# The supervisor stage
 
 `@net` runs two processes. snug forks a second long-lived one, the **stage**, whose job is to create the sandbox's network namespace, pin it,
-*leave* it, and fork bwrap back into it. This document is the stage as built and
-why it is shaped that way.
+*leave* it, and fork bwrap back into it. This document is the stage and why it is shaped that way.
 
-Everything marked **MEASURED** was executed on **2026-08-13**, on the development
-host — openSUSE Tumbleweed, `bwrap` 0.11.2, `pasta` 20260612, Go 1.26, inside a
-rootless-podman distrobox. Everything else is reasoning and is marked as such.
+Everything marked **MEASURED** was executed on the development host (openSUSE Tumbleweed, `bwrap` 0.11.2, `pasta` 20260612,
+Go 1.26, inside a rootless-podman distrobox). Everything else is reasoning and is marked as such. The numbers live here rather than
+in a script because the measuring script is gone (its prototype shipped as `internal/stage`); the live checks are the tests named below.
 
-The measurements were taken by a throwaway proof of concept, `poc/nsd`, since
-deleted ([#49](https://github.com/gomoni/snug/issues/49)) because what it
-prototyped shipped as `internal/stage` and a second unbuilt copy of the same
-`setns` logic beside the real one is a divergence `./...`, `go vet` and `make
-gate` could not see. **The numbers are here rather than in a script for exactly
-that reason:** a citation pointing at a script is worth nothing once the script
-is gone. `run.sh` was 51 checks, `pass=51 fail=0`; `run-netns.sh` was 42 checks,
-green in three identical consecutive runs; both are distilled into §1.
-`run-graft.sh` measured the derived mount view against a **real** snug sandbox,
-and its sixty checks are in [`ENGINE-NETNS.md`](ENGINE-NETNS.md) §5.1.
-
-*Read the counts carefully, because one of them moved.* `run.sh` read `pass=49`
-until a review found that four of those checks passed on a sandbox
-that **never happened** — the `pasta.avx2` shape from `CLAUDE.md`, in the script
-whose own header claimed the property. The count rose because nothing was
-actually broken; the point is that it could not have told us if it had been. Two
-rules came out of it and every measurement below obeys both: never assert an
-exit code as a negative — assert a MARKER the payload emitted — and never
+Two rules every measurement here obeys: never assert an exit code as a negative — assert a MARKER the payload emitted — and never
 compare two namespace ids without refusing the empty case.
 
-**Why this exists at all** is [`ENGINE-NETNS.md`](ENGINE-NETNS.md): a container
-started through `@podman-socket` runs on the *engine's* network, not the
-sandbox's, so the sandbox's network guarantees do not cover it. Moving the engine
-into the sandbox's network namespace fixes that, and doing so requires something
-other than bwrap to own the namespace. The stage is that owner. It shipped
-FIRST, on its own, under the explicit contract that **it adds no user-visible
-capability** — and the engine now runs as its second child (§2), which is what
-the contract was making room for.
+**Why the stage exists** is [`ENGINE-NETNS.md`](ENGINE-NETNS.md): a container started through `@podman-socket` runs on the *engine's*
+network, not the sandbox's. Moving the engine into the sandbox's network namespace fixes that, and doing so requires something other
+than bwrap to own the namespace. The stage is that owner, and the engine is its second child (§2).
 
----
-
-## 0. The correction that opened this up
-
-ENGINE-NETNS §1 is right that you cannot join *only* a network namespace: an
-unprivileged process must create the netns together with a user namespace, and
-joining afterwards needs `CAP_SYS_ADMIN` in that user namespace. That fact is
-unchanged and is why pasta is already passed `--userns` alongside `--netns`.
-
-What was wrong was the shape it imposed on the answer. "No daemon, no service
-files — just execute a binary" was being read as **one process**, so every design
-had to end with snug *becoming* the sandbox. Nothing in the invariants says that.
-Invariant 4 says *no root, no setuid, no daemon*, and spells out what it defends:
-"helpers are children that die with the sandbox and leave nothing behind".
-
-`tmux` is the model: no unit file, no socket activation, no root, nothing
-surviving a reboot — and still a process that outlives the command you typed.
-The distinction that matters is **who owns the process**, not how many there are.
+Invariant 4 (no daemon) is about who owns the process, not how many there are: the stage is a child that dies with snug, like `tmux`'s
+server without the survival. You cannot join *only* a network namespace unprivileged: it must be created together with a user namespace,
+and joining needs `CAP_SYS_ADMIN` in that user namespace, which is why pasta is passed `--userns` alongside `--netns`.
 
 ---
 
@@ -73,7 +35,7 @@ The distinction that matters is **who owns the process**, not how many there are
 | N dies with the stage when pinned only by a descriptor: after `kill -9`, stage, sandbox and both namespaces are gone | **MEASURED** (positive control: 3 processes in N before the kill) |
 | A single-uid map in U (`0 <hostuid> 1`) is enough for `bwrap --uid 1000` to give the payload uid 1000 with host-uid-owned writes | **MEASURED against snug's real `BwrapFlags`**, not a hand-built invocation — see §4 Step 0 |
 | pasta's forwarding side is outside N | **INFERRED** from egress working. pasta sets itself non-dumpable, so no test can sweep it. Any test claiming "only bwrap and the init are in N" must say this rather than imply coverage it does not have |
-| `PR_SET_PDEATHSIG` **survives** the `__stage-setup → __stage-serve` re-exec | **MEASURED** (round 3). Capabilities do not widen at that exec — the stage already holds a full set in U from the moment it creates the userns — so there is no `secureexec` and the signal is preserved. An earlier draft asserted the opposite; see §3.5 |
+| `PR_SET_PDEATHSIG` **survives** the `__stage-setup → __stage-serve` re-exec | **MEASURED**. Capabilities do not widen at that exec — the stage already holds a full set in U from the moment it creates the userns — so there is no `secureexec` and the signal is preserved (§3.5) |
 
 ---
 
@@ -121,11 +83,9 @@ sandbox's mount or pid namespace, and the sandbox is not inside the engine's.
 What they share is N and U. The engine is NOT in the sandbox leg's intermediate
 pid namespace either — it is forked separately, from P1's own.
 
-**Why the sandbox leg is nested at all**, since P1 could fork bwrap directly and
-did until recently: pid 1 of a pid namespace ignores every signal it has no
+**Why the sandbox leg is nested at all**: pid 1 of a pid namespace ignores every signal it has no
 handler for, and bwrap installs none. Unnested, bwrap is an ordinary member of
 P0's process group — nothing in the chain calls `setpgid` — so a terminal's
-Ctrl-C killed it directly and collapsed the sandbox before snug decided
 anything. MEASURED: `SIGINT` to the outer bwrap alone ended the run; the same
 signal to the offline arm's already-nested bwrap was ignored and the payload
 kept running. Together with P1 catching and dropping `SIGINT/TERM/HUP/QUIT`
@@ -142,9 +102,7 @@ consumes it.
 
 **Read the two names as two axes.** `P0/P1` are distinct *processes*.
 `__stage-setup`/`__stage-serve` are successive *exec images of P1* — same pid
-throughout. `__innetns` is a third exec image but in a child. An earlier
-spelling numbered the images `__stage1`/`__stage2`, which read as P1 and P2 and
-meant neither.
+throughout. `__innetns` is a third exec image but in a child.
 
 **A bare `snug <dir>` starts no stage.** The stage exists only where something
 other than bwrap must own the sandbox's namespaces; an ordinary offline run has
@@ -168,7 +126,7 @@ loopback. `Topology.NeedsStage()` is the live answer, and §3.2 is its argument.
 
 ---
 
-## 3. The decisions, and what each one overruled
+## 3. The decisions, and the alternative each one rejected
 
 ### 3.1 The bwrap argv under the stage: enumerate, do not reuse `--share-net`
 
@@ -256,15 +214,13 @@ Two locks, two different reasons they hold — namespace invisibility, and a
 denied syscall for whatever makes that stop being true — rather than one fact
 doing both jobs.
 
-**There will be no listener.** It was designed, scheduled as issue #61's
-part (d), and cut on measurement: the namespaces this channel would let a
+**There is no listener.** The namespaces this channel would let a
 client reach are joinable by descriptor by any same-uid host process already,
-confirmed five ways on both topologies, so the listener is a second route to
+confirmed five ways on both topologies, so a listener would be a second route to
 authority the kernel already grants, behind a weaker gate than the kernel's.
 There is no second client and no verb that would be one: snug places no
 process into a running sandbox's namespaces, so the protocol's strictness
-below is the guard on the one client that exists — P0 — and not a deposit
-against a second one.
+is the guard on the one client that exists — P0.
 
 *`--dry-run` says all of this*, and says it precisely: a line reading "no
 socket" is the half a reviewer would use to decide there is nothing here to
@@ -282,8 +238,7 @@ func PastaTargetChild(childPID int) PastaTarget          // /proc/<pid>/ns/{net,
 func PastaTargetStage(stagePID, netnsFD int) PastaTarget // /proc/<P1>/fd/<n> + /proc/<P1>/ns/user
 ```
 
-An earlier plan said the signature could stay as it was and a caller would just
-pass the stage's pid. Measured otherwise, three ways: after the move
+The signature cannot stay a pid. Measured, three ways: after the move
 `/proc/<P1>/ns/net` is the stage's own *empty* namespace and pasta attaches to it
 silently; handing pasta the descriptor as `/proc/self/fd/<n>` is refused, because
 pasta drops privileges before opening it; and **no single process is both in N
@@ -317,7 +272,6 @@ goroutine* to notice EOF. A stopped process runs no user code at all. Measured
 3/3: freeze the whole tree with SIGSTOP — stage, both bwraps, pasta — then
 SIGKILL snug, and everything is gone with no leaked netns. Pdeathsig is the only
 thing that can do that. The wrong comment was actively dangerous: it told a
-future maintainer the line was dead weight.
 
 ### 3.6 Two uid maps, and the setuid helpers are on exactly one of them
 
@@ -327,12 +281,9 @@ future maintainer the line was dead weight.
   written by Go's `SysProcAttr.UidMappings` in the child itself. This is the
   one self-map the kernel allows an unprivileged writer to make, so it needs
   no `newuidmap`/`newgidmap`, no `/etc/subuid` line, and no privileged
-  re-exec. **"No root, no setuid" is literally true on this path**, and it
-  removed the CLOEXEC-clearing dance that produced a confirmed descriptor leak
-  in review. Adopted gated on re-measuring it against snug's real `BwrapFlags`
-  and its two-user-namespace structure rather than a hand-built bwrap
-  invocation (§4 Step 0). It held, and it is what every run without a
-  container engine still gets.
+  re-exec. **"No root, no setuid" is literally true on this path.** MEASURED
+  against snug's real `BwrapFlags` and its two-user-namespace structure, not a hand-built bwrap
+  invocation. It is what every run without a container engine gets.
 
 - **`SubuidFull`** — namespace 0 to the real id *plus* the delegated
   `/etc/subuid` range. A container engine needs it: an image whose content is
@@ -360,9 +311,7 @@ future maintainer the line was dead weight.
 
 An offline sandbox has `lo` UP with `127.0.0.1/8` because bwrap configures the
 netns *it created*. Under the stage bwrap does not create the netns, so nothing
-would configure loopback and every `NetEgress` sandbox would silently lose
-working loopback — a thing a user finds, not a test. Except that a test does find
-it, and the requirement was that it pass **unedited**.
+would configure loopback unless the stage does.
 
 Implementation is `SIOCGIFFLAGS`/`SIOCSIFFLAGS` with `IFF_UP` on `lo`, on a plain
 `AF_INET` datagram socket, in the stage **while it is still in N**. Never by
@@ -371,114 +320,34 @@ a path that must not depend on what is installed.
 
 ---
 
-## 4. The order the work happened in
+## 4. Where it lives
 
-The order is part of the design, because one step was a gate.
-
-- **Step 0 — the measurement gate, no tree changes.** Re-measure the single-uid
-  map against the real `BwrapFlags` argv. Everything downstream of §3.6 depended
-  on it, and the rule was that nothing downstream would be built before it ran.
-  It came back green; had it not, the phase would have fallen back to full maps
-  plus `newuidmap`/`newgidmap` and recorded the cost as an issue rather than
-  carrying it silently.
-- **Step 1 — `internal/policy`: `Topology`.** A derived scalar on `Policy`,
-  computed once from `Net.Mode` and `Podman`, pinned by `Validate`, rendered by
-  the canonicaliser so the commutativity and idempotence tests cover it.
-- **Step 2 — `--dry-run`: the topology block.** Printed always, including the
-  one-process case, because "Phase 1 adds no user-visible capability" is a claim
-  that has to stay checkable rather than merely asserted.
-- **Step 3 — `internal/fdseal`.** Extracted from `internal/sandbox` because a
-  long-lived forker is a different animal from a one-shot process: its descriptor
-  table drifts. **The keep-list is empty by construction, and that is the fix** —
-  the first cut derived one from `cmd.ExtraFiles`, which is precisely what let
-  the args memfd through, read-write, to the payload. Go installs child
-  descriptors with `dup3` and does **not** close the sources, so a source whose
-  number is higher than its target survives into the child as a second, fully
-  usable copy.
-- **Step 4 — `internal/stage`.** The clone, the pin, the move, the re-exec, the
-  protocol, the setns shim.
-- **Step 5 — `internal/sandbox`: `Run` dispatches on the topology.** The stage
-  arm takes a `*Stage`, a type only `stage.Start` can produce, so "bwrap forked
-  into a topology that says `NetnsStage`" does not compile without going through
-  it.
-- **Step 6 — `internal/cli/main.go`: hidden verb dispatch.** Before flag parsing:
-  `__stage-setup`, `__stage-serve`, `__innetns`. Each refuses immediately when
-  invoked outside the fork chain.
+- `internal/policy`: `Topology`, a derived scalar on `Policy`, computed once from `Net.Mode` and `Podman`, pinned by `Validate`, rendered by the canonicaliser so the commutativity and idempotence tests cover it; `--dry-run` prints the topology block always, including the one-process case.
+- `internal/fdseal`: the descriptor sweep of a long-lived forker, whose descriptor table drifts. **The keep-list is empty by construction.** Deriving one from `cmd.ExtraFiles` is what once let the args memfd through, read-write, to the payload: Go installs child descriptors with `dup3` and does **not** close the sources, so a source whose number is higher than its target survives into the child as a second, fully usable copy.
+- `internal/stage`: the clone, the pin, the move, the re-exec, the protocol, the setns shim.
+- `internal/sandbox`: `Run` dispatches on the topology. The stage arm takes a `*Stage`, a type only `stage.Start` can produce, so "bwrap forked into a topology that says `NetnsStage`" does not compile without going through it.
+- `internal/cli/main.go`: hidden verb dispatch before flag parsing — `__stage-setup`, `__stage-serve`, `__innetns` — each refusing immediately when invoked outside the fork chain.
 
 ---
 
-## 5. What the reviews found
+## 5. Claims to not re-derive
 
-Three review rounds plus a red-team run per round, by agents with no edit tools.
-**No round found an escape from the sandbox.** Independently re-confirmed on
-fresh builds each time: capabilities empty on all three topologies, host loopback
-closed *by behaviour* against a live listener, abstract sockets private to N, the
-payload holding exactly stdio, `/proc/1/environ` empty.
-
-Four confirmed defects were found and fixed in the code the reviews graded:
-
-| found | why the tests missed it |
-|---|---|
-| the args memfd reached the payload read-write | the fd sweep exempted `ExtraFiles` — the careful-looking thing, and exactly the leak |
-| `--cap-drop ALL` was absent | nobody asserted `CapBnd` on a topology where bwrap's parent is uid 0 in a userns |
-| a three-reader deadlock in the pasta helper | the channel was written to once and read three times |
-| `parked.release` declared the window over before it released | the failure path was unreachable in testing and fail-open in code |
-
-And two tests were found that **could not fail**, by two different reviewers:
-
-- The only test behind "the stage is one-shot" matched `/proc/<pid>/comm` against
-  the literal `"snug"`. The kernel sets `comm` from the basename of the file
-  exec'd — always `"exe"` here, because the stage is started as `/proc/self/exe`
-  — and setting `cmd.Args[0]` moves `cmdline`, not `comm`. The same file's own
-  helper documents this exactly, 700 lines above the loop that did not use it.
-- The only structural guard keeping `Topology` out of profiles used a **keyed**
-  composite literal, which compiles with fields missing. Proven fake by adding a
-  `Topology` field to `Profile` and watching three packages stay green. It is
-  unkeyed now, and the other half of the surface — the type TOML actually decodes
-  into — is guarded in the package that can see it.
-
-**Two claims the reviews falsified are worth carrying**, because both were stated
-confidently and both were wrong in the direction that invites a bad edit:
+Two claims were stated confidently, were wrong, and were wrong in the direction that invites a bad edit:
 `PR_SET_PDEATHSIG` does survive the re-exec (§3.5), and a same-uid host process
 does **not** gain anything from the stage. On the second: the route by which a
 same-uid process reaches the sandbox's namespaces is `NS_GET_USERNS` on the
 sandbox's own namespace descriptor followed by `setns` into the owner — which
-works on the pre-stage path too, and yields the sandbox's whole **mount**
+works with no stage too, and yields the sandbox's whole **mount**
 namespace, not just its netns. Direct `setns` on `/proc/<child>/ns/net` is EPERM
-on both. The parity conclusion holds; the reasoning that had been written down
-for it did not, and a reader who tested the stated route would have concluded the
-stage widened the host surface.
+on both topologies.
 
-**One defect was open when this document was first written, and is now closed.**
-The guard that stopped a dying snug from releasing a parked payload was armed
-*after* the payload was already parked, and a SIGKILL inside the window ran the
-payload and left an orphaned sandbox — measured 5/5. It was not fixable by
-arming the guard earlier, because a guard catches signals and SIGKILL is the one
-signal that cannot be caught.
-
-It was closed by **deleting the thing that had a window** rather than by
-defending it — see §7.
-
-**Three review rounds agreed on a diagnosis that measurement contradicted, and
-the agreed fix would not have worked.** The rounds reported SIGTERM as open too,
-at 10/10, 6/6 and 3/3. All three killed at a fixed wall-clock offset — 60 ms,
-100 ms — and the release happens at ~30 ms, so the payload had legitimately
-started. **A positive control that only shows an unkilled run writing its marker
-cannot tell "released early by the bug" from "released correctly, then killed".**
-Measured properly, SIGTERM and SIGINT were **0/5**: the catchable signals had
-been closed all along, and the defect was SIGKILL-only over ~17 ms. Both red
-teams then converged on "arm the guard earlier, pid-less" — a guard catches
-signals, and the only signal left cannot be caught, so it would have changed
-nothing.
-
-The shape to carry forward: **a positive control must distinguish the two
-explanations, not merely prove the machinery runs.** The same mistake recurs in
-[#13](https://github.com/gomoni/snug/issues/13), where two further plausible
-mechanisms were agreed and refuted by measurement.
+**A positive control must distinguish the two explanations, not merely prove the machinery runs.** A kill at a fixed
+wall-clock offset (60 ms, 100 ms) after a release at ~30 ms cannot tell "released early by the bug" from "released correctly,
+then killed"; a control that only shows an unkilled run writing its marker proves nothing about the window.
 
 ---
 
-## 7. The ordering that removed the parked window
+## 7. The ordering that removes the parked window
 
 The startup sequence is now:
 
@@ -502,9 +371,8 @@ confirmed; nothing about the network's own ordering changes.
 **`--block-fd` never travels alone.** `snug` passes `--block-fd R` and the
 payload parks after the whole mount tree is built and before any payload is
 forked; the engine starts behind it; `snug` writes one byte once the engine's
-socket answers. The old defect — a payload released early by a dying `snug` —
-is closed by the **second** flag: the SAME pipe's write end is passed as
-`--sync-fd W`, which `bwrap` keeps open in the sandbox's own pid 1 for the life
+socket answers. A payload released early by a dying `snug` is
+prevented by the **second** flag: the SAME pipe's write end is passed as
 of the run, so the parked read never sees EOF however violently anything
 outside dies. Measured on this host, 5 runs each: `--block-fd` alone, `SIGKILL`
 of the holder while parked → `PAYLOAD_RAN` **5/5**; with `--sync-fd` on the
@@ -546,10 +414,7 @@ request with `SIOCGIFFLAGS` on `snug0` — a name snug itself passes to pasta wi
 namespace with no process in it at all, stays up, and its interface is waiting
 when bwrap arrives.
 
-Three consequences worth stating:
-
-- **The regression test asserts SIGKILL now.** Its predecessor documented, in
-  its own doc comment, that it could not. Same property, strictly stronger
+- **The regression test asserts SIGKILL.**
   claim.
 - **A dead pasta is still detected immediately.** Readiness is raced against the
   helper exiting, because otherwise a pasta that crashes at once would be

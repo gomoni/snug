@@ -1,17 +1,13 @@
 # Generating a tool's configuration inside the sandbox
 
-**Status: the rule.** Several files are generated under it today, four with a
-design document of their own — [`GIT-CONFIG.md`](GIT-CONFIG.md) (`[identity.git]`,
-`~/.gitconfig`), [`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
+**The rule.** Generators live beside their instance documents —
+[`GIT-CONFIG.md`](GIT-CONFIG.md) (`[identity.git]`, `~/.gitconfig`),
+[`CLAUDE-SETTINGS.md`](CLAUDE-SETTINGS.md) (`@claude`,
 `~/.claude/settings.json`), [`STORAGE-CONF.md`](STORAGE-CONF.md) and
-[`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) (the container engine's
-`storage.conf` and `policy.json`) — and the rest are the container engine's,
-authored in `internal/engine`: `containers.conf` (issue #133) and
-`registries.conf` (#137). **Count them in the tree, not here.** The engine ones
-arrived for a reason this document did not anticipate and which is worth
-carrying: under a **derived** mount view, a config naming a path snug does not
-own is a path snug cannot move, so authoring the file stopped being tidiness and
-became load-bearing.
+[`SIGNATURE-POLICY.md`](SIGNATURE-POLICY.md) — and the container engine's own
+files are authored in `internal/engine`. Count them in the tree, not here.
+Under a **derived** mount view a config naming a path snug does not own is a
+path snug cannot move, so authoring the file is load-bearing there.
 
 `policy.json` is the one that is a PROJECTION rather than an allowlisted
 reconstruction, and the difference is the rule's sharpest edge. The others answer
@@ -385,10 +381,10 @@ them:
 Invariant 5 has no adapter-shaped exception, and it was missed in code that was
 written, tested and green.
 
-`FilterClaudeSettings` originally returned two values — the carried set, and the
-dropped keys that were in the catalogue. An **allowlisted** key whose value
-failed its charset or type check was dropped with **nothing on any screen**.
-Measured:
+`FilterClaudeSettings` returns three values: the carried set, the dropped
+catalogued keys, and `[]ClaudeSettingRefusal`. An **allowlisted** key whose value
+fails its charset or type check must not vanish silently. Measured against a
+filter without the third value:
 
 ```
 in:      {"model":"arn:aws:bedrock:us-east-1::foundation-model/claude","theme":"dark"}
@@ -400,11 +396,8 @@ That is exactly the Bedrock/Vertex user the charset check was written to protect
 (§6), and the adapter's own argument for mitigating rather than dropping that
 key was *"the residual fails loudly at the first message, which the human fixes
 with `--model`"* (`CLAUDE-SETTINGS.md` §3.2) — which a human can only do **if
-they are told**. The function now returns a third value,
-`[]ClaudeSettingRefusal`, and
-`TestClaudeSettingsReportsWhyAnAllowlistedValueWasRefused` is the regression.
-It was found by reading the code, not by any test the author wrote — the shape
-CLAUDE.md's definition-of-done table warns about.
+they are told**. `TestClaudeSettingsReportsWhyAnAllowlistedValueWasRefused`
+holds it.
 
 Three rules fall out, and they are the reusable part:
 
@@ -481,12 +474,12 @@ again:
   one when it *does* displace something — that is how the identity files'
   overwrite of a bind stays visible.)
 - **Catalogue the path** so it can never be bound again:
-  `TestNoBuiltinGrantsACredentialOrCommandTablePath`'s list now contains
+  `TestNoBuiltinGrantsACredentialOrCommandTablePath`'s list contains
   `{home}/.claude/settings.json`, which can only fire on a regression.
 
 The cost of this branch, stated because it is real: **there is no escape
 hatch.** A human who wants more in git's config than the pin says grants a stub
-at a scope git reads beside the generated file (`GIT-CONFIG.md` §4); where the
+at a scope git reads beside the generated file (the book's "Other git settings": a stub at `/etc/gitconfig`); where the
 file *is* the path, there is no such scope. That puts more weight on §9's bound and is a reason to keep the
 allowlist small enough that a stale adapter is boring rather than broken.
 
@@ -536,9 +529,9 @@ the installed plugin set *and their install paths* independently of
 `Stop`, each running a shell command). Dropping `enabledPlugins` is **not known
 to disable any of it**. Issue #68.
 
-That is the **third** time a rule in this project was defeated one indirection
-below the layer it was written about — the `@claude` PATH shadow slot and the
-`/snug/bin` overmount are the other two. So the rule for an adapter is:
+This is one of three places a rule was defeated one indirection below the layer
+it was written about; the `@claude` PATH shadow slot and the `/snug/bin`
+overmount are the other two. So the rule for an adapter is:
 
 > When you generate a file, write down what the adapter does **not** close, in
 > the profile's abuse block, in the guidance the sandbox reads, and in the design
@@ -551,7 +544,7 @@ An organisation's managed settings (`/etc/claude-code/managed-settings.json`)
 are not visible inside: `@sys` enumerates fourteen `/etc` entries and that is not
 one of them. So `permissions.deny`, `allowManagedHooksOnly`, `availableModels`
 and `forceLoginOrgUUID` do not apply inside a snug sandbox. This is the same
-position `GIT-CONFIG.md` §7 takes on `/etc/gitconfig` — root-owned host policy;
+position the git adapter takes on `/etc/gitconfig` — root-owned host policy;
 the sandbox is not the host — and granting it would mean granting a file full of
 `policyHelper` and `processWrapper` keys. Recorded rather than accidental: issue
 #70.

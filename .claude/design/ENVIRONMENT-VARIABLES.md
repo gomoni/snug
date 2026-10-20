@@ -1,1125 +1,405 @@
-# Environment variables — the configuration format
+# Environment variables — internals and evidence
 
-**Status: shipped.** `internal/policy/env*.go` is the implementation and the
-truth; this document is the format and the evidence behind each rule. §1–§3
-format, §4 the measurements that forced each rule, §5 what was considered and
-rejected — read that one only to reopen something. §6 is what is genuinely open.
-`env = [...]` and `path = [...]` are gone: `environ.inherit` and `environ.merge`
-on `PATH` took their meanings, and the old spellings are not fields on
-`rawProfile` any more, so a profile still writing one is refused by
-`DisallowUnknownFields` as an unknown key. snug commits to no configuration
-compatibility (CLAUDE.md, "Decisions made").
+The format, the verbs, the type roster, ordering, `sanitise` and the `--dry-run`
+marks are documented for users in `docs/src/environment.md` and the generated
+`docs/src/reference/environment-names.md`. This file holds what the book is
+not for: which code enforces what, the attacker-side reasoning behind each rule,
+and the measurements. `internal/policy/env*.go` is the truth.
 
-Decided: five verbs nested under one `environ` section, all of them profile
-keys; `prepend` usable **once per variable** across the selected set, a second is
-a failure; snug authors its own variables and is not bound by the verbs; snug
-owns the variable types; snug never splits a string on a separator.
+Section numbers are cited from code and other design files; they are stable
+and not contiguous.
 
----
+## 1. Structure
 
-## 1. The format
+### 1.1 snug's own authorship
 
-### 1.1 Five verbs
+**snug is not bound by the verbs when writing its own variables.** Two kinds,
+split by what the write is conditional on. Both lists are derived from code:
+`internal/cli/ownedenv_test.go` asserts owned + conditional equals the set of
+names every `AuthorEnv`/`AuthorEnvList` call writes, so a new writer fails the
+build until placed, and that every conditional name snug authored has its
+predicate true on that policy.
 
-| verb | where | operates on | two profiles both use it |
-|---|---|---|---|
-| `environ.set` | profile | **scalars** | same value fine; **different values are an error** |
-| `environ.merge` | profile | **lists** | **union**, then sorted |
-| `environ.prepend` | profile | **lists** | at most one *value* per variable across the selected set; identical claims agree, **different ones are an error** |
-| `environ.inherit` | profile | any | copy host value verbatim |
-| `environ.sanitise` | profile | **lists** | copy host value, keep only elements policy grants |
-
-One more key, and it is not a verb: `environ.types`. It gives a name snug's
-roster (§3) has no row for one of two kinds, and the kind fixes every fact a verb
-reads (`EnvKind` in `internal/policy/envdeclare.go`):
-
-| kind | shape | separator | checks | `set` / `inherit` | `merge` / `prepend` | `sanitise` | empty element |
-|---|---|---|---|---|---|---|---|
-| `path` | scalar | — | coupling + absolute (§2.5) | ✓ / ✓ | ✗ | ✗ | — |
-| `path-list` | list | `:` | coupling + absolute, per element | ✗ / ✗ | ✓ | ✗ | assumed an instruction (MANPATH's, §3.3) |
-
-```toml
-[profile.ruby]
-ro = ["{home}/.gem"]   # coupling: the profile naming a path grants it
-[profile.ruby.environ.types]
-# A hostile process inside the sandbox can use this to do nothing it cannot
-# already do with `export`: it grants no path, device or socket, and changes only
-# which verbs this profile's own lines may use on GEM_PATH.
-GEM_PATH = "path-list"
-[profile.ruby.environ.merge]
-GEM_PATH = ["{home}/.gem"]
-```
-
-- **Own profile only.** A declaration licenses the declaring profile's own
-  lines — not a profile that includes it, not one selected beside it — so no
-  profile's verdict depends on another file.
-- **Refused:** a name snug writes (`SnugOwnedEnv`, and every conditional name or
-  name that outranks one); a name any builtin profile writes, at any verb
-  (`checkTypesOfBuiltinNames`, internal/profile — the one package that holds the
-  builtins); a kind that contradicts a roster row; a declaration
-  the profile does not use (`path-list` with no `merge`/`prepend`, `path` with no
-  `set`).
-- **A compatible declaration of any other rostered name is admitted and inert** — the row
-  governs, and `snug profile show` marks it redundant. So a row added later for a
-  name somebody declared does not break their profile unless it contradicts them.
-- **Two profiles declaring the same `path-list` compose**: the merge band is the
-  sorted union, and `DeclaredBy` names both.
-- **A list and a single value across one selection is refused**, naming every
-  claimant: one profile's `path-list` against another's `set` or `inherit` of the
-  same name, judged from profile text so the verdict is the same on every host.
-- **A profile snug ships cannot declare**, redundantly or otherwise.
-
-There is no key naming a set of names without a type: `environ.set MY_VAR = "x"`
-in a file with a name, a path and an author already is the declaration, so a
-name list would make the author sign twice.
-
-**And a sixth thing that is not a verb: snug's own authorship.** **snug is not
-bound by the verbs' rules when writing its own variables.** There are two kinds,
-split by what the write is conditional on, and both lists must be **derived from
-the code rather than retyped** — an earlier draft retyped one, gave the count as
-nineteen, and missed six:
-
-```
-owned, every run       HOME SHELL USER LOGNAME TMPDIR PS1 PATH
-                       SNUG SNUG_PROFILES SNUG_TARGET
-owned, host value      TERM TZ LANG
-conditional            resolve.go   GIT_CONFIG_GLOBAL LISTEN_FDS LISTEN_FDNAMES BROWSER
-                       httpdoor.go  LISTEN_PID            ← exported by the staged door script
-                       identity.go  SSH_AUTH_SOCK GH_CONFIG_DIR GH_HOST          ← after Resolve
-                       container.go CONTAINER_HOST DOCKER_HOST DOCKER_BUILDKIT   ← after Resolve
-```
-
-- **Owned** (`SnugOwnedEnv`, thirteen names): no profile may write one, in any
-  run, refused at parse time. `TERM`, `TZ` and `LANG` are written only when the
-  host has a value, and are owned all the same: a verdict keyed on that would
-  pass a profile on one host and refuse it on another (§4.4), so the only
-  host-independent verdict is the unconditional one.
-- **Conditional** (`conditionalEnvs`, eleven names): snug writes one only when a
-  profile key turns its feature on — `podman`, `identity.ssh.agent = "proxy"`,
-  `identity.gh.user`, an identity, `listen_names`,
-  `login = ["claude"]`. In any
-  other selection a profile may `set` or `inherit` it, annotated (§2.9). In a
-  selection that turns the feature on, a profile's line on it is a **symmetric
-  conflict** naming the profile's line and the profiles whose key made snug the
-  author — the shape two `set`s of one scalar already have. Two rules make that
-  verdict the same on every host: the predicate reads the **selection**, never
-  whether snug wrote the name (`identity.gh.user` writes no `GH_CONFIG_DIR` on a
-  dry run with no token), and the claim is the profile's
-  **text**, never what the host held (an `inherit` the host cannot satisfy is
-  still a claim). The same conflict covers the names a tool reads **in place
-  of** snug's: `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
-  `GITHUB_ENTERPRISE_TOKEN` beat the token in the `hosts.yml` snug generates,
-  `CONTAINER_CONNECTION` beats `CONTAINER_HOST` (measured, gh 2.96.0 and
-  podman 6.0.2) — a profile's line on one redirects the feature exactly as a
-  line on the name would. A profile snug ships may write none of them
-  (`checkBuiltinConditionalEnv`): snug's own value is the narrowed version of
-  the hole — a one-key agent proxy, a filtering container proxy, a generated
-  config — and a shipped profile pointing the name elsewhere would ship the wide
-  version.
+- **Owned** (`SnugOwnedEnv`): no profile may write one, in any run, refused at
+  parse time. `TERM`, `TZ` and `LANG` are written only when the host has a value
+  and are owned all the same: a verdict keyed on that would pass a profile on one
+  host and refuse it on another, so the only host-independent verdict is the
+  unconditional one.
+- **Conditional** (`conditionalEnvs`): snug writes one only when a profile key
+  turns its feature on. Elsewhere a profile may `set`/`inherit` it, annotated
+  (§2.9). In a selection that turns the feature on, a profile's line on it is a
+  symmetric conflict naming the profile's line and the profiles whose key made
+  snug the author. Two rules make the verdict host-independent: the predicate
+  reads the **selection**, never whether snug wrote the name (`identity.gh.user`
+  writes no `GH_CONFIG_DIR` on a dry run with no token), and the claim is the
+  profile's **text**, never what the host held. The conflict also covers names a
+  tool reads **in place of** snug's: `GH_TOKEN`, `GITHUB_TOKEN`,
+  `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` beat the token in the
+  generated `hosts.yml`; `CONTAINER_CONNECTION` beats `CONTAINER_HOST`
+  (measured, gh 2.96.0 and podman 6.0.2).
+  A profile snug ships may write none of them (`checkBuiltinConditionalEnv`):
+  snug's value is the narrowed hole (one-key agent proxy, filtering container
+  proxy, generated config); a shipped profile pointing the name elsewhere would
+  ship the wide version.
 
 Why conditional and not owned: owning these protected nobody hostile.
-`environ.*` comes only from the trusted profile set (invariant 3), and the
-payload can export `DOCKER_HOST` for itself. What ownership did protect is kept
-by the conflict — without it a profile's line on a slot snug fills is discarded
-with no trace (invariant 5): replaced outright by `AuthorEnv` for the six
-written after `Resolve`, carried beside snug's entry and never used for the
-three written inside it.
-
-**Ownership refuses the verbs that REPLACE a value, not every verb.** An earlier
-draft said flatly "no profile may write a name snug writes" and listed `PATH` —
-which contradicts §1.2's `@rust`, §2.4's band diagram and §2.8's rendering, all
-of which require `environ.merge PATH` to be legal. The reading under which every
-one of those is true:
-
-- **For a scalar, that is every verb a profile has.** `HOME`, `SHELL`, `PS1`,
-  `SNUG*` and the rest are refused outright, because writing them means replacing
-  them.
-- **For a list, snug's authorship is a *band* (§2.4), so contributing is not
-  replacing.** `merge`, `prepend` and `sanitise` add a band ahead of snug's base
-  and displace nothing; `set` and `inherit` are refused by the *type* rules,
-  which already say a list takes neither.
-
-What stays unconditional is **the base `PATH`**, not the variable. `PATH` is the
-only list among the names snug writes — verified — so the exemption is exactly
-one variable wide, and `TestPATHIsSharedButNotReplaceable` pins both halves.
-
-`internal/cli/ownedenv_test.go` asserts the owned list plus the conditional list
-equals the set of names every `AuthorEnv`/`AuthorEnvList` call writes, so a new
-writer fails the build until it is placed in one of them; and that every
-conditional name snug authored has its predicate true on that policy.
-
-This is not an exemption invented for convenience; it is the distinction the
-codebase already draws for mounts and CLAUDE.md already states: *a profile
-mounting over another profile's grant is masking and is refused; snug replacing a
-path with its own generated content is replacement and is allowed.* `Mount` has
-an `Authored` field and `Policy.Replace` is its single writer. The environment
-needs the same, and omitting it is easy to do — which
-made the format contradict itself in three places (§1.2 note, §2.5, §4.2).
-
-Nested, not five root keys. Written as table headers, not inline tables. Three
-reasons, heaviest first — and one that was claimed and does not hold.
-
-**(a) Keep root namespace nouns.** `environ` sit beside `ro`, `rw`, `tmpfs`, `symlink`. Verbs one level down describe operations *within* a thing, not compete with grants for root.
-
-**(b) Unknown verb refused for free.** `environ` = struct with known fields, so `DisallowUnknownFields` catch `environ.deny` exactly as it catch unknown root key. "A negation key cannot be smuggled in" apply one level down, no new code.
-
-**(c) `append` later cost a nested field, not a sixth root key.**
-
-**"The flat spelling does not parse" is FALSE, and there is no portability
-argument underneath it either.** The flat form
-
-```toml
-environ = { set = {
-  XDG_CONFIG_HOME = "...",
-  XDG_CACHE_HOME  = "...",
-} }
-```
-
-is **valid TOML**. TOML 1.1.0 (released 2025-12-18) allows newlines *and* a
-trailing comma inside an inline table — "Allow newlines and trailing commas in
-inline tables" — and `go-toml/v2 v2.4.3`, the version in `go.mod`, states its
-own conformance as "This library supports TOML v1.1.0". Measured through that
-version: the multi-line form, the outer-only multi-line form, the trailing-comma
-form, the single-line form and the header form all decode with a nil error.
-
-So accepting it is conformance, not laxity, and it is nothing snug inherited by
-accident. A pass over the document text to refuse the form would refuse
-documents a conformant parser accepts — and it would have to be a second,
-independent pass, because the decoded value is byte-identical to the header form
-and go-toml exposes no syntax provenance. snug does not do this and must not
-start. **No comment anywhere may claim snug refuses the flat form.**
-
-TOML 1.0 forbade both spellings, which is why a `python3 -m tomllib` reading
-refuses them — that measurement is against a 1.0 parser, not a stricter one, and
-1.0 is superseded. Reasons (a)–(c) above are the whole case for the header form,
-and they are style and greppability rather than validity: the header form is what
-every shipped profile uses (`base.toml` contains zero inline tables) and it is
-what keeps `grep -rn 'environ.prepend'` finding every ordered claim on a host.
-
-Greppability survive — why verbs beat inferring operation from value type: `grep -rn 'environ.prepend' ~/.config/snug/profiles.d/` find every ordered claim on host, because header spell whole path. That would **not** hold for nested inline form.
-
-### 1.2 Worked profiles
-
-```toml
-# NOTE: @sys sets NO environment. SHELL and the four base PATH entries are
-# snug's (§1.1), not a profile's — showing them here contradicts §1.1. A profile
-# that wants a tool on PATH grants the directory and merges it, like @rust below.
-[profile.sys]
-description = "The system's binaries, libraries and a curated /etc."
-ro = ["/usr", "/etc/ssl", "/etc/pki", "/etc/passwd"]
-symlink = [{ at = "/bin", target = "usr/bin" }, { at = "/sbin", target = "usr/sbin" }]
-
-
-[profile.rust]
-description = "cargo's binaries on PATH"
-ro = ["{home}/.cargo/bin"]
-
-[profile.rust.environ.merge]
-PATH = ["{home}/.cargo/bin"]
-
-
-[profile.home]
-description = "$HOME is an empty tmpfs at the host path. Writable, ephemeral."
-tmpfs = ["{home}", "{home}/.config", "{home}/.cache",
-         "{home}/.local/state", "{home}/.local/share"]
-
-[profile.home.environ.set]
-XDG_CONFIG_HOME = "{home}/.config"
-XDG_CACHE_HOME  = "{home}/.cache"
-XDG_STATE_HOME  = "{home}/.local/state"
-XDG_DATA_HOME   = "{home}/.local/share"
-
-
-[profile.claude]
-description = "Claude Code's configuration and credentials"
-
-[profile.claude.environ.inherit]
-ANTHROPIC_API_KEY = true
-EDITOR            = true
-```
-
-```toml
-# ~/.config/snug/config.toml — preferences, no grants
-defaults = ["@sys", "@home", "@target-rw"]
-prompt   = "{lock} snug[{profiles}]:{cwd}$ "
-```
-
-Three things the layout does:
-
-**`@home` binds authorship to the grant.** Variables sit next to the `tmpfs` that
-creates the directories. Rule: every path a *profile* writes must be granted by
-that same profile. This is a rule about profiles only — snug's own variables
-(§1.1) are not subject to it, which is what makes `HOME` and the base `PATH`
-still unconditional. See §4.2.
-
-**There is deliberately no `@stubs-in-path` profile.** Two drafts proposed one —
-first prepending `/snug/bin`, then as a switch granting nothing. Both are
-wrong, and the second instructively so: **the abuse sentence cannot be written.**
-The stub is read-only, snug-generated, refuses everything outside its allowlist,
-and `/usr/bin/podman` is untouched and still reachable by absolute path. A profile
-that is not a grant is what the `@null` decision retired — *"a profile that grants
-nothing is a preference wearing a profile's clothes"* — and it would appear in
-`$SNUG_PROFILES` and `snug profile tree` as though it were a hole.
-
-It also adds nothing. The two existing gates already select the exact
-intersection, measured four ways: a genuine podman binary, no stub; a shim but no
-podman profile, no stub; no podman at all, no stub plus a named warning; both
-conditions, stub. A third condition ANDed on adds no discrimination — only a way
-to break it, because `defaults = [...]` **replaces** the built-in list wholesale,
-so anyone who trims their defaults silently loses the stub and gets back the
-cryptic host-shim failure. That is a silent-downgrade path the profile would
-create and that does not exist today.
-
-What the profile was reaching for is *telling the human*, and `--dry-run` already
-does it: a `COMMANDS` block naming the shim, the reason, the allowlist and the
-read-only property, plus `exec /snug/bin/podman (snug)` in `FILESYSTEM`. §2.8
-finishes the job by giving the `PATH` line the same provenance. **The answer is
-provenance in `--dry-run`, not a name in `$SNUG_PROFILES`.**
-
-**`@claude` keeps `inherit`, and moving `inherit`/`sanitise` to `config.toml`
-is refused.** It is a regression: `ANTHROPIC_API_KEY`
-enters only when `@claude` is selected today, whereas a host-wide config line
-would put it in **every** sandbox on the machine — inverting CLAUDE.md's bound on
-adapters ("one opt-in profile per tool, never in `defaults`"). The trust argument
-for moving it does not survive either: `profiles.d` and `config.toml` sit in the
-same `$XDG_CONFIG_HOME/snug/` tree at the same trust level, so moving it changes
-only how narrowly it can be *scoped*, and that gets strictly worse.
-
----
-
-## 2. How it behaves
-
-### 2.1 The verb and the variable must agree
-
-snug ship type table (§3). Mismatch = load error naming right verb:
-
-```
-environ.merge on EDITOR  →  EDITOR is a scalar, not a list — use environ.set.
-environ.set   on PATH    →  PATH is a list — use environ.merge, or environ.prepend
-                            if the order matters. environ.set on a list would
-                            replace every other profile's entries, which snug
-                            does not allow.
-```
-
-An unknown name has no type; it is not a scalar by default. Three red-team
-rounds found three sets of names a default type had never been taught about,
-while the space it was chasing ("every variable some tool, in some version, turns
-into an exec") stayed unbounded. `envTypes` is the ROSTER, and it answers one
-question — **what IS this variable** — for two kinds of profile:
-
-- **A profile snug SHIPS may write only a name with a row.** Enforced in
-  `internal/profile`'s `mark` — the one place the `@` mark is added, for the same
-  reason the mark itself lives there — and expressed with
-  `policy.IsUnknownEnv`, the predicate the screens draw their mark from, so the
-  rule reads *a profile snug ships may not hand over a name the screen would mark
-  unknown*. A roster row is where the sentence saying what the variable lets a
-  tool DO gets reviewed, and a shipped profile owes that review because there is
-  no human standing behind it.
-- **A profile a HUMAN wrote may write a name with no row**, at `set` and
-  `inherit`. It is carried, and every entry it produces renders `← unknown` in
-  `--dry-run` and in `snug profile show`, from the same predicate. Nothing about
-  the name is claimed, and the screens say so.
-
-The three LIST verbs take no name with neither a row nor a `path-list`
-declaration in the same profile (§1.1); `sanitise` takes no declared name at all.
-`merge`, `prepend` and `sanitise` need the separator and the meaning of an empty
-element, which is exactly what a roster row carries and what a profile supplies
-only by declaring the one shape snug fixes them for — inferring them from the
-shape of a value is what §3 exists not to do. Everything else applies to
-an unrostered name unchanged: the grammar, `checkEnvOwnership`, and the
-control-character rule on the value. See `internal/policy/envtypes.go` — the code
-is the list, and this paragraph is a summary of it.
-
-**`inherit` is refused for every list variable, without exception.** Copying a
-host search path wholesale imports directories that do not exist inside — what
-§2.7 case 4 refuses for `set`, and what `sanitise` exists to do properly.
-`inherit` is the scalar form; `sanitise` is the list form. It is a rule, not a
-per-row column — carrying it on every table row is how it gets lost in a
-rewrite.
-
-**`forbiddenEnv` is gone. It is `envNotes`, and it refuses nothing** — see §2.9,
-which is the whole of the argument. The table survived intact, name for name and
-measurement for measurement; what changed is the sink. A name in it is
-**annotated** on `--dry-run` and on `snug profile show` instead of being refused
-at parse time, because snug has only allowlists and the author of a profile is a
-human on the trusted side of the boundary. The reasoning that put each name in
-the table is exactly why each name carries a sentence today.
-
-**The split by verb is what carries this, and it matters more here than in a
-refusal.** `set` carries a
-value from a reviewable file in the trusted profile layer; `inherit` carries
-whatever the host process had at launch, put there by whatever invoked snug.
-**`inherit` is a hole punched in `--clearenv`; `set` is not.** A refusal made
-that difference visible for free. With neither refused, the difference IS the
-sentence: `envNote` carries one string for the authored verbs and one for the
-host verbs, and the middle bucket — `BASH_ENV`, `ENV`, `PYTHONSTARTUP`,
-`PYTHONBREAKPOINT`, `LESSOPEN` — is where they differ:
-`BASH_ENV = "{home}/.snug-init"` with the file granted by the same profile is
-coherent and reviewable, while the same name inherited names a file chosen on the
-host, outside any profile. A note table flattened to one string per name would
-lose exactly what `forbidKind` carried.
-
-**Annotated at every verb** are the names snug owns (which are *also* refused by
-ownership, which is stronger), the prefixes `LD_*`, `BASH_FUNC_*` and
-`GIT_CONFIG_*`, the ten glibc strips §4.4 takes from `ld.so(8)`, the git and ssh
-transport hooks (`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`,
-`GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_EXEC_PATH`, `GIT_EXTERNAL_DIFF`, `GIT_EDITOR`,
-`GIT_SEQUENCE_EDITOR`), `GIT_PAGER`, `GIT_TEMPLATE_DIR`, `GIT_DIR` and
-`GIT_COMMON_DIR` (a directory whose hooks are code — `GIT_COMMON_DIR` was the
-sibling `GIT_DIR`/`GIT_TEMPLATE_DIR` missed the first time),
-`GIT_ALLOW_PROTOCOL`/`GIT_PROTOCOL_FROM_USER` (re-enabling the `ext::` transport
-is the transport), the interpreter option channels (`JAVA_TOOL_OPTIONS`,
-`_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUBYOPT`), the prompt hooks other than
-`PS1` (`PS0`, `PS2`, `PS3`, `PS4`, `PROMPT_COMMAND`), the compiler/toolchain
-wrapper class found by a second red-team pass — `MAKEFLAGS`, `GOFLAGS`, `CC`,
-`TAR_OPTIONS`, `RSYNC_RSH`, `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`
-and the `CARGO_*` prefix (carved out at `CARGO_HOME`, the one pointer in that
-namespace) — and the interpreter-hook class **promoted out of the middle bucket**
-by the same pass: `PYTHONPATH`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `PERL5OPT`
-all run unconditionally on interpreter start (`sitecustomize.py`/
-`usercustomize.py`, `--require`, `-M`), which is a stronger claim than
-"reviewable as set" survives — measured, not reasoned about.
-
-Two of those are worth reading twice, because the annotation model changed their
-reach and their reach only. `PYTHONPATH` is a **list**: `forbidBoth` would refuse
-`environ.merge`/`environ.prepend` on it as a side effect of refusing the name,
-but it is mergeable, so those two verbs are legal and annotated — the **only
-list-verb capability the annotation model adds**. `LD_PRELOAD`,
-`LD_LIBRARY_PATH`, `CDPATH` and `GOFLAGS` gained nothing at all: they are lists
-the roster marks neither mergeable nor sanitisable, so every verb is still
-refused — on TYPE grounds, which is snug declining an operation rather than
-denying anyone anything.
-
-**Annotated differently at `inherit`** is the prefix `PIP_*` — §4.5's finding
-that a tool's environment outranks the file snug generated for it, and nothing
-under it has been measured to exec a program (unlike `npm_config_*`, below).
-`npm_config_*` started in that bucket and was **promoted to the same sentence at
-every verb**, carved out at `NPM_CONFIG_USERCONFIG`, for the identical reason
-`CARGO_*` was: `npm_config_script_shell`/`npm_config_node_gyp` name a program npm
-executes, not merely a config value that outranks a file — measured in every case
-spelling npm's own case-insensitive lookup honours, which is also why a single
-shared table (`prefixCaseFold`) decides case-folding for every prefix in both the
-annotation table and the sink-sweep predicate that reads the same names
-(`policy.IsInlineConfigEnv`) — two tables each keeping an independent copy of
-"does this tool fold case" is how they drift apart. The
-carve-outs are the POINTERS, and both tables now name the same set, asserted by
-`TestPointerExemptionsAgreeBetweenTheTwoTables`: a pointer gets no family
-sentence at the verbs that AUTHOR it, because authoring one is the mechanism
-"generate, don't bind" asks for.
-
-**`EDITOR`/`VISUAL`/`PAGER` are annotated at every verb.** `GIT_EDITOR`'s
-documented fallback chain is `GIT_EDITOR` → `core.editor` → `VISUAL` → `EDITOR`
-and `GIT_PAGER` → `core.pager` → `PAGER`, so a table that refuses the `GIT_*`
-spellings closes the invisible half of a class rather than the class. All six
-spellings carry a sentence, which is what makes either half readable at the
-point a grant is made; https://github.com/gomoni/snug/issues/35 and
-https://github.com/gomoni/snug/issues/45 asked for exactly that. The annotation
-is not the whole answer for a profile snug SHIPS — §3.2 carries that, and
-`@claude` inherits `PAGER` alone.
-
-The git group is where the split earns its keep, and it was not got right first
-time: the red team found `GIT_SSH` passing while `GIT_SSH_COMMAND` sat two
-entries above it in the same table, and used it to hijack a real `git fetch` in a
-sandbox whose ssh identity a *different* profile had pinned. The rule is not "the
-newest spelling of the name" — it is **the value is code**, and now: *say so, at
-every spelling*. A missing sentence is the modern shape of that same defect. The
-type table says what may be *merged*; the annotation table says what a tool DOES
-with the value, at any type — `LD_PRELOAD` is a list and is annotated. Two
-tables, both read, neither replacing the other. Collapsing them gets two wrong
-answers at once (add `PS1`, drop `LD_LIBRARY_PATH`). §4.4 is a list to be
-**extended**, not retired.
-
-### 2.2 snug never splits a string on a separator
-
-String = exactly one element. Profile cannot write `"/usr/bin:"`, cannot produce `"/usr/bin::/bin"` by dropping element, cannot smuggle `;` into `LD_LIBRARY_PATH`. snug join with right separator for variable and refuse empty element.
-
-**If nothing survives a `sanitise`, the variable is UNSET, not set empty.** §4.3
-is why: an empty `PATH` is the current directory, and an empty `LD_LIBRARY_PATH`
-is not the same thing as an absent one to the loader.
-
-Close §4.3 hazards by construction, not by implementer remembering. `environ.prepend` with `PATH = "/opt/bin"` = one-element prepend, not string to parse; several at once = array, and order within one profile unambiguous because one profile wrote it.
-
-### 2.3 A variable name must look like a variable name
-
-TOML keys are arbitrary strings, so nothing in the *syntax* stops
-`[profile.x.environ.set]` carrying `"A=B" = "c"`, an empty key, or a name with a
-newline in it — and those go straight to `--setenv NAME VALUE`. Profile names
-have `checkName` for precisely this reason; variable names need the same.
-
-The rule, matching what `execve(2)` and every shell already assume:
-
-```
-name  ::=  [A-Za-z_][A-Za-z0-9_]*
-```
-
-Refused, each with its own message: an empty name; anything containing `=`, NUL
-or a newline; a leading digit; and any name snug owns (§1.1). **Checked at parse
-time**, next to `checkName` and `DisallowUnknownFields`, so `snug profile show`
-reports it too and the verdict never depends on the invoking host.
-
-*Note which refusals these are: the ones about what a name would BREAK (the
-wire format, a screen row), not about what a human may have. `forbiddenEnv` is
-not consulted — §2.9.*
-
-`=` is the one worth naming separately. `NAME=VALUE` is the wire format of the
-environment itself, so a key containing `=` is not a weird name — it is a second
-assignment smuggled inside the first, and the only reason it is not exploitable
-today is that no key accepts a variable name yet.
-
-### 2.4 What `prepend` actually guarantees, and what it does not
-
-A list variable is rendered in **bands**, and the band is structural — nothing a
-profile writes can change which band its entry lands in:
-
-```
-prepend (at most one profile)  →  merge (sorted)  →  sanitise (host order, filtered)
-                               →  snug's generated  →  base
-```
-
-This is what `resolve.go` does today, with `prepend` added in front.
-
-**Be precise about the guarantee; the obvious reading overclaims it.**
-`prepend` guarantees *the front* — ahead of every merged entry. It does **not**
+`environ.*` comes only from the trusted profile set (invariant 3) and the payload
+can export `DOCKER_HOST` for itself. What ownership did protect is kept by the
+conflict: without it a profile's line on a slot snug fills is discarded with no
+trace (invariant 5) — replaced outright by `AuthorEnv` for names written after
+`Resolve`, carried beside snug's entry and never used for those written inside it.
+
+**Ownership refuses the verbs that REPLACE a value.** For a scalar that is every
+verb. For a list, snug's authorship is a band (§2.4), so `merge`, `prepend` and
+`sanitise` add a band ahead of snug's base and displace nothing; `set`/`inherit`
+are refused by the type rules. `PATH` is the only list snug writes, so the
+exemption is one variable wide; `TestPATHIsSharedButNotReplaceable` pins both
+halves. This is the distinction mounts already draw: a profile mounting over
+another's grant is masking and refused; snug replacing a path with generated
+content is replacement and allowed (`Mount.Authored`, `Policy.Replace`).
+
+**`environ.types`** (`EnvKind`, `internal/policy/envdeclare.go`) licenses only the
+declaring profile's own lines, so no profile's verdict depends on another file.
+A shipped profile cannot declare (`checkTypesOfBuiltinNames`, `internal/profile`,
+the one package that holds the builtins). A compatible declaration of a rostered
+name is admitted and inert, so a row added later for a name somebody declared
+breaks their profile only if it contradicts them. A declared `path-list` assumes
+the empty element is an instruction (MANPATH's, §3.3), which is why `sanitise` is
+refused on it. There is no key naming names without a type: `environ.set X = "x"`
+in a file with an author already is the declaration.
+
+**Header form, not inline tables.** Reasons, heaviest first: (a) `environ` sits
+beside `ro`/`rw`/`tmpfs`, so root namespace stays nouns; (b) `environ` is a struct
+with known fields, so `DisallowUnknownFields` refuses `environ.deny` exactly as it
+refuses an unknown root key, with no new code; (c) `grep -rn 'environ.prepend'`
+finds every ordered claim because the header spells the whole path. The flat
+spelling `environ = { set = { ... } }` is **valid TOML 1.1.0** (newlines and
+trailing commas in inline tables) and `go-toml/v2` in `go.mod` states TOML 1.1.0
+conformance; measured through that version, every spelling decodes with a nil
+error. Refusing it would need a second pass over the document text, because the
+decoded value is identical and go-toml exposes no syntax provenance. snug does
+not do this; **no comment may claim snug refuses the flat form.** A `python3 -m
+tomllib` refusal is a TOML 1.0 parser.
+
+**No `@stubs-in-path` profile.** Its abuse sentence cannot be written (the stub
+is read-only, generated, allowlisted; `/usr/bin/podman` is still reachable by
+absolute path), and a profile that grants nothing is a preference wearing a
+profile's clothes. The two existing gates already select the exact intersection
+(genuine podman and shim, stub; otherwise none, with a warning), and a third
+ANDed condition only adds a break: `defaults = [...]` replaces the built-in list,
+so trimming it would silently lose the stub. The answer is provenance in
+`--dry-run`, not a name in `$SNUG_PROFILES`.
+
+**`inherit`/`sanitise` stay in profiles, not `config.toml`.** `ANTHROPIC_API_KEY`
+enters only when `@claude` is selected; a host-wide config line would put it in
+every sandbox, inverting CLAUDE.md's bound on adapters. `profiles.d` and
+`config.toml` sit at the same trust level, so moving only widens the scope.
+
+## 2. Behaviour
+
+### 2.1 Roster and the verb/variable agreement
+
+`envTypes` is the ROSTER and answers one question: what IS this variable. An
+unknown name is not a scalar by default: three red-team rounds each found a set of
+names a default type had not been taught about, while the space ("every variable
+some tool turns into an exec") stayed unbounded.
+
+- A profile snug **ships** may write only a name with a row, enforced in
+  `internal/profile`'s `mark` via `policy.IsUnknownEnv`. A roster row is where the
+  sentence saying what the variable lets a tool DO is reviewed, and a shipped
+  profile owes that review because no human stands behind it.
+- A profile a **human** wrote may write an unrostered name at `set`/`inherit`; it
+  renders `← unknown` from the same predicate. The three list verbs need a row or
+  a same-profile `path-list` declaration, because they need the separator and the
+  empty-element meaning, which inferring from a value's shape would guess.
+
+`inherit` is refused for every list, as a rule rather than a per-row column
+(carrying it per row is how it gets lost in a rewrite): copying a host search path
+imports directories that do not exist inside; `sanitise` is the list form.
+
+**`set` carries a value from a reviewable file in the trusted layer; `inherit`
+carries whatever the host process had at launch. `inherit` is a hole punched in
+`--clearenv`; `set` is not.** `envNote` therefore carries one sentence for authored
+verbs and one for host verbs. For `BASH_ENV`, `ENV`, `PYTHONSTARTUP`,
+`PYTHONBREAKPOINT`, `LESSOPEN` they differ: `BASH_ENV = "{home}/.snug-init"` with
+the file granted by the same profile is reviewable, while the same name inherited
+names a file chosen on the host, outside any profile.
+
+Annotation reach, by the measurement that put each in its class (the table is
+`internal/policy/envtypes.go`; this lists the classes):
+
+- Every verb: names snug owns, `LD_*`, `BASH_FUNC_*`, `GIT_CONFIG_*`, the ten
+  glibc strips from `ld.so(8)`, git/ssh transport hooks (`GIT_SSH`,
+  `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`,
+  `GIT_EXEC_PATH`, `GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`),
+  `GIT_PAGER`, `GIT_TEMPLATE_DIR`, `GIT_DIR`, `GIT_COMMON_DIR` (a directory whose
+  hooks are code), `GIT_ALLOW_PROTOCOL`/`GIT_PROTOCOL_FROM_USER` (re-enabling
+  `ext::` is the transport), interpreter option channels (`JAVA_TOOL_OPTIONS`,
+  `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUBYOPT`), prompt hooks other than `PS1`,
+  the toolchain wrapper class (`MAKEFLAGS`, `GOFLAGS`, `CC`, `TAR_OPTIONS`,
+  `RSYNC_RSH`, `RUSTC*`, `CARGO_*` carved out at `CARGO_HOME`), and the
+  interpreter hooks `PYTHONPATH`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `PERL5OPT`,
+  which run on every interpreter start (`sitecustomize.py`/`usercustomize.py`,
+  `--require`, `-M`), measured.
+- `npm_config_*` is annotated at every verb, carved out at
+  `NPM_CONFIG_USERCONFIG`: `npm_config_script_shell`/`npm_config_node_gyp` name a
+  program npm executes. Measured in every case spelling npm's case-insensitive
+  lookup honours, which is why one table (`prefixCaseFold`) decides case folding
+  for the annotation table and for `policy.IsInlineConfigEnv`. The pointer
+  carve-outs are the same set in both tables
+  (`TestPointerExemptionsAgreeBetweenTheTwoTables`): authoring a pointer is the
+  "generate, don't bind" mechanism, not the hazard.
+- `PIP_*` is annotated at `inherit` only: the environment outranks the file snug
+  generated (§4.5), and nothing under it has been measured to exec a program.
+- `EDITOR`/`VISUAL`/`PAGER` at every verb: git's fallback chains are
+  `GIT_EDITOR` → `core.editor` → `VISUAL` → `EDITOR` and `GIT_PAGER` →
+  `core.pager` → `PAGER`, so annotating only `GIT_*` closes the visible half.
+- `PYTHONPATH` is a list; `merge`/`prepend` on it are legal and annotated — the
+  only list-verb capability annotation adds. `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+  `CDPATH`, `GOFLAGS` are lists the roster marks neither mergeable nor
+  sanitisable, so every verb stays refused on TYPE grounds.
+
+The rule is not "the newest spelling": it is **the value is code, so say so at
+every spelling**. The red team found `GIT_SSH` passing while `GIT_SSH_COMMAND`
+sat above it, and hijacked a real `git fetch` in a sandbox whose ssh identity
+another profile pinned. The type table says what may be merged; the annotation
+table says what a tool DOES at any type (`LD_PRELOAD` is a list and is
+annotated). Collapsing them gets two wrong answers at once. The annotation table
+is a list to be extended, not retired.
+
+### 2.2 snug never splits a string
+
+A string is one element. A profile cannot write `"/usr/bin:"`, produce
+`"/usr/bin::/bin"` by dropping an element, or smuggle `;` into `LD_LIBRARY_PATH`;
+snug joins with the variable's separator and refuses an empty element, closing the
+§4.3 hazards by construction. If nothing survives a `sanitise`, the variable is
+UNSET, not set-empty (an empty `PATH` is the current directory; `LD_LIBRARY_PATH`
+empty is not absent to the loader), and snug never emits `--unsetenv`.
+
+### 2.3 Name grammar
+
+TOML keys are arbitrary strings and go straight to `--setenv NAME VALUE`, so
+`checkEnvNameAt` enforces `[A-Za-z_][A-Za-z0-9_]*` at parse time (so `snug
+profile show` reports it and the verdict is host-independent). `=` is the one to
+name: `NAME=VALUE` is the wire format, so a key containing it is a second
+assignment smuggled inside the first. These refusals are about what a name would
+BREAK (wire format, a screen row), not about what a human may have.
+
+### 2.4 What `prepend` guarantees
+
+Bands are structural; nothing a profile writes changes which band an entry lands
+in: `prepend` (one claim) → `merge` (sorted) → `sanitise` (host order, filtered) →
+snug's generated → base. `prepend` guarantees the front, nothing more. It does not
 make merge order-free: merged entries are sorted, so between two profiles ASCII
-decides, and `/opt/bin` beats `/usr/bin` without anyone using `prepend` or
-consuming the slot. Two profiles merging directories that both contain `git` will
-resolve to one of them silently.
-
-So the honest statement is narrower than "two claims cannot both hold":
-
-- **The front is exclusive**, and that is checkable from declarations alone.
-- **Base entries are structurally last**, so a merged entry always beats the
-  distro's — deliberately, because that is the point of a profile providing a
-  tool.
-- **Merge-vs-merge is sorted, and sorting is not a decision.** If you care which
-  of two *profiles* wins, `prepend` is the only way to say so, and only one of
-  you gets it.
-
-That last point is an effective-behaviour non-monotonicity of the same shape
-CLAUDE.md already carves out for mount depth, and it should be stated in the same
-place rather than left to be discovered.
-
-### 2.5 The grant-coupling rule, decided
-
-§1.2 says a profile must grant the paths it names. A review showed the loose
-version is unimplementable, and the fix is a reframing rather than a detail:
-
-> **It is a coupling rule, not an existence check.** The profile that names a
-> path must be the profile that put a node on the chain to it, so a reviewer
-> reading one profile sees both acts. It cannot prove the path exists —
-> `internal/policy` may not touch the filesystem, a `tmpfs` grant creates an
-> *empty* directory, and a bind's contents are host state.
-
-Put that in the code comment, because otherwise someone will cite the check as a
-boundary. **It is not one.** The value is inert, and the payload can set any
-variable it likes once running. It stops a profile *lying*; it does not stop
-anything *reaching*.
-
-Scope: it binds only values a profile **writes** (`set`/`merge`/`prepend`), and
-only for names the type table marks path-valued. `EDITOR=vim` is out of scope.
-`TZ` is out of scope *of this rule* — `Asia/Tokyo` is a zoneinfo name, not a path
-— and needs its own guard ("setting `TZ` requires granting
-`/usr/share/zoneinfo`"), which is a different check with a different message.
-
-| question | decision |
-|---|---|
-| exact path or coverage? | **coverage, downward, no depth limit** — lexical `/`-boundary containment on guest paths |
-| do `symlink` grants count? | **resolved first, never a grant themselves** — rewrite the value through the profile's symlink map, then check coverage |
-| do `include`d grants count? | **yes, the transitive closure. The selected set does NOT.** |
-| `optional` grants? | **checked against profile TEXT, not resolved mounts** |
-| `host:guest` specs? | **the guest side** |
-| refuse or warn? | **refuse, for profiles** |
-
-**Why coverage and not exact match.** `SHELL=/usr/bin/bash` against `ro=["/usr"]`
-must pass, and there is no principled depth at which to stop. "Granting `/` buys
-everything" is already moot: `Validate` refuses a non-authored mount at `/`.
-Coverage does make `@home` a rubber stamp for all of `$HOME` — accepted, because
-`environ` cannot create a mount, so a false positive yields a variable naming an
-empty directory: a usability bug, not a hole. Exact match would force authors to
-write `ro` grants they do not want, and a rule shipped profiles cannot satisfy
-gets a carve-out.
-
-**Why the include closure but not the selected set.** `include` is the profile's
-own text, static and host-independent. If the selected set counted, `resolve([a])`
-could refuse what `resolve([a,b])` admits — adding a profile would change another
-profile's verdict. Not a visibility break, but one step from it, and it must be
-refused **by name with a test**, because it is one edit away. The cost is real:
-`@podman-socket` includes `sys`+`home`, so for paths under `/usr` and `{home}`
-the check is vacuous for it. Correct — that profile *did* bring them, on a line
-`--dry-run` and `$SNUG_PROFILES` both render.
-
-**Why profile text, not resolved mounts.** An absent `optional` grant produces no
-mount at all, and `@claude` marks **every** `ro` entry optional — so checking
-resolved mounts would make a profile's *legality* host-dependent. That is exactly
-the §4.4 defect, adopted as a design. Text-only also lets `snug profile show`
-render a verdict with no target.
-
-**Why refuse for profiles but only mark for snug (§4.2).** Not favouritism —
-different floors. `HOME`/`PATH`/`SHELL` have **no safe absent state** (§4.3), so
-refusing would make the sandbox worse. A profile has no such floor: refusing
-`CARGO_HOME=/opt/cargo` costs one line. **Where refusing makes the sandbox worse,
-mark; where it costs only an author's line, refuse.**
-
-Two stages, because one location cannot do it. **Parse time**: name grammar,
-verb/type agreement, snug-owned and forbidden names, hand-written separators.
-**Resolve time**, after `{var}` expansion: coverage, purely lexical over the
-profile's own expanded guest specs plus the symlink map. No new `Environ` method
-is needed — and if anyone proposes an existence check, that is where a filesystem
-fact would have to travel, and the answer is no.
-
-*Implementation trap:* `validate.go`'s `resolveVia` is **not reusable as-is**. It
-skips `g == link` (right for a mountpoint, wrong for a `PATH` element that is
-literally `/bin`) and returns the first map match, which is nondeterministic when
-one link prefixes another. One map, two entry points; the environ one must match
-`g == link` and pick the **deepest** link.
-
-### 2.6 What `sanitise` does, decided
-
-| question | decision |
-|---|---|
-| host path vs guest path? | **drop, never rewrite.** An element survives iff, read verbatim as a *guest* path, a grant covers it |
-| what access counts? | **`ro` is enough.** No mode bits, no `stat` |
-| what *kind* counts? | **a bind, generated data or a granted symlink.** An element whose deepest covering mount is `KindTmpfs`, `KindProc` or `KindDev` is dropped |
-| host unset vs empty? | **both mean absent**, and neither may change a verdict |
-| with `merge` on one name? | **legal, never an error** — both are unions |
-| where in the order? | **a fourth band, after `merge`** |
-
-**Drop, never rewrite**, because the host→guest map is not a function: `KindData`
-mounts have no host path at all, and `Mount.Host` is already canonicalised. With
-a profile binding a host directory at `/tmp`, `/tmp/x/lib` is kept and
-`/tmp/<that directory>/lib` is dropped — which is also the intuitive answer from
-inside, where `/tmp` *is* the bound directory. **With no such grant both are
-dropped**, because `/tmp` is then a tmpfs and the kind rule below applies; the two answers differ because the two
-sandboxes differ, which is the filter reporting the policy rather than the host. The cost is that genuinely-real elements get dropped; §2.7 prints them
-**named**, and the repair is one visible `merge` line.
-
-**`ro` is enough, and the honest scope is narrower than the name.** `sanitise`
-removes elements naming paths the sandbox has no grant for. It is a
-**truthfulness filter, not a capability filter** — it cannot promise a surviving
-`PATH` element contains an executable, because the mount may be an empty bind.
-
-**A tmpfs is not enough, and this is the same rule rather than a second one.**
-The filter's contract is *"copy the host value, keep only what policy grants"* —
-so the question at each element is *does the sandbox have the **host's content**
-at this path*, and a tmpfs answers no: it grants an **empty** directory. An
-element covered only by one was never a truthful survivor, and the correction is
-the existing predicate giving a correct answer to the question it already asks.
-The **deepest** covering mount decides, so a bind nested inside a tmpfs is kept
-while the tmpfs directory above it is dropped. Do not read that as "keep if any
-mount exists at or below" — that is a second, downward walk, and it re-admits the
-element the rule exists to remove.
-
-**`@claude` does NOT stage `{home}/.local/bin`, and the reason belongs here of
-all places** — an example built on "which `@claude` really does stage" would be
-describing a hole rather than the rule. `@claude`
-staged a read-only bind inside a *writable* directory and then put that directory
-on `PATH` with `merge` — and no amount of correctness in this filter could reach
-it, because `sanitise` only ever inspects the **host's** value for an imported
-variable and a `merge` entry is written in a profile. The binary now lands in
-`policy.StagedBinDir` (`/snug/bin`), which is unwritable from inside. The
-nesting rule above is unchanged and still right; what changed is that its
-best-known example was itself a hole, in the half of the environment this
-document does not govern.
-
-*Why it matters, and the bound on the claim.* Under `@home`, `{home}` and four
-subdirectories are tmpfs, and `/tmp` is tmpfs in every policy. So a host `PATH`
-carrying `/tmp/x/bin` reaching the `PATH` snug writes would land at a directory
-that is **empty and writable inside**, in a band **ahead of** `/usr/bin`. The payload creates the directory, drops a file called `git` in it,
-and the next `git` a human or another agent runs inside is that file. Verified
-end to end (marker `SHADOWED-GIT-RAN`).
-
-***`/proc` and `/dev` are dropped too, and getting that arm wrong is the most
-instructive part of this section.*** They were kept at first, on the reasoning
-that both are "kernel- and bwrap-populated, not empty" — true of the
-**directory**, false of what `/proc`'s magic symlinks **resolve to**. The filter
-is lexical and does not follow symlinks, so the walk stops at `/proc` while the
-kernel walks `/proc/self/root/tmp/x/bin` to the writable tmpfs and
-`/proc/self/cwd` to the target, where the shadow file also persists to the host.
-Both reproduced. The general form is worth keeping in mind well beyond this
-filter: **a lexical predicate answers about the path it was handed, the kernel
-answers about the path it resolves, and wherever those differ is where the attack
-is.** `..`, trailing slashes and repeated slashes were probed and are not
-exploitable, because the walk cleans before it starts.
-
-`KindSymlink` still survives, and the line between the two is not arbitrary: a
-`KindSymlink` is a link some **grant** authored, pointing where that grant says,
-and following it here would be a second resolution rule with its own failure
-modes. `/proc`'s magic links are authored by the **kernel**, point at whatever
-the reading process happens to have open, and are not a grant at all.
-
-The narrower fix was chosen over "drop anything writable" deliberately, and the
-reason bounds what this claims: *the payload can rewrite `PATH` at will, so no
-filter closes shadowing. What the filter owes is that the environment **snug
-itself** hands over does not ship the shadow slot pre-installed.* Dropping every
-writable element would also drop the target's own `bin/`, which is a truthful
-element — a real bind of real host content — and would chase an invariant the
-sandbox cannot hold. A writable **bind** therefore still survives, target
-included, and the residual shadow slots that leaves are recorded in §4.3.
-
-**Unset and empty collapse to absent** for lists. But write it as a rule for
-lists only, **not a shared helper**: §3.2's flag scalars (`NO_COLOR`, `CI`) are
-"set to any value, including empty", so the collapse is exactly wrong for them.
-"Right for one type, wrong for the other" is how this class of bug ships.
-
-**After `merge`**, because a `merge` is a declaration by a profile the human
-selected and a `sanitise` is a filtered copy of ambient host state — a
-declaration must beat ambient state, or the host's `PKG_CONFIG_PATH` arbitrates
-between two profiles. It also means adding a `sanitise` can only ever *append*.
-**Survivors keep host order; they are not sorted.** Two reviewers disagreed here
-and this is the resolution: `sanitise`'s contract is *"copy the host value, keep
-only what policy grants"*, so sorting is a second, silent transformation nobody
-asked for — and §3.3 documents a variable where position is semantic (`GOPATH`,
-element 0 privileged). There is no commutativity cost: host order is one external
-sequence, not a fold artifact. The objection — that the resolved value becomes a
-function of a host string — is true of `sanitise` either way; sorting does not
-remove the dependence, it only mangles the value.
-
-*Monotone, and that is the non-obvious half:* the filter predicate is "is this
-path granted", and grants only ever grow, so adding a profile can only make
-**more** host elements survive.
-
-*But once the kind decides the verdict, that argument acquires a dependency.* The
-one shape that would break monotonicity is a **tmpfs appearing beneath an
-existing bind**, which would turn a kept element into a dropped one. It cannot
-happen only because `rejectMasking` refuses it (`validate.go`). A tmpfs nested
-inside another tmpfs is legal and harmless here — the element was already
-dropped. So `sanitise`'s monotonicity now **rests on the masking rule**, a
-coupling that is invisible in either file, which is why
-`TestSanitiseMonotonicityRestsOnRejectMasking` exists: relax the masking rule one
-day and the environment stops being monotone, loudly rather than quietly.
-
-**Duplicates collapse to their earliest band.** That keeps `prepend`'s guarantee
-literally true, and it fixes a live bug — today a profile `path` entry is not
-deduped against the base, measured:
-
-```
-snug --dry-run -p tpath .      # path = ["/nonexistent/bin", "/bin"]
-  PATH=/bin:/nonexistent/bin:/usr/bin:/bin:/usr/sbin:/sbin
-```
-
-`/bin` twice, and an ungranted directory accepted in silence — which is the
-present-day state §2.5's rule changes.
-
-### 2.7 The errors
-
-Errors = specification. Each name both profiles and fix.
-
-```toml
-# 1. Two prepends of one variable.
-[profile.mytools.environ.prepend]
-PATH = "/opt/bin"
-
-[profile.othertools.environ.prepend]
-PATH = "/srv/bin"
-```
-```
-snug: mytools and othertools both prepend to PATH (/opt/bin and /srv/bin).
-       Only one profile may hold the front of a variable. Use
-       [profile.othertools.environ.merge] if you do not need to be first.
-```
-
-**The slot is a user's to take.** snug's own contribution (§1.1) is authored, not
-a prepend, so `defaults` does not consume the slot. Getting that backwards
-leaves no way to prepend on an ordinary run short of `--no-defaults`.
-Two profiles wanting the front is a genuine disagreement and is worth an error;
-snug quietly holding it forever would not have been.
-
-```toml
-# 2. Two scalars disagree.
-[profile.a.environ.set]
-XDG_DATA_HOME = "{home}/.local/share"
-
-[profile.b.environ.set]
-XDG_DATA_HOME = "{home}/.share"
-```
-```
-snug: profiles a and b both set XDG_DATA_HOME, to /home/u/.local/share and
-       /home/u/.share. A scalar has one value. Select one profile, or make
-       them agree.
-```
-The *same* value in both is fine. **The reason usually given for it is wrong** and
-worth correcting: not "to keep `include` usable" — `expand` folds includes into a
-set keyed by profile name, so a diamond contributes its `set` exactly once and
-never reaches an agreement check. The real reason is independently-authored
-duplication: two profiles both writing `XDG_CONFIG_HOME = "{home}/.config"` is
-plausible and harmless.
-
-**The same rule applies to `prepend`, and the tempting answer is wrong.** Two
-profiles naming the *identical* directory do not disagree about who is first, and
-the resolved policy is byte-identical either way — refusing it refuses a
-non-conflict. Making agreement legal collapses a rule rather than adding one:
-`prepend` then behaves exactly like `set`, `identity`, `address`, `gateway` and
-`mtu` — a single-valued slot where equal claims join and unequal claims are a
-symmetric error. One rule, six users. Equality is over the whole ordered sequence
-after `{var}` expansion, so `["/a","/b"]` against `["/b","/a"]` is still a
-disagreement about order and still fails.
-
-*The error must name every claimant, not two of them.* Accumulate claims during
-the fold and check after it completes, so there is no fold order to keep
-order-independent. Today's scalar conflicts do not: with three profiles where two
-agree, the message names the alphabetically-last agreeing profile and never
-mentions the first — a fold artifact with no meaning to the reader.
-
-```toml
-# 3. A separator written by hand.
-[profile.x.environ.merge]
-PATH = "/usr/bin:/usr/sbin"
-```
-```
-snug: PATH is a list, so environ.merge needs an array —
-       PATH = ["/usr/bin", "/usr/sbin"]. snug joins with the right separator; a
-       hand-written one can smuggle in an empty element, which in PATH means the
-       current directory.
-```
-
-```toml
-# 4. A value naming something the profile does not grant.
-[profile.broken]
-tmpfs = ["{home}/.config"]
-
-[profile.broken.environ.set]
-XDG_DATA_HOME = "{home}/.local/share"
-```
-```
-snug: profile broken sets XDG_DATA_HOME=/home/u/.local/share, which it does not
-       grant. Add it to tmpfs/ro/rw, or drop the variable — a variable naming a
-       path that does not exist inside is worse than an absent one.
-```
-
-```toml
-# 5. A name snug owns.
-[profile.evil.environ.set]
-SNUG_PROFILES = "@sys"
-PS1 = "$(id)"
-```
-Refused. `SNUG_*` = what `--dry-run` and injected `~/.claude/CLAUDE.md` read against, so profile that can set it can lie to artifacts a human read to decide whether to trust sandbox. `PS1` executed by bash (§3.5). Refusal must cover **prefixes** — `BASH_FUNC_*`, `GIT_CONFIG_*`, `LD_*`, `npm_config_*`, `PIP_*`, `CARGO_*` — which today's `map[string]bool` cannot express.
-
-```toml
-# 6. A verb that does not exist.
-[profile.evil.environ.deny]
-PATH = "/usr/bin"
-```
-Refused by `DisallowUnknownFields`, same as any unknown key.
-
-### 2.8 What `--dry-run` shows
-
-Provenance per entry = product. Mounts already render this way; environment should match, with verb and profile that supplied it:
-
-```
-ENVIRONMENT  (--clearenv, then:)
-  PAGER            less                            inherit   @claude
-  HOME             /home/u                    (snug)
-  PATH             /opt/bin                        prepend   mytools
-                   /home/u/.cargo/bin         merge     @rust
-                   /snug/bin                   (snug)    podman stub
-                   /usr/bin /bin /usr/sbin /sbin   (snug)    base
-  PKG_CONFIG_PATH  /usr/lib64/pkgconfig            sanitise  @pkgconfig
-                   (2 host entries dropped: /opt/x/lib/pkgconfig, /srv/pkgconfig)
-  SHELL            /usr/bin/bash                   (snug)
-  XDG_CONFIG_HOME  /home/u/.config            set       @home
-```
-
-Three things a flat list cannot say: **which verb** produced the value, **which
-profile**, and for `sanitise`, **what was dropped** — named, not counted. A filter
-that silently removes two of three elements is the exact shape of failure this
-document exists to avoid, and a bare "1 of 3 kept" does not let anyone check it.
-
-`(snug)` is the provenance for snug's own authorship (§1.1), matching what mounts
-already print. The `PATH` bands read top to bottom in resolution order, so the
-rendering *is* the §2.4 diagram — which is the point: if the two ever disagree,
-the renderer is lying.
-
-Note `HOME` and `SHELL` carry `(snug)` and no verb. They are not profile-writable
-(§1.1), and §4.2's repair is that this block also **marks** an authored value
-whose path nothing grants.
-
-**A second mark, added after §4.2 shipped: `← writable from inside`, on `PATH`
-entries only.** §4.2's mark answers *is anything there*; this one answers *can
-the payload write there*, and both draw on `coveringMount` so there is still one
-answer to "what is at this path".
-
-It exists because the block was rendering two entries with the identical property
-in opposite ways, four lines apart — a profile's `merge` of a writable directory
-kept and unmarked, directly above a `sanitise` drop line explaining that a
-writable directory is a shadow slot. The filter was right in both cases:
-`sanitise` judges only the **host's** value for an imported variable, and can
-never reach a `merge` entry written in a file. But a reader cannot see that
-distinction on the screen, and the gap is not academic: `@claude`'s
-`{home}/.local/bin` is exactly the shape that sits in it unmarked.
-
-The scope is the substance. `PATH` entries are searched for **commands**, so a
-writable one is a slot the payload can fill; a writable `CARGO_HOME` or
-`XDG_CACHE_HOME` is what those variables are *for*, and marking them would teach
-the reader to skip the mark on the one line that matters. The two marks cannot
-collide: the writable mark needs a covering mount, and the `not granted` mark
-means there is none.
-
-It stays a **mark, not a refusal**, for the same reason §4.2's does — and the
-reason is now sharper than "restriction is not snug's job". A human's own profile
-may deliberately put a writable directory on `PATH`; that is their declaration,
-an accepted residual. What snug may never do is *ship*
-one, and that is enforced separately and absolutely, by a test over the builtins
-(`TestNoBuiltinPutsAWritableDirectoryOnPATH`) rather than by anything on screen.
-
----
-
-### 2.9 The annotation contract, and why the roster holds no permission bits
-
-This is the decision the second pass over issue #44 made, stated once so the rest
-of this document can refer to it.
-
-**snug has only allowlists and never denylists.** The base state is an empty
-environment: `cmd.Env = []string{}` plus bwrap's `--clearenv`. A profile is a
-named hole in it. There is therefore nothing to deny — the thing a denylist would
-deny was never there — and a table that refused a NAME was snug refusing *its own
-user* a hole in *their own* sandbox. The author of a profile stands on the far
-side of the line the sandbox draws: snug constrains the payload, never the person
-configuring it. **You get what you configure**, and what snug owes in return is
-that the screen you approve it on says what you approved.
-
-So: `forbiddenEnv`, `forbiddenEnvPrefixes` and the roster's own `noInherit` bit
-are all **annotations** now (`policy.EnvNote`), rendered by `--dry-run`'s
-ENVIRONMENT block and by `snug profile show`. Measured, over the 113 names snug
-has a table entry for: **147 (name, verb) pairs across 82 names are
-allowed-with-annotation rather than refused, and nothing goes the other way.**
-The prefix families are unbounded, so the real figure is "every name under `LD_*`,
-`GIT_CONFIG_*`, `PIP_*`, `CARGO_*` and `npm_config_*`" as well.
-
-**The roster holds type facts only.** Scalar or list, the separator, the
-alternate separator, what an empty element means, whether the value is a path,
-whether the elements compose. If a field you are about to add answers "may a
-profile do this", it does not belong in `envType`; if it answers "what IS this
-variable", it does. `noInherit` was the one field that failed that test — its
-message read "snug refuses to take this from the host", which is a verdict about
-an author — and `noSet` (the mirror, proposed for `EDITOR`/`VISUAL`/`PAGER` in
-issue #45) was never built and now never will be.
-
-**What still refuses, and there are exactly three kinds.** None of them is a rule
-about what a human may have:
-
-| kind | what it says | where |
+decides and `/opt/bin` beats `/usr/bin` without anyone using `prepend`. Base
+entries are structurally last. If you care which of two profiles wins, `prepend`
+is the only way to say so, and only one gets it. That is an effective-behaviour
+non-monotonicity of the same shape as mount depth, stated rather than
+discovered. The slot is a user's: snug's own contribution is authored, not a
+prepend, so `defaults` does not consume it. Identical claims after `{var}`
+expansion agree (equality is over the whole ordered sequence), making `prepend`
+behave like `set`, `identity`, `address`, `gateway` and `mtu`: one single-valued
+slot, equal claims join, unequal is a symmetric error naming every claimant.
+Claims accumulate during the fold and are checked after it, so no fold order leaks
+into the message.
+
+### 2.5 Grant coupling is not a boundary
+
+The rule is a **coupling rule, not an existence check**: the profile that names a
+path must be the one that put a node on the chain to it, so a reviewer of one
+profile sees both acts. It cannot prove the path exists (`internal/policy` may
+not touch the filesystem; a `tmpfs` grant creates an empty directory; a bind's
+contents are host state). **It is not a boundary**: the value is inert and the
+payload can set any variable once running. It stops a profile lying; it does not
+stop anything reaching. Put that in the code comment so no one cites the check as
+a boundary.
+
+Decisions: coverage downward, no depth limit, lexical `/`-boundary containment on
+guest paths; symlinks are resolved first and never a grant themselves; the
+`include` closure counts, the selected set does not (otherwise `resolve([a])`
+could refuse what `resolve([a,b])` admits, one edit from a visibility break, and
+it must stay refused by name with a test); `optional` grants are checked against
+profile TEXT, not resolved mounts (`@claude` marks every `ro` optional, so a
+resolved-mount check would make legality host-dependent, and text-only lets
+`snug profile show` render a verdict with no target); `host:guest` uses the guest
+side. Coverage makes `@home` a rubber stamp for `$HOME`: accepted, because
+`environ` cannot create a mount, so a false positive is a variable naming an empty
+directory, a usability bug rather than a hole. Refuse for profiles, mark for
+snug's own: `HOME`/`PATH`/`SHELL` have no safe absent state (§4.2), a profile has
+no such floor and refusing costs one line.
+
+Two stages: parse time (name grammar, verb/type agreement, owned names, hand-written
+separators), resolve time after `{var}` expansion (coverage, lexical over the
+profile's expanded guest specs plus the symlink map). No new `Environ` method; an
+existence check would be where a filesystem fact has to travel, and the answer is
+no. `validate.go`'s `resolveVia` is not reusable as-is: it skips `g == link` (right
+for a mountpoint, wrong for a `PATH` element that is literally `/bin`) and returns
+the first match, nondeterministic when one link prefixes another. The environ entry
+point must match `g == link` and pick the **deepest** link.
+
+### 2.6 `sanitise` internals
+
+- **Drop, never rewrite**: the host→guest map is not a function (`KindData` mounts
+  have no host path; `Mount.Host` is canonicalised). An element survives iff, read
+  verbatim as a guest path, a grant covers it. The same string can be kept in one
+  sandbox and dropped in another because the filter reports the policy, not the host.
+- `ro` is enough; no mode bits, no `stat`. It is a **truthfulness filter, not a
+  capability filter**: a surviving `PATH` element may be an empty bind.
+- Kind: the **deepest** covering mount decides; `KindTmpfs`, `KindProc`,
+  `KindDev` drop; bind, generated data, granted symlink keep. "Keep if any mount
+  exists at or below" is a second, downward walk that re-admits the removed element.
+- **Why tmpfs drops** (verified end to end, marker `SHADOWED-GIT-RAN`): under
+  `@home`, `{home}` and four subdirectories are tmpfs, and `/tmp` is tmpfs in every
+  policy. A host `PATH` carrying `/tmp/x/bin` landing in snug's `PATH` would name a
+  directory that is empty and writable inside, ahead of `/usr/bin`; the payload
+  drops a file called `git` there. The bound on the claim: the payload can rewrite
+  `PATH` at will, so no filter closes shadowing. What the filter owes is that the
+  environment snug itself hands over does not ship the shadow slot pre-installed.
+  A writable **bind** (the target's own `bin/`) still survives: it is truthful host
+  content, and dropping all writable elements would chase an invariant the sandbox
+  cannot hold.
+- **`/proc` and `/dev` drop too.** Keeping them reasoned "kernel-populated, not
+  empty" — true of the directory, false of what `/proc`'s magic links resolve to.
+  The filter is lexical; the kernel walks `/proc/self/root/tmp/x/bin` to the
+  writable tmpfs and `/proc/self/cwd` to the target, both reproduced. General
+  form: **a lexical predicate answers about the path it was handed, the kernel
+  about the path it resolves; where they differ is where the attack is.** `..`,
+  trailing and repeated slashes were probed and are not exploitable (the walk
+  cleans first). `KindSymlink` survives because a grant authored it and following
+  it would be a second resolution rule; `/proc`'s links are kernel-authored.
+- `@claude` stages its binary in `policy.StagedBinDir` (`/snug/bin`), unwritable
+  from inside, rather than a read-only bind inside a writable directory on
+  `PATH`: `merge` entries are written in a profile, and no `sanitise` correctness
+  reaches them.
+- Unset and empty both mean absent, for lists only; the collapse is exactly wrong
+  for flags (`NO_COLOR`, `CI`: "set to any value, including empty"), so
+  `sanitiseHostList` keeps its own check instead of a shared helper.
+- After `merge`: a `merge` is a declaration by a selected profile, `sanitise` a
+  filtered copy of ambient host state, and a declaration must beat ambient state.
+  So a `sanitise` can only append. Survivors keep host order, unsorted: sorting is
+  a second silent transformation, and position is semantic for `GOPATH` (element
+  0 privileged). Duplicates collapse to their earliest band, keeping `prepend`'s
+  guarantee literally true.
+- Monotone because grants only grow. The one shape that breaks it, a tmpfs
+  appearing beneath an existing bind, cannot occur only because `rejectMasking`
+  refuses it, so `TestSanitiseMonotonicityRestsOnRejectMasking` makes a relaxed
+  masking rule fail loudly.
+
+### 2.9 Annotation contract
+
+**snug has only allowlists.** The base state is an empty environment
+(`cmd.Env = []string{}` plus `--clearenv`); a profile is a named hole; a table
+that refused a NAME was snug refusing its own user a hole in their own sandbox.
+The author stands on the far side of the line the sandbox draws: snug constrains
+the payload, never the person configuring it. What snug owes is that the screen
+the profile is approved on says what was approved. `forbiddenEnv`, its prefixes and
+the roster `noInherit` bit are `policy.EnvNote` annotations, rendered by
+`--dry-run` and `snug profile show`. Measured over the 113 names with a table
+entry: 147 (name, verb) pairs across 82 names are allowed-with-annotation and
+nothing goes the other way; prefix families are unbounded on top.
+
+**The roster holds type facts only**: scalar or list, separator, alternate
+separator, empty-element meaning, path-ness, composability. If a field answers "may
+a profile do this" it does not belong in `envType`; "what IS this variable" does.
+
+**Exactly three refusal kinds, none a rule about what a human may have:**
+
+| kind | says | where |
 |---|---|---|
-| **ownership** | snug writes this name itself — in every run, or (resolve time) in this selection | `checkEnvOwnership`, `SnugOwnedEnv`; `checkConditionalEnv`, `conditionalEnvs`; `checkEnvTypes`'s owned and conditional arms |
-| **type** | snug cannot carry out this verb on this variable correctly | `checkEnvVerbType`, `checkUnrosteredName`, `checkDeclaredVerbType` |
-| **transport** | this name or value would corrupt a mechanism or forge a screen row | `checkEnvName`, `checkEnvValue`, `checkEnvElement` |
+| ownership | snug writes this name itself, every run or in this selection | `checkEnvOwnership`, `SnugOwnedEnv`; `checkConditionalEnv`, `conditionalEnvs`; `checkEnvTypes` |
+| type | snug cannot carry out this verb on this variable correctly | `checkEnvVerbType`, `checkUnrosteredName`, `checkDeclaredVerbType` |
+| transport | this name/value would corrupt a mechanism or forge a screen row | `checkEnvName`, `checkEnvValue`, `checkEnvElement` |
 
-Ownership is narrower than it looks and deliberately so: a rostered LIST returns
-`nil` early, which is what lets a profile `merge` onto `PATH`. It is "snug's
-SCALARS are untouchable", not "snug's names are". Type is the one that keeps
-`LD_PRELOAD` unreachable at every verb, and it does so without a denylist. And
-`checkEnvElement` reads the roster, or the profile's own declaration, for the
-separator — for a name with neither there is no separator to smuggle, and no list
-verb to smuggle it into.
+Ownership returns `nil` early for a rostered list, which is what lets a profile
+`merge` onto `PATH`. `checkEnvElement` reads the roster or the profile's
+declaration for the separator; a name with neither has no separator to smuggle.
 
-**Four statements, one row, fixed order.** A rendered row can carry up to four
-marks, and none replaces another — this is the same defect two independent
-reviews found one commit earlier, one indirection out:
+**A rendered row carries up to four statements, none replacing another**, widest
+first: `unknown` (about the NAME), `declared` (the NAME), annotation (the VALUE:
+what the tool does), `not granted` (the VALUE: absolute-looking, nothing covers
+it). They co-occur without contradiction (`set PIP_INDEX_URL`: no type row, yet an
+annotated family). `TestUnknownMarkJoinsRatherThanReplacesTheGrantMark` drives a
+fixture with all three (`GIT_SSH_COMMAND`). On `PATH` entries only, `← writable
+from inside` marks a shadow slot; `not granted` means nothing is there, `writable`
+means something is there and the payload can add to it, and they are not mutually
+exclusive (a dangling link on writable ground is both; `not granted` takes
+precedence, `TestGrantMarkPrecedesGrantedWhenBothConditionsHold`). It is PATH-only
+because a writable `CARGO_HOME` is what that variable is for, and marking it
+teaches the reader to skip the mark where it matters. It is a mark, not a refusal:
+a human may deliberately put a writable directory on `PATH`; what snug may never do
+is **ship** one (`TestNoBuiltinPutsAWritableDirectoryOnPATH`).
 
-```
-unknown     about the NAME    snug has no roster row, so no type
-declared    about the NAME    a profile in this selection typed it (environ.types)
-annotation  about the VALUE   what the tool will DO with it
-not granted about the VALUE   spelled like an absolute path, nothing inside covers it
-```
+**An annotation must never become a grant.** `IsUnknownEnv` answering from the
+roster OR the annotation table would make every annotated name (sixty, including
+`GIT_SSH_COMMAND` and `RUSTC_WRAPPER`) one a shipped profile may write.
+`snugKnowsEnvName` reads the roster alone, pinned by
+`TestAnAnnotationDoesNotMakeANameCheckedForABuiltin`.
 
-Widest claim first. `unknown` and the annotation can co-occur and do not
-contradict each other: `set PIP_INDEX_URL` has no type row (so snug has no
-opinion about what the variable IS) and matches an annotated family (so snug does
-have one about what pip does with it). Pinned by
-`TestUnknownMarkJoinsRatherThanReplacesTheGrantMark`, which drives a fixture
-carrying all three at once (`GIT_SSH_COMMAND`, unrostered, annotated, ungranted).
-
-**An annotation must never become a grant, and `IsUnknownEnv` is where that
-nearly happens.** Answering from the roster OR the forbidden table is harmless
-only while that table refuses, because a refused pair never reaches a screen.
-`internal/profile`'s `checkBuiltinEnvRoster` is written on that predicate, so
-folding the *annotation* table in would have made every annotated name — sixty of
-them, `GIT_SSH_COMMAND` and `RUSTC_WRAPPER` included — a name a profile snug
-SHIPS may write, in the same commit that stopped refusing them for everybody
-else. Measured, both ways. `snugKnowsEnvName` now reads the roster alone, and
-`TestAnAnnotationDoesNotMakeANameCheckedForABuiltin` pins it.
-
-**The residual, stated rather than closed.** `checkBuiltinEnvRoster` is now the
-only thing keeping `GIT_SSH_COMMAND` out of a profile snug ships, and it holds
-because that name has no roster ROW — not because anyone decided a builtin may
-not write it. Add a row to an annotated name (to give it a type so a list verb
-works, the plausible reason) and the builtin gate opens silently while the
-annotation stays. Extending the rule to "nor a name snug would annotate" was
-considered and **rejected on measurement**: `@claude` inherits `PAGER` and
-`ANTHROPIC_BASE_URL`, both annotated, so a blanket refusal fails at
-`Builtins()` and takes every snug command with it. Instead the
-annotated (name, verb) pairs a shipped profile writes are a **pinned inventory**
+**The residual, stated.** `checkBuiltinEnvRoster` alone keeps `GIT_SSH_COMMAND`
+out of a shipped profile, and it holds because that name has no roster ROW, not
+because anyone decided a builtin may not write it. Adding a row to an annotated
+name opens the gate silently. Extending the rule to "nor any annotated name" was
+rejected on measurement: `@claude` inherits `PAGER` and `ANTHROPIC_BASE_URL`, both
+annotated, so a blanket refusal fails `Builtins()` and every command with it.
+Instead the annotated pairs a shipped profile writes are a pinned inventory
 (`TestAnnotatedEnvPairsAShippedProfileWritesArePinned`, `internal/profile`), so
-opening the gate moves a list a human reads — the project's stated review
-mechanism, the same argument as the golden argv files. It is not a gate and does
-not pretend to be.
+opening the gate moves a list a human reads. It is not a gate.
 
-**The review artifact.** `internal/policy/testdata/annotations.txt` is the golden
-of every sentence, at every verb a profile can actually write. It exists because the boundary
-lives in the thing a human READS: against a refusal, a change to the boundary
-showed up as a changed refusal in `refusals.txt`; against an annotation, it shows
-up as a changed sentence, so the sentence is the artifact, and a sentence with
-no golden is prose drifting away from the measurement it was written from. Five
-rows left `refusals.txt` in the commit that added that file.
+**`EDITOR`/`PAGER` in `@claude`.** A profile may set `PAGER` or `EDITOR` to a
+command and git runs it (`PAGER="sh -c '…'" git log` measured hijacked). Nothing
+untrusted chooses the value, so this is one profile weakening another, not an
+escape. Measured inside `@claude`: `command -v vi vim nano` finds nothing and
+`less`/`more` exist, so an inherited `EDITOR` names an absent program while
+`PAGER=less` names a present one. `EDITOR` and `VISUAL` are withdrawn from
+`[profile.claude.environ.inherit]` and `PAGER` stays: the grant was wider than the
+need (invariant 2's corollary). An identity-conditional refusal would be a grant
+changing meaning with its neighbours, the shape invariant 1 refuses.
 
-**What this does not change.** `policy.IsInlineConfigEnv` and
-`TestNoBuiltinHandsOverAnInlineConfigVariable` are untouched, and their scope is
-now exactly what CLAUDE.md says the rule is: *the environment snug ITSELF hands
-over must not ship the override pre-installed*. That sweep is builtin-only. A
-user profile handing over `GIT_CONFIG_KEY_0` is legal, annotated, and outside its
-remit — as it always was, since the sweep never resolved a user profile.
+**Review artifact:** `internal/policy/testdata/annotations.txt` is the golden of
+every sentence at every verb a profile can write; against an annotation the
+boundary is the sentence a human reads, and a sentence with no golden is prose
+drifting from its measurement. `policy.IsInlineConfigEnv` and
+`TestNoBuiltinHandsOverAnInlineConfigVariable` are builtin-only: the environment
+snug itself hands over must not ship the override pre-installed; a user profile
+handing over `GIT_CONFIG_KEY_0` is legal and annotated.
 
-## 3. The variable types that drive the verbs
-
-Everything `char*`; that all they share. Three types, and type decide which verbs apply.
-
-### 3.1 Reading the tables
-
-Both tables use the same marks:
-
-| mark | means |
-|---|---|
-| **✓** | the verb is allowed on this variable |
-| **⚠** | allowed, with the stated constraint — never "probably fine" |
-| **✗** | refused at load time, with the reason in the note |
-| **—** | not applicable to this type at all |
-
-**Read every ✗ below against §2.9: half of them are annotations, not refusals.**
-A ✗ that says *snug cannot carry out this verb correctly* — `merge` on a scalar,
-`sanitise` on `MANPATH`, `inherit` on any list, any list verb on a name with
-neither a row nor a declaration, `sanitise` on any declared name — is still a refusal, and comes from `checkEnvVerbType`. A ✗ that said *a
-profile may not take this from the host* is an **annotation** now: the `inherit ✗`
-column on `XDG_*`, `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG` and
-`PIP_CONFIG_FILE` marked the roster's `noInherit` bit, which the model does not
-carry: those rows are legal and marked. The reasoning in each note is what the
-sentence says; only the column differs.
-
-`sanitise` and `merge` are list-only, `set` is scalar-only, and `inherit` is
-scalar-only (§2.1). `prepend` gets no column because it is allowed wherever
-`merge` is: the question it answers is *who is first*, not *what type is this*.
+## 3. Measurements behind the roster
 
 ### 3.2 Scalars
 
-Scalars have no order to get wrong, so the whole ordering argument passes them
-by. What they do have is the `set`-versus-`inherit` question, and for the
-path-valued ones the §2.7-case-4 rule: a value naming something nothing grants is
-worse than an absent value.
-
-| variable | path? | set | inherit | note |
-|---|---|---|---|---|
-| `HOME`, `SHELL`, `USER`, `LOGNAME`, `TMPDIR`, `PS1`, `SNUG*` | yes/no | **—** | **✗** | snug's (§1.1); no profile may write them |
-| `EDITOR`, `VISUAL`, `PAGER` | no | ✓ | ✓ | exec vectors, but the host's own choice — **legal at both verbs, with no identity-conditional refusal, and ANNOTATED at both** (§2.9). What a profile snug SHIPS does with them is a separate question, answered below |
-| `TERM`, `LANG`, `TZ` | no / no / **sort of** | **—** | **✗** | snug's (§1.1), copied from the host when it has one; `TZ` has a **two-branch grammar — see below** |
-| `LC_*` | no | ✓ | ✓ | genuine scalars; `LC_ALL` > `LC_<cat>` > `LANG` is a consumer rule, not a merge rule |
-| `NO_COLOR`, `CI` | no | ⚠ | ⚠ | **flags: empty is not unset.** `NO_COLOR` is "set to any value, including empty", so the usual "drop it if empty" rule inverts |
-| `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` | yes | ✓ | **✗ → annotated** | must name a granted path; empty **is** unset per spec (§3.4) |
-| `XDG_RUNTIME_DIR` | yes | ⚠ | **✗ → annotated** | carries obligations, not just a value — mode 0700, owned by the user |
-| `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` | yes | ✓ | ✓ | conditional (§1.1): snug's when the identity or `git` key turns its feature on, a conflict for a profile then; otherwise annotated — a raw agent socket signs with every key it holds, the two pointers name a command table |
-| `CARGO_HOME`, `DOCKER_CONFIG`, `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE` | yes | ✓ | **✗ → annotated** | "generate, don't bind" — the value is a path, never a credential. No annotation at `set`: authoring a pointer is the mechanism, not the hazard |
-| `CONTAINER_HOST`, `DOCKER_HOST` | **no — URLs** | ✓ | ✓ | conditional (§1.1): snug's filtering proxy when `podman` is on, a conflict for a profile then; otherwise annotated — the engine at the URL runs whatever container it is asked for. podman dials an `ssh://` URL itself (measured, podman 6.0.2) and does not read `DOCKER_HOST` at all |
-| `BROWSER` | yes | ✓ | ✓ | conditional (§1.1): snug's login-bridge shim (`/snug/bin/snug-browser`) when `login = ["claude"]` is on, a conflict for a profile then; otherwise annotated — Claude Code execs the named program with the URL it wants opened as its one argument |
-
-**The three names are legal at both verbs for anybody, and `@claude` — the one
-shipped profile that touches the environment — inherits `PAGER` and neither of
-the other two.** Those are two different decisions and the second one is the
-one with a cost:
-
-*Legality.* An identity-conditional refusal (the row read "refused inside
-`@git`-style identity" for a milestone, with nothing behind it in code) is
-a profile's grant changing meaning because of its neighbours, which is the
-shape invariant 1 exists to refuse. An unconditional `forbidBoth` is not that,
-but it is a denylist entry in a table whose job is to carry sentences: profiles
-are the trusted layer, and snug constrains the payload rather than the person
-configuring it. So both verbs stay legal, and what a human gets instead is the
-annotation `policy.EnvNote` renders on `--dry-run` and on `snug profile show`,
-at all six spellings — the answer to
-https://github.com/gomoni/snug/issues/35 and
-https://github.com/gomoni/snug/issues/45.
-
-*What `@claude` ships.* The residual annotation leaves standing is real —
-
-> A profile may set `PAGER` or `EDITOR` to a command and git will run it:
-> `PAGER="sh -c '…'" git log` was measured hijacked, and the fallback chains
-> are `GIT_EDITOR → core.editor → VISUAL → EDITOR` and `GIT_PAGER →
-> core.pager → PAGER`. Nothing untrusted chooses the value, so this is one
-> profile weakening what another established, not an escape.
-
-— and issue #530 settled it on a MEASUREMENT rather than on that argument.
-Inside `@claude`'s own sandbox `command -v vi vim nano` finds nothing and
-`command -v less more` finds `/usr/bin/less` and `/usr/bin/more`. An inherited
-`EDITOR` therefore names a program that is not there — the host's `vim` or
-`code` is not bound — so git fails identically with it and without it, while an
-inherited `PAGER=less` names a program that is. `EDITOR` and `VISUAL` are
-withdrawn from `[profile.claude.environ.inherit]` and `PAGER` stays: the grant
-was wider than the need, so it shrank (invariant 2's corollary) at no ergonomic
-cost. A profile that wants an editor inside `set`s one to a fixed value and
-binds it.
-
-`internal/profile`'s `TestAnnotatedEnvPairsAShippedProfileWritesArePinned`
-pins the surviving pair, so re-adding either name moves an inventory a human
-reads.
-
-**`TZ` is the sharpest scalar, and it is this document's own rule biting.** It is
-not a plain string: it is either a file reference resolved under `TZDIR`, or an
-inline POSIX rule. When the file is unreachable glibc does **not** fail — it
-re-reads the same value as a rule string. Measured:
+`TZ` is not a plain string: a file reference under `TZDIR` or an inline POSIX
+rule, and when the file is unreachable glibc re-reads the same value as a rule.
 
 ```
 env -i TZ=Asia/Tokyo                    date -d @0 +"%z %Z"  →  +0900 JST
 env -i TZDIR=/nonexistent TZ=Asia/Tokyo date -d @0 +"%z %Z"  →  +0000 Asia
 ```
 
-`Asia` became a timezone abbreviation with a zero offset. Every timestamp in the
-sandbox is silently wrong, on no channel at all. A value a profile chose without
-granting `/usr/share/zoneinfo` would be a guarantee it does not keep — invariant
-5 says that is worse than refusing. No profile chooses one: `TZ` is owned, and
-snug copies the host's. `TZDIR`, which decides where the name is looked up, is
-annotated with this measurement.
+Every timestamp is silently wrong on no channel at all, so a value chosen without
+granting `/usr/share/zoneinfo` would be a guarantee not kept (invariant 5). No
+profile chooses one: `TZ` is owned and copied from the host. `TZDIR` is annotated
+with this measurement.
 
-### 3.3 Lists, and the empty-element column that decides `sanitise`
+`XDG_RUNTIME_DIR` carries obligations (owned by the user, mode 0700, session
+lifetime), so authoring it is a grant, and it belongs to whichever profile creates a
+directory meeting them. `CONTAINER_HOST`/`DOCKER_HOST` are URLs, not paths;
+podman dials an `ssh://` URL itself and does not read `DOCKER_HOST` at all
+(measured, podman 6.0.2). `BROWSER` is the login-bridge shim
+(`/snug/bin/snug-browser`) when `login = ["claude"]`; Claude Code execs the
+program with the URL as its argument. A raw `SSH_AUTH_SOCK` signs with every key
+the agent holds.
 
-"→ CWD" mean empty element resolve to current directory, which inside snug = target: writable thing hostile payload control.
+### 3.3 Empty elements decide `sanitise`
 
-| variable | sep | empty element | merge | sanitise |
-|---|---|---|---|---|
-| `PATH` | `:` | **→ CWD** | ✓ | ⚠ rebuild only |
-| `LD_LIBRARY_PATH` | **`:` or `;`** | **→ CWD** | ✗ | ✗ |
-| `LD_PRELOAD` | **`:` or space** | n/a | ✗ | ✗ |
-| `MANPATH` | `:` | **an OPERATOR** — leading = prepend system path, trailing = append, `::` = insert here | ⚠ | **✗** |
-| `CDPATH` | `:` | **→ CWD, positionally** | ✗ | ✗ |
-| `PKG_CONFIG_PATH` | `:` | **ignored** | ✓ | ✓ |
-| `PYTHONPATH` | `:` | **→ CWD** | **✗** | ✗ |
-| `PERL5LIB` | `:` | **ignored** | ✓ | ✓ |
-| `NODE_PATH` | `:` | **ignored** | ✓ | ✓ |
-| `CLASSPATH` | `:` / `;` | unverified | ⚠ | ⚠ |
-| `GOPATH` | `:` | element 0 privileged; empty first ⇒ empty `GOMODCACHE` | ⚠ | ⚠ |
-| `INFOPATH` | `:` | trailing only = system default | ⚠ | ⚠ |
-| `TERMINFO_DIRS` | `:` | = the system location | ✓ | ⚠ |
-| `GOFLAGS` | **space** | n/a | ✗ | ✗ |
-| (declared `path-list`, §1.1) | `:` | unknown ⇒ treated as `MANPATH`'s | ✓ | ✗ |
-
-**The discriminator for `sanitise` is this column, not the type.** An empty
-element is safe where it is *ignored*, hazardous where it means *CWD*, and
-illegal where it is an *operator*. So a type that carries a separator must also
-carry the empty-element kind — otherwise the sanitiser is written once and is
-wrong for a third of its inputs.
-
-`PYTHONPATH`'s `merge` column is `✗`, not the `⚠` it looks like it should be:
-`sitecustomize.py` on **any** element runs at interpreter start (§2.1, §4.4), so
-it belongs in the forbidden-name table rather than the "reviewably mergeable"
-one — and that table refuses **every** verb, `merge`/`prepend` included, not
-only `set`/`inherit`.
-
-**That column is now wrong, and it is the ONLY row in either table where the
-annotation change widened what a profile may write.** The refusal came from the
-name table, not from the type, and the name table refuses nothing (§2.9). The
-type still says `mergeable: true`, so `environ.merge`/`environ.prepend` on
-`PYTHONPATH` are legal and annotated. Read the column as ⚠ with the sentence
-attached. `sanitise` stays `✗` and is unaffected: that one comes from the
-`sanitisable` column, because an empty element here is the current directory,
-which inside snug is the target. No shipped profile merges it, then or now.
-
-`MANPATH` sharpest: empty element = instruction, so *removing* element can *add* directories. Measured — man-db announce the choice:
+The discriminator is the empty-element column, not the type. An empty element is
+safe where ignored, hazardous where it means the current directory (inside snug
+the writable target), illegal where it is an operator; a type carrying a
+separator must also carry the empty-element kind or the sanitiser is wrong for a
+third of its inputs. `PYTHONPATH`'s `sitecustomize.py` on any element runs at
+interpreter start, and its empty element is the current directory, so `sanitise`
+is refused on it (from the `sanitisable` column) while `merge`/`prepend` are legal
+and annotated. `MANPATH` is the sharpest: removing an element can ADD directories.
+man-db announces the choice:
 
 ```
 env -i MANPATH=/a     manpath  →  ignoring /etc/manpath.config    → /a
@@ -1127,112 +407,44 @@ env -i MANPATH=:/a    manpath  →  prepending /etc/manpath.config  → /usr/sha
 env -i MANPATH=/a::/b manpath  →  inserting /etc/manpath.config   → /a:/usr/share/man:/b
 ```
 
-`LD_LIBRARY_PATH` and `LD_PRELOAD` = why separator live in type, not parser: `ld.so(8)` give them two different separator sets, neither escapable.
+`LD_LIBRARY_PATH` (`:` or `;`) and `LD_PRELOAD` (`:` or space) are why the
+separator lives in the type, not the parser: `ld.so(8)` gives them two different
+sets, neither escapable. `GOPATH` element 0 is privileged and an empty first
+element empties `GOMODCACHE`. `CLASSPATH`'s empty element is unverified. XDG
+variables are the exception: empty is unset and relative paths must be ignored per
+spec, so a naive sanitiser is safe there by specification.
 
-### 3.4 XDG — five scalars and two lists
+### 3.5 Semi-structured names take no verb, except `PS1`
 
-| variable | type | default when not set **or empty** |
-|---|---|---|
-| `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` | scalar path | `$HOME/.config`, `.cache`, `.local/state`, `.local/share` |
-| `XDG_RUNTIME_DIR` | scalar path | **no default value** |
-| `XDG_DATA_DIRS` | **list**, `:` | `/usr/local/share/:/usr/share/` |
-| `XDG_CONFIG_DIRS` | **list**, `:` | `/etc/xdg` |
+`LS_COLORS`, `TERMCAP`, `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_PARAMETERS`,
+`IFS`: no verb accepts them, so there is nothing to refuse; a tool wanting colour
+sets `LS_COLORS` itself. Why they cannot be merged: `PS0`–`PS4` are a template
+language on which bash performs command substitution (`promptvars`, default on,
+measured); `PROMPT_COMMAND` runs before every prompt; `LS_COLORS` values contain
+`;`, a separator in `LD_LIBRARY_PATH`; `IFS` is a set of delimiters; `BASH_FUNC_*`
+is a name pattern carrying exported shell functions, and **function lookup
+precedes `PATH` entirely**, so it defeats every ordering question here.
 
-Three things spec settle. **Empty is unset** — unlike `PATH`, XDG variables have genuine no-op value. **Relative paths must be ignored** — make these only two lists here where naive sanitiser safe *by specification*. And **`XDG_RUNTIME_DIR` carry obligations** — owned by user, mode 0700, session lifetime — so authoring it *is* a grant, and it belong to whichever profile create a directory meeting them.
+`PS1` is owned, and not as a security control: anything inside can set it. Refusing
+the user's configuration buys nothing against a hostile payload and hurts the human
+asking "am I inside?". `environ.inherit = ["PS1"]` stays refused because command
+substitution fires before the user types anything. The preference is a constrained
+template (`prompt = "..."` in `config.toml`, fixed placeholders, bash's own
+escapes, no command substitution). The template is still a display string, so `\r`
+or a cursor escape can erase what precedes it. Machine-readable is a separate
+channel: `SNUG=1` and `SNUG_PROFILES`.
 
-Note `XDG_CONFIG_HOME` (scalar, `environ.set`) against `XDG_CONFIG_DIRS` (list, `environ.merge`). One character apart, different verbs — exactly what type table exist to catch.
+## 4. Evidence
 
-### 3.5 Semi-structured: no verb — except `PS1`
+### 4.2 Authoring and granting are two acts
 
-`LS_COLORS`, `TERMCAP`, `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_PARAMETERS`, `IFS`: **snug ignore them — position, not gap.** No verb accept semi-structured name, so nothing to refuse — operation not exist, same shape as "no X11 profile ships". Tool inside wanting colourful `ls` can set `LS_COLORS` itself.
-
-Why they cannot be merged, one line each: `PS0`–`PS4` = template language on which bash perform **command substitution** (`promptvars`, on by default — measured). `PROMPT_COMMAND` = command bash run before every prompt. `LS_COLORS` = `key=value` pairs whose values contain `;` — the character that is a *separator* in `LD_LIBRARY_PATH`. `DBUS_SESSION_BUS_ADDRESS` = `;`-separated addresses, each `transport:` plus `,`-separated percent-encoded pairs. `IFS` = *set* of delimiter characters with first privileged. `BASH_FUNC_*` not a variable but name pattern carrying exported shell functions — and **function lookup precedes `PATH` entirely**, so it defeat every ordering question here.
-
-**`PS1` is the exception, for a reason easy to get backwards.**
-
-**Not a security control.** Anything inside can set it — payload first line can be `PS1='$ '` and marker gone. Refusing to let *user* configure it buy nothing against hostile payload; only hurt honest case, the one that matter: human at interactive shell asking *"am I inside?"*, where guessing wrong expensive.
-
-But `environ.inherit = ["PS1"]` must still be refused — command substitution fire before user type anything. Same for `PS0`–`PS4` and `PROMPT_COMMAND`.
-
-So neither verb nor flat no — **preference with constrained template**, "generate, don't bind" applied to display string:
-
-```toml
-prompt = "{lock} snug[{profiles}]:{cwd}$ "
-```
-
-snug render from fixed placeholder set — `{lock}`, `{profiles}`, `{target}`, `{cwd}` — emitting bash's own escapes. No command substitution, no host string. One caveat worth writing now: template still a display string, so `\r` or cursor-movement escape erase whatever precede it. Place marker last, or reject control characters.
-
-*Machine-readable = separate channel, already solved:* `SNUG=1` and `SNUG_PROFILES` are what an agent or script should test. Prompt for humans; do not make it carry both jobs.
-
----
-
-## 4. Why — the measured evidence
-
-Every measurement executed against `main` (`408e8e4`), and **every one of them is
-still reported in the present tense on purpose**: this section is the evidence
-that argued for the design, not a description of the tree you are reading. Where
-the implementation has since closed one, the subsection carries a `**Closed by**`
-line naming the commit. A subsection with no such line is still live on `main`.
-
-### 4.1 What `main` does today
-
-Thirteen variables, no XDG among them, and `PATH` only one any profile can influence:
-
-```
-snug <dir> -- env
-HOME LANG LOGNAME PATH PS1 PWD SHELL SNUG SNUG_PROFILES SNUG_TARGET TERM TMPDIR USER
-
-snug <dir> -- sh -c 'env | grep -c XDG'   →  0
-```
-
-`path` already work for user profiles and prepends — but entries come out **alphabetically**, from `sortedKeys` over a map, so author who care which of two directories win cannot say so:
-
-```
-snug -p zzz -p aaa . -- sh -c 'echo $PATH'   →  /aaa/bin:/zzz/bin:/usr/bin:…
-snug -p aaa -p zzz . -- sh -c 'echo $PATH'   →  /aaa/bin:/zzz/bin:/usr/bin:…
-```
-
-Format fix this by *naming the regions*: `merge` = explicitly where you declined to care, so sorting it correct not arbitrary; `prepend` = where you said you do.
-
-**`snug . -- podman` resolve against sandbox `PATH`, not host** — precondition for everything here, and nothing test it. bwrap `--clearenv`s, `--setenv`s `PATH`, then `execvp`s *inside* namespaces:
-
-```
-PATH=/…/hostonly:$PATH snug . -- hostmarker
-  bwrap: execvp hostmarker: No such file or directory     ← host PATH contributes nothing
-snug -p tbin . -- ls
-  SANDBOX-LS-RAN                                          ← a fake ls beat /usr/bin/ls
-```
-
-Second case = `prepend` already working, unnamed and undeclared. Two gaps follow: **no test cover it** — refactor to host-side `exec.LookPath` would leave every test green and make negative case *succeed*, which read like a feature — and **error is bwrap's**, naming neither sandbox own `PATH` nor profile that would grant binary, for most ordinary mistake in tool.
-
-### 4.2 Authoring and granting are two acts, and `main` already gets this wrong
-
-`HOME` assigned unconditionally in `Resolve` while directory it name created by `@home`; `SHELL` and `PATH` name things `@sys` grant:
-
-```
-snug --dry-run --no-defaults -p @parent-ro . -- true
-
-  HOME=/home/u                     ← no @home: does not exist
-  SHELL=/usr/bin/bash                   ← no @sys:  does not exist
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin    ← no @sys:  none of the four exist
-```
-
-Not a hole — twenty-minutes-of-confusion class. But **three existing
-violations**, not hypothetical.
-
-**The repair is to MARK them, not to stop authoring them.** The opposite
-conclusion — author only what the profile grants — converts a confusion bug into
-a reachable hole, because §4.3 shows `PATH` has no safe
-absent state: leave it unset and bash substitutes a compiled-in default ending in
-`.`, which is the target. Same for `HOME`, which is where the identity generator
-writes `~/.gitconfig`, `~/.ssh/config` and `known_hosts` — a profile able to move
-it would silently defeat identity pinning.
-
-So snug keeps authoring `HOME`, `PATH` and `SHELL` unconditionally (§1.1), and
-`--dry-run` flags any authored value whose path nothing grants. That is
-invariant 5's shape — say it rather than degrade silently — and it leaves the
-"every path must be granted" rule where it belongs: on *profiles*, which have no
-such floor to protect.
+`HOME` is assigned unconditionally while the directory is created by `@home`;
+`SHELL` and `PATH` name things `@sys` grants. With `--no-defaults -p @parent-ro`
+none of them exist. Not a hole, a confusion bug. The repair is to MARK, not to stop
+authoring: `PATH` has no safe absent state (§4.3), and `HOME` is where the identity
+generator writes `~/.gitconfig`, `~/.ssh/config` and `known_hosts`, so a profile
+able to move it would silently defeat identity pinning. `--dry-run` flags any
+authored value whose path nothing grants (invariant 5's shape).
 
 ### 4.3 An empty element is not nothing
 
@@ -1243,55 +455,28 @@ env -i PATH="/usr/bin:/bin"  sh -c 'victim'  →  command not found
 env -i PATH="/usr/bin:" /usr/bin/env victim  →  PWD-BINARY-RAN   ← execvp(3), not the shell
 ```
 
-Empty element in `PATH` = current directory — in snug, target. Naive sanitiser = string replace: `/usr/bin:/hostonly/bin` → `/usr/bin:`. *A feature sold as tightening the environment would let a hostile process drop a file named `git` in the project root and have it run.* Hence §2.2.
-
-No safe *absent* state either. For `execvp` unset = floor, empty = CWD; for **bash** unset worse — substitute compiled-in default:
+An empty `PATH` element is the current directory, in snug the target. A naive
+sanitiser (string replace: `/usr/bin:/hostonly/bin` → `/usr/bin:`) is a feature
+sold as tightening that would let a hostile process drop `git` in the project root
+and have it run. Hence §2.2. There is also no safe *absent* state: unset is the
+floor for `execvp`, but bash substitutes a compiled-in default ending in `.`:
 
 ```
 env -i bash --noprofile --norc -c 'echo "${PATH-UNSET}"'
-  /usr/local/bin:/usr/bin:/bin:.        ← DEFAULT_PATH_VALUE, and it ends in "."
+  /usr/local/bin:/usr/bin:/bin:.        ← DEFAULT_PATH_VALUE
 ```
 
-So `PATH` must always be authored, never merely omitted.
+so `PATH` must always be authored. `snug . -- cmd` resolves `cmd` against the
+sandbox `PATH`, not the host's: bwrap `--clearenv`s, `--setenv`s `PATH`, then
+`execvp`s inside the namespaces (`PATH=/…/hostonly:$PATH snug . -- hostmarker` →
+`bwrap: execvp hostmarker: No such file or directory`). A refactor to a host-side
+`exec.LookPath` would keep every test green and make the negative case succeed
+(`test/integration/sandbox_test.go`).
 
-### 4.4 `forbiddenEnv` fires conditionally, and is both too wide and too narrow
+### 4.5 The environment outranks the file
 
-Refusal sit *inside* "is it set on the host" guard, so profile carrying `env = ["LD_PRELOAD"]` **accepted** where host has it unset, refused where set. Not a leak — value never reach sandbox — but same profile pass review on one machine, fail on another.
-
-Measured against type table, list wrong in both directions. `PYTHONSTARTUP` in it and does **not** fire for non-interactive interpreter; `PYTHONPATH` **not** in it and fire on every `python3` via `sitecustomize.py`. Missing, each measured to execute: `GIT_EXEC_PATH`, `GIT_CONFIG_PARAMETERS`, the `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` family, `GIT_EXTERNAL_DIFF`, `GIT_EDITOR`/`EDITOR`/`VISUAL`, `LESSOPEN`, `PYTHONBREAKPOINT`, `BASH_FUNC_*`. Missing on glibc's own authority — `ld.so(8)` strip exactly these under secure execution, closest thing to authoritative denylist: `GCONV_PATH`, `LOCPATH`, `NLSPATH`, `HOSTALIASES`, `RESOLV_HOST_CONF`, `RES_OPTIONS`, `TZDIR`, `MALLOC_TRACE`, `GETCONF_DIR`, `NIS_PATH`.
-
-Four of these = name **prefixes**, which `map[string]bool` cannot express.
-
-**Closed by `86fea49` (Step 3).** The refusal does not consult the host, so a
-profile's verdict is the same on every machine, and the table is
-`internal/policy/envtypes.go`, split by verb (§2.1) and carrying the prefix
-rules `LD_`, `BASH_FUNC_`, `GIT_CONFIG_`, `PIP_`, `npm_config_`. It has
-since been extended once more, by `68c6363`, after the red team demonstrated that
-`GIT_SSH` passed while `GIT_SSH_COMMAND` — its exact equivalent — was refused two
-entries above it. As this section says, the list is to be **extended**, not
-retired.
-
-**Status of the "Missing, each measured to execute" list above, checked
-against `internal/policy/envtypes.go` during the issue #26 review round.**
-`GIT_EXEC_PATH`, `GIT_CONFIG_PARAMETERS` (via the `GIT_CONFIG_` prefix),
-`GIT_EXTERNAL_DIFF`, `GIT_EDITOR`, `LESSOPEN` and `BASH_FUNC_*` are all
-covered — `LESSOPEN` and `PYTHONBREAKPOINT` deliberately in the middle bucket
-(§2.1) rather than the "value is code" class, which was always the intended
-treatment for a value the tool merely *reads* rather than unconditionally
-executes.
-
-**Amended by §2.9, and the amendment reverses what "covered" means in this
-paragraph.** None of these names is refused any more; every one of them is
-ANNOTATED, at every verb, `EDITOR` and `VISUAL` included. So the list above is
-complete for the first time — and the thing it is complete *at* changed from
-"refused" to "the reader is told". The middle bucket did not dissolve into the
-code class: it is the pair of sentences an `envNote` carries, one for a value a
-profile wrote and one for a value taken from the host. Read §2.9 before citing
-any sentence in this section as a boundary.
-
-### 4.5 Out of scope but found here: the environment outranks the file
-
-CLAUDE.md's "generate, don't bind" rule pin a tool's config **file** and leave its **environment** — higher-precedence source:
+"Generate, don't bind" pins a tool's config file and leaves its environment, a
+higher-precedence source:
 
 ```
 env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
@@ -1304,217 +489,83 @@ env -i GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
   AlsoInjected
 ```
 
-*A hostile process inside the sandbox can set `GIT_CONFIG_KEY_0=core.sshCommand` and have the next `git fetch` — including one an unsuspecting user or agent runs — execute its command, with `GIT_CONFIG_GLOBAL` pointing at a perfectly clean generated file.* Not a break in sandbox boundary; payload already run code. Break in **identity pinning** — the guarantee `GIT_CONFIG_GLOBAL` exist to make. Same shape by documentation for npm (`npm_config_*` outrank `.npmrc`) and pip (`PIP_*` outrank the file).
+*A hostile process inside the sandbox can set `GIT_CONFIG_KEY_0=core.sshCommand`
+and have the next `git fetch`, including one a user or agent runs, execute its
+command, with `GIT_CONFIG_GLOBAL` pointing at a clean generated file.* Not a
+sandbox-boundary break (the payload already runs code); a break in identity
+pinning. Same shape for npm (`npm_config_*` outranks `.npmrc`) and pip (`PIP_*`
+outranks the file). No fix exists for the payload-authored route (the value enters
+git at command-line scope above every config file, and every mitigation tested
+lives in the channel the attacker owns); what snug owes and asserts is that the
+environment it hands over never ships such a name (`policy.IsInlineConfigEnv`,
+`TestNoBuiltinHandsOverAnInlineConfigVariable`). See `GIT-CONFIG.md` §9 and
+`GENERATED-CONFIG.md` §7.
 
-**Wanted its own investigation and its own fix — got both, as GitHub issue
-#26.** The verdict: no fix exists for the payload-authored route (the value
-enters git at the command-line scope, above every config file, and every
-mitigation tested lives in the same channel the attacker already owns); what
-snug owes and now asserts mechanically is that the environment snug ITSELF
-hands over never ships one of these inline-config names pre-installed
-(`policy.IsInlineConfigEnv`,
-`TestNoBuiltinHandsOverAnInlineConfigVariable`). See
-`.claude/design/GIT-CONFIG.md` §9 for the measurement and the threat model,
-and `GENERATED-CONFIG.md` §7 for the pointer-vs-inline-setting rule that came
-out of it.
+## 5. Rejected
 
----
+Reopen one only with a reason.
 
-### 4.6 Three live bugs, none of which needs this format to be fixed
-
-Found while reviewing the design, all measured on `main`. They are recorded here
-because this is where they surfaced, **not** because they depend on anything
-proposed above. If the format never ships, these still want fixing.
-
-**(a) A variable set to the empty string is silently dropped, and for flags that
-inverts the meaning.** `resolve.go:283` reads
-`if v := env.Getenv(e); v != ""`, so set-but-empty is indistinguishable from
-unset:
-
-```
-NO_COLOR=  snug --dry-run -p @claude .   →  no NO_COLOR at all
-NO_COLOR=1 snug --dry-run -p @claude .   →  NO_COLOR=1 / --setenv NO_COLOR 1
-```
-
-`NO_COLOR`'s specification is "set to **any** value, including empty", so
-`NO_COLOR=` means *disable colour* and snug silently re-enables it. §3.2's flag
-row is already right about the semantics; the code is wrong. The fix is an
-`Environ.LookupEnv(k) (string, bool)` and a presence check — and it is the same
-one line that carries §4.4's host-conditional refusal, so both go together.
-
-**Closed by `86fea49` (Step 3)**, together with §4.4, exactly as predicted above.
-One caveat the fix had to keep straight: the collapse is inverted for lists,
-where unset and empty both mean absent, so `sanitiseHostList` keeps its own
-check rather than sharing a helper (§2.6).
-
-**(b) A profile file that does not load is one file's problem.** `Load()`
-collects it as a `BadFile` and keeps every other file and the builtins, so
-reclassifying a name in the variable type table costs the profiles in the files
-that used the old verb, not the registry. Diagnostic commands (`profile list`,
-`config`, `doctor`) report the file and continue. A run refuses only when its
-selection, or an `include` it reaches, names a profile the file defines; any
-other run goes ahead with a note naming the file. The names a bad file defines
-are recovered whenever it is valid TOML, so `-p thatprofile` says *"defined in
-FILE, which did not load"* and quotes the error. A file whose names are
-unrecoverable — not TOML, not readable, or an unlistable `profiles.d` — refuses
-every run: it may define the name another file answers for. A name a bad file
-defines that a good file or a builtin also defines is a redefinition, refused at
-load.
-
-**(c) `PATH` entries are not deduplicated, and an ungranted directory is accepted
-in silence.** A profile with `path = ["/nonexistent/bin", "/bin"]`:
-
-```
-snug --dry-run -p tpath .
-  PATH=/bin:/nonexistent/bin:/usr/bin:/bin:/usr/sbin:/sbin
-```
-
-`/bin` twice — once from the profile, once from `basePATH` — and
-`/nonexistent/bin` accepted with no message despite the profile granting nothing
-there. Harmless today, and it is the present-day state that §2.5's coupling rule
-and §2.6's dedup-to-earliest-band both change. Worth its own fix regardless: a
-duplicated entry means the rendered value depends on how many profiles happened
-to name a directory, which is a fold artifact.
-
-**Closed by `2078b69` (Step 6)** for the duplicate, and by §2.5's coupling rule
-for the ungranted directory.
-
----
-
-## 5. Sidenote — what was considered and rejected
-
-Short on purpose. Reopen one only with a reason.
-
-**Prior art.** makeWrapper (`--set` / `--prefix ENV SEP VAL` / `--unset`, argv
-order, imperative). systemd (`Environment=` / `PassEnvironment=` /
-`UnsetEnvironment=`, later wins). flatpak (`[Environment]` sets, including to an
-empty value; removal is `unset-environment` / `--unset-env` — empty-means-unset
-was the pre-1.10 behaviour and is now back-compat only). Environment Modules
-(`prepend-path`, `-d` for the delimiter, reference counting for unload, and **no**
-priority) and Lmod (the same plus an optional **priority** argument). NixOS
-modules (`mkDefault`/`mkForce` = override priority 1000/50, `mkBefore`/`mkAfter` =
-order rank 500/1500). Nickel (symmetric merge, numeric priorities). CUE
-(unification = greatest lower bound; commutative, associative, idempotent;
-**conflict is an error, no override**). Kubernetes (`env`/`envFrom`, last wins —
-documented for `envFrom`; for duplicate keys inside `env` it is kubelet behaviour
-rather than a validated rule).
-
-Two conclusions shaped the format, and both were **overstated in an earlier
-draft**. The corrected versions are narrower and still decisive.
-
-*Ordering.* Not "everyone buys commutativity back with a number". Systems where
-**one author controls the sequence** just use the sequence — makeWrapper takes
-argv order, Environment Modules takes load order, and neither needs a priority. A
-number appears exactly where units are **independently authored** and no sequence
-exists: Lmod's optional priority, NixOS's `mkOrder`. snug's profiles are
-independently authored, which is why sorting alone is not an answer and why the
-real choice is between a number and a refusal. Lmod needed reference counting on
-top, and its docs concede that *when duplicates are allowed* it "does not remember
-which module inserted which directory where".
-
-*Subtraction.* Not "everyone except CUE and Kubernetes". Three-way: **real
-removal** (makeWrapper `--unset`, systemd `UnsetEnvironment=`, flatpak
-`unset-environment`, Modules/Lmod `remove-path`); **override only** — NixOS
-`mkForce` and Nickel `force` win a priority comparison and never delete a
-definition; and **neither** (CUE, Kubernetes). The conclusion survives and is
-sharper for being right: borrowing a vocabulary by analogy imports removal from
-the first group and a priority field from the second, and invariant 1 forbids
-both. Read any proposal asking *"what is the `unset` here?"*; the answer must be
-*there isn't one*.
-
-Putting the separator in the signature is not unique to makeWrapper either —
-Environment Modules has `prepend-path -d` and Lmod takes a delimiter argument. So
-§3.3's requirement is not novel, which is the point worth keeping.
-
-**Rejected approaches.**
-
-- *Sort and hope* — today's behaviour. Commutative and meaningless (§4.1).
-- *A priority number* (`rank = 100`) — honest, familiar, and it is the priority
-  field invariant 1 was written against. Ties put you back where you started.
-- *Declared shadowing* (`shadows = ["podman"]`) — conflict detected by comparing
-  directory **contents**. Need filesystem read, so `internal/policy` stop being
-  pure, and stay *partial* because `/snug/bin/podman` not exist at resolve
-  time. "One prepend across the set" get same guarantee from declarations alone.
-- *Order from structure* — mounts need no priority because depth decide; nothing
-  in a search path play that role. Provenance class give a *band* — the
-  `prepend` / `merge` / base ordering — but not a total order.
-- *Parameterised profiles as the ordering mechanism* — make each contribution
-  a distinct set member so "the union falls out of set membership". Solve
-  membership, not order. (Profiles taking arguments are postponed; the idea is
-  recorded here because the ordering argument stands without them.)
-- *An expression language* (Dhall, CUE, Nickel, Starlark, KCL, Pkl) — **the one
-  worth understanding.** TOML with `DisallowUnknownFields` load-bearing because
-  unknown key = fatal parse error, so negation key cannot be smuggled in. That
-  guarantee **syntactic** — checked by listing keys. Expression language move it
-  to **semantics**: nothing needs a `deny` key when a profile can write
-  `filter (λd → d != "/usr/bin") host.PATH`. Subtraction stop being a key you
-  forgot to forbid and become a function composed from safe primitives, and
-  invariant 1 would have to be re-proved against a language on every release of
-  a dependency. CUE closest fit and still fail: its unification *is* the lattice
-  this format want, but it is a full language with imports, and invariant 3 say
-  trusted profile set come from outside the sandboxed material. **Borrow CUE's
-  semantics; do not take the dependency.**
-- *A separator key on `environ.types`* — the separator and the empty-element
-  kind are measurements of a consumer, and a key would have the author state them
-  unmeasured. `path-list` fixes `:` and the worst-case empty element instead.
-- *Declared `sanitise`, or a declared empty-element kind* — a guess. Whether a
-  list may be filtered is not derivable from its shape: `PATH` and `PYTHONPATH`
-  share separator and path-ness, and one is sanitisable while the other is not.
-- *Types in `config.toml`, or a registry-level `[types]` table* — `config.toml`
-  holds preferences, never grants; and a table read by every profile would make
-  one file's verdict depend on another's.
-- *A name set without a type* (`environ.declare`) — `environ.set` in a file with
-  an author already declares the name; a list of names makes that author sign
-  twice and supplies no fact a refused verb needs.
-
----
+- *Sort and hope*: commutative and meaningless.
+- *A priority number* (`rank = 100`): the priority field invariant 1 was written
+  against; ties put you back where you started. Systems with one author controlling
+  the sequence (makeWrapper, Environment Modules) use the sequence; a number
+  appears where units are independently authored (Lmod, NixOS `mkOrder`), as snug's
+  are, so the real choice is a number or a refusal.
+- *Declared shadowing* (`shadows = ["podman"]`): compares directory contents, needs
+  filesystem reads, and stays partial because `/snug/bin/podman` does not exist at
+  resolve time. "One prepend across the set" gives the same guarantee from
+  declarations.
+- *Order from structure*: mounts need no priority because depth decides; nothing
+  in a search path plays that role. Provenance gives a band, not a total order.
+- *An expression language* (Dhall, CUE, Nickel, Starlark, KCL, Pkl): the one worth
+  understanding. `DisallowUnknownFields` is a **syntactic** guarantee (a negation
+  key cannot be smuggled in, checked by listing keys). A language moves it to
+  **semantics**: nothing needs `deny` when a profile can write `filter (λd → d !=
+  "/usr/bin") host.PATH`, and invariant 1 would be re-proved against a language on
+  every dependency release. CUE is the closest fit (unification is the lattice this
+  format wants; conflict is an error, no override) but has imports, against
+  invariant 3. Borrow CUE's semantics; do not take the dependency.
+- *Subtraction vocabulary*: makeWrapper `--unset`, systemd `UnsetEnvironment=`,
+  flatpak `unset-environment` and Modules `remove-path` remove; NixOS `mkForce` and
+  Nickel `force` override by priority; CUE and Kubernetes do neither. Borrowing by
+  analogy imports removal or a priority field, which invariant 1 forbids. Asked
+  "what is the `unset` here?", the answer is there isn't one.
+- *A separator key on `environ.types`*, or a declared `sanitise` or empty-element
+  kind: these are measurements of a consumer and a key would have the author state
+  them unmeasured. `PATH` and `PYTHONPATH` share separator and path-ness and differ
+  in sanitisability.
+- *Types in `config.toml` or a registry-level `[types]` table*: `config.toml` holds
+  preferences, never grants, and a shared table makes one file's verdict depend on
+  another's.
+- *Parameterised profiles as the ordering mechanism*: solves membership, not order.
 
 ## 6. Open
 
-- **Is `environ.append` needed?** Nothing has asked. Leaving it out keeps exactly
-  one ordered operation — what makes "at most one across the set" easy to state
-  and check. Adding it means answering whether prepend and append coexist (they
-  do — different ends) and whether two appends conflict (yes, same argument).
-- ~~Is `environ.inherit` a preference or a grant?~~ **Settled: a grant, so it
-  stays in a profile.** Moving it to `config.toml` would need CLAUDE.md's
-  "config holds preferences, never grants" amended, which is the wrong
-  direction — see §1.2. Config keeps `defaults` and `prompt`, which really are
-  preferences.
-- **`XDG_RUNTIME_DIR`** needs an owner — whichever profile create a directory
-  meeting the spec's obligations.
-- §4.5 (the environment outranking a pinned config file) is untouched by any of
-  this and wants its own fix.
-- **§4.6's three bugs are independent of the format.** (a) set-empty is dropped,
-  (b) one bad profile file disables the whole registry, (c) `PATH` entries are
-  not deduplicated. None needs this design to land, and (a) shares its one-line
-  fix with §4.4.
+- Is `environ.append` needed? Nothing has asked. Leaving it out keeps one ordered
+  operation, which is what makes "at most one across the set" easy to state.
+- `XDG_RUNTIME_DIR` needs an owner: whichever profile creates a directory meeting
+  the spec's obligations.
 
 ## Tests
 
-**They exist; the suite is the truth and this section is not.** The resolver
-invariants and the verb behaviour are in `internal/policy/envresolve_test.go`,
-`envtypes_test.go`, `envallowlist_test.go`, `envnotes_test.go` and
-`envcoupling_test.go`; the `--dry-run` rendering is pinned by
-`internal/cli/testdata/env.*.txt`.
-
-One requirement from that list is worth keeping as prose, because it is the
-reasoning rather than a name: **§4.3's `PATH` sanitise is the one place here
-where getting it wrong ADDS a hole rather than fails to close one**, so its
-regression test needs the positive control that a planted binary in the target
-*is* found when an empty element is present. `envresolve_test.go:158` carries
-the same hazard from the other side — an empty element in the HOST's value must
-never be carried through.
+The suite is the truth: `internal/policy/envresolve_test.go`, `envtypes_test.go`,
+`envallowlist_test.go`, `envnotes_test.go`, `envcoupling_test.go`; `--dry-run`
+rendering in `internal/cli/testdata/env.*.txt`. The `PATH` sanitise of §4.3 is the
+one place where getting it wrong ADDS a hole, so its regression test needs the
+positive control that a planted binary in the target *is* found when an empty
+element is present; `envresolve_test.go` carries the same hazard from the other
+side (an empty element in the HOST's value must never be carried through).
 
 ## Sources
 
-- [makeWrapper](https://github.com/NixOS/nixpkgs/blob/master/pkgs/build-support/setup-hooks/make-wrapper.sh) ·
-  [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) ·
-  [flatpak-run(1)](https://www.man7.org/linux/man-pages/man1/flatpak-run.1.html) ·
-  [Lmod ref counting](https://lmod.readthedocs.io/en/latest/077_ref_counting.html) ·
-  [NixOS properties](https://nixos.wiki/wiki/NixOS:Properties) ·
-  [Nickel merging](https://nickel-lang.org/user-manual/merging/) ·
-  [CUE spec](https://cuelang.org/docs/reference/spec/)
-- [POSIX ch. 8, environment variables](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap08.html) ·
-  [ld.so(8)](https://man7.org/linux/man-pages/man8/ld.so.8.html) ·
-  [XDG Base Directory Specification](http://specifications.freedesktop.org/basedir/latest/) ·
-  [Bash variables](https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html)
+[makeWrapper](https://github.com/NixOS/nixpkgs/blob/master/pkgs/build-support/setup-hooks/make-wrapper.sh) ·
+[systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) ·
+[flatpak-run(1)](https://www.man7.org/linux/man-pages/man1/flatpak-run.1.html) ·
+[Lmod ref counting](https://lmod.readthedocs.io/en/latest/077_ref_counting.html) ·
+[NixOS properties](https://nixos.wiki/wiki/NixOS:Properties) ·
+[Nickel merging](https://nickel-lang.org/user-manual/merging/) ·
+[CUE spec](https://cuelang.org/docs/reference/spec/) ·
+[POSIX ch. 8](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap08.html) ·
+[ld.so(8)](https://man7.org/linux/man-pages/man8/ld.so.8.html) ·
+[XDG Base Directory Specification](http://specifications.freedesktop.org/basedir/latest/) ·
+[Bash variables](https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html)

@@ -130,7 +130,7 @@ func podmanClientUsable() (ok bool, path, detail string) {
 // # Why the staged replacement is a dispatcher, not a translator
 //
 // snug now DOES stage a `podman` on PATH when it resolves to a host-escape
-// shim (podmanstub.go, CONTAINER-CLIENT.md §6-§8) — reversing the standing
+// shim (podmanstub.go, CONTAINER-CLIENT.md §8) — reversing the standing
 // refusal this comment used to argue for. It forwards a fixed, compiled-in
 // allowlist of docker subcommands to `docker`, byte for byte, and refuses
 // everything else BY NAME; it never rewrites a flag or otherwise translates.
@@ -155,8 +155,7 @@ func podmanClientUsable() (ok bool, path, detail string) {
 // rather than kept for history, because it is now measurably false:
 // `isDefaultLogConfig` (internal/dockerproxy/create.go) was added because the
 // denylist it replaced "refused every `docker run` there has ever been
-// through this proxy", and `docker run --rm alpine echo` works today. See
-// CONTAINER-CLIENT.md §5.
+// through this proxy", and `docker run --rm alpine echo` works today.
 func warnAboutPodmanClient(n *notes) {
 	ok, _, detail := podmanClientUsable()
 	if !ok {

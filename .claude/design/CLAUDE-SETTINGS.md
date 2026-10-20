@@ -4,30 +4,22 @@
 the rule; this document holds the Claude-Code-specific measurements.** The other
 instance is [GIT-CONFIG.md](GIT-CONFIG.md).
 
-**Status: built** (issue
-[#17](https://github.com/gomoni/snug/issues/17)). `@claude` binds
-`~/.claude/settings.json` nowhere, under `ro` or `optional`; snug reads the
-host's file as data and generates the one the sandbox sees. The filter is
-`policy.FilterClaudeSettings` / `policy.ClaudeSettingsJSON`
-(`internal/policy/claudesettings.go`, pure — no filesystem, no `exec`); the host
+User-facing behaviour (what is carried, what is reported) is in
+`docs/src/claude.md`. This document holds the measurements and the attacker-side
+reasoning. The filter is `policy.FilterClaudeSettings` /
+`policy.ClaudeSettingsJSON` (`internal/policy/claudesettings.go`, pure); the host
 read and the stderr lines are `stageClaudeSettings` and
 `loadHostClaudeSettings` (`internal/cli/claude.go`).
 
-**Measured against claude 2.1.232**
-(`/home/michal/.local/share/claude/versions/2.1.232`), on the development host,
-**2026-08-13**. Every "MEASURED" below is either a read of that binary's own
-schema strings or a read of a real host file, named at the point it is used.
-Claude Code gains settings keys across releases with no stable machine-readable
-schema, so **re-measure before changing any of it** — and note that the
-allowlist's design (§2) is what makes a stale measurement boring rather than
-dangerous.
+**Measured against claude 2.1.232**, on the development host, 2026-08-13 unless
+a section names another version. Every "MEASURED" below is a read of that
+binary's own schema strings or of a real host file. Claude Code gains settings
+keys across releases with no stable machine-readable schema, so **re-measure
+before changing any of it** — the allowlist's design (§2) is what makes a stale
+measurement boring rather than dangerous.
 
-Sections **6, 8, 9 and 11** of the specification this document was promoted from
-were implementation instructions — where the code goes, every site that had to
-change, the test plan, and the plan for these documents. They are not part of
-the built design and the numbering below skips them so that the section
-references written into the code (`§1.1`, `§3.2`, `§3.3(e)`, `§4.1`, `§4.4`,
-`§5.2`, `§5.4`, `§5.6`, `§7.3`) still resolve.
+The numbering skips 6, 8, 9 and 11 on purpose: code comments cite the surviving
+section numbers.
 
 ---
 
@@ -50,24 +42,12 @@ git's value-injection route by construction and opens a different one.
 
 ## 1. What the file actually is
 
-### 1.1 The host's real file, read 2026-08-13
+### 1.1 An ordinary host file
 
-`/home/michal/.claude/settings.json`, 335 bytes:
-
-```json
-{
-  "model": "opus[1m]",
-  "enabledPlugins": { "gopls-lsp@claude-plugins-official": true, "caveman@caveman": true },
-  "extraKnownMarketplaces": { "caveman": { "source": { "source": "github", "repo": "JuliusBrussee/caveman" } } },
-  "skipWorkflowUsageWarning": true,
-  "theme": "dark"
-}
-```
-
-Two of five keys select code to load, and one of those names a remote GitHub
-repository. This is an ordinary developer's file, not a crafted one — which is
-why `model` and `theme` are also the filter's positive control
-(`TestClaudeSettingsFilterCarriesAnOrdinarySetting` feeds exactly this shape).
+A real host file (335 bytes) held `model`, `enabledPlugins`,
+`extraKnownMarketplaces`, `skipWorkflowUsageWarning` and `theme`. Two of five
+keys select code to load, one naming a remote GitHub repository. It is an
+ordinary developer's file, not a crafted one.
 
 ### 1.2 Keys that name a program, in claude 2.1.232
 
@@ -148,35 +128,26 @@ and the confirming sentence, verbatim from the binary:
 > `~/.claude/settings.json`, `.claude/settings.json`, and
 > `.claude/settings.local.json` are blocked.
 
+
 **This is the git two-file lesson (GENERATED-CONFIG.md §7.1), and it comes out
 clean.** git merges `~/.gitconfig` **and** `$XDG_CONFIG_HOME/git/config`, which
 is why generating one of them was not enough. Claude Code has **one** user-scope
 file. There is no `~/.claude/settings.local.json` at user scope: the
 `settings.local.json` strings in the binary all sit next to `.claude/` project
-paths ("Disable it just for you in `.claude/settings.local.json`", "Skipping
-`settings.local.json` copy into worktree", the legacy-migration strings). So
-generating `~/.claude/settings.json` bounds the whole of the **host's**
-contribution.
+paths. So generating `~/.claude/settings.json` bounds the whole of the
+**host's** contribution.
 
-Two sources remain outside this fix, and both are stated rather than implied:
+Two sources remain outside this fix:
 
-- **`projectSettings`, `localSettings` and `.mcp.json` live in the target tree,
-  and snug projects all three read-only WHERE THEY EXIST (issues #73, #460).** The inbound-only
-  framing this bullet once carried — "the target is sandboxed material, gated by
-  Claude Code's trust dialog" — was true one direction and wrong the other: the
-  payload can WRITE a `.claude/settings.json` hook into the target, which
+- **`projectSettings`, `localSettings` and `.mcp.json` live in the target tree.**
+  The payload can WRITE a `.claude/settings.json` hook into the target, which
   persists and runs on the host later. MEASURED: a `SessionStart` hook in a
   target's `.claude/settings.json` fired from a host-side `claude -p` with no
   trust dialog, no approval and no `~/.claude.json` entry, on a never-trusted
   directory. So snug reinterprets both files through the SAME allowlist as the
-  user-scope one and mounts them `AccessRO` — a hostile repo's hooks do not run
-  inside, and the payload's write does not survive outside. ONLY where the file
-  exists: a generated mount over an absent path CREATES the file on the host
-  (measured, issue #73/#186), so a target that ships neither file gets no mount,
-  and a NEW file the payload writes there is the residual this does not close.
-  See §4.5.
+  user-scope one and mounts them `AccessRO`. See §4.5.
 - **`policySettings` (`/etc/claude-code/managed-settings.json`) is not visible
-  inside** — §10.3, issue #70.
+  inside** — §10.1.
 
 ### 1.5 There is no `GIT_CONFIG_GLOBAL` for this tool — VERIFIED
 
@@ -195,21 +166,16 @@ Two sources remain outside this fix, and both are stated rather than implied:
   inside the sandbox that directory is already a fresh tmpfs that snug
   populates.
 
-**Consequence, as a classification.** The rule has two halves — *generate* the
-file, and *point the tool at it with the tool's own env var*. The second half
-has no instrument for this tool, so snug takes the first half and writes the
-file at the canonical path. Under CLAUDE.md's replacement-vs-masking distinction
-that is **replacement**: snug authoring its own content at a path, via
-`Policy.Replace`, which sets `Mount.Authored` and is what `rejectMasking`
-exempts. It is *not* masking, because after §7.1 removed the `ro` line **no
-profile grant exists at that path at all** — there is nothing to displace, and
-`Replace` records no `replaces:` provenance.
+**Consequence.** The rule has two halves: *generate* the file, and *point the
+tool at it with the tool's own env var*. The second half has no instrument for
+this tool, so snug writes the file at the canonical path. That is
+**replacement** (`Policy.Replace`, which sets `Mount.Authored` and is what
+`rejectMasking` exempts), not masking: no profile grant exists at that path, so
+there is nothing to displace and no `replaces:` provenance.
 
-There is also **no escape hatch if the format drifts**. With git, a human who
-dislikes snug's generated file can unset `GIT_CONFIG_GLOBAL` in their own
-profile; here the file *is* the path. That makes the opt-in-profile bound
-(GENERATED-CONFIG.md §9) do more work here than it does for git, and it is why
-the allowlist must stay small enough that a stale adapter is boring rather than
+There is also **no escape hatch if the format drifts**: with git a human can
+unset `GIT_CONFIG_GLOBAL`; here the file *is* the path. That is why the
+allowlist must stay small enough that a stale adapter is boring rather than
 broken.
 
 ---
@@ -235,34 +201,23 @@ of.
 Upstream carries roughly 150 settings keys with no stable machine-readable
 schema, keys land without announcement, and deprecated keys linger. A denylist
 written from the issue's own opening list (`hooks`, `apiKeyHelper`, `env` "at
-minimum"), against the schema read in §1.2, would have carried:
+minimum"), against the schema read in §1.2, would have missed twenty-one keys
+(everything in §1.2 beyond those three, plus `autoMemoryDirectory`,
+`permissions.defaultMode = "bypassPermissions"` and
+`skipDangerousModePermissionPrompt`) on a schema that had just been read once,
+carefully.
 
-`proxyAuthHelper`, `awsCredentialExport`, `awsAuthRefresh`, `gcpAuthRefresh`,
-`otelHeadersHelper`, `policyHelper`, `policyHelpers`, `processWrapper`,
-`statusLine`, `subagentStatusLine`, `mcpServers`, `enabledPlugins`,
-`extraKnownMarketplaces`, `enableAllProjectMcpServers`, `enabledMcpjsonServers`,
-`sshConfigs`, `agent`, `defaultShell`, `autoMemoryDirectory`,
-`permissions.defaultMode = "bypassPermissions"`,
-`skipDangerousModePermissionPrompt`.
-
-Twenty-one, on a schema that had just been read once, carefully.
-
-`policy.ClaudeExecutingKeys` — the ~90-name catalogue in the code — exists for
-reporting, disjointness and documentation, and **is not a filter**; its own doc
-comment and
-`TestClaudeSettingsAllowlistAndExecutingCatalogueAreDisjoint` are what keep it
-from becoming one. It may be incomplete without any security consequence: an
-unnamed key is dropped exactly like a named one, and
-`TestClaudeSettingsFilterDropsEveryExecutingKey` asserts that directly, feeding
-one unlisted key alongside every listed one.
+`policy.ClaudeExecutingKeys` (~90 names) exists for reporting and
+documentation and **is not a filter**. It may be incomplete without any security
+consequence: an unnamed key is dropped exactly like a named one.
 
 ---
 
-## 3. The keep/drop table, as built
+## 3. The keep/drop table
 
 ### 3.0 The shape of the allowlist
 
-Not a list of names — a table of `(name, JSON kind, value check)`,
+Not a list of names but a table of `(name, JSON kind, value check)`,
 `policy.ClaudeSettingKey`. Three structural rules, each of which exists because
 §4 or §5 found a way through without it:
 
@@ -276,31 +231,12 @@ Not a list of names — a table of `(name, JSON kind, value check)`,
 
 ### 3.1 KEEP — the allowlist
 
-Every entry is a scalar, none names a program, a path, a URL, a remote source or
-a credential, and each buys something a human would notice missing.
-
-| key | kind | value check | why it is carried |
-|---|---|---|---|
-| `model` | string | `modelName` (§5.3) | The human's default model. Dropping it silently changes which model the sandbox uses. **Trap, see §3.2.** |
-| `theme` | string | `shortToken` | Cosmetic, and it pairs with `hasCompletedOnboarding`: the theme picker is skipped, so without this the sandbox is whatever the default theme is. |
-| `editorMode` | string | `shortToken` | `vim` vs `normal` keybindings. A vim user typing `:wq` into a non-vim prompt is a real, immediate annoyance. |
-| `verbose` | bool | — | Full tool output vs truncated. |
-| `alwaysThinkingEnabled` | bool | — | Thinking on/off. |
-| `autoCompactEnabled` | bool | — | Auto-compaction on/off. |
-| `includeCoAuthoredBy` | bool | — | Whether commits made **in the sandbox, into the persistent target tree** carry the Claude co-author trailer. The one carried key with an effect that outlives the run, and it is a boolean the human set deliberately. |
-| `prefersReducedMotion` | bool | — | Accessibility. A human who needs it on the host needs it inside. |
-| `spinnerTipsEnabled` | bool | — | Cosmetic. |
-| `skipWorkflowUsageWarning` | bool | — | Suppresses a warning the human has already dismissed once; present in the real host file (§1.1), so it exercises the filter on every developer run. |
-
-That is three strings and seven booleans today. **The source of that count is
-`policy.ClaudeSettingAllowlist`, not this table** — the number "ten" is also
-written by hand into `base.toml`'s abuse block, into `claudeGuidance`'s injected
-text and into `stageClaudeSettings`' doc comment, and no test connects any of
-those copies to `len(ClaudeSettingAllowlist)`. CLAUDE.md's rule about a count
-in prose applies to all four: if this table and the code disagree,
-**the code is right**, and the honest way to read the allowlist is
-`internal/policy/claudesettings.go`, where every row carries its own reason in a
-comment.
+`policy.ClaudeSettingAllowlist` is the list; every row carries its reason in a
+comment. Every entry is a scalar, none names a program, a path, a URL, a remote
+source or a credential, and each buys something a human would notice missing.
+Two rows are not pure preference: `model` (trap, §3.2) and `includeCoAuthoredBy`,
+the one carried key whose effect outlives the run (commits into the persistent
+target tree carry the trailer).
 
 **Growing this list is a policy change.** The reviewer's question is R-SCALAR +
 R-NOPATH + "what does this key make Claude Code DO", and the answer goes in the
@@ -326,9 +262,9 @@ question, asked of every candidate here:
   sandbox authenticating with OAuth, that name does not resolve and the session
   fails at the first prompt. Mitigated rather than dropped: `modelName` refuses
   any value containing `:` or `/`, which excludes ARNs and provider paths, and
-  **the refusal is now reported on stderr** (§5.7 — it was not, and that was a
-  defect). The residual, a plain alias that happens not to exist inside, fails
-  loudly at the first message and the human fixes it with `--model`.
+  the refusal is reported on stderr (§5.7). The residual, a plain alias that
+  happens not to exist inside, fails loudly at the first message and the human
+  fixes it with `--model`.
 - **`forceLoginOrgUUID`.** "Login fails if the authenticated account does not
   belong to a listed organization." Carried, it can cause the sandbox to reject
   the very token snug staged. Drop.
@@ -344,64 +280,46 @@ question, asked of every candidate here:
   trusted, and would make this fix *appear* to close the plugin channel (§4.4)
   that it does not close.
 - **`cleanupPeriodDays`.** Governs retention of transcripts that live on a tmpfs
-  and die with the session. Inert inside. Dropped as buying nothing; a key on
-  the allowlist that cannot have an effect is still a name a reviewer must
-  audit.
+  and die with the session. Inert inside; a key that cannot have an effect is
+  still a name a reviewer must audit.
 - **`autoUpdates` / `autoUpdatesChannel`.** The binary is a read-only bind at
   `policy.StagedBinDir`; a self-update can only fail ("Auto-update failed · Run
-  claude doctor", MEASURED pre-#19). The generated `~/.claude.json` already
-  asserts `autoUpdates=false`, so a host value here could only contradict snug's
-  own assertion. Drop.
+  claude doctor", MEASURED). The generated `~/.claude.json` already asserts
+  `autoUpdates=false`, so a host value could only contradict snug's assertion.
 - **`outputStyle`.** A *name* whose definition may live in
   `~/.claude/output-styles/`, which is not mounted. Dangling reference, unknown
-  failure mode, pure preference. Drop; revisit only with a measurement.
+  failure mode, pure preference.
 
 ### 3.3 DROP — by class, with the reason per class
 
-The catalogue in `policy.ClaudeExecutingKeys` is grouped by exactly these
-letters, so a reviewer can read one against the other.
+`policy.ClaudeExecutingKeys` is grouped by exactly these letters and holds the
+names; this section holds the reasons.
 
-**(a) Names a program to execute.** `hooks`, `apiKeyHelper`, `proxyAuthHelper`,
-`awsCredentialExport`, `awsAuthRefresh`, `gcpAuthRefresh`, `otelHeadersHelper`,
-`policyHelper`, `policyHelpers`, `processWrapper`, `statusLine`,
-`subagentStatusLine`, `mcpServers`, `defaultShell`.
-*Reason:* §1.2. A read-only bind supplies these; a generated file must not
-mention them. `defaultShell` is in this class even though it is a two-value enum
-— it selects *which interpreter* runs a command, and its only non-default value
-(`powershell`) does not exist on this platform, so it can only break.
+**(a) Names a program to execute** (`hooks`, the `*Helper` keys, `processWrapper`,
+`statusLine`, `mcpServers`, `defaultShell`, …). *Reason:* §1.2. A read-only bind
+supplies these; a generated file must not mention them. `defaultShell` is in
+this class even though it is a two-value enum — it selects *which interpreter*
+runs a command, and its only non-default value (`powershell`) does not exist on
+this platform, so it can only break.
 
-**(b) Selects or fetches code.** `enabledPlugins`, `extraKnownMarketplaces`,
-`additionalMarketplaces`, `strictKnownMarketplaces`, `allowedMarketplaces`,
-`blockedMarketplaces`, `pluginSuggestionMarketplaces`, `pluginConfigs`,
-`enableAllProjectMcpServers`, `enabledMcpjsonServers`, `disabledMcpjsonServers`,
-`allowedMcpServers`, `deniedMcpServers`, `allowAllClaudeAiMcps`,
-`disableClaudeAiConnectors`, `skillOverrides`, `disableBundledSkills`.
-*Reason:* a marketplace entry names a remote GitHub repository that Claude Code
-fetches and loads; `enabledPlugins` enables code that `@claude` already mounts
-read-only; the `*Mcpjson*` pair pre-approves servers named by the **target
+**(b) Selects or fetches code** (`enabledPlugins`, the marketplace keys, the
+`*Mcpjson*` keys, `allowedMcpServers`, `skillOverrides`, …). *Reason:* a
+marketplace entry names a remote GitHub repository that Claude Code fetches and
+loads; the `*Mcpjson*` pair pre-approves servers named by the **target
 repository's** `.mcp.json`, which is invariant 3 verbatim — a host key handing
-the sandboxed material an execution channel.
-*Cost, stated:* the human's plugins are not *selected* inside via
-`enabledPlugins`. It is said in the injected guidance so nobody diagnoses it.
-Dropping `enabledPlugins` is not the only thing standing between an installed
-plugin and auto-loading: the `plugins` allowlist regenerates
-`installed_plugins.json` so only named plugins load (issue #68); see §4.4.
+the sandboxed material an execution channel. *Cost:* the human's plugins are
+not *selected* inside via `enabledPlugins`; the injected guidance says so. What
+stands between an installed plugin and auto-loading is §4.4, not this drop alone.
 
-**(c) Environment.** `env`.
-*Reason:* "Environment variables to set for Claude Code sessions" — it lands in
-the process environment and therefore in `/proc/self/environ`, passively
-readable by every process in the sandbox and inherited by every child.
-`@claude`'s `environ.inherit` block refuses `ANTHROPIC_API_KEY` by name and says
-"must not come back". A bound `settings.json` was a second door to exactly that
-variable. See §4.1 — this is the finding.
+**(c) Environment** (`env`). *Reason:* it lands in the process environment and
+therefore in `/proc/self/environ`, passively readable by every process in the
+sandbox and inherited by every child. `@claude`'s `environ.inherit` block
+refuses `ANTHROPIC_API_KEY` by name; a bound `settings.json` is a second door to
+exactly that variable. See §4.1.
 
-**(d) Permission and policy.** The whole `permissions` object (`allow`, `ask`,
-`deny`, `defaultMode`, `additionalDirectories`), plus
-`skipDangerousModePermissionPrompt`, `allowManagedHooksOnly`,
-`allowManagedPermissionRulesOnly`, `allowManagedMcpServersOnly`,
-`allowedHttpHookUrls`, `httpHookAllowedEnvVars`, `disableSideloadFlags`,
-`disableCommandPluginSources`, `strictPluginOnlyCustomization`, `sandbox`.
-*Reason, and it is four reasons:*
+**(d) Permission and policy** (the whole `permissions` object, plus
+`skipDangerousModePermissionPrompt`, the `allowManaged*Only` keys, the http-hook
+allowlists, `sandbox`, …). *Four reasons:*
 1. `defaultMode` accepts `"bypassPermissions"`. Carried into a sandbox opened on
    an unfamiliar repository, it removes every tool-approval prompt.
 2. `additionalDirectories` names **paths** — R-NOPATH, (e) below.
@@ -417,9 +335,9 @@ variable. See §4.1 — this is the finding.
    Dropping `permissions` is the same sentence about the same thing, and
    failing towards *more* prompts is the safe direction.
 
-**(e) Path-valued — R-NOPATH.** `autoMemoryDirectory`, `plansDirectory`,
-`permissions.additionalDirectories`, `sshIdentityFile`, `claudeMdExcludes`,
-`worktree.sparsePaths`, `worktree.symlinkedDirectories`, `$schema` (a URL).
+**(e) Path-valued — R-NOPATH** (`autoMemoryDirectory`, `plansDirectory`,
+`sshIdentityFile`, `claudeMdExcludes`, `$schema`, nested `worktree.*` and
+`permissions.additionalDirectories`).
 
 The rule is GENERATED-CONFIG.md §5. `autoMemoryDirectory` is its sharp instance:
 it names a directory Claude Code both **reads memory from and writes memory
@@ -431,9 +349,8 @@ the same conclusion one scope down. Note that the nested spellings
 before R-NOPATH is even consulted, since their parent is a container; the
 catalogue therefore names only the top-level ones.
 
-**(f) Instructions to the model.** `claudeMd`, `claudeMdExcludes`,
-`companyAnnouncements`, `agent`, `outputStyle`, `spinnerVerbs`,
-`spinnerTipsOverride`, `attribution`, `pluginTrustMessage`.
+**(f) Instructions to the model** (`claudeMd`, `companyAnnouncements`, `agent`,
+`outputStyle`, `spinnerVerbs`, `attribution`, …).
 
 > **Ruling on `claudeMd`.** It executes nothing, so it is not a command table;
 > and it is not inert data either. It is **standing instructions to the agent**,
@@ -456,38 +373,27 @@ that lands in the target repository's git history; the boolean
 `includeCoAuthoredBy` carries the same preference with no text channel and is on
 the allowlist.
 
-**(g) Login and endpoint steering.** `forceLoginMethod`, `forceLoginOrgUUID`,
-`forceLoginGatewayUrl`, `xaaIdp`, `issuer`, `callbackPort`,
-`parentSettingsBehavior`, `forceRemoteSettingsRefresh`, `defaultEnvironmentId`.
+**(g) Login and endpoint steering** (`forceLogin*`, `xaaIdp`, `issuer`, …).
 *Reason:* §3.2's `forceLoginOrgUUID` trap, plus these redirect authentication to
 a host-named endpoint. The sandbox authenticates from one staged file; nothing
 about that decision belongs to the host's settings.
 
-**(h) Remote surfaces.** `sshConfigs`, `sshHost`, `sshPort`, `sshIdentityFile`,
-`startDirectory`, `remoteControlAtStartup`, `autoUploadSessions`,
-`crossSessionInbound`, `channelsEnabled`, `allowedChannelPlugins`,
-`isolatePeerMachines`, `teammateMode`, `daemonColdStart`,
-`agentPushNotifEnabled`, `inputNeededNotifEnabled`, `disableRemoteControl`,
-`disableAgentView`.
-*Reason:* each either opens an outbound channel from inside the sandbox or names
-a remote peer. None is needed to run an agent against a directory. `sshConfigs`
-additionally names an identity file that is not mounted — snug pins ssh identity
-through the agent proxy (base.toml's identity block; internal/sshproxy/proxy.go)
-and a second mechanism would contradict it.
+**(h) Remote surfaces** (`sshConfigs`, `remoteControlAtStartup`,
+`autoUploadSessions`, `crossSessionInbound`, `teammateMode`, …). *Reason:* each
+either opens an outbound channel from inside the sandbox or names a remote peer.
+None is needed to run an agent against a directory. `sshConfigs` additionally
+names an identity file that is not mounted — snug pins ssh identity through the
+agent proxy (base.toml's identity block; internal/sshproxy/proxy.go) and a
+second mechanism would contradict it.
 
-**(i) Credential-adjacent state.** `customApiKeyResponses` (records which API
-keys the user approved), `feedbackDrafts`, `asBuiltDebugKey`.
-*Reason:* host state, no benefit inside.
+**(i) Credential-adjacent state** (`customApiKeyResponses`, `feedbackDrafts`).
+Host state, no benefit inside.
 
-**(j) Inert or contradicting snug's own keys.** `cleanupPeriodDays`,
-`autoUpdates`, `autoUpdatesChannel`, `minimumVersion`,
-`requiredMinimum/MaximumVersion`, `wslInheritsWindowsSettings`,
-`skipDangerousModePermissionPrompt`, `disableAllHooks`, and the long tail of
-`@internal` keys (`totalTokensReminder*`, `modelProposedGoals`,
-`doneMeansMerged`, `ultracode`, `dialogExpiry`, `askUserQuestionTimeout`, …).
-*Reason:* §3.2 for the first several; for the tail, an `@internal` key is one
-upstream reserves the right to change without notice, which is the allowlist
-argument in miniature.
+**(j) Inert or contradicting snug's own keys** (`cleanupPeriodDays`,
+`autoUpdates`, `requiredMinimum/MaximumVersion`, `disableAllHooks`, the long
+tail of `@internal` keys). *Reason:* §3.2; for the tail, an `@internal` key is
+one upstream reserves the right to change without notice, which is the
+allowlist argument in miniature.
 
 **(k) Everything not named anywhere in this document.** Dropped, because the
 filter copies only what it names. That row is the point of §2 and it is the row
@@ -495,15 +401,13 @@ that will do the most work over time.
 
 ### 3.4 AUTHOR — the two keys snug writes itself
 
-`policy.ClaudeAuthoredSettings`. A third operation beside keep and drop:
-snug's own value, a literal in `claudesettings.go`, written into the
-**user-scope** file only. `ClaudeUserSettingsJSON` renders carried-plus-authored;
-`ClaudeSettingsJSON` renders carried alone and stays the project-scope renderer.
-
-| key | value | what it gates |
-|---|---|---|
-| `crossSessionInbound` | `"refuse"` | inbound peer messages, in the RECEIVING client |
-| `isolatePeerMachines` | `true` | `SendMessage` *and* `SendFile` to a peer on another machine |
+`policy.ClaudeAuthoredSettings`: `crossSessionInbound = "refuse"` (inbound peer
+messages, in the RECEIVING client) and `isolatePeerMachines = true`
+(`SendMessage` *and* `SendFile` to a peer on another machine). A third operation
+beside keep and drop: snug's own value, a literal in `claudesettings.go`,
+written into the **user-scope** file only. `ClaudeUserSettingsJSON` renders
+carried-plus-authored; `ClaudeSettingsJSON` renders carried alone and stays the
+project-scope renderer.
 
 Authoring is not carrying, so it needs its own admission rule. Four conditions,
 all required:
@@ -519,21 +423,21 @@ all required:
    and R-SCALAR holds by construction.
 
 `FilterClaudeSettings`' `disableAllHooks` refusal is the nearest precedent and
-it splits rather than binding. Invariant 1 is about *grants* — which host paths
-are visible, a union with no subtraction — and a key inside a file snug wholly
-authors is not a grant and subtracts none; snug already authors restriction into
-generated config (`autoUpdates = false`, the regenerated
-`installed_plugins.json`, `registries.conf` searching only `docker.io`). What
-does bind is the other half: *it must not make the fix appear to close a channel
-it does not close*. That is answered by the disclosure at every sink, not by
-refusing the key.
+it splits rather than binding.
+
+Invariant 1 is about *grants* — which host paths are visible, a union with no
+subtraction — and a key inside a file snug wholly authors is not a grant and
+subtracts none; snug already authors restriction into generated config
+(`autoUpdates = false`, the regenerated `installed_plugins.json`,
+`registries.conf` searching only `docker.io`). What does bind is the other
+half: *it must not make the fix appear to close a channel it does not close*.
+That is answered by the disclosure at every sink, not by refusing the key.
 
 Both names stay in `ClaudeExecutingKeys`, so the **host's** value is still
-dropped — snug overrides Claude Code's default, never a carried human decision,
-and a test asserts that rather than this paragraph. The drop is reported in its
-own `ClaudeSettingDrops.Overridden` class, because `Executing`'s message ("names
-a program, selects or fetches code, sets an environment variable") is false for
-these two.
+dropped — snug overrides Claude Code's default, never a carried human decision.
+The drop is reported in its own `ClaudeSettingDrops.Overridden` class, because
+`Executing`'s message ("names a program, selects or fetches code, sets an
+environment variable") is false for these two.
 
 **`permissions.deny: ["SendMessage","ListAgents"]` is REFUSED.** Three reasons,
 the first sufficient: it is a denylist over a surface with at least three
@@ -550,7 +454,7 @@ Project scope authors nothing, measured: a repo-scope value may only tighten
 ("a repo may only tighten, so your own `\"accept\"` cannot override it"), so the
 user-scope value already applies.
 
-**None of it is a boundary** — §10.7.
+**None of it is a boundary** — §10.3.
 
 ---
 
@@ -562,7 +466,7 @@ reach. The question is **what the host's file causes to run inside that the
 human did not choose for this run, and whether any of it reaches something the
 sandbox otherwise would not have arranged.**
 
-### 4.1 `env` was a second door to the credential the profile refuses by name — the finding
+### 4.1 `env` is a second door to the credential the profile refuses by name
 
 `@claude`'s `environ.inherit` block carries this comment:
 
@@ -582,22 +486,18 @@ sessions". So on any host whose `~/.claude/settings.json` contained
 file put a long-lived, typically org-scoped API key into the sandbox's process
 environment, where `/proc/self/environ` makes it passively readable by every
 process and every child, and where `SECRETS.md` §6.2 measured that it becomes
-the credential actually in use. The profile's own stated guarantee was false
-whenever the host used that spelling, and nothing on any screen said so.
+the credential actually in use. The profile's stated guarantee is false
+whenever the host uses that spelling, and nothing on any screen says so.
 
-It required no attacker, no hostile repo and no user error — only the documented
-configuration. That is why the issue was not `sev:low`, and it is the shape
-CLAUDE.md's `redteam` inventory sweep asks about: *working exactly as designed,
+It requires no attacker, no hostile repo and no user error — only the documented
+configuration. It is the shape CLAUDE.md's `redteam` inventory sweep asks about: *working exactly as designed,
 what did we hand over?*
 
-**Closed, and permanently regression-tested from inside a running sandbox.**
-`TestClaudeSettingsAreGeneratedNotBound` (`test/integration`) writes a fixture
-host `settings.json` whose `env` block carries a canary and asserts the canary
-appears in **none** of the generated file, the payload's own environment, and
-`/proc/1/environ` — the last because CLAUDE.md records that bwrap-as-PID-1 once
-leaked 106 host variables while the payload's own environment looked clean. The
-test has a positive control (`SNUG=1` must be visible in one of the two
-environments) so the negative cannot pass on a sandbox that never started.
+`TestClaudeSettingsAreGeneratedNotBound` (`test/integration`) holds it closed
+from inside a running sandbox: a canary in a fixture `env` block must appear in
+none of the generated file, the payload's environment and `/proc/1/environ`
+(bwrap-as-PID-1 once leaked 106 host variables while the payload's own
+environment looked clean).
 
 `apiKeyHelper` is the same door with a program in front of it (§1.3), and it has
 a second mode: a helper that *resolves* inside (`/bin/cat <path in the target>`,
@@ -607,17 +507,16 @@ credential. Both failure modes are reachable, they are selected by the host's
 value, and snug cannot tell which from the key name — which is precisely why the
 key is dropped rather than validated.
 
-### 4.2 `hooks` re-opened, from the host side, and the trust dialog is not what closes it
+### 4.2 `hooks` from the host side; the trust dialog is not what closes it
 
 `claudeStateJSON` writes `hasTrustDialogAccepted` for the target
-unconditionally, into the tmpfs `~/.claude.json` that dies with the run
-(issue #460): the dialog does not appear, and the host's own file is not read.
-What pays for that is §4.5 — the two repo-supplied command tables Claude Code
-would read are reinterpreted before it reads them. MEASURED, claude 2.1.251, on
-a target whose only content is `.claude/settings.json` with a `SessionStart`
-hook: the hook fires in NEITHER arm, with the key written and without it, while
-the same fixture fires on the host. The dialog was gating a channel the
-projection had already closed.
+unconditionally, into the tmpfs `~/.claude.json` that dies with the run: the
+dialog does not appear, and the host's own file is not read. What pays for that
+is §4.5 — the repo-supplied command tables are reinterpreted before Claude Code
+reads them. MEASURED, claude 2.1.251, on a target whose only content is
+`.claude/settings.json` with a `SessionStart` hook: the hook fires in NEITHER
+arm, with the key written and without it, while the same fixture fires on the
+host. The dialog was gating a channel the projection had already closed.
 
 A host-scope `hooks.SessionStart` fires in every session, and it is not gated by
 the repository's trust state at all. Two consequences:
@@ -643,114 +542,65 @@ inside a run whose whole premise is that *this* run is a separate decision.
 - **The network**, when `@net` is selected — and `@claude` is commonly combined
   with `@net`.
 
-### 4.4 The plugin channel — why settings.json alone did not close it, and what #68 did
+### 4.4 The plugin channel
 
-`@claude` binds `{home}/.claude/plugins` read-only. Measured on the development
-host, 2026-08-13:
+`@claude` binds `{home}/.claude/plugins` read-only. `installed_plugins.json`
+there records the installed plugin set and install paths independently of
+`settings.json`; hook-carrying manifests exist (`caveman@caveman`,
+`security-guidance`), and the binary loads `hooks/hooks.json` from each plugin
+automatically.
 
-- `~/.claude/plugins/installed_plugins.json` records the installed plugin set
-  **and their install paths**, independently of `settings.json`, and it sits
-  **inside that read-only bind**;
-- hook-carrying manifests are present for **`caveman@caveman`** (a `SessionStart`
-  hook running `node "${CLAUDE_PLUGIN_ROOT}/src/hooks/caveman-activate.js"`) and
-  for the official **`security-guidance`** plugin (`SessionStart`,
-  `UserPromptSubmit`, `PostToolUse` and `Stop`, each running a shell command);
-- the binary confirms the loading path: *"Plugin hooks
-  (`~/.claude/plugins/*/hooks/hooks.json`)"* and *"The standard
-  `hooks/hooks.json` is loaded automatically"*.
+**Measured on claude 2.1.238.** A plugin's `SessionStart` hook fires only when
+it is BOTH named in `installed_plugins.json` AND enabled in `settings.json`'s
+`enabledPlugins` — two AND-gates, measured with a two-plugin fixture driven
+headless. With a plugin enabled but ABSENT from `installed_plugins.json`, its
+hook does **not** fire, while one present in both does: the manifest is an
+independent gate on the binary. An empty `enabledPlugins` means no plugin hook
+fires at all.
 
-So **dropping `enabledPlugins` was never enough on its own**: the bound directory
-carried its own record of what is installed and where, and that record is a
-second, independent gate on which plugin loads. That was the residual this
-section first named.
+**snug closes this channel by TWO mechanisms.** `policy.FilterInstalledPlugins` /
+`internal/cli.stageInstalledPlugins` regenerate `installed_plugins.json` from a
+per-profile `plugins` allowlist, mounted `AccessRO`, empty by default; and the
+`settings.json` filter drops `enabledPlugins`. Either alone stops the measured
+channel on this version. State both, because either can drift out from under the
+other: if a future claude fires hooks from the manifest without
+`enabledPlugins`, only the manifest half remains.
 
-**Measured on claude 2.1.238, 2026-08-21.** A plugin's
-`SessionStart` hook fires only when it is BOTH named in
-`installed_plugins.json` AND enabled in `settings.json`'s `enabledPlugins` — two
-AND-gates, measured with a two-plugin fixture driven headless. The
-imprecision is itself the
-lesson this file keeps recording: `enabledPlugins` moved from `~/.claude.json`
-to `settings.json` between versions, so a sentence about a third party's binary
-without its version number went stale. Both claims below carry their version for
-that reason.
-
-The load-bearing half is unchanged and now DIRECTLY measured: with a plugin
-enabled in `settings.json` but ABSENT from `installed_plugins.json`, its hook
-does **not** fire, while one present in both DOES (rows 2 vs 3 of the matrix).
-The manifest is an independent gate on the binary, which is the premise #68
-rests on.
-
-**And snug closes this channel by TWO mechanisms, not one — on 2.1.238.** #68
-regenerates `installed_plugins.json` (the manifest gate). Separately, snug's
-`settings.json` filter DROPS `enabledPlugins` entirely
-(`internal/policy/claudesettings.go`, `ClaudeSettingAllowlist`), and on 2.1.238
-an empty `enabledPlugins` means no plugin hook fires at all (row 4). So #68 is
-**defence-in-depth behind an enablement gate that was already there** — either
-alone stops the measured channel on this version. State both, because either can
-drift out from under the other: if a future claude fires hooks from the manifest
-without `enabledPlugins`, the enablement gate silently stops carrying its half
-and only #68 remains.
-
-**Issue #68 closes it, by the same mechanism this whole document is about.**
-snug now REGENERATES `installed_plugins.json` from a per-profile `plugins`
-allowlist (`@claude`'s `plugins = [...]`, `policy.FilterInstalledPlugins`,
-`internal/cli.stageInstalledPlugins`), mounted `AccessRO` at that path — so the
-file Claude Code reads names only the plugins the profile named, empty by
-default, and the host's manifest naming every plugin ever installed is not what
-the sandbox sees. The measurements above are why the fix exists and stay true;
-what changed is the conclusion, not them.
-
-**Mounted only where the host's manifest EXISTS**, the same residual §4 states
-for the settings files and for the same reason: `~/.claude/plugins` is bound
+**Mounted only where the host's manifest EXISTS.** `~/.claude/plugins` is bound
 read-only, so a generated mount at a path with nothing behind it makes bwrap
 CREATE the mountpoint inside a read-only mount, which it cannot —
 `Can't create file …/installed_plugins.json: Read-only file system`, and the run
 does not start. A plugins directory holding no manifest is what one looks like
-before the first plugin is installed. Nothing is staged there, and nothing is
-lost by it: there is no host manifest to displace, so the bind exposes none
-either way. A profile that NAMES plugins against such a host is refused instead
-of quietly filtered — `policy.FilterInstalledPlugins` owns that rule (issue #68,
-invariant 5), and `stageInstalledPlugins` calls it before it decides whether to
-stage anything. Where the file is there, `rejectGeneratedOntoHost` sees a
-regular file at its own destination and accepts the overmount of an existing
-inode (issue #580).
+before the first plugin is installed; there is no host manifest to displace, so
+the bind exposes none either way. A profile that NAMES plugins against such a
+host is refused instead of quietly filtered (`policy.FilterInstalledPlugins`,
+invariant 5).
 
-Keep the residual NARROW, because this section is itself the record of a rule
-being defeated one indirection below where it was written — three times so far
-(the `@claude` PATH shadow slot, the `/snug/bin` overmount, and this plugin
-channel), and it must not become a fourth by overclaiming:
+Keep the residual NARROW, because this section records a rule being defeated one
+indirection below where it was written (the `@claude` PATH shadow slot, the
+`/snug/bin` overmount, and this plugin channel), and it must not become a
+fourth by overclaiming:
 
 > snug regenerates `installed_plugins.json` to name only the allowlisted
-> plugins. Unit tests assert the MANIFEST snug WRITES
-> (`TestFilterKeepsExactlyTheAllowlistedPlugins`, the staged-set tests). What
-> the real `claude` binary DOES with it is MEASURED above and asserted by
-> `scripts/0033-an-unnamed-plugins-hook-does-not-fire.sh`: a plugin enabled in `settings.json` but absent
-> from the regenerated manifest did not fire its `SessionStart` hook on 2.1.238,
-> while one present in the manifest did. Observing that needs the proprietary
-> binary, which is in no distribution, so this repository does not test it and
-> a version bump can move it silently. Nothing here exercises the sandbox MOUNT
-> that delivers the file inside a run either (that is `claudestagedset_test.go`
-> and the in-sandbox inventory test).
+> plugins. What the real `claude` binary DOES with it is MEASURED above and
+> asserted by `scripts/0033-an-unnamed-plugins-hook-does-not-fire.sh`. Observing
+> that needs the proprietary binary, which is in no distribution, so CI does not
+> test it and a version bump can move it silently.
 
-**The live assertion is host-level, and cannot be otherwise on 2.1.238** — worth
-one line so nobody tries to move it. Inside `@claude` the `settings.json` filter
-drops `enabledPlugins`, so nothing fires (row 4), so a positive control ("the
-named plugin fired") cannot exist inside the sandbox; a negative there would pass
-because nothing ran. The control lives only where `enabledPlugins` survives —
-the host, against the binary directly.
+**The live assertion is host-level, and cannot be otherwise on 2.1.238.** Inside
+`@claude` the filter drops `enabledPlugins`, so nothing fires, so a positive
+control ("the named plugin fired") cannot exist inside the sandbox; a negative
+there would pass because nothing ran. The control lives only where
+`enabledPlugins` survives — the host, against the binary directly.
 
 That residual sentence is load-bearing and its narrow form appears in
 `base.toml`'s abuse block, `claudeGuidance`'s injected text and `--dry-run`'s
-CLAUDE block for the same reason. Filed as
-[issue #68](https://github.com/gomoni/snug/issues/68), `sev:medium`, fixed by
-the allowlist above and covered by the test named here.
+CLAUDE block.
 
-### 4.5 Project-scope settings — the same command table, facing outward (issue #73)
+### 4.5 Project-scope settings — the same command table, facing outward
 
-§1.4 once said snug "does not filter" the target's `.claude/settings.json` and
-`settings.local.json`, gated by Claude Code's trust dialog. That was the INBOUND
-reading. Turned around: the payload can WRITE a `hooks` block into the target,
-which persists on the host and runs on the next `claude` there.
+The payload can WRITE a `hooks` block into the target, which persists on the
+host and runs on the next `claude` there.
 
 MEASURED (claude 2.1.238): a `SessionStart` hook in a target's
 `.claude/settings.json` fired from a host-side `claude -p` with **no trust
@@ -759,58 +609,50 @@ claude had never seen; `settings.local.json` behaved identically; an interactive
 `claude` on an already-trusted target fires it too. Two of the three realistic
 host scenarios have no gate.
 
-**All three are projected only where a REGULAR FILE exists, and a non-regular
-one REFUSES the run.** `os.Lstat` answers "is there a name here"; the shapes
-disagree with it. Measured: a target shipping `ln -s NOTES.generated .mcp.json`
-left a 0-byte read-only `NOTES.generated` in the HOST tree before the payload
-ran — `HostDestExists` was set on Lstat's answer, so `rejectGeneratedOntoHost`
-(issue #186) skipped the mount, and the guard was defeated through its own
-exemption. That measurement is **version-bound**: on bubblewrap 0.12.0 a symlink
-destination is refused rather than followed (`Can't mount on symlink destination
-…` for `--ro-bind-data`, `Too many levels of symbolic links` for `--file`, and
-nothing created — all eight combinations re-measured), which is
-CVE-2026-87766's fix. A directory at the name aborts bwrap setup instead
-(`Destination is not a file …`), which lets a hostile repo deny the run.
-Skipping the projection is not the fix: a symlink to a sibling in the same repo
-would then feed Claude Code the repo's own hooks or servers. So
+**All three files are projected only where a REGULAR FILE exists, and a
+non-regular one REFUSES the run.** `os.Lstat` answers "is there a name here"; the
+shapes disagree with it. Measured: a target shipping
+`ln -s NOTES.generated .mcp.json` left a 0-byte read-only `NOTES.generated` in
+the HOST tree before the payload ran, because `HostDestExists` was set on
+Lstat's answer and `rejectGeneratedOntoHost` skipped the mount. That measurement
+is **version-bound**: on bubblewrap 0.12.0 a symlink destination is refused
+rather than followed (`Can't mount on symlink destination …` for
+`--ro-bind-data`, `Too many levels of symbolic links` for `--file`, and nothing
+created — all eight combinations re-measured). A directory at the name aborts
+bwrap setup instead (`Destination is not a file …`), which lets a hostile repo
+deny the run. Skipping the projection is not the fix: a symlink to a sibling in
+the same repo would then feed Claude Code the repo's own hooks or servers. So
 `projectableTargetFile` refuses, naming the shape and the path.
 
-`.mcp.json` is the THIRD file and gets the same treatment, on a sharper
-measurement (issue #460, claude 2.1.251). A target whose only content is a
-`.mcp.json` naming `sh -c "touch MCP-FIRED"` ran that command three ways: inside
-a `@claude` sandbox with the trust key omitted, inside one with it written, and
-on the host in a directory Claude Code had never trusted. `enableAllProjectMcpServers`
-and `enabledMcpjsonServers` are refused *settings* keys and were read as a gate on
-this *file*; they are not one. The file has one key and it names programs, so the
-allowlist that survives is empty: `policy.ClaudeProjectMCPJSON` generates
-`{"mcpServers": {}}` and `stageProjectMCPJSON` mounts it `AccessRO` where the
-file exists. The cost, stated: an MCP server a project legitimately commits does
-not run inside a snug sandbox, and there is no flag for it.
+`.mcp.json` gets the same treatment, on a sharper measurement (claude 2.1.251).
+A target whose only content is a `.mcp.json` naming `sh -c "touch MCP-FIRED"`
+ran that command three ways: inside a `@claude` sandbox with the trust key
+omitted, inside one with it written, and on the host in a directory Claude Code
+had never trusted. `enableAllProjectMcpServers` and `enabledMcpjsonServers` are
+refused *settings* keys and were read as a gate on this *file*; they are not
+one. The file has one key and it names programs, so the allowlist that survives
+is empty: `policy.ClaudeProjectMCPJSON` generates `{"mcpServers": {}}`. The
+cost: an MCP server a project legitimately commits does not run inside a snug
+sandbox, and there is no flag for it.
 
 **The fix is this document's own mechanism, applied to project scope.** snug
 projects each file read-only through the SAME `ClaudeSettingAllowlist` — not a
 forked table, because a key that names a program is no safer for being
-repo-supplied — so the repo's hooks do not run inside (inbound) and the payload's
-write to the path fails EROFS (outbound). `internal/cli.stageProjectClaudeSettings`.
+repo-supplied — so the repo's hooks do not run inside (inbound) and the
+payload's write to the path fails EROFS (outbound).
+`internal/cli.stageProjectClaudeSettings`.
 
-**ONLY where the file exists, and the residual is written down rather than
-implied**, because this is a check that covers half its rule. A generated mount
-over an ABSENT path does not overmount an inode — bwrap CREATES the mountpoint
-FILE on the host (MEASURED: a 0-byte read-only `settings.local.json` appeared in
-the host repo). snug must not write the host during setup (§1's whole premise,
-and `rejectGeneratedOntoHost`, issue #186), so the projection is mounted only
-where an `os.Lstat` confirms a regular file is there. The guard asks the same
-question of its OWN destination through `Environ.Lstat` — the guest path
-translated through the covering grant, which a path-translating grant makes a
-different file (issue #580). The half that closes is the sharper one: a hostile repo
-SHIPPING a `settings.json` with hooks is the exists case, reinterpreted. A clean
-repo where the payload CREATES one that did not exist is NOT closed — it leaves a
+**ONLY where the file exists, and the residual is written down.** A generated
+mount over an ABSENT path does not overmount an inode — bwrap CREATES the
+mountpoint FILE on the host (MEASURED: a 0-byte read-only `settings.local.json`
+appeared in the host repo). snug must not write the host during setup, so the
+projection is mounted only where an `os.Lstat` confirms a regular file is there;
+the guard asks the same question of its OWN destination through
+`Environ.Lstat`, translated through the covering grant, which a
+path-translating grant makes a different file. The half that closes is the
+sharper one: a hostile repo SHIPPING a `settings.json` with hooks. A clean repo
+where the payload CREATES one that did not exist is NOT closed — it leaves a
 file the human sees in `git status`, which is not a guarantee and is not nothing.
-
-Filed as [issue #73](https://github.com/gomoni/snug/issues/73), and it is the
-same argument as issue #17 (`~/.claude/settings.json` is a command table) on the
-project-scope file, facing outward instead of inward — CLAUDE.md's "a limitation
-and a hole are frequently the same fact facing two directions."
 
 ---
 
@@ -844,14 +686,13 @@ verbatim, every key beneath it would ride in unnamed:
                    "additionalDirectories": ["/home/u/.ssh"] } }
 ```
 
+
 `policy.ClaudeSettingKind` has three constants and **no container constant**, so
 an allowlist row cannot declare a container as an allowed value; the type is
 also re-checked at the read site, so a decoded container never reaches a carried
 entry. `permissions` is thereby refused twice — once by §3.3(d) as policy, once
 by R-SCALAR as structure. Both refusals are wanted, on the key that can spell
-`bypassPermissions`. `TestClaudeSettingsCarriesNoContainer` asserts both halves:
-an allowlisted name whose value is an object or array is dropped, and every row
-of the allowlist declares a scalar kind.
+`bypassPermissions`.
 
 ### 5.3 Scalar value checks — R-VALUE
 
@@ -865,16 +706,13 @@ carried string, in order:
    value reaches `--dry-run`'s `CLAUDE` block, which invariant 7 governs — a
    newline or an ESC there forges or erases a row in the artifact a human reads
    to decide whether to trust the sandbox. Mirrors
-   `policy.withoutControlCharacters` (`gitconfig.go`) exactly: the same rule, in
-   a different container format.
-3. **Per-key charset**, which is where R-NOPATH becomes mechanical:
-   - `modelName`: `^[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,63}$`. Note the brackets —
-     the real host value is `opus[1m]`. The charset excludes `:` and `/`, which
-     excludes ARNs (`arn:aws:…`), provider paths and URLs (§3.2's Bedrock trap).
-   - `shortToken` (`theme`, `editorMode`):
-     `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` — `:` is permitted **only** because
-     the schema documents a `custom:` theme spelling, and `/` is not, so the
-     value still cannot be a path.
+   `policy.withoutControlCharacters` (`gitconfig.go`).
+3. **Per-key charset**, which is where R-NOPATH becomes mechanical. `modelName`
+   admits brackets (the real host value is `opus[1m]`) but excludes `:` and `/`,
+   which excludes ARNs, provider paths and URLs (§3.2's Bedrock trap).
+   `shortToken` (`theme`, `editorMode`) permits `:` **only** because the schema
+   documents a `custom:` theme spelling, and `/` is not, so the value still
+   cannot be a path.
 4. **Type match.** The decoded value's Go type must match the row's declared
    kind. A `model` that decodes to a number or an array is **dropped, never
    coerced** — coercing would mean the filter deciding what the value should
@@ -890,10 +728,6 @@ does not need to know: **Claude Code never sees the host's bytes.** Whatever
 snug's decoder resolved is rendered exactly once into the generated file, so a
 disagreement between the two parsers over which duplicate wins cannot be
 exploited — only one parser reads the ambiguous document.
-`TestClaudeSettingsLastDuplicateWinsAndIsRenderedOnce` pins it, and
-`TestClaudeSettingsRendersDeterministically` pins the rest of the rendering
-contract: sorted keys (`json.MarshalIndent` over a map), two-space indent,
-trailing newline, and `{}\n` for the empty set.
 
 ### 5.5 Reconstruct, never edit
 
@@ -910,127 +744,62 @@ and every such difference is a key snug believes it removed and Claude Code
 still reads. Reconstruction has no such surface: the output contains exactly the
 entries snug put there.
 
-### 5.6 Parse failure, JSONC, size, symlinks — the degradation rules, as built
 
-`loadHostClaudeSettings` (`internal/cli/claude.go`):
+### 5.6 Degradation rules
 
-- **Read cap.** `os.Stat` first, then `os.ReadFile`, up to **1 MiB**. The stat
-  comes first deliberately: the cap exists so a multi-gigabyte file at this path
-  is never read into memory at all, not merely truncated afterwards. Over the
-  cap → carry nothing, one line on stderr naming the size.
-- **Strict JSON decode.** `encoding/json` refuses comments and trailing commas
-  that Claude Code accepts. A hand-edited JSONC settings file therefore carries
-  **nothing** — a fail-closed divergence, and it is **named on stderr**
-  (invariant 5: silently ignoring the human's settings is a downgrade they are
-  entitled to know about). snug does not implement a JSONC parser; this is the
-  document's known deviation, in the sense `GIT-CONFIG.md` §7 uses the term.
-- **Every other failure is the same failure — "carry nothing" — and none of them
-  fails the run.** Unreadable file, invalid JSON, a top-level value that is not
-  an object (the same decode error shape, so one branch covers both). An
-  **absent** file is the one degradation with no stderr line: a host that never
-  ran Claude Code has nothing to be told snug ignored, which matches
-  `claudeFiles`' `stage()` closure for every other optional host path.
-- **Symlinks.** `os.ReadFile` follows them, so a `~/.claude/settings.json` that
-  symlinks to `~/.ssh/id_ed25519` *is* read. It cannot leak: the content fails
-  the JSON decode, and even a file that parsed could only contribute
-  allowlisted, type-checked, charset-checked scalars. The contrast is an
-  argument for the whole change — **the old `ro` bind followed the same symlink
-  and mounted the target file whole.**
+`loadHostClaudeSettings` stats before reading so a multi-gigabyte file is never
+read into memory; every failure is "carry nothing" and none fails the run.
+What the book does not state:
+
+- Strict JSON refuses comments and trailing commas that Claude Code accepts. It
+  is a fail-closed divergence, named on stderr (invariant 5); snug does not
+  implement a JSONC parser.
+- An **absent** file is the one degradation with no stderr line.
+- `os.ReadFile` follows symlinks, so a `~/.claude/settings.json` symlinked to
+  `~/.ssh/id_ed25519` is read. It cannot leak: the content fails the JSON decode,
+  and a file that parsed could only contribute allowlisted, type- and
+  charset-checked scalars.
 - The generated file is `0600`, has no execute bit, and is not under
-  `policy.StagedBinDir` — no `PATH` interaction, no shadow slot.
+  `policy.StagedBinDir`: no `PATH` interaction.
 
-### 5.7 Every drop is named, and the defect that made this three return values
+### 5.7 Every drop is named
 
 `FilterClaudeSettings` returns **three** things: the carried set; the dropped
 keys that are in `ClaudeExecutingKeys`, sorted; and every **allowlisted** key
-that was present but whose **value** was refused, with the reason, sorted.
+that was present but whose **value** was refused, with the reason, sorted. The
+third is what keeps §3.2's argument honest — "fails loudly at the first message,
+which the human fixes with `--model`" holds only if the human is **told** that
+their ARN-valued `model` did not carry. A silent value drop is invariant 5 and
+diverges from GENERATED-CONFIG.md §6a (every drop is named).
 
-The third return value is not cosmetic — it closes a defect in the first version
-of this code. An allowlisted key whose value failed its charset or type check
-was dropped with **nothing on any screen**. Measured:
-
-```
-in:      {"model":"arn:aws:bedrock:us-east-1::foundation-model/claude","theme":"dark"}
-out:     {"theme":"dark"}
-stderr:  (empty)
-```
-
-That is invariant 5 exactly, it diverges from `GENERATED-CONFIG.md` §6a's rule
-(every drop is named), and it directly contradicted §3.2's
-argument that the residual "fails loudly at the first message, which the human
-fixes with `--model`" — the human can only do that if they are **told**. The
-person it protects is the Bedrock/Vertex user whose `model` is an ARN. Found by
-review, not by a test the author wrote; the regression is
-`TestClaudeSettingsReportsWhyAnAllowlistedValueWasRefused`.
-
-Two properties of the reporting are asserted rather than assumed, and they are
-the reusable part (GENERATED-CONFIG.md §6a):
+Two properties of the reporting are the reusable part (GENERATED-CONFIG.md §6a):
 
 - **The two kinds of line are kept apart.** A dropped executing key is snug
   refusing on purpose and there is nothing for the human to do; a refused value
   is the human's own setting failing to carry.
-- **The reasons distinguish the failure modes.** "not a string (it is a JSON
-  object)", "value contains a control character", "value is N bytes, over the
-  256-byte cap" and "value does not match this key's allowed shape" are
-  different mistakes; the test asserts a charset failure and a type failure do
-  not produce the same text.
+- **The reasons distinguish the failure modes** (type, control character, size,
+  shape): they are different mistakes and must not produce the same text.
 
 `ClaudeSettingsJSON` re-applies the kind check, the string check and the per-key
 check and **silently** omits anything that fails — the same backstop
 `GitConfigFrom` keeps for the same reason (the renderer is the last place a bad
-value can be caught, and the next caller has not been written yet). It is silent
-because it is pure and has no stderr; the reporting belongs to the filter, which
-the caller with a stderr calls first.
+value can be caught). It is silent because it is pure and has no stderr; the
+reporting belongs to the filter, which the caller with a stderr calls first.
 
 ---
 
 ## 7. The profile, the mount, and what a human sees
 
-### 7.1 The profile after the change
+### 7.1 The grant
 
-`[profile.claude]` names `{home}/.claude/settings.json` under **neither `ro` nor
-`optional`**. The `optional` entry went too, and not for tidiness: `Resolve`
-only consults `optional[host]||optional[guest]` for a path that is *granted*, so
-an `optional` line naming an ungranted path is dead text — and dead policy text
-is how a stale claim survives a rewrite.
-
-```toml
-[profile.claude]
-description = "Claude Code: binary and skills read-only, credentials and settings generated."
-include = ["sys", "home"]
-ro = [
-  "{home}/.local/bin/claude:/snug/bin/claude",
-  "{home}/.local/share/claude",
-  "{home}/.claude/skills",
-  "{home}/.claude/plugins",
-]
-optional = [
-  "{home}/.local/bin/claude",
-  "{home}/.local/share/claude",
-  "{home}/.claude/skills",
-  "{home}/.claude/plugins",
-]
-```
-
-The path is now in `credentialsurface_test.go`'s command-table catalogue, where
-it can only ever fire on a regression:
-`TestNoBuiltinGrantsACredentialOrCommandTablePath` refuses any builtin grant of
-it, with no allowlist and no flag. `{home}/.claude/plugins` is deliberately in
-**neither** that catalogue nor the ordinary-control list — it *is* a command
-table by that file's own definition (§4.4), but there is no generator for a
-plugin tree, so cataloguing it would fail the build today; the omission is a
-recorded decision pointing at issue #68, not an oversight. `{home}/.claude/skills`
-stays asserted ordinary: a skill is model-mediated and tool-gated, a plugin hook
-is not, and the two must not be conflated.
-
-### 7.2 The abuse block
-
-`base.toml` carries three paragraphs above the profile, in the form the working
-agreement requires: what the file is (a command table, with the key classes
-named); the abuse sentence for the **generated** file; and **what this does not
-close** (§4.4, with the `installed_plugins.json` measurement and the issue
-link). The third is not optional — a fix whose claim is wider than its effect is
-how the last three findings happened.
+`[profile.claude]` names `{home}/.claude/settings.json` under neither `ro` nor
+`optional`; `Resolve` consults `optional` only for a granted path, so an
+`optional` line naming an ungranted path is dead text.
+`{home}/.claude/plugins` is deliberately not in the credential/command-table
+catalogue of `TestNoBuiltinGrantsACredentialOrCommandTablePath`: it is a command
+table (§4.4) with no generator for a plugin tree, so cataloguing it would fail
+the build. `{home}/.claude/skills` stays asserted ordinary: a skill is
+model-mediated and tool-gated, a plugin hook is not.
 
 ### 7.3 Unconditional, and writable
 
@@ -1038,13 +807,10 @@ how the last three findings happened.
 `.credentials.json`. Three reasons:
 
 1. **It collapses a two-armed claim into one true sentence.** An `optional`
-   bind forces every consumer to branch on whether the host has a settings file
-   — `describeClaude` and `claudeGuidance` would each carry the arm. With snug always authoring the file,
-   "`~/.claude/settings.json` is snug's, generated from an allowlist, and dies
-   with the session" is true on every host, and no `claudeSettingsBound`
-   predicate is needed.
-2. **The sandbox's behaviour stops varying with host state**, which is the same
-   argument made above for `~/.claude.json` being unconditional.
+   bind forces every consumer to branch on whether the host has a settings file.
+   With snug always authoring the file, "`~/.claude/settings.json` is snug's,
+   generated from an allowlist, and dies with the session" is true on every host.
+2. **The sandbox's behaviour stops varying with host state.**
 3. **"Absent" and "the filter carried nothing" become distinguishable.** The
    file is always there; the `CLAUDE` block says which keys it carried, or says
    that none of the allowlisted ones were present.
@@ -1054,32 +820,20 @@ rewrites `hosts.yml` on first use and a read-only copy failed with "failed to
 write config after migration"; Claude Code likewise writes into settings files
 (the binary carries `Failed to set JSONC property` and `Failed to insert item
 into user JSONC array`) for `/theme`, `/config` and user-scope permission
-grants. A private tmpfs copy absorbs those writes and they go nowhere — asserted
-end-to-end: the integration test writes `{}` over the file inside the sandbox,
-requires the write to succeed, and requires the **host's** file to be
-byte-identical afterwards.
+grants. A private tmpfs copy absorbs those writes and they go nowhere; the
+host's file stays byte-identical.
 
-**`rw` has a real cost, and the argument that it does not is two-armed.** *"The
-security delta of `rw` over `ro` is nil — the path was already writable, the
-payload already has arbitrary execution inside, and nothing at that path reaches
-the host"* holds only on the arm where the host has **no** settings file. The
-other arm is where it fails. Measured both ways, same fixture, payload
-`echo BAD >> $HOME/.claude/settings.json`:
+**`rw` has a real cost.** *"The security delta of `rw` over `ro` is nil"* holds
+only on the arm where the host has **no** settings file. Measured, payload
+`echo BAD >> $HOME/.claude/settings.json`, host HAS a settings file: with the
+`ro` bind, `Read-only file system`; with `rw`, the write succeeds. On a host
+that has run Claude Code a barrier that existed is gone.
 
-| build | host HAS a settings file |
-|---|---|
-| `main` (the `ro` bind) | `Read-only file system` |
-| this change | write succeeds |
-
-On a host that has run Claude Code — the common case for a profile that exists
-to run Claude Code — a barrier that existed is gone.
-
-**What it buys is bounded, and bounded in the right direction: nothing reaches
-the host.** Confirmed, and asserted by the integration test: the host's file is
-byte-identical after a write inside. What it does buy is the in-sandbox analogue
-of the `PATH` shadow slot CLAUDE.md describes — one compromised step controls
-every *later* `claude` in the same sandbox, including one a human starts at the
-sandbox shell. A full command table installs cleanly over snug's generated file:
+What it buys is bounded in the right direction: nothing reaches the host. It is
+the in-sandbox analogue of the `PATH` shadow slot CLAUDE.md describes — one
+compromised step controls every *later* `claude` in the same sandbox, including
+one a human starts at the sandbox shell. A full command table installs cleanly
+over snug's generated file:
 
 ```json
 {"apiKeyHelper": "/bin/echo sk-PWNED",
@@ -1090,98 +844,42 @@ sandbox shell. A full command table installs cleanly over snug's generated file:
 `hooks` fire with no tool gate, `bypassPermissions` removes every approval
 prompt, `apiKeyHelper` substitutes the credential.
 
-**Accepted, not fixed, and the reason is that `ro` is not available.** Claude
-Code and `gh` both genuinely rewrite their config files; a read-only copy breaks
-the tool, which is a measurement (the `gh` migration failure above) rather than
-a guess. So this is a residual that is written down, in the same register as
-§3.2's refusal to author `disableAllHooks`: CLAUDE.md's rule is that *"the
-payload can rewrite it anyway"* is not the test — whether snug ships the slot
-pre-installed is — and here snug does, knowingly.
+**Accepted, not fixed, because `ro` is not available.** Claude Code and `gh` both
+genuinely rewrite their config files; a read-only copy breaks the tool (the `gh`
+migration failure above). CLAUDE.md's rule is that *"the payload can rewrite it
+anyway"* is not the test — whether snug ships the slot pre-installed is — and
+here snug does, knowingly.
 
-The consequence for every other claim in this document stands unchanged and is
-the load-bearing sentence: **no test and no document may claim containment from
+The load-bearing sentence: **no test and no document may claim containment from
 anything written into this file during the run.**
 
-### 7.4 What a human sees
+### 7.4 The `CLAUDE` block
 
-Abridged, on a host whose settings file is §1.1's:
-
-```
-$ snug -p @claude <dir> --dry-run
-CLAUDE   ~/.claude.json is GENERATED, not copied — two keys, no host bytes
-         …
-         settings   ~/.claude/settings.json is GENERATED from an allowlist of
-                    the host's — not bound, never read-only
-                    carried: model theme
-         never      hooks, apiKeyHelper, statusLine, env, mcpServers,
-                    enabledPlugins, extraKnownMarketplaces, permissions — each
-                    names a program, selects/fetches code, or sets env; see
-                    policy.ClaudeExecutingKeys for the full catalogue
-```
-
-`Mount.Content` is redacted (`policy.Secret`) everywhere else on that screen by
-design. Printing the **carried key names** here is not an exception to the
-redaction — it is the mechanism the redaction exists to be replaced by for this
-one generated file, exactly as the `trust` and `not here` lines do the same job
-for `~/.claude.json`. The names go through `visibleValue`, like every other
-profile-influenced string on a snug screen (invariant 7).
-
-The `never` line is a **fixed, host-independent list** rather than a per-run
-diff of what this host's file happened to contain. Which names the host used is
-not the disclosure that matters; which *classes* never cross, regardless of the
-host, is. Both goldens (`internal/cli/testdata/claude-block.txt` and
-`claude-block-trusted.txt`) pin the block, the second with a host file that
-exercises the filter so the pair shows both the trust arm and the filter arm.
+`Mount.Content` is redacted (`policy.Secret`) on the dry-run screen. Printing the
+carried key names is the mechanism that replaces the redaction for this one
+generated file, and the names go through `visibleValue` (invariant 7). The
+`never` line is a fixed, host-independent list of key classes, not a per-run
+diff.
 
 ---
 
-## 10. Residuals and filed findings
+## 10. Residuals
 
-### 10.1 `env` — closed by this change
-
-§4.1. Regression: `TestClaudeSettingsAreGeneratedNotBound` part 4, which checks
-the canary in the generated file, the payload's environment **and**
-`/proc/1/environ`. Recorded here rather than only in a closed issue because it
-is a case of a **stated guarantee that was false**, not merely a missing filter:
-`base.toml` said the variable "must not come back", and a documented,
-recommended configuration brought it back through a different door.
-
-### 10.2 The plugin channel — open, `sev:medium`
-
-§4.4, [issue #68](https://github.com/gomoni/snug/issues/68). No sentence
-anywhere may claim the hook channel is closed.
-
-### 10.3 Enterprise managed settings do not apply inside — DECIDED, not doing it
+### 10.1 Enterprise managed settings do not apply inside
 
 §1.4. `/etc/claude-code/managed-settings.json` is not in `@sys`'s enumerated
 `/etc` list, so an organisation's `permissions.deny`, `allowManagedHooksOnly`,
 `availableModels` and `forceLoginOrgUUID` are absent inside. This is the correct
-default (root-owned host policy — `GIT-CONFIG.md` §7's position on
-`/etc/gitconfig`) and granting it would mean granting a file full of
-`policyHelper` and `processWrapper` keys. **Settled as `not planned`, YAGNI**
-([issue #70](https://github.com/gomoni/snug/issues/70)). Two wider options were
-designed out and rejected first: reading the host's managed file as data and
-authoring snug's own version inside, and refusing `@claude` on a managed host
-with an opt-in `@claude-managed` as the sanctioned path. Both went through two
-independent adversarial passes before the decision. **Do not re-propose either
-without reading that issue** — the absence is the answer, not an oversight.
+default (root-owned host policy, the same position `docs/src/identity.md`
+takes on `/etc/gitconfig`) and granting it would mean granting a file full of
+`policyHelper` and `processWrapper` keys. Two wider options were designed out
+and rejected: reading the host's managed file as data and authoring snug's own
+version inside, and refusing `@claude` on a managed host with an opt-in
+`@claude-managed`. **Do not re-propose either without reading
+[issue #70](https://github.com/gomoni/snug/issues/70)** — the absence is the
+answer, not an oversight.
 
-### 10.4 `CLAUDE_CODE_PROCESS_WRAPPER` — CLOSED, issue #69
-
-`processWrapper` is an argv prefix for every process Claude Code spawns —
-`LD_PRELOAD`'s shape for this tool — and the schema says the environment
-variable **takes precedence when set**. It is now named twice — the `envType`
-row at `internal/policy/envtypes.go:1357` and `inlineConfigNames` at `:1928` —
-asserted by `envtypes_test.go:733`.
-
-### 10.5 `@claude`'s bwrap-argv golden — CLOSED, issue #71
-
-`internal/cli/testdata/bwrap.claude.txt` exists. The reason it mattered is worth
-keeping: this is the profile that stages an OAuth token and mounts four host
-paths, and *"a security change that produces no golden diff is probably
-untested"*.
-
-### 10.6 What the generated file does not bound
+### 10.2 What the generated file does not bound
 
 GENERATED-CONFIG.md §8.1 in full; the Claude-specific instance is that a payload
 inside the sandbox sets whatever it likes in its own environment, including
@@ -1190,7 +888,7 @@ reaches the same hijack through `~/.bashrc` regardless. The generated file
 bounds the **host's** contribution and nothing else. An accepted residual,
 bounded by `$HOME` being a fresh tmpfs on every run.
 
-### 10.7 The two authored keys are a default, not a bound — open by construction
+### 10.3 The two authored keys are a default, not a bound — open by construction
 
 §3.4. Both are enforced **client-side by Claude Code**, so they bind a
 prompt-injected *model* — which acts through the tools its client offers — and
