@@ -448,6 +448,32 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			if _, err := ParseKubeCredential(string(id.Kube.Credential)); err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
+			// The same two-doors rule as ParseSSHMode: internal/cli and the
+			// profile loader each parse the array, but an Identity built in Go
+			// reaches Resolve without them, so the accepted set is enforced
+			// here too. A half block is refused, because a fingerprint with no
+			// scope grants nothing and a scope with no key names nothing.
+			if id.GPG != (IdentityGPG{}) {
+				fp, err := ParseFingerprint(id.GPG.Fingerprint)
+				if err != nil {
+					return nil, fmt.Errorf("profile %q: %w", name, err)
+				}
+				if id.GPG.Scope == "" {
+					return nil, fmt.Errorf("profile %q: identity.gpg pins a key but names "+
+						"no scope; a key with no scope grants nothing "+
+						"(want %s or %s, or both)", name, GPGScopeSign, GPGScopeDecrypt)
+				}
+				scope, err := ParseGPGRuntimeScope(strings.Split(id.GPG.Scope, ","))
+				if err != nil {
+					return nil, fmt.Errorf("profile %q: %w", name, err)
+				}
+				if scope != id.GPG.Scope {
+					return nil, fmt.Errorf("profile %q: identity.gpg.scope %q is not "+
+						"canonical; the sorted, comma-joined form is %q",
+						name, id.GPG.Scope, scope)
+				}
+				id.GPG.Fingerprint = fp
+			}
 			// The default is filled in BEFORE the path loop, so an omitted
 			// kubeconfig, "{home}/.kube/config" and "~/.kube/config" are
 			// expanded, link-walked and compared as one value (#559's lesson,
@@ -823,18 +849,26 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	if err := refuseSigningWithoutAgent(p); err != nil {
 		return nil, err
 	}
+	// The gpg arm's counterpart: a sign-scoped gpg pin ALSO authors
+	// commit.gpgsign, and gpg.format is a single value — so a profile that pins
+	// both an ssh signing key and a sign-scoped gpg key is refused rather than
+	// silently letting one win.
+	if err := refuseTwoSigningKeys(p); err != nil {
+		return nil, err
+	}
 	if err := refuseHalfNamedHost(p); err != nil {
 		return nil, err
 	}
 
-	// The git config is GENERATED from the identity.git and identity.ssh pins,
-	// and only from them. One writer, one path: two code paths racing to author
-	// ~/.gitconfig is how the last silent displacement got in.
-	if p.Identity.Pinned("git") || p.Identity.Pinned("ssh") {
+	// The git config is GENERATED from the identity.git, identity.ssh and
+	// identity.gpg pins, and only from them. One writer, one path: two code
+	// paths racing to author ~/.gitconfig is how the last silent displacement
+	// got in.
+	if p.Identity.Pinned("git") || p.Identity.Pinned("ssh") || p.Identity.Pinned("gpg") {
 		if cfg := GitConfigFrom(p.Identity, home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
-				Content: cfg, From: []string{p.IdentityProvenance("git", "ssh")},
+				Content: cfg, From: []string{p.IdentityProvenance("git", "ssh", "gpg")},
 			})
 			// GIT_CONFIG_GLOBAL REPLACES the global config; without it git reads
 			// ~/.gitconfig AND $XDG_CONFIG_HOME/git/config and merges them, so
@@ -1937,6 +1971,34 @@ func refuseSigningWithoutAgent(p *Policy) error {
 		"key would also be an ssh key the sandbox can log in with, added to an agent another profile "+
 		"pinned. Put identity.git.signing_key in the profile that sets identity.ssh, or remove it",
 		git, p.IdentityOwner("ssh"))
+}
+
+// refuseTwoSigningKeys refuses a profile that pins BOTH an ssh signing key and
+// a sign-scoped gpg key.
+//
+// Both arms author `commit.gpgsign = true` in the sandbox's ~/.gitconfig and
+// both write `user.signingkey` — but `gpg.format` is ONE value, so git would
+// use exactly one of the two keys and the other pin would be a grant that
+// silently does nothing. Refusing names both fields, which is the fix; picking
+// a winner here would be a rule a reader has to simulate.
+//
+// There is no analogous conflict for a DECRYPT-only gpg pin: it authors no
+// signing config, so it composes freely with an ssh signing key.
+func refuseTwoSigningKeys(p *Policy) error {
+	id := p.Identity
+	if id == nil {
+		return nil
+	}
+	sshSigning := id.Git.SigningKey != "" && id.SSH.Agent != SSHNone
+	gpgSigning := id.GPG.Fingerprint != "" && GPGScopeHas(id.GPG.Scope, GPGScopeSign)
+	if !sshSigning || !gpgSigning {
+		return nil
+	}
+	return fmt.Errorf("profiles %q and %q: identity.git.signing_key and a sign-scoped "+
+		"identity.gpg both turn on git commit signing, but git signs with ONE format "+
+		"(gpg.format = ssh or openpgp), so one of the two keys would be pinned and never "+
+		"used. Keep one: drop identity.git.signing_key, or drop \"sign\" from identity.gpg.scope",
+		p.IdentityOwner("git"), p.IdentityOwner("gpg"))
 }
 
 func refuseHalfNamedHost(p *Policy) error {

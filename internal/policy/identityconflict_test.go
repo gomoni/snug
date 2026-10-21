@@ -117,6 +117,7 @@ func baseNestedIdentity() Identity {
 	return Identity{
 		SSH: IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
 		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
+		GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "sign"},
 		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
 		Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,
 			Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "/home/u/.kube/config"},
@@ -156,6 +157,18 @@ func TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf(t *testing.T) {
 				// one profile.
 				av.SetString(string(KubeCredentialClientCert))
 				bv.SetString(string(KubeCredentialToken))
+			} else if f.Key == "gpg.fingerprint" {
+				// Two ACCEPTED fingerprints: appending "-a" would make an invalid
+				// one, and the parser would name ident-a instead of the conflict
+				// this subtest is about. Same two-different-values shape as
+				// kubectl.credential above.
+				av.SetString("6732361300BBFDAE7F22972CD4381E1CE2880244")
+				bv.SetString("0000000000000000000000000000000000000000")
+			} else if f.Key == "gpg.scope" {
+				// Both accepted, both canonical, both non-empty: the conflict is
+				// the difference, not the absence of a key.
+				av.SetString("sign")
+				bv.SetString("decrypt")
 			} else {
 				av.SetString(av.String() + "-a")
 				bv.SetString(bv.String() + "-b")

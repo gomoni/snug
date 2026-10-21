@@ -747,6 +747,7 @@ func maximalProfile() *Profile {
 			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
 				SigningKey: "/home/u/.ssh/sign.pub"},
+			GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "decrypt"},
 			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
 			// NOT the default path, so dropping identity.kubectl.kubeconfig really
 			// changes which file is read (the fixture serves both).
@@ -802,6 +803,11 @@ func keyDrops() []keyDrop {
 		{"identity.git.name", "Identity.Git.Name", func(p *Profile) { p.Identity.Git.Name = "" }},
 		{"identity.git.email", "Identity.Git.Email", func(p *Profile) { p.Identity.Git.Email = "" }},
 		{"identity.git.signing_key", "Identity.Git.SigningKey", func(p *Profile) { p.Identity.Git.SigningKey = "" }},
+		// Dropping either gpg leaf alone leaves a HALF block, which Resolve
+		// refuses; the drop is here so that refusal is exercised, and so a
+		// gpg leaf that stopped being checked would show up as a widening.
+		{"identity.gpg.fingerprint", "Identity.GPG.Fingerprint", func(p *Profile) { p.Identity.GPG.Fingerprint = "" }},
+		{"identity.gpg.scope", "Identity.GPG.Scope", func(p *Profile) { p.Identity.GPG.Scope = "" }},
 		{"identity.gh.host", "Identity.Gh.Host", func(p *Profile) { p.Identity.Gh.Host = "" }},
 		{"identity.gh.user", "Identity.Gh.User", func(p *Profile) { p.Identity.Gh.User = "" }},
 		{"identity.kubectl.context", "Identity.Kube.Context", func(p *Profile) { p.Identity.Kube.Context = "" }},
@@ -812,6 +818,7 @@ func keyDrops() []keyDrop {
 		// block removes one pin, and must widen nothing the others grant.
 		{"identity.ssh", "Identity.SSH", func(p *Profile) { p.Identity.SSH = IdentitySSH{} }},
 		{"identity.git", "Identity.Git", func(p *Profile) { p.Identity.Git = IdentityGit{} }},
+		{"identity.gpg", "Identity.GPG", func(p *Profile) { p.Identity.GPG = IdentityGPG{} }},
 		{"identity.gh", "Identity.Gh", func(p *Profile) { p.Identity.Gh = IdentityGh{} }},
 		{"identity.kubectl", "Identity.Kube", func(p *Profile) { p.Identity.Kube = IdentityKube{} }},
 		{"environ.set", "Environ.Set", func(p *Profile) { p.Environ.Set = nil }},

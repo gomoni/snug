@@ -99,6 +99,7 @@ func ParseKubeCredential(s string) (KubeCredential, error) {
 type Identity struct {
 	SSH  IdentitySSH  `snug:"ssh"`
 	Git  IdentityGit  `snug:"git"`
+	GPG  IdentityGPG  `snug:"gpg"`
 	Gh   IdentityGh   `snug:"gh"`
 	Kube IdentityKube `snug:"kubectl"`
 }
@@ -188,6 +189,131 @@ type IdentityGh struct {
 	// four consumers would otherwise name a host the profile never wrote.
 	Host string `snug:"host"`
 	User string `snug:"user"`
+}
+
+// IdentityGPG pins one OpenPGP key, by FINGERPRINT, for signing and/or
+// decryption through snug's filtering proxy to the host's gpg-agent.
+//
+// THERE IS NO `agent` KNOB, and its absence is the whole design: unlike
+// identity.ssh, where "no agent" is a real mode — the sandbox keeps its own
+// keys on its own disk — a pinned gpg key is USELESS without the agent. The
+// private half lives in the host agent and nowhere else, so a block that names
+// a fingerprint has, by construction, selected the proxy. A second key saying
+// "proxy" would be a knob whose only accepted value is the only value the
+// block can mean, which is the disease CLAUDE.md refuses.
+//
+// Fingerprint, NOT a path: the key is matched inside the HOST agent, which
+// knows it by fingerprint; snug reads no key file for this block. So it is a
+// string leaf with no `path` role and no staging of key material.
+//
+// Scope is a STRING LEAF holding the CANONICAL, comma-joined, sorted set of
+// granted capabilities — "sign", "decrypt" or "decrypt,sign" — and not a
+// []string or a bitmask field, because Identity is walked by mustIdentityFields,
+// which supports exactly nested structs and strings, and because IDENTITY
+// BLOCKS ARE COMPARED WITH == AND reflect.Value.Equal, which a slice would
+// break. ParseGPGRuntimeScope is the door that produces this spelling from the
+// profile's array; internal/cli parses it back.
+type IdentityGPG struct {
+	// Fingerprint is the 40-hex-character OpenPGP key fingerprint, the same
+	// string `gpg --fingerprint` prints. The primary key signs; its encryption
+	// subkey decrypts, and internal/cli derives the keygrips for both.
+	Fingerprint string `snug:"fingerprint"`
+
+	// Scope is the canonical comma-joined set of capabilities granted:
+	// "sign", "decrypt" or "decrypt,sign". Set by ParseGPGRuntimeScope; never
+	// written by a hand-rolled literal except in tests.
+	Scope string `snug:"scope"`
+}
+
+// GPGScopeSign and GPGScopeDecrypt are the two capabilities a profile may
+// spell. There is deliberately no "encrypt": measured, encrypting to the
+// pinned key produced an EMPTY host-agent log — gpg encrypts from the public
+// key alone — so a value accepted for it would grant nothing. There is
+// deliberately no "auth": gpg-agent's ssh-emulation side is a protocol snug
+// has not measured, and a value whose verbs are not read into the proxy would
+// be a scope that cannot be enforced.
+const (
+	GPGScopeSign    = "sign"
+	GPGScopeDecrypt = "decrypt"
+)
+
+// ParseGPGRuntimeScope validates a profile's `scope` array and returns the
+// CANONICAL spelling: sorted, de-duplicated, comma-joined. It refuses an empty
+// set (a block that names a key must say what it grants — the same reason
+// `podman = "off"` is refused), an unknown value, and a duplicate, and it
+// names the accepted set in every refusal.
+//
+// It returns a STRING rather than a bitmask because the result is stored in
+// IdentityGPG.Scope, which is compared with == and rendered into refusals.
+func ParseGPGRuntimeScope(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", fmt.Errorf("identity.gpg.scope sets nothing; "+
+			"name what the sandbox may do with this key (want %s or %s, or both)",
+			GPGScopeSign, GPGScopeDecrypt)
+	}
+	seen := map[string]bool{}
+	for _, v := range values {
+		switch v {
+		case GPGScopeSign, GPGScopeDecrypt:
+		default:
+			return "", fmt.Errorf("unknown identity.gpg.scope %q (want %s or %s)",
+				v, GPGScopeSign, GPGScopeDecrypt)
+		}
+		if seen[v] {
+			return "", fmt.Errorf("identity.gpg.scope names %q twice; "+
+				"the set is a union, so a repeat says nothing", v)
+		}
+		seen[v] = true
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	slices.Sort(out)
+	return strings.Join(out, ","), nil
+}
+
+// GPGScopeHas reports whether the canonical scope spelling grants cap. It is
+// the reader for a stored IdentityGPG.Scope; internal/cli uses it to build the
+// per-grip gpgproxy.Scope.
+func GPGScopeHas(scope, cap string) bool {
+	for part := range strings.SplitSeq(scope, ",") {
+		if part == cap {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseFingerprint is the door into IdentityGPG.Fingerprint. It accepts the
+// v4/v5 OpenPGP fingerprint: 40 or 64 hexadecimal characters, case-insensitive,
+// and returns it UPPERCASE so that two profiles naming the same key in two
+// cases compare equal (the identity join is textual).
+//
+// It is a door rather than a validation inside Resolve because the fingerprint
+// is a property of the profile TEXT: `snug profile show`, which never resolves,
+// must report it like every other bad key. internal/cli also calls it before
+// handing the value to gpg, so an unsettable spelling never reaches `gpg
+// --list-secret-keys`.
+func ParseFingerprint(s string) (string, error) {
+	up := strings.ToUpper(s)
+	if up == "" {
+		return "", fmt.Errorf("identity.gpg.fingerprint is empty; " +
+			"name the key by its fingerprint (the string `gpg --fingerprint` prints)")
+	}
+	n := len(up)
+	if n != 40 && n != 64 {
+		return "", fmt.Errorf("identity.gpg.fingerprint %q has %d characters; "+
+			"a fingerprint is 40 (v4) or 64 (v5) hexadecimal characters", s, n)
+	}
+	for i := 0; i < n; i++ {
+		c := up[i]
+		if (c < '0' || c > '9') && (c < 'A' || c > 'F') {
+			return "", fmt.Errorf("identity.gpg.fingerprint %q is not hexadecimal "+
+				"(the offending byte is %q)", s, string(s[i]))
+		}
+	}
+	return up, nil
 }
 
 // A pointer, slice or map field would make this fail to compile — which is worth
@@ -462,6 +588,22 @@ const PubKeyGuest = ".ssh/id_snug.pub"
 // a profile names the same file twice the two staged copies are identical and
 // harmless — cheaper than a branch a reader has to simulate.
 const SigningKeyGuest = ".ssh/id_snug_signing.pub"
+
+// GPGHomeGuest is the sandbox's $GNUPGHOME, and GPGAgentSocketGuest is where
+// the filtering proxy's socket must sit inside it.
+//
+// NOT under SnugDir, unlike AgentSocketGuest: gpg derives the agent socket from
+// the CLIENT's GNUPGHOME (`gpgconf --list-dirs agent-socket` answers
+// "$GNUPGHOME/S.gpg-agent"), so a socket anywhere else is simply not looked at.
+// The name S.gpg-agent is gpg's, not snug's, and it is fixed.
+const (
+	GPGHomeGuest        = ".gnupg"
+	GPGAgentSocketGuest = GPGHomeGuest + "/S.gpg-agent"
+	// GPGKeyringGuest is the staged PUBLIC keyring, holding exactly the pinned
+	// key. gpg reads it to know the fingerprint it may sign and encrypt with;
+	// the private half never leaves the host agent.
+	GPGKeyringGuest = GPGHomeGuest + "/pubring.kbx"
+)
 
 // AllowedSignersGuest is the generated `gpg.ssh.allowedSignersFile`. It holds
 // exactly ONE line — the pinned signing key, under the pinned git email — so a

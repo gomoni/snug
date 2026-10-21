@@ -85,6 +85,15 @@ var conditionalEnvs = []conditionalEnv{
 		writes: "points ssh at its one-key agent proxy",
 	},
 	{
+		// The gpg block IS the proxy, so the pin and the write coincide: snug
+		// sets GNUPGHOME whenever a resolved identity pins a gpg key.
+		names:  []string{"GNUPGHOME"},
+		key:    func(*Profile) string { return "identity.gpg.fingerprint" },
+		on:     func(p *Policy) bool { return p.Identity.Pinned("gpg") },
+		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "gpg") },
+		writes: "points gpg at the ~/.gnupg whose agent socket is its filtering proxy",
+	},
+	{
 		names:    []string{"GH_CONFIG_DIR", "GH_HOST"},
 		outranks: []string{"GH_ENTERPRISE_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITHUB_TOKEN"},
 		key:      func(*Profile) string { return "identity.gh.user" },
