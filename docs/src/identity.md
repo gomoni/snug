@@ -67,10 +67,10 @@ include = ["work", "kubectl"]
 a different cluster definition. `kubectl` inside sees one context, and the
 other cluster is not there at all.
 
-`identity` itself holds up to four optional blocks: `ssh`, `git`, `gh` and
-`kubectl`. Blocks from different profiles combine, but each block has one value
-per run. A second, different value of the same block is refused, naming both
-profiles:
+`identity` itself holds up to five optional blocks: `ssh`, `git`, `gpg`, `gh`
+and `kubectl`. Blocks from different profiles combine, but each block has one
+value per run. A second, different value of the same block is refused, naming
+both profiles:
 
 ```text
 $ snug -p work -p other ~/src/app
@@ -102,9 +102,9 @@ With the proxy, the generated git config also rewrites `https://HOST/` to
 | `signing_key` | path to the **public** key used for `gpg.format = ssh` signing |
 
 snug generates `~/.gitconfig` from this block and points `GIT_CONFIG_GLOBAL`
-at it. It never reads the host git config. snug generates it when an `ssh` or
-`git` block is set and without either there is no `~/.gitconfig`, and `git commit`
-inside has no author.
+at it. It never reads the host git config. snug generates it when an `ssh`,
+`git` or `gpg` block is set and without any of them there is no `~/.gitconfig`,
+and `git commit` inside has no author.
 
 With `signing_key`, snug generates the signing configuration and turns
 commit signing on. The private key stays in your host agent, so it needs
@@ -115,6 +115,10 @@ trusted. snug checks before starting that the agent will actually sign with
 it.
 
 `email` must be a single address.
+
+A `sign`-scoped [`identity.gpg`](#identitygpg) block also turns commit signing on,
+in OpenPGP format. Because git signs in ONE format, a profile cannot pin both an
+ssh `signing_key` and a sign-scoped gpg key: snug refuses that.
 
 #### Other git settings
 
@@ -130,6 +134,52 @@ ro = ["{home}/.config/snug/sandbox.gitconfig:/etc/gitconfig"]
 
 git reads it below the generated `~/.gitconfig`, so the pinned keys still win.
 `~/.gitconfig` and `~/.config/git/config` do not work for this.
+
+### `identity.gpg`
+
+| key | value | default |
+|---|---|---|
+| `fingerprint` | the key's fingerprint, 40 or 64 hex characters | none |
+| `scope` | array of `"sign"`, `"decrypt"` | none — required |
+
+```toml
+[profile.work]
+
+  [profile.work.identity.gpg]
+  fingerprint = "6732361300BBFDAE7F22972CD4381E1CE2880244"
+  scope       = ["sign"]
+```
+
+`GNUPGHOME` inside points at a `~/.gnupg` snug generates, whose `S.gpg-agent`
+socket is a filtering proxy to your host gpg-agent. Only the pinned key is
+usable, and no key material enters the sandbox: your other keys can be neither
+used nor listed, and `gpg --export-secret-keys` returns nothing.
+
+The key is named by **fingerprint**, not by path — the private half lives in
+your host agent and is matched there, so snug reads no key file for this block.
+There is no `agent` knob: unlike ssh, where `"none"` is a real mode with keys of
+its own on the sandbox disk, a pinned gpg key is useless without the agent, so a
+block that names a fingerprint has already selected the proxy.
+
+`scope` says what the sandbox may do with the key, and must be set:
+
+| value | grants |
+|---|---|
+| `"sign"` | sign with the key (`gpg --detach-sign`, and `git commit -S` — snug turns OpenPGP commit signing on) |
+| `"decrypt"` | decrypt a message addressed to the key |
+
+`scope = ["sign", "decrypt"]` grants both. The primary key signs; its encryption
+subkey decrypts, and snug resolves each keygrip from the fingerprint.
+
+There is no `"encrypt"` value, deliberately: encrypting **to** the key uses only
+the public half, needs no agent, and so grants nothing a sandbox does not
+already have. There is no `"auth"` value either: gpg-agent's ssh-emulation side
+is a protocol snug has not measured, and a value whose verbs are unenforced
+would be a scope in name only.
+
+A key pinned for `"decrypt"` cannot be used to sign, and a key pinned for
+`"sign"` cannot be used to decrypt: a decryption-only grant is not also a
+signing oracle, and the two keygrips carry the scope separately.
 
 ### `identity.gh`
 
