@@ -106,7 +106,7 @@ func TestIdentityFieldKeysMatchTheProfileTOMLTags(t *testing.T) {
 	for i := 0; i < raw.NumField(); i++ {
 		f := raw.Field(i)
 		switch f.Name {
-		case "SSH", "Git", "Gh", "Kube":
+		case "SSH", "Git", "GPG", "Gh", "Kube":
 			prefix := f.Tag.Get("toml") + "."
 			nested := f.Type
 			for j := 0; j < nested.NumField(); j++ {
