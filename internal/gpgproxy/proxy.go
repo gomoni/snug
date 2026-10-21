@@ -353,6 +353,12 @@ func (s *session) upstream() (*bufio.Reader, *bufio.Writer, error) {
 			break
 		}
 	}
+	// Propagate TTY/display context to the agent so pinentry behaves like gpg
+	// does. Without this, each new Assuan connection can spawn a different
+	// pinentry program than the one that was primed by gpg-connect-agent.
+	if err := probeSetOptions(s.upW, s.upR); err != nil {
+		_ = err
+	}
 	return s.upR, s.upW, nil
 }
 
@@ -1016,6 +1022,42 @@ func atoiSafe(s string) (int, error) {
 	return n, nil
 }
 
+func probeSetOptions(w *bufio.Writer, r *bufio.Reader) error {
+	// Try to mirror gpg's behavior: tell the agent about the TTY and display
+	// so it can spawn pinentry in the right context.
+	setOption := func(opt string) {
+		_ = writeLine(w, "OPTION "+opt)
+		_ = w.Flush()
+		// OPTION may return OK or ERR; consume the reply if present.
+		line, err := readLine(r)
+		if err != nil {
+			return
+		}
+		_ = line
+	}
+	if v := os.Getenv("GPG_TTY"); v != "" {
+		setOption("ttyname=" + v)
+		setOption("ttytype=linux")
+		setOption("putenv=GPG_TTY=" + v)
+	} else if v := os.Getenv("TERM"); v != "" {
+		setOption("ttytype=" + v)
+	}
+	for _, key := range []string{"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP", "GNOME_DESKTOP_SESSION_ID", "DESKTOP_SESSION"} {
+		if v := os.Getenv(key); v != "" {
+			setOption(key + "=" + v)
+			setOption("putenv=" + key + "=" + v)
+		}
+	}
+	// Some agents need this to actually use the options for the current session
+	_ = writeLine(w, "UPDATESTARTUPTTY")
+	_ = w.Flush()
+	line, err := readLine(r)
+	if err == nil {
+		_ = line
+	}
+	return nil
+}
+
 // ── the startup probe ───────────────────────────────────────────────────────
 
 // probeTimeout bounds the whole startup exchange — dial, write, read. On a
@@ -1064,6 +1106,24 @@ func probeUpstream(upstream string, pins []grip) error {
 		if isTerminal(line) {
 			break
 		}
+	}
+	// Set up TTY/display context so the agent can spawn pinentry correctly,
+	// just like the gpg CLI does. The agent may ignore these, but without them
+	// a new Assuan connection (from a process different from gpg) often fails to
+	// start a GUI or tty pinentry with "Inappropriate ioctl for device".
+	if err := probeSetOptions(w, r); err != nil {
+		// Non-fatal: the agent might not support all options; continue and let
+		// the actual sign probe report a clearer error if pinentry fails.
+		_ = err
+	}
+	// Set up TTY/display context so the agent can spawn pinentry correctly,
+	// just like the gpg CLI does. The agent may ignore these, but without them
+	// a new Assuan connection (from a process different from gpg) often fails to
+	// start a GUI or tty pinentry with "Inappropriate ioctl for device".
+	if err := probeSetOptions(w, r); err != nil {
+		// Non-fatal: the agent might not support all options; continue and let
+		// the actual sign probe report a clearer error if pinentry fails.
+		_ = err
 	}
 	// One HAVEKEY per grip: the multi-grip form answers a single ERR when ANY
 	// is missing, which would not say WHICH pin the profile got wrong.
