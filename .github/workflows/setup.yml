@@ -1,0 +1,54 @@
+name: setup
+
+# snug-setup is its own Go module (setup/go.mod), so ci.yml's `make gate` runs
+# its vet and tests only through the last line of the gate target. The split
+# lives here:
+#
+#   ci.yml   `make gate` -> gofmt, vet and the tests of setup/ too
+#   setup.yml (this file) -> the same, in the module's own terms with CGO off,
+#            and the binary built
+#
+# Not path-filtered. A workflow that does not run posts no check at all, and a
+# pull request requiring it would wait forever on "Expected" (see the draft
+# note in ci.yml); the unit job is seconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to commit SHAs with the tag beside them; see ci.yml for
+# why and how to verify one.
+jobs:
+  unit:
+    name: snug-setup gofmt, vet, unit tests
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache-dependency-path: setup/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l setup)" || (gofmt -l setup; exit 1)
+      - name: vet
+        run: cd setup && go vet ./...
+      - name: test
+        run: cd setup && go test ./...
+      - name: Binary builds without cgo
+        run: cd setup && go build -o /dev/null ./cmd/snug-setup

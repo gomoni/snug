@@ -1,0 +1,34 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ssh
+  ( ) none
+        no ssh key in the sandbox
+▸ (•) vyskocilm   suggested
+        ssh   github.com  github_auth
+              ~/.ssh/config  Host github.com  → github_auth
+  ( ) plainsof
+        ssh   github.com
+              ~/.ssh/config  Host github.com  → github_auth
+        ! conflicts with vyskocilm on ssh, git, gh
+
+  git
+  ( ) none
+        no git author in the sandbox
+  (•) vyskocilm   suggested
+        git   M V <m@example.org>
+        sign  github_sign
+  ( ) plainsof
+        git   <p@example.org>
+        ! conflicts with vyskocilm on ssh, git, gh
+
+  gh
+  ( ) none
+        no gh login in the sandbox
+  (•) vyskocilm   suggested
+        gh    github.com/vyskocilm
+        also includes: gh-cli
+  ( ) plainsof
+        gh    github.com/plainsof
+        ! conflicts with vyskocilm on ssh, git, gh
+
+ j/k move  space pick or toggle  ? why  esc back

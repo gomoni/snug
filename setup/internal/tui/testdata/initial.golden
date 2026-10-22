@@ -1,0 +1,14 @@
+snug-setup  ~/work/snug-setup
+
+▸ NAME       snug-setup                       from directory
+  DESC       snug-setup, vyskocilm            from project and identity
+  BASE       @sys @home @target-rw @parent-ro
+  IDENTITY   vyskocilm                        remote github.com:gomoni/snug
+  AGENT      @claude                          CLAUDE.md found
+  NETWORK    @net                             @claude, go mod download
+  CONTAINERS —                                ○ @podman-build? Containerfile
+  ENV        GOMODCACHE GOCACHE               go.mod
+
+  ! accounts.toml: vyskocilm uses @cwd-rw, renamed @target-rw   f fix
+
+ j/k move  space cycle  enter edit text  u revert  ? why  d dry-run  w write  q quit  e edit & exit
