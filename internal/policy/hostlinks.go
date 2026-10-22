@@ -275,5 +275,5 @@ next:
 		"if you did not, delete the link and treat everything near it as sandbox-written.",
 		string(d.profile), VisibleText(d.requested), VisibleText(d.link.At), VisibleText(d.link.Text),
 		ownerPhrase(d.link, d.uid), VisibleText(d.real), d.key,
-		d.key, VisibleText(d.real), VisibleText(d.real), VisibleText(d.requested))
+		d.key, VisibleText(specText(d.real)), VisibleText(specText(d.real)), VisibleText(specText(d.requested)))
 }

@@ -1676,6 +1676,14 @@ func splitSpec(spec string, vars map[string]string) (host, guest string, err err
 	return filepath.Clean(host), filepath.Clean(guest), nil
 }
 
+// specText writes a path as grant text that splitSpec reads back as that one
+// path: a ':' would be taken for the host:guest divider and a '{' would open
+// a variable, so each is written as its variable. For refusals that suggest a
+// grant to copy.
+func specText(path string) string {
+	return strings.NewReplacer("{", "{lbrace}", ":", "{colon}").Replace(path)
+}
+
 // expansionNote says where a refused host path came from when the grant was
 // written with variables: the grant as the profile spells it, and the value
 // of each variable in it. "" for a literal grant, whose path is already what
@@ -1797,7 +1805,8 @@ func expandVars(s string, vars map[string]string) (string, error) {
 //
 // {lbrace} and {rbrace} are the only way to write a literal brace, because a
 // `{` always opens a name. A lone `}` outside one stays literal, and
-// {rbrace} exists for symmetry.
+// {rbrace} exists for symmetry. {colon} writes a ':' that splitSpec does not
+// take for the host:guest divider, because it splits before expanding.
 func pathVars(target, home string) map[string]string {
 	return map[string]string{
 		"target":        target,
@@ -1805,6 +1814,7 @@ func pathVars(target, home string) map[string]string {
 		"home":          home,
 		"lbrace":        "{",
 		"rbrace":        "}",
+		"colon":         ":",
 	}
 }
 

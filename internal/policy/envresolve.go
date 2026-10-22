@@ -225,7 +225,8 @@ func checkAbsoluteElement(profile ProfileName, name string, verb EnvVerb, raw, e
 // RELATIVE q/bin, resolved against the payload's cwd, the target.
 // checkAbsoluteElement cannot see that: the whole string starts with '/'. {home} cannot carry
 // one (Resolve's passwd check refuses it); {target} and {target_parent} are host
-// directory names and can.
+// directory names and can. {colon} writes the separator itself, so it is refused
+// in any element of a ':'-separated list.
 func checkExpandedElement(profile ProfileName, name string, verb EnvVerb, raw, expanded string, decl map[string]EnvKind) error {
 	t, known, _ := typeWithin(name, decl)
 	if !known || !t.list || raw == expanded {
@@ -234,6 +235,12 @@ func checkExpandedElement(profile ProfileName, name string, verb EnvVerb, raw, e
 	for _, sep := range []string{t.sep, t.altSep} {
 		if sep == "" || !strings.Contains(expanded, sep) {
 			continue
+		}
+		if strings.Contains(raw, "{colon}") && sep == ":" {
+			return fmt.Errorf("profile %q: environ.%s %s entry %q expands to %q, which contains %q — "+
+				"the separator %s is read with — and {colon} writes exactly that separator, so the "+
+				"payload would see an extra element, or an empty one meaning its working directory. "+
+				"{colon} cannot be used in a list element", profile, verb, name, raw, expanded, sep, name)
 		}
 		return fmt.Errorf("profile %q: environ.%s %s entry %q expands to %q, which contains %q — "+
 			"the separator %s is read with — so the payload would see several elements, one of "+

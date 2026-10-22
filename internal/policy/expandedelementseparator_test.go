@@ -129,3 +129,23 @@ func TestExpandedElementSurvivesOnATargetWithoutTheSeparator(t *testing.T) {
 		t.Errorf("PATH = %v, does not contain %q", got, want)
 	}
 }
+
+// TestColonVariableCannotBeAListElement fails if {colon} is allowed inside a
+// path-list element: it writes the list's own separator, so one element
+// would reach the payload as two. The message must name {colon}, not blame a
+// directory name.
+func TestColonVariableCannotBeAListElement(t *testing.T) {
+	reg := testRegistry()
+	reg["merger"] = &Profile{Name: "merger", RO: []string{"/a"}, Environ: EnvGrants{
+		Merge: map[string][]string{"PATH": {"/a/b{colon}c"}},
+	}}
+	env := newFakeEnv()
+	env.dirs["/a"] = true
+	_, err := Resolve(reg, []ProfileName{"@sys", "@home", "merger"}, testCtx(), env)
+	if err == nil {
+		t.Fatal("resolved cleanly; {colon} split one PATH element into two")
+	}
+	if !strings.Contains(err.Error(), "{colon}") || strings.Contains(err.Error(), "A directory this") {
+		t.Errorf("error %q should blame {colon}, not a directory name", err)
+	}
+}
