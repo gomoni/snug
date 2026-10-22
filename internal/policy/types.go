@@ -342,6 +342,19 @@ type Graft struct {
 	HostAsked string
 }
 
+// Placeholder is one {profile.NAME.KEY} a file body carried and what it
+// expanded to. Text is the placeholder as written, braces included.
+type Placeholder struct{ Text, Value string }
+
+// ProfileFile is the ledger entry for one profile-written file.
+type ProfileFile struct {
+	// From is every profile that wrote this exact body at this path, sorted
+	// and deduplicated.
+	From []ProfileName
+	// Placeholders is sorted by Text and deduplicated.
+	Placeholders []Placeholder
+}
+
 // Policy is the single computed, immutable object. It is the sole author of the
 // bwrap argv — and, once they exist, of the pasta argv and the container
 // proxy's decisions too. One author means those cannot drift apart.
@@ -356,6 +369,17 @@ type Policy struct {
 	Command     []string
 
 	Mounts map[string]Mount
+
+	// Files records, per guest path, which profiles wrote a KindData mount
+	// from a `file` grant and what each {profile.NAME.KEY} placeholder in it
+	// expanded to. It exists because Policy.Replace overwrites the whole Mount,
+	// so the Mount alone cannot say whether a KindData file is snug's or a
+	// profile's once something displaced it, and because --dry-run owes the
+	// placeholders' values to the human reading it. Nil when no selected
+	// profile carries a `file`, so every policy without one compares equal to
+	// what it did before the key existed. Validate holds it to p.Mounts
+	// (rejectProfileFileDisplaced).
+	Files map[string]ProfileFile
 
 	// TmpfsSizeBytes bounds EVERY KindTmpfs mount snug emits, each independently
 	// (measured: two `--size 1048576 --tmpfs` mounts each filled to 1 MiB, not

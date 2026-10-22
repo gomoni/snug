@@ -280,7 +280,7 @@ func TestJoinRefusesDifferingContentAtSamePath(t *testing.T) {
 		t.Fatal("two different generated file contents at the same guest path joined silently; " +
 			"there is no join between two different file bodies")
 	}
-	for _, want := range []string{"gen-a", "gen-b", "different generated contents"} {
+	for _, want := range []string{"gen-a", "gen-b", "different file contents"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
@@ -1164,6 +1164,10 @@ func TestGoldenRefusals(t *testing.T) {
 		{"home_link_carries_a_forging_rune", refusalHomeCarriesAForgingRune},
 		{"join_conflict_different_content", refusalJoinDifferentContent},
 		{"join_conflict_different_perms", refusalJoinDifferentPerms},
+		{"profile_file_under_a_bind", refusalProfileFileUnderABind},
+		{"profile_file_outside_the_include_closure", refusalProfileFileOutsideClosure},
+		{"profile_file_unknown_placeholder", refusalProfileFileUnknownPlaceholder},
+		{"profile_file_displaced_by_a_generated_file", refusalProfileFileDisplaced},
 		{"kind_conflict_tmpfs_over_sys_bind", refusalKindConflictTmpfsOverSysBind},
 		{"home_bind_through_a_translated_guest", refusalHomeBindThroughATranslatedGuest},
 		{"grant_at_root_tmpfs", func(t testing.TB) error { return refusalGrantAtRoot(t, "tmpfs") }},
@@ -1813,4 +1817,35 @@ func TestEveryRefusalProducerIsRegistered(t *testing.T) {
 				"golden-bearing refusal, rename it so it does not match this sweep", name)
 		}
 	}
+}
+
+func refusalProfileFileUnderABind(t testing.TB) error {
+	reg := fileReg(map[ProfileName]*Profile{"gitconf": {Name: "gitconf", File: gitconfig("[init]\n")}})
+	_, err := Resolve(reg, []ProfileName{"rt", "@sys", "@target-rw", "gitconf"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func refusalProfileFileOutsideClosure(t testing.TB) error {
+	reg := fileReg(map[ProfileName]*Profile{
+		"id":   idProfile("id", IdentitySSH{Host: "git.example"}),
+		"conf": {Name: "conf", File: gitconfig("host = {profile.id.identity.ssh.host}\n")},
+	})
+	_, err := Resolve(reg, []ProfileName{"rt", "@target-rw", "conf"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func refusalProfileFileUnknownPlaceholder(t testing.TB) error {
+	reg := fileReg(map[ProfileName]*Profile{"conf": {Name: "conf", File: gitconfig("ok\n{homee}\n")}})
+	_, err := Resolve(reg, []ProfileName{"rt", "@target-rw", "conf"}, testCtx(), newFakeEnv())
+	return err
+}
+
+func refusalProfileFileDisplaced(t testing.TB) error {
+	reg := fileReg(map[ProfileName]*Profile{"conf": {Name: "conf", File: []FileGrant{{Path: "{home}/.gitconfig", Content: "x"}}}})
+	p, err := Resolve(reg, []ProfileName{"rt", "@target-rw", "conf"}, testCtx(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("control: the profile file alone must resolve: %v", err)
+	}
+	p.Replace(Mount{Guest: "/home/u/.gitconfig", Kind: KindData, Access: AccessRO, From: []string{"identity:id"}})
+	return p.Validate(newFakeEnv())
 }

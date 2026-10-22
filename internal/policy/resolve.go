@@ -185,11 +185,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			"Give the account a home directory of its own", VisibleText(home))
 	}
 
-	vars := map[string]string{
-		"target":        target,
-		"target_parent": filepath.Dir(target),
-		"home":          home,
-	}
+	vars := pathVars(target, home)
 
 	p := &Policy{
 		Target:         target,
@@ -430,6 +426,34 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			if err := p.join(Mount{Guest: filepath.Clean(at), Kind: KindSymlink, Host: target, Access: AccessRO, From: []string{string(name)}}); err != nil {
 				return nil, err
 			}
+		}
+		// A profile's own text, written as a read-only file. KindData and NOT
+		// Authored: it is a grant like any other, so rejectMasking judges it
+		// (a bind covering it is masking) and a later writer of snug's own
+		// replaces it only by being refused (rejectProfileFileDisplaced).
+		if err := CheckFileGrants(prof.File); err != nil {
+			return nil, fmt.Errorf("profile %q: %w", name, err)
+		}
+		for _, f := range prof.File {
+			g, err := expandVars(f.Path, vars)
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: file path: %w", name, err)
+			}
+			if !filepath.IsAbs(g) {
+				return nil, fmt.Errorf("profile %q: file path %s is not absolute after expansion. "+
+					"Write a path from /, or start it with {home} or ~/", name, VisibleText(g))
+			}
+			g = filepath.Clean(g)
+			body, ph, err := expandFileContent(reg, name, f.Path, f.Content, vars)
+			if err != nil {
+				return nil, err
+			}
+			perm := uint32(0o444)
+			if err := p.join(Mount{Guest: g, Kind: KindData, Access: AccessRO, Perms: &perm,
+				Content: Secret(body), From: []string{string(name)}}); err != nil {
+				return nil, err
+			}
+			p.mergeProfileFile(g, name, ph)
 		}
 		if prof.Identity != nil {
 			// Before anything is expanded or read: every field here ends up
@@ -1331,7 +1355,7 @@ func (p *Policy) join(m Mount) error {
 			m.Guest, permString(old.Perms), provenance(old), permString(m.Perms), provenance(m))
 	}
 	if !bytes.Equal(old.Content, m.Content) {
-		return fmt.Errorf("conflict at %s: two different generated contents (from %s and from %s)",
+		return fmt.Errorf("conflict at %s: two different file contents (from %s and from %s); select one",
 			m.Guest, provenance(old), provenance(m))
 	}
 	old.Access = old.Access.Join(m.Access)
@@ -1737,6 +1761,64 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		b.WriteString(s)
 		return b.String(), nil
 	}
+	out, err := scanBraces(s, func(key, rest string) (string, error) {
+		val, ok := vars[key]
+		if !ok {
+			// {host_tmpdir} is named on its own, because a profile carrying it
+			// is not a typo: it is a profile written against a variable snug
+			// USED to resolve, and "unknown variable" would send its author
+			// hunting a spelling mistake. It went with the @tmp-shared
+			// profile it existed for, and there is no replacement spelling — a
+			// profile that wants a host directory as the sandbox's /tmp names
+			// the directory itself, `rw = ["/path/on/host:/tmp"]`, which is the
+			// same grant with the path on the screen instead of behind a
+			// variable snug allocated.
+			if key == "host_tmpdir" {
+				return "", fmt.Errorf("{host_tmpdir} in %q was removed with the @tmp-shared "+
+					"profile and has no replacement: name the host directory yourself, "+
+					"rw = [\"/path/on/host:/tmp\"]", rest)
+			}
+			return "", fmt.Errorf("unknown variable {%s} in %q", key, rest)
+		}
+		return val, nil
+	}, func(rest string) error {
+		return fmt.Errorf("unterminated variable in %q", rest)
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(out)
+	return b.String(), nil
+}
+
+// pathVars is the variable table every sink expands against. It is a function
+// of two values so that internal/policy/profilefile.go can learn the NAMES
+// without a second list: the keys are read off this one literal.
+//
+// {lbrace} and {rbrace} are the only way to write a literal brace, because a
+// `{` always opens a name. A lone `}` outside one stays literal, and
+// {rbrace} exists for symmetry.
+func pathVars(target, home string) map[string]string {
+	return map[string]string{
+		"target":        target,
+		"target_parent": filepath.Dir(target),
+		"home":          home,
+		"lbrace":        "{",
+		"rbrace":        "}",
+	}
+}
+
+// scanBraces rewrites s in ONE PASS, replacing each {name} with lookup(name).
+// The literal text before a placeholder and the substituted value are both
+// COMMITTED — appended to the output and never looked at again — so a value
+// containing a brace is data, never a placeholder. Only the unexamined
+// remainder continues round the loop. lookup and unterminated are handed that
+// remainder, which is what their messages quote.
+//
+// Every `{` opens a name; the name ends at the next `}`. expansionNote walks
+// the same grammar and must agree with this.
+func scanBraces(s string, lookup func(key, rest string) (string, error), unterminated func(rest string) error) (string, error) {
+	var b strings.Builder
 	for {
 		i := strings.Index(s, "{")
 		if i < 0 {
@@ -1745,30 +1827,12 @@ func expandVars(s string, vars map[string]string) (string, error) {
 		}
 		j := strings.Index(s[i:], "}")
 		if j < 0 {
-			return "", fmt.Errorf("unterminated variable in %q", s)
+			return "", unterminated(s)
 		}
-		key := s[i+1 : i+j]
-		val, ok := vars[key]
-		if !ok {
-			// {host_tmpdir} is named on its own, because a profile carrying it
-			// is not a typo: it is a profile written against a variable snug
-			// USED to resolve, and "unknown variable" would send its author
-			// hunting a spelling mistake. It went with the @tmp-shared profile
-			// it existed for, and there is no replacement spelling — a profile
-			// that wants a host directory as the sandbox's /tmp names the
-			// directory itself, `rw = ["/path/on/host:/tmp"]`, which is the
-			// same grant with the path on the screen instead of behind a
-			// variable snug allocated.
-			if key == "host_tmpdir" {
-				return "", fmt.Errorf("{host_tmpdir} in %q was removed with the @tmp-shared "+
-					"profile and has no replacement: name the host directory yourself, "+
-					"rw = [\"/path/on/host:/tmp\"]", s)
-			}
-			return "", fmt.Errorf("unknown variable {%s} in %q", key, s)
+		val, err := lookup(s[i+1:i+j], s)
+		if err != nil {
+			return "", err
 		}
-		// The literal text before the placeholder and the substituted value are
-		// both COMMITTED — appended to the builder and never looked at again.
-		// Only the unexamined remainder continues round the loop.
 		b.WriteString(s[:i])
 		b.WriteString(val)
 		s = s[i+j+1:]

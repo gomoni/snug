@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"runtime"
 	"sort"
 	"strconv"
@@ -89,6 +91,11 @@ type Report struct {
 	// undiffable and the golden fixture worthless.
 	Mounts []policy.Mount
 
+	// Files is what the profiles wrote as `file` grants, sorted by Guest,
+	// and empty when none did. Both renderers read it, so the FILES block and
+	// the JSON `files` array state one derivation.
+	Files []reportFile
+
 	// TmpfsSizeBytes is Policy.TmpfsSizeBytes: the bound applied to every
 	// mount in Mounts whose Kind is KindTmpfs (issue #281). It is
 	// policy-level, not per-mount, so it lives here once rather than being
@@ -170,6 +177,69 @@ type Report struct {
 	// BwrapExec is what snug will really exec for argv[0], which is NOT the
 	// word BwrapArgv[0]'s renderers print. See reportExec.
 	BwrapExec reportExec
+}
+
+// reportFile is one profile-written file, with the text it carries.
+//
+// Content is the file body as text, unredacted: this is the ONE deliberate
+// unwrapping of policy.Secret in the report. A Mount's Content is a Secret
+// because under identity and @claude it holds a credential; the bytes of a
+// `file` grant are text the profile author wrote, and --dry-run exists to show
+// them. The docs tell the author never to put a credential in one.
+type reportFile struct {
+	Guest        string
+	From         []string
+	Content      string
+	Bytes        int
+	Lines        int
+	SHA256       string
+	NoFinalLF    bool
+	Placeholders []policy.Placeholder
+	// Displaced is true when the mount at Guest is no longer the profile's
+	// file: snug wrote its own there (Policy.Replace), and Validate refuses the
+	// selection for it. The bytes there are snug's, possibly a credential, and
+	// a refused document is still rendered, so Content, Bytes, Lines and
+	// SHA256 stay empty.
+	Displaced bool
+}
+
+// buildFiles derives Report.Files. Only guests recorded in p.Files are read:
+// every other KindData mount keeps its Secret.
+func buildFiles(p *policy.Policy) []reportFile {
+	if len(p.Files) == 0 {
+		return nil
+	}
+	guests := make([]string, 0, len(p.Files))
+	for g := range p.Files {
+		guests = append(guests, g)
+	}
+	sort.Strings(guests)
+	out := make([]reportFile, 0, len(guests))
+	for _, g := range guests {
+		led := p.Files[g]
+		m, ok := p.Mounts[g]
+		if !ok || m.Kind != policy.KindData || m.Authored {
+			out = append(out, reportFile{Guest: g, From: policy.NameStrings(led.From), Displaced: true})
+			continue
+		}
+		body := string(m.Content)
+		lines := strings.Count(body, "\n")
+		if body != "" && !strings.HasSuffix(body, "\n") {
+			lines++
+		}
+		sum := sha256.Sum256([]byte(body))
+		out = append(out, reportFile{
+			Guest:        g,
+			From:         policy.NameStrings(led.From),
+			Content:      body,
+			Bytes:        len(body),
+			Lines:        lines,
+			SHA256:       hex.EncodeToString(sum[:]),
+			NoFinalLF:    body != "" && !strings.HasSuffix(body, "\n"),
+			Placeholders: led.Placeholders,
+		})
+	}
+	return out
 }
 
 // reportMountNote is MountNotes' value type.
@@ -484,6 +554,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 		Selected:       p.Selected,
 		Implied:        p.Implied(),
 		Mounts:         p.SortedMounts(),
+		Files:          buildFiles(p),
 		TmpfsSizeBytes: p.TmpfsSizeBytes,
 		Grafts:         sortedGrafts(p),
 		NotGranted:     notGranted(p),

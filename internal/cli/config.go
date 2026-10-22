@@ -685,6 +685,13 @@ func profileCmd(args []string) int {
 			fmt.Fprintf(os.Stderr, "snug: %v\n", unknownProfile(reg, name, bad))
 			return exitPolicy
 		}
+		// Closure and set checks that Resolve makes for a `file` placeholder, made
+		// here too because show does not resolve: a profile whose text cannot
+		// resolve for any selection must not render as though it could.
+		if err := policy.CheckProfileFiles(map[policy.ProfileName]*policy.Profile(reg), name); err != nil {
+			fmt.Fprintf(os.Stderr, "snug: %v\n", err)
+			return exitPolicy
+		}
 		fmt.Printf("profile     %s\n", name)
 		if p.Description != "" {
 			// A multi-line description is deliberate and stays multi-line, so
@@ -738,6 +745,24 @@ func profileCmd(args []string) int {
 				head = "symlink"
 			}
 			fmt.Printf("  %-16s %s -> %s\n", head, visibleValue(s.At), visibleValue(s.Target))
+		}
+		// The RAW text, placeholders unexpanded, since the values depend on the
+		// selection. Every line goes through visibleValue like the rest of this
+		// screen: it is profile text.
+		for i, f := range p.File {
+			head := ""
+			if i == 0 {
+				head = "file"
+			}
+			fmt.Printf("  %-16s %s\n", head, visibleValue(f.Path))
+			if f.Content != "" {
+				for _, line := range strings.Split(strings.TrimSuffix(f.Content, "\n"), "\n") {
+					fmt.Printf("  %-16s | %s\n", "", visibleValue(line))
+				}
+			}
+			if f.Content != "" && !strings.HasSuffix(f.Content, "\n") {
+				fmt.Printf("  %-16s (no trailing newline)\n", "")
+			}
 		}
 		showCapabilities(p, show)
 		if len(p.Optional) > 0 {

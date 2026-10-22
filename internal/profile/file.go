@@ -47,6 +47,7 @@ type rawProfile struct {
 	RW          []string         `toml:"rw"`
 	Tmpfs       []string         `toml:"tmpfs"`
 	Symlink     []policy.Symlink `toml:"symlink"`
+	File        []rawFile        `toml:"file"`
 	Optional    []string         `toml:"optional"`
 	Plugins     []string         `toml:"plugins"`
 	ListenNames []string         `toml:"listen_names"`
@@ -69,6 +70,35 @@ type rawProfile struct {
 	Podman   string       `toml:"podman"`
 	Login    []string     `toml:"login"`
 	Identity *rawIdentity `toml:"identity"`
+}
+
+// rawFile is one `[[profile.NAME.file]]` table. Content is a pointer so a
+// missing `content` is refused rather than read as an empty file; an explicit
+// `content = ""` is the empty file.
+type rawFile struct {
+	Path    string  `toml:"path"`
+	Content *string `toml:"content"`
+}
+
+// toFileGrants refuses a `file` with no `content` and hands the rest to
+// policy.CheckFileGrants, the same check Resolve runs over a Profile built in
+// code.
+func toFileGrants(in []rawFile, name, source string) ([]policy.FileGrant, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]policy.FileGrant, 0, len(in))
+	for i, f := range in {
+		if f.Content == nil {
+			return nil, fmt.Errorf("%s: profile %q: file %d (path %q) has no `content`. Write "+
+				"content = \"\" for an empty file", source, name, i+1, f.Path)
+		}
+		out = append(out, policy.FileGrant{Path: f.Path, Content: *f.Content})
+	}
+	if err := policy.CheckFileGrants(out); err != nil {
+		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+	}
+	return out, nil
 }
 
 // rawEnviron is the `[profile.NAME.environ.*]` block as TOML delivers it.
@@ -371,6 +401,10 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		files, err := toFileGrants(r.File, rawName, source)
+		if err != nil {
+			return nil, err
+		}
 		if err := checkFeatureModes(r); err != nil {
 			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 		}
@@ -382,6 +416,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			RW:          r.RW,
 			Tmpfs:       r.Tmpfs,
 			Symlink:     r.Symlink,
+			File:        files,
 			Optional:    r.Optional,
 			Plugins:     r.Plugins,
 			ListenNames: r.ListenNames,

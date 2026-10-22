@@ -360,6 +360,10 @@ func (p *Policy) Validate(env Environ) error {
 		}
 	}
 
+	if err := p.rejectProfileFileDisplaced(); err != nil {
+		return err
+	}
+
 	if err := p.rejectGeneratedOntoHost(env); err != nil {
 		return err
 	}
@@ -1037,7 +1041,10 @@ func (p *Policy) rejectEndpointSource(env Environ) error {
 // grant can steer where the exempted mount goes.
 func (p *Policy) rejectGeneratedOntoHost(env Environ) error {
 	for _, m := range p.SortedMounts() {
-		if m.Kind != KindData {
+		// Only snug's own files: a profile's file under a bind is MASKING,
+		// which rejectMasking refuses for every access, so the host-landing
+		// question is never reached for it.
+		if m.Kind != KindData || !m.Authored {
 			continue
 		}
 		// The DEEPEST mount containing the generated path is the one that
@@ -1569,10 +1576,14 @@ func checkNesting(env Environ, outer Mount, at string, inner Mount) error {
 			provenance(inner), describeNode(inner), inner.Guest, at, at, snugsOwn[at].why, inner.Guest)
 
 	case KindData:
-		return fmt.Errorf("profile %s puts %s at %s, which is inside %s — a generated FILE (from %s).\n"+
+		what := "a FILE"
+		if outer.Authored {
+			what = "a generated FILE"
+		}
+		return fmt.Errorf("profile %s puts %s at %s, which is inside %s — %s (from %s).\n"+
 			"       A grant beneath a file is meaningless: nothing can be mounted inside a regular file.\n"+
 			"       Remove the grant at %s.",
-			provenance(inner), describeNode(inner), inner.Guest, at, provenance(outer), inner.Guest)
+			provenance(inner), describeNode(inner), inner.Guest, at, what, provenance(outer), inner.Guest)
 	}
 	// KindSymlink: unreachable here — Validate already refuses any grant whose
 	// guest path traverses one of snug's own symlinks, with a better message
@@ -1601,6 +1612,9 @@ func describeNode(m Mount) string {
 	case KindSymlink:
 		return fmt.Sprintf("a symlink to %s", VisibleText(m.Host))
 	case KindData:
+		if !m.Authored {
+			return "a file the profile writes"
+		}
 		return "generated file content"
 	case KindProc:
 		return "a procfs"
