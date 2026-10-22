@@ -444,6 +444,25 @@ func (a *fakeAgent) sawDecryptInquire() []string {
 	return append([]string(nil), a.inquire...)
 }
 
+// waitDecryptInquire is sawDecryptInquire once the agent has read a line that
+// ends the inquiry. The proxy writes its CAN upstream and answers the client
+// without waiting for the agent to read it, so a test that drains the client
+// can otherwise look before the agent's goroutine has recorded anything.
+func (a *fakeAgent) waitDecryptInquire(t *testing.T) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := a.sawDecryptInquire()
+		if n := len(got); n > 0 && (got[n-1] == "END" || got[n-1] == "CAN" || got[n-1] == "CANCEL") {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (a *fakeAgent) sawScd() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

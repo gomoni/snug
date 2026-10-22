@@ -134,7 +134,7 @@ func TestInquireInjectionEndsTheSession(t *testing.T) {
 			}
 			// What the agent saw of the answer is a CAN from the proxy, never
 			// the sandbox's command lines.
-			for _, got := range a.sawDecryptInquire() {
+			for _, got := range a.waitDecryptInquire(t) {
 				if got != "CAN" && got != "D abc" {
 					t.Errorf("the agent received %q from an inquiry answer", got)
 				}
@@ -161,7 +161,7 @@ func TestInquireAnswerTerminatorsAreExact(t *testing.T) {
 			if !strings.Contains(strings.Join(seen, "\n"), errForbidden) {
 				t.Errorf("%q in an inquire answer was not refused: %q", bad, seen)
 			}
-			got := a.sawDecryptInquire()
+			got := a.waitDecryptInquire(t)
 			if len(got) != 1 || got[0] != "CAN" {
 				t.Errorf("the agent saw %q for %q, want exactly the proxy's [CAN]", got, bad)
 			}
