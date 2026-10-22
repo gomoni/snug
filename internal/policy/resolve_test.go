@@ -357,6 +357,11 @@ func testRegistry() map[ProfileName]*Profile {
 		// exercise "profiles selected but nothing granted" separately from
 		// "nothing selected at all".
 		"nothing": {Name: "nothing"},
+		// Two profiles writing one identical file, so the commutativity and
+		// idempotence properties cover the profile-file ledger (canon renders it).
+		"filed":     {Name: "filed", File: []FileGrant{{Path: "{home}/.config/filed.conf", Content: "[x]\n\tk = v\n"}}},
+		"filey":     {Name: "filey", File: []FileGrant{{Path: "/srv/filey.conf", Content: "same\n"}}},
+		"filey-too": {Name: "filey-too", File: []FileGrant{{Path: "/srv/filey.conf", Content: "same\n"}}},
 		"@sys": {Name: "@sys",
 			RO:       []string{"/usr", "/etc", "/opt"},
 			Optional: []string{"/opt"},
@@ -563,6 +568,7 @@ func canon(p *Policy) string {
 		fmt.Fprintf(&b, "%s %s %s %s optional=%v authored=%v\n",
 			m.Guest, m.Kind, m.Access, m.Host, m.Optional, m.Authored)
 	}
+	fmt.Fprintf(&b, "files %+v\n", p.Files)
 	// The environment is rendered ENTRY BY ENTRY, not as its joined value, and
 	// that is the same lesson as the paragraph above one level down. The joined
 	// value hides which verb produced an entry, which profile got the credit,
@@ -603,7 +609,7 @@ func canon(p *Policy) string {
 func TestResolveIsCommutative(t *testing.T) {
 	all := []ProfileName{"@sys", "@home", "@target-rw", "@parent-ro", "cwd-ro", "netty", "netty-too",
 		"envy", "envy-too", "setty", "firsty", "sanity", "dupe-path",
-		"gems-a", "gems-b", "toolroot"}
+		"gems-a", "gems-b", "toolroot", "filey", "filey-too"}
 	want := canon(mustResolve(t, all...))
 
 	rng := rand.New(rand.NewSource(1))
@@ -618,7 +624,7 @@ func TestResolveIsCommutative(t *testing.T) {
 
 // Selecting a profile twice must be identical to selecting it once.
 func TestResolveIsIdempotent(t *testing.T) {
-	for _, name := range []ProfileName{"@sys", "@target-rw", "@parent-ro", "combo"} {
+	for _, name := range []ProfileName{"@sys", "@target-rw", "@parent-ro", "combo", "filey"} {
 		once := canon(mustResolve(t, "@sys", "@target-rw", name))
 		twice := canon(mustResolve(t, "@sys", "@target-rw", name, name))
 		if once != twice {
@@ -734,6 +740,7 @@ func maximalProfile() *Profile {
 		RW:          []string{"/opt/a"},
 		Tmpfs:       []string{"/scratch"},
 		Symlink:     []Symlink{{At: "/bin", Target: "usr/bin"}},
+		File:        []FileGrant{{Path: "/etc/gitconfig", Content: "[init]\n\tdefaultBranch = main\n"}},
 		Optional:    []string{"/opt/tool"},
 		Plugins:     []string{"caveman", "superpowers"},
 		ListenNames: []string{"web"},
@@ -787,6 +794,7 @@ func keyDrops() []keyDrop {
 		{"rw", "RW", func(p *Profile) { p.RW = nil }},
 		{"tmpfs", "Tmpfs", func(p *Profile) { p.Tmpfs = nil }},
 		{"symlink", "Symlink", func(p *Profile) { p.Symlink = nil }},
+		{"file", "File", func(p *Profile) { p.File = nil }},
 		{"optional", "Optional", func(p *Profile) { p.Optional = nil }},
 		{"plugins", "Plugins", func(p *Profile) { p.Plugins = nil }},
 		{"listen_names", "ListenNames", func(p *Profile) { p.ListenNames = nil }},

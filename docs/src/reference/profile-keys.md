@@ -10,6 +10,7 @@ Every key a `[profile.NAME]` table accepts. Any other key is an error.
 | `rw` | array of strings | path specs | union; `rw` wins at one path | [Filesystem](../filesystem.md) |
 | `tmpfs` | array of strings | guest paths | union | [Filesystem](../filesystem.md#tmpfs) |
 | `symlink` | array of tables | `{ at = "…", target = "…" }` | union; one target per `at` | [Filesystem](../filesystem.md#symlink) |
+| `file` | array of tables | `{ path = "…", content = "…" }` | union; identical text at one `path` | [Filesystem](../filesystem.md#file) |
 | `optional` | array of strings | paths | this profile only | [Filesystem](../filesystem.md#optional) |
 | `nss` | boolean | `true`, `false` | any `true` | [Filesystem](../filesystem.md#generated-account-files-nss) |
 | `environ.set` | table of strings | `NAME = "value"` | must agree | [Environment](../environment.md) |

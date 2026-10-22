@@ -55,6 +55,10 @@ type Profile struct {
 	Tmpfs   []string
 	Symlink []Symlink
 
+	// File is literal text this profile writes as a read-only file inside the
+	// sandbox. See FileGrant.
+	File []FileGrant
+
 	// Optional lists paths that are silently skipped when absent on the host,
 	// so one profile can cover several distro layouts.
 	Optional []string
@@ -170,4 +174,25 @@ type EnvGrants struct {
 type Symlink struct {
 	At     string `toml:"at"`
 	Target string `toml:"target"`
+}
+
+// FileGrant is a file whose body the profile itself carries: `[[profile.NAME.file]]`.
+// snug writes Content at Path inside the sandbox as a read-only file (0444). No
+// host path is opened and nothing is created on the host.
+//
+// ABUSE: a hostile process inside the sandbox can READ this text and nothing
+// more. It cannot write, replace or unlink the file, and the file is gone when
+// the sandbox exits. The text is not secret: `snug --dry-run` and
+// `snug profile show` print it, so never put a credential in it.
+// The power is the AUTHOR's: whatever program reads Path obeys the text.
+// /etc/gitconfig is a command table git executes (core.sshCommand,
+// credential.helper, alias.x = "!cmd", core.pager). snug's generated
+// ~/.gitconfig pins only user, signing, insteadOf and safe.directory, so it
+// overrides none of those. That is exactly the power of
+// `ro = ["<stub>:/etc/gitconfig"]` and less than
+// `environ.set GIT_CONFIG_KEY_0`, which git reads at command-line scope, above
+// every file. Write here only what you would write in that stub.
+type FileGrant struct {
+	Path    string
+	Content string
 }

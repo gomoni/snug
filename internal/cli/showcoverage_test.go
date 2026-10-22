@@ -43,6 +43,7 @@ var probes = map[string]string{
 	"RW":          "/probe-rw",
 	"Tmpfs":       "/probe-tmpfs",
 	"Symlink":     "/probe-link",
+	"File":        "/probe-file",
 	"Optional":    "/probe-optional",
 	"Network":     "egress",
 	"DNS":         "resolv.conf",
@@ -77,6 +78,7 @@ rw       = ["/probe-rw"]
 tmpfs    = ["/probe-tmpfs"]
 optional = ["/probe-optional"]
 symlink  = [{at = "/probe-link", target = "/probe-ro"}]
+file     = [{path = "/probe-file", content = "probe text\n"}]
 network  = "egress"
 dns      = true
 nss      = true

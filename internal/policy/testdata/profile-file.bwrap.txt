@@ -1,0 +1,67 @@
+--unshare-user
+--unshare-ipc
+--unshare-pid
+--unshare-uts
+--unshare-cgroup-try
+--unshare-net
+--uid 1000
+--gid 1000
+--hostname snug
+--die-with-parent
+--cap-drop ALL
+--perms 0755
+--dir /home
+--symlink usr/bin /bin
+--dev /dev
+--remount-ro /dev
+--size 1073741824
+--tmpfs /dev/shm
+--ro-bind-fd 18 /etc
+--ro-bind-fd 19 /opt
+--proc /proc
+--size 1073741824
+--tmpfs /tmp
+--ro-bind-fd 20 /usr
+--ro-bind-data 10 /etc/group
+--ro-bind-data 11 /etc/nsswitch.conf
+--ro-bind-data 12 /etc/passwd
+--ro-bind-data 13 /etc/resolv.conf
+--size 1073741824
+--tmpfs /home/u
+--ro-bind-data 14 /proc/config.gz
+--ro-bind-data 15 /proc/key-users
+--ro-bind-data 16 /proc/keys
+--ro-bind /proc/sys /proc/sys
+--size 1073741824
+--tmpfs /home/u/.cache
+--size 1073741824
+--tmpfs /home/u/.config
+--size 1073741824
+--tmpfs /home/u/.local
+--size 1073741824
+--tmpfs /home/u/proj
+--perms 0444
+--ro-bind-data 17 /home/u/.config/filed.conf
+--size 1073741824
+--tmpfs /home/u/.local/share
+--size 1073741824
+--tmpfs /home/u/.local/state
+--bind-fd 21 /home/u/proj/sub
+--remount-ro /
+--clearenv
+--setenv HOME /home/u
+--setenv LOGNAME u
+--setenv PATH /usr/bin:/bin:/usr/sbin:/sbin
+--setenv PS1 🔒 snug:\w\$ 
+--setenv SHELL /bin/sh
+--setenv SNUG 1
+--setenv SNUG_PROFILES @home,@sys,@target-rw,filed
+--setenv SNUG_TARGET /home/u/proj/sub
+--setenv TMPDIR /tmp
+--setenv USER u
+--setenv XDG_CACHE_HOME /home/u/.cache
+--setenv XDG_CONFIG_HOME /home/u/.config
+--setenv XDG_DATA_HOME /home/u/.local/share
+--setenv XDG_STATE_HOME /home/u/.local/state
+--chdir /home/u/proj/sub
+-- /bin/sh

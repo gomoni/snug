@@ -100,6 +100,7 @@ func TestTopologyIsDerivedNotSettable(t *testing.T) {
 	_ = Profile{
 		"x", "", nil, // Name, Description, Include
 		nil, nil, nil, nil, // RO, RW, Tmpfs, Symlink
+		nil,       // File
 		nil,       // Optional
 		nil,       // Plugins
 		nil,       // ListenNames

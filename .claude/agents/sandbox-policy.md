@@ -126,7 +126,8 @@ Measured, not recalled. Each one changed a design decision.
 - **Overmounting is allowed, and the rule is authorship, not capability.** snug
   overmounts generated files inside bound directories routinely —
   `/etc/resolv.conf` sits inside the `/etc` bind, which is what `rejectMasking`'s
-  `KindData` exemption is for. A *profile* mounting over what *another profile's*
+  `Mount.Authored` exemption is for (a `KindData` file a profile writes is not
+  authored and is not exempt). A *profile* mounting over what *another profile's*
   grant exposes is **masking**, refused unconditionally; *snug* replacing a path
   with its own generated content is **replacement**, allowed, because the sandbox
   still sees a file there and no grant is silently subtracted. For a whole
