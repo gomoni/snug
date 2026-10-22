@@ -152,15 +152,15 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 			t.Errorf("%s is both unconditionally and conditionally owned", n)
 		}
 	}
-	// Eleven written (the nine of issue #621, LISTEN_PID which the #621 red
-	// team found exported by the staged door script, and BROWSER for the
-	// login bridge of issue #455, KUBECONFIG for identity.kubectl), five that
-	// outrank them.
-	if got := len(ConditionalEnvNames()); got != 12 {
-		t.Errorf("ConditionalEnvNames() = %v, want 12 names", ConditionalEnvNames())
+	// Twelve written (the nine of issue #621, LISTEN_PID which the #621 red
+	// team found exported by the staged door script, BROWSER for the
+	// login bridge of issue #455, KUBECONFIG for identity.kubectl, and
+	// GNUPGHOME for identity.gpg), five that outrank them.
+	if got := len(ConditionalEnvNames()); got != 13 {
+		t.Errorf("ConditionalEnvNames() = %v, want 13 names", ConditionalEnvNames())
 	}
-	if got := len(ConditionalEnvClaimed()); got != 17 {
-		t.Errorf("ConditionalEnvClaimed() = %v, want 17 names", ConditionalEnvClaimed())
+	if got := len(ConditionalEnvClaimed()); got != 18 {
+		t.Errorf("ConditionalEnvClaimed() = %v, want 18 names", ConditionalEnvClaimed())
 	}
 }
 

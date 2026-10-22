@@ -75,6 +75,7 @@ reads them in place of what snug wrote.
 |---|---|---|
 | `podman` is `"socket"` or `"build"` | `CONTAINER_HOST` `DOCKER_BUILDKIT` `DOCKER_HOST` | `CONTAINER_CONNECTION` |
 | `identity.ssh.agent` is `"proxy"` | `SSH_AUTH_SOCK` |  |
+| an `identity.gpg` block | `GNUPGHOME` |  |
 | `identity.gh.user` is set | `GH_CONFIG_DIR` `GH_HOST` | `GH_ENTERPRISE_TOKEN` `GH_TOKEN` `GITHUB_ENTERPRISE_TOKEN` `GITHUB_TOKEN` |
 | an `identity.ssh` or `identity.git` block | `GIT_CONFIG_GLOBAL` |  |
 | an `identity.kubectl` block | `KUBECONFIG` |  |

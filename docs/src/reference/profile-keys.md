@@ -29,6 +29,8 @@ Every key a `[profile.NAME]` table accepts. Any other key is an error.
 | `identity.git.name` | string | author name | the block must match | [Identity](../identity.md#identitygit) |
 | `identity.git.email` | string | author email | the block must match | [Identity](../identity.md#identitygit) |
 | `identity.git.signing_key` | string | path to a public key | the block must match | [Identity](../identity.md#identitygit) |
+| `identity.gpg.fingerprint` | string | 40- or 64-hex key fingerprint | the block must match | [Identity](../identity.md#identitygpg) |
+| `identity.gpg.scope` | array of strings | `["sign"]`, `["decrypt"]`, both | union | [Identity](../identity.md#identitygpg) |
 | `identity.gh.host` | string | host name | the block must match | [Identity](../identity.md#identitygh) |
 | `identity.gh.user` | string | account name | the block must match | [Identity](../identity.md#identitygh) |
 | `identity.kubectl.context` | string | context name in the kubeconfig | the block must match | [Identity](../identity.md#identitykubectl) |

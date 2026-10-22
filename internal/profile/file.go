@@ -141,6 +141,7 @@ type rawEnviron struct {
 type rawIdentity struct {
 	SSH  rawIdentitySSH  `toml:"ssh"`
 	Git  rawIdentityGit  `toml:"git"`
+	GPG  rawIdentityGPG  `toml:"gpg"`
 	Gh   rawIdentityGh   `toml:"gh"`
 	Kube rawIdentityKube `toml:"kubectl"`
 }
@@ -162,6 +163,14 @@ type rawIdentityGit struct {
 	Name       string `toml:"name"`
 	Email      string `toml:"email"`
 	SigningKey string `toml:"signing_key"`
+}
+
+// rawIdentityGPG is [identity.gpg]. Scope is a []string here and a canonical
+// comma-joined string in policy.Identity: the array is what a profile author
+// writes, and toIdentity folds it into the comparable leaf that Identity needs.
+type rawIdentityGPG struct {
+	Fingerprint string   `toml:"fingerprint"`
+	Scope       []string `toml:"scope"`
 }
 
 type rawIdentityGh struct {
@@ -613,6 +622,10 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if _, err := policy.ParseKubeCredential(r.Kube.Credential); err != nil {
 		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 	}
+	gpgFingerprint, gpgScope, err := gpgBlock(r.GPG, name, source)
+	if err != nil {
+		return nil, err
+	}
 	id := &policy.Identity{
 		SSH: policy.IdentitySSH{
 			Host:  r.SSH.Host,
@@ -623,6 +636,10 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 			Name:       r.Git.Name,
 			Email:      r.Git.Email,
 			SigningKey: r.Git.SigningKey,
+		},
+		GPG: policy.IdentityGPG{
+			Fingerprint: gpgFingerprint,
+			Scope:       gpgScope,
 		},
 		Gh: policy.IdentityGh{
 			Host: r.Gh.Host,
@@ -641,6 +658,41 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	return id, nil
 }
 
+// gpgBlock converts [identity.gpg]'s two leaves, and refuses a HALF block.
+//
+// An absent block (both leaves unset) returns two empty strings and takes no
+// part in the join, exactly like an absent [identity.ssh]. A block that sets
+// ONE of the two is refused HERE rather than left to Resolve, because the
+// fingerprint is a property of the profile TEXT and `snug profile show` — which
+// never resolves — must render the fault on the screen a human reads to decide
+// whether to select the profile. A gpg block naming a fingerprint but no scope
+// would otherwise sit on that screen looking complete while granting nothing,
+// which is the same failure #454's branch fixed for identity.ssh.agent.
+func gpgBlock(r rawIdentityGPG, name, source string) (fingerprint, scope string, err error) {
+	if r.Fingerprint == "" && len(r.Scope) == 0 {
+		return "", "", nil
+	}
+	if r.Fingerprint == "" {
+		return "", "", fmt.Errorf("%s: profile %q: identity.gpg names a scope but no "+
+			"fingerprint.\n       Name the key: `fingerprint = \"...\"`, the string "+
+			"`gpg --fingerprint` prints", source, name)
+	}
+	fingerprint, err = policy.ParseFingerprint(r.Fingerprint)
+	if err != nil {
+		return "", "", fmt.Errorf("%s: profile %q: %w", source, name, err)
+	}
+	if len(r.Scope) == 0 {
+		return "", "", fmt.Errorf("%s: profile %q: identity.gpg pins a key but names no "+
+			"scope.\n       A key with no scope grants nothing; say what the sandbox may "+
+			"do with it: scope = [\"sign\"], [\"decrypt\"] or both", source, name)
+	}
+	scope, err = policy.ParseGPGRuntimeScope(r.Scope)
+	if err != nil {
+		return "", "", fmt.Errorf("%s: profile %q: %w", source, name, err)
+	}
+	return fingerprint, scope, nil
+}
+
 // emptyIdentityBlock refuses [identity] with no keys under it.
 //
 // An empty block pins nothing — Resolve joins identity one block at a time and
@@ -652,8 +704,8 @@ func emptyIdentityBlock(source, name string) error {
 	return fmt.Errorf("%s: profile %q has an [identity] block that sets nothing.\n"+
 		"       It pins nothing, and a reader of this file would believe it pins something;\n"+
 		"       the likelier cause is keys written under the wrong table. Write at least one\n"+
-		"       key under [identity.ssh], [identity.git], [identity.gh] or [identity.kubectl],\n"+
-		"       or remove the block",
+		"       key under [identity.ssh], [identity.git], [identity.gpg], [identity.gh] or\n"+
+		"       [identity.kubectl], or remove the block",
 		source, name)
 }
 

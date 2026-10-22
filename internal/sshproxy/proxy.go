@@ -42,10 +42,11 @@ import (
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gomoni/snug/internal/hostread"
+
+	"github.com/gomoni/snug/internal/unixserve"
 )
 
 // Agent protocol message numbers (draft-miller-ssh-agent).
@@ -119,16 +120,9 @@ type Proxy struct {
 	pinned []pin
 
 	upstream string // the host's real SSH_AUTH_SOCK
-	ln       net.Listener
 	audit    func(string)
 
-	// mu orders Serve's wg.Add against Close's wg.Wait: an Add that can run
-	// concurrently with a Wait on a zero counter is a misuse of WaitGroup, and
-	// the race detector reports it. Once closed is set, Serve adds nothing.
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
-	once   sync.Once
+	srv *unixserve.Server
 }
 
 // New parses the PUBLIC key files and prepares a proxy pinned to all of them.
@@ -214,40 +208,13 @@ func New(keys []PinnedKey, upstream, socketPath string, audit func(string)) (*Pr
 	if audit == nil {
 		audit = func(string) {}
 	}
-	return &Proxy{pinned: pins, upstream: upstream, ln: ln, audit: audit}, nil
+	return &Proxy{pinned: pins, upstream: upstream, srv: unixserve.New(ln), audit: audit}, nil
 }
 
-func (p *Proxy) Serve() {
-	for {
-		c, err := p.ln.Accept()
-		if err != nil {
-			return // listener closed
-		}
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
-			c.Close()
-			return
-		}
-		p.wg.Add(1)
-		p.mu.Unlock()
-		go func() {
-			defer p.wg.Done()
-			defer c.Close()
-			p.handle(c)
-		}()
-	}
-}
+func (p *Proxy) Serve() { p.srv.Serve(p.handle) }
 
-func (p *Proxy) Close() {
-	p.once.Do(func() {
-		p.mu.Lock()
-		p.closed = true
-		p.mu.Unlock()
-		p.ln.Close()
-		p.wg.Wait()
-	})
-}
+// Close stops the proxy and ends every live sandbox connection.
+func (p *Proxy) Close() { p.srv.Close() }
 
 // handle serves one client connection. Anything it does not positively
 // understand is answered with SSH_AGENT_FAILURE — the protocol's own way of

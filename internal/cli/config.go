@@ -1077,6 +1077,24 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"agent protocol carries no purpose, so either pinned key can be used "+
 				"for either job.")...)
 	}
+	if id.GPG.Fingerprint != "" {
+		// One block per scope, because they are two grants with two blast
+		// radii, and the proxy holds each to its own verb.
+		row := "gpg key " + visibleValue(id.GPG.Fingerprint)
+		if policy.GPGScopeHas(id.GPG.Scope, policy.GPGScopeSign) {
+			rows = append(rows, capRows(row+" (sign)",
+				"THE SANDBOX CAN SIGN AS YOU with this OpenPGP key — commits, tags, release "+
+					"artifacts, mail — for as long as the run lasts. snug generates "+
+					"commit.gpgsign = true, so commits inside are signed by default. No private "+
+					"key enters the sandbox and your other keys cannot be listed or used.")...)
+		}
+		if policy.GPGScopeHas(id.GPG.Scope, policy.GPGScopeDecrypt) {
+			rows = append(rows, capRows(row+" (decrypt)",
+				"THE SANDBOX CAN DECRYPT ANYTHING ADDRESSED TO THIS KEY that it can read, "+
+					"for as long as the run lasts. The proxy sees an opaque ciphertext and "+
+					"cannot tell which message it is decrypting.")...)
+		}
+	}
 	if id.Git.Name != "" || id.Git.Email != "" {
 		rows = append(rows, strings.TrimSpace("git "+visibleValue(id.Git.Name)+
 			" <"+visibleValue(id.Git.Email)+">"))

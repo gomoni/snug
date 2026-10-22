@@ -119,6 +119,7 @@ func TestResolveRecordsWhichProfilePinnedTheIdentity(t *testing.T) {
 var wantIdentityLeaves = []string{
 	"ssh.host", "ssh.key", "ssh.agent",
 	"git.name", "git.email", "git.signing_key",
+	"gpg.fingerprint", "gpg.scope",
 	"gh.host", "gh.user",
 	"kubectl.context", "kubectl.server", "kubectl.credential", "kubectl.kubeconfig",
 }

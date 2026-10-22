@@ -48,7 +48,17 @@ func GitConfigFrom(id *Identity, home string) []byte {
 	// Belt and braces, the same shape as withoutControlCharacters: Resolve has
 	// already refused signing_key with agent = none, and this is the backstop
 	// for whatever calls the renderer next.
-	signing := id.Git.SigningKey != "" && id.SSH.Agent != SSHNone
+	sshSigning := id.Git.SigningKey != "" && id.SSH.Agent != SSHNone
+	// GPG commit signing, on exactly the same footing as the ssh arm above: a
+	// key served by an agent the resolver has already required, and which
+	// gpgproxy.New has already asked the host agent to SIGN with once before
+	// the listener was bound. The SCOPE is what decides it — a pin scoped only
+	// "decrypt" must NOT turn commit signing on, or a decryption grant would
+	// silently be a signing oracle for the same key. `gpg.format` is one value,
+	// so the two arms cannot both write it; Resolve refuses that combination
+	// (refuseTwoSigningKeys) rather than picking a winner here.
+	gpgSigning := id.GPG.Fingerprint != "" && GPGScopeHas(id.GPG.Scope, GPGScopeSign)
+	signing := sshSigning || gpgSigning
 	// Second guard, deliberately not the only one. The identity block is
 	// validated at load, and this is the backstop for whatever calls the renderer
 	// next — because the failure it prevents is not cosmetic: a newline inside
@@ -72,11 +82,18 @@ func GitConfigFrom(id *Identity, home string) []byte {
 		if email != "" {
 			fmt.Fprintf(&b, "\temail = %s\n", gitQuote(email))
 		}
-		if signing {
+		if sshSigning {
 			fmt.Fprintf(&b, "\tsigningkey = %s\n", gitQuote(home+"/"+SigningKeyGuest))
 		}
+		if gpgSigning {
+			// The FINGERPRINT, not a path: git's openpgp backend hands this to
+			// gpg, which matches the key inside the agent by fingerprint. The
+			// sandbox reads no key file for it, so there is nothing to stage for
+			// this value — the public keyring is staged by internal/cli.
+			fmt.Fprintf(&b, "\tsigningkey = %s\n", gitQuote(id.GPG.Fingerprint))
+		}
 	}
-	if signing {
+	if sshSigning {
 		b.WriteString("# AUTHORED from identity.git.signing_key: the private half stays in the\n")
 		b.WriteString("# host agent and only the .pub is inside.\n")
 		b.WriteString("# gpgsign is true because snug asked your host agent for one signature with\n")
@@ -92,6 +109,21 @@ func GitConfigFrom(id *Identity, home string) []byte {
 		// the run verifies the key the profile pinned and nothing else.
 		fmt.Fprintf(&b, "[gpg \"ssh\"]\n\tallowedSignersFile = %s\n",
 			gitQuote(home+"/"+AllowedSignersGuest))
+		b.WriteString("[commit]\n\tgpgsign = true\n")
+	}
+	if gpgSigning {
+		b.WriteString("# AUTHORED from identity.gpg: the private half stays in the host agent and\n")
+		b.WriteString("# the sandbox's ~/.gnupg holds only the public keyring, whose S.gpg-agent\n")
+		b.WriteString("# is snug's filtering proxy.\n")
+		b.WriteString("# gpgsign is true because snug asked your host agent for one signature with\n")
+		b.WriteString("# this key at startup and got one. A key the agent merely LISTS can still\n")
+		b.WriteString("# refuse every signature (a pinentry prompt with no tty, a smartcard that\n")
+		b.WriteString("# is not inserted), which would fail every commit here naming no cause.\n")
+		b.WriteString("[gpg]\n\tformat = openpgp\n")
+		// No allowedSignersFile: that is the ssh backend's verifier list. The
+		// openpgp backend verifies against gpg's keyring, and the sandbox's
+		// keyring holds exactly the pinned key (staged by internal/cli), so a run
+		// verifies the key the profile pinned and nothing else.
 		b.WriteString("[commit]\n\tgpgsign = true\n")
 	}
 	if id.SSH.Agent != SSHNone {

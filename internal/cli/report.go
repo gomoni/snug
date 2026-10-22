@@ -130,7 +130,9 @@ type Report struct {
 	// BrowserBridge is nil when the policy's login set lacks claude.
 	BrowserBridge *reportBrowserBridge
 	// Kube is nil when no identity.kubectl block is pinned.
-	Kube        *reportKube
+	Kube *reportKube
+	// GPG is nil when no identity.gpg block is pinned.
+	GPG         *reportGPG
 	Topology    reportTopology
 	Containers  *reportContainers // nil when no engine runs
 	Environment []reportEnvVar
@@ -592,6 +594,7 @@ func buildReport(env policy.Environ, p *policy.Policy, args []string, cfg config
 	}
 	rep.BrowserBridge = buildBrowserBridgeReport(env, p)
 	rep.Kube = buildKubeReport(p)
+	rep.GPG = buildGPGReport(p)
 	rep.BwrapExec = execResolution("bwrap")
 	rep.Pasta = buildPastaReport(p)
 	for _, name := range p.EnvNames() {

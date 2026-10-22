@@ -145,7 +145,8 @@ type Mount struct {
 	Access   Access
 	Optional bool // -try semantics: silently skip when Host is absent
 
-	// Perms is the mode for a KindData file. nil means bwrap's default.
+	// Perms is the mode for a KindData file or a KindTmpfs directory. nil
+	// means bwrap's default (0755 for a tmpfs).
 	Perms *uint32
 
 	// Content is the file body for KindData. It is materialised into an

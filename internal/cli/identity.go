@@ -153,6 +153,19 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		}
 	}
 
+	// The gpg half, gated on the BLOCK rather than a mode: a pinned gpg key
+	// has no mode — the block IS the proxy. A block that sets a fingerprint is
+	// a request for the agent, and Resolve has already refused a half block.
+	if id.GPG != (policy.IdentityGPG{}) {
+		gpgCleanup, gerr := startGPGIdentity(pol, id, verbose, dryRun)
+		if gerr != nil {
+			cleanup()
+			return nil, gerr
+		}
+		inner := cleanup
+		cleanup = func() { gpgCleanup(); inner() }
+	}
+
 	if err := stageGhConfig(pol, id, dryRun, ghToken); err != nil {
 		cleanup()
 		return nil, err
