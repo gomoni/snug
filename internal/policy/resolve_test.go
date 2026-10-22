@@ -748,7 +748,7 @@ func maximalProfile() *Profile {
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
 				SigningKey: "/home/u/.ssh/sign.pub"},
 			GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "decrypt"},
-			Gh: IdentityGh{Host: "gh.example", User: "some-one"},
+			Gh:  IdentityGh{Host: "gh.example", User: "some-one"},
 			// NOT the default path, so dropping identity.kubectl.kubeconfig really
 			// changes which file is read (the fixture serves both).
 			Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,

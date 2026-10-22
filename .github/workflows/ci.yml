@@ -256,7 +256,7 @@ jobs:
             echo "::error::This is the Ubuntu mirror, not snug. Re-run the job."
             exit 1
           fi
-          sudo timeout 120 apt-get install -y bubblewrap
+          sudo timeout 120 apt-get install -y bubblewrap gnupg
 
       # pasta comes from UPSTREAM, not from apt, and that is not a preference.
       #

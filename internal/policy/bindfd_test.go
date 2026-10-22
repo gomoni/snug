@@ -315,3 +315,28 @@ func TestGoldenFilesHaveNoPathBindOutsideProc(t *testing.T) {
 		}
 	}
 }
+
+// TestTmpfsPermsReachTheArgv: a KindTmpfs with Perms is emitted with --perms
+// in front of its --tmpfs, and one without is not. identity.gpg relies on it
+// for a 0700 GNUPGHOME — gpg warns "unsafe permissions on homedir" under
+// bwrap's default 0755.
+func TestTmpfsPermsReachTheArgv(t *testing.T) {
+	p := mustResolveDefaults(t)
+	perm := uint32(0o700)
+	p.Mounts["/zz/private"] = Mount{Guest: "/zz/private", Kind: KindTmpfs, Access: AccessRW, Perms: &perm}
+	p.Mounts["/zz/plain"] = Mount{Guest: "/zz/plain", Kind: KindTmpfs, Access: AccessRW}
+	args := p.BwrapArgs(1000, 1000)
+	before := func(guest string) []string {
+		i := slices.Index(args, guest)
+		if i < 0 || args[i-1] != "--tmpfs" {
+			t.Fatalf("no --tmpfs %s in %v", guest, args)
+		}
+		return args[max(0, i-5):i]
+	}
+	if got := before("/zz/private"); !slices.Contains(got, "0700") || got[len(got)-5] != "--perms" {
+		t.Errorf("tmpfs with Perms emitted %v, want --perms 0700 --size N --tmpfs", got)
+	}
+	if got := before("/zz/plain"); got[0] == "--perms" || got[2] != "--size" {
+		t.Errorf("tmpfs without Perms emitted %v, want no --perms", got)
+	}
+}

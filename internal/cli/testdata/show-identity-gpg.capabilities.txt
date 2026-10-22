@@ -1,0 +1,11 @@
+  identity         gpg key 6732361300BBFDAE7F22972CD4381E1CE2880244 (sign)
+                   THE SANDBOX CAN SIGN AS YOU with this OpenPGP key —
+                   commits, tags, release artifacts, mail — for as long as the
+                   run lasts. snug generates commit.gpgsign = true, so commits
+                   inside are signed by default. No private key enters the
+                   sandbox and your other keys cannot be listed or used.
+                   gpg key 6732361300BBFDAE7F22972CD4381E1CE2880244 (decrypt)
+                   THE SANDBOX CAN DECRYPT ANYTHING ADDRESSED TO THIS KEY that
+                   it can read, for as long as the run lasts. The proxy sees an
+                   opaque ciphertext and cannot tell which message it is
+                   decrypting.

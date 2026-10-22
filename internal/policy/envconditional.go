@@ -102,10 +102,15 @@ var conditionalEnvs = []conditionalEnv{
 		writes:   "points gh at the config it generates for that one account",
 	},
 	{
-		names:  []string{"GIT_CONFIG_GLOBAL"},
-		key:    func(*Profile) string { return "identity" },
-		on:     func(p *Policy) bool { return p.Identity.Pinned("git") || p.Identity.Pinned("ssh") },
-		by:     func(prof *Profile) bool { return profileSetsBlock(prof, "git") || profileSetsBlock(prof, "ssh") },
+		names: []string{"GIT_CONFIG_GLOBAL"},
+		key:   func(*Profile) string { return "identity" },
+		on: func(p *Policy) bool {
+			return p.Identity.Pinned("git") || p.Identity.Pinned("ssh") || p.Identity.gpgSigns()
+		},
+		by: func(prof *Profile) bool {
+			return profileSetsBlock(prof, "git") || profileSetsBlock(prof, "ssh") ||
+				(prof.Identity != nil && prof.Identity.gpgSigns())
+		},
 		writes: "points git at the ~/.gitconfig it generates",
 	},
 	{

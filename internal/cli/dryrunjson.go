@@ -366,7 +366,9 @@ type jsonDoc struct {
 	// BrowserBridge is absent when the policy's login set lacks claude.
 	BrowserBridge *jsonBrowserBridge `json:"browser_bridge,omitempty"`
 	// Kube is absent when no identity.kubectl block is pinned.
-	Kube        *jsonKube       `json:"kube,omitempty"`
+	Kube *jsonKube `json:"kube,omitempty"`
+	// GPG is absent when no identity.gpg block is pinned.
+	GPG         *jsonGPG        `json:"gpg,omitempty"`
 	Topology    jsonTopology    `json:"topology"`
 	Containers  *jsonContainers `json:"containers"`
 	Environment []jsonEnvVar    `json:"environment"`
@@ -882,6 +884,9 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Proxy: k.Proxy, Refused: k.Refused,
 		}
 	}
+	if g := rep.GPG; g != nil {
+		doc.GPG = &jsonGPG{Fingerprint: g.Fingerprint, Scope: g.Scope, Proxy: g.Proxy}
+	}
 	doc.Target, doc.TargetBytes = e.text(rep.Target)
 	if rep.TargetAsked != "" {
 		doc.TargetAsked, doc.TargetAskedBytes = e.text(rep.TargetAsked)
@@ -900,7 +905,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			// The fact behind the human column's "exec" word: a KindData file
 			// with an executable permission bit is CODE, not config (the
 			// podman stub is the one case today).
-			Executable:      m.Perms != nil && *m.Perms&0o111 != 0,
+			Executable:      m.Kind == policy.KindData && m.Perms != nil && *m.Perms&0o111 != 0,
 			HostIsRunScoped: m.RunScoped,
 		}
 		if m.Kind == policy.KindTmpfs {

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,17 +14,26 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// gpgGrips is one pinned key as the host agent knows it: the primary keygrip
-// and the encryption subkey's keygrip, both 40 hex characters.
+// gpgGrips is one pinned key as the host agent knows it: the keygrips of the
+// subkeys that sign and of those that decrypt, each 40 hex characters.
 //
-// BOTH are needed because signing and decryption use DIFFERENT keygrips through
-// the agent: SIGKEY/PKSIGN take the primary key's grip, SETKEY/PKDECRYPT take
-// the encryption subkey's. The fingerprint names the key; the grips are what
-// the proxy compares against, and they are resolved HERE, on the host, before
-// the proxy exists — internal/gpgproxy never learns a fingerprint.
+// The PRIMARY key's grip is deliberately not among them. The primary carries
+// Certify, and the agent signs a hash without knowing what it is for, so a
+// pinned primary is a certification oracle: measured through this proxy,
+// `gpg --quick-add-uid <fp> 'Evil <evil@attacker.example>'` inside the sandbox
+// added a user ID certified by the host's primary key — a change to the key
+// itself that outlives the run. The same PKSIGN can bind a subkey the attacker
+// holds or make a revocation. Subkeys cannot certify.
+//
+// Both lists can hold several grips, for two measured reasons. A key can carry
+// more than one subkey of a kind, and gpg uses the newest, so pinning only the
+// first would leave the one actually used unpinned. And a gpg 2.5
+// post-quantum subkey (ky768_bp256) is composite: its `grp:` line carries TWO
+// grips, comma-separated, and decryption names both (`SETKEY <first>` then
+// `SETKEY --another <second>`).
 type gpgGrips struct {
-	primary   string // the primary key's keygrip: signs
-	encryptor string // the encryption subkey's keygrip: decrypts ("" if none)
+	signers    []string // signing-capable, unrevoked, unexpired subkeys' grips
+	encryptors []string // encryption subkeys' grips, expired ones included
 }
 
 // gpgKeyInfo asks the host gpg for the keygrips behind a fingerprint.
@@ -43,11 +54,12 @@ func gpgKeyInfo(fingerprint string) (gpgGrips, error) {
 		return gpgGrips{}, fmt.Errorf("identity.gpg needs gpg on the host to resolve the key's " +
 			"keygrips, and no gpg is on PATH")
 	}
-	cmd := exec.Command(gpg, "--batch", "--with-colons", "--with-keygrip",
-		"--list-secret-keys", fingerprint)
-	// The HOST's own GNUPGHOME, if the caller has one set. Not staging the
-	// sandbox's: this runs before the sandbox exists.
-	cmd.Env = os.Environ()
+	ctx, cancel := context.WithTimeout(context.Background(), gpgHostTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, gpg, "--batch", "--with-colons", "--with-keygrip",
+		"--list-secret-keys", "--", fingerprint)
+	// The HOST's own GNUPGHOME, if the caller has one set (inherited): this
+	// runs before the sandbox exists.
 	var out, errs bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errs
@@ -67,65 +79,101 @@ func gpgKeyInfo(fingerprint string) (gpgGrips, error) {
 	return grips, nil
 }
 
-// parseKeygrips reads the colon-delimited listing and returns the primary
-// keygrip and, if the key has an encryption subkey, that subkey's keygrip.
+// parseKeygrips reads the colon-delimited listing of ONE key and returns its
+// subkeys' grips, and whether the listing held the asked-for key at all.
 //
 // It is a small parser ON PURPOSE: it consumes only `sec:`, `ssb:`, `fpr:` and
-// `grp:`, and it keys the primary/subkey choice off the capability field of
-// `ssb:` (the `e` in the 12th field). A key whose subkey is sign-only, or that
-// has no subkey at all, yields an empty encryptor — decryption is then refused
-// by the proxy for want of a grip, which is the correct narrow answer.
+// `grp:`, keys signing and encryption off the capability field of `ssb:` (the
+// 12th: `s`, `e`), and reads only the block whose primary `fpr:` is the one
+// asked for, so a listing holding a second key adds nothing. Validity (the 2nd
+// field) keeps a revoked or expired subkey from SIGNING; it still decrypts,
+// because mail already addressed to it is the reason to keep it.
 func parseKeygrips(listing, fingerprint string) (gpgGrips, bool) {
 	var g gpgGrips
-	// The order of records is: a `sec:` line, then its `fpr:` and `grp:`, then
-	// each subkey's `ssb:` followed by its own `fpr:` and `grp:`. So the first
-	// `grp:` after the matching `sec:`/`fpr:` is the primary key's, and a
-	// later one is a subkey's.
 	var (
-		havePrimary   bool
-		pendingSubkey bool
-		subkeyDecrypt bool
-		lastFpr       string
+		inKey    bool // inside the asked-for key's block
+		atSec    bool // the next fpr: is the primary's
+		found    bool
+		validity string
+		caps     string
 	)
+	want := strings.ToUpper(fingerprint)
 	for line := range strings.SplitSeq(listing, "\n") {
 		fields := strings.Split(line, ":")
-		if len(fields) == 0 {
-			continue
+		field := func(n int) string {
+			if len(fields) > n {
+				return fields[n]
+			}
+			return ""
 		}
 		switch fields[0] {
 		case "sec":
-			pendingSubkey = false
+			inKey, atSec, caps = false, true, ""
 		case "ssb":
-			pendingSubkey = true
-			// The 12th field is the capability string; `e` means encrypt.
-			subkeyDecrypt = len(fields) > 11 && strings.Contains(fields[11], "e")
+			atSec = false
+			validity, caps = field(1), field(11)
 		case "fpr":
-			if len(fields) > 9 {
-				lastFpr = strings.ToUpper(fields[9])
+			if atSec {
+				inKey = strings.ToUpper(field(9)) == want
+				found = found || inKey
+				atSec = false
 			}
 		case "grp":
-			if len(fields) <= 9 || fields[9] == "" {
+			if !inKey || caps == "" || field(9) == "" {
 				continue
 			}
-			grip := strings.ToUpper(fields[9])
-			if !pendingSubkey {
-				// The primary key's grip. Guard against a subkey record that
-				// arrived before its `sec:` by only taking it if it belongs to
-				// the fingerprint we asked for.
-				if lastFpr == "" || lastFpr == strings.ToUpper(fingerprint) || !havePrimary {
-					g.primary = grip
-					havePrimary = true
-				}
-			} else if subkeyDecrypt && g.encryptor == "" {
-				g.encryptor = grip
+			grips := strings.Split(strings.ToUpper(field(9)), ",")
+			if strings.Contains(caps, "s") && validity != "r" && validity != "e" {
+				g.signers = append(g.signers, grips...)
+			}
+			if strings.Contains(caps, "e") {
+				g.encryptors = append(g.encryptors, grips...)
 			}
 		}
 	}
-	return g, havePrimary
+	return g, found
 }
 
-// startGPGIdentity is everything identity.gpg needs: the Assuan proxy to the
-// host gpg-agent, the pinned key's PUBLIC keyring, and GNUPGHOME.
+// gpgPins is the pin set for one key and scope. A scope the key has no subkey
+// for is refused rather than pinned to nothing: a profile that grants signing
+// on a key that cannot sign through snug would run, and every `git commit`
+// inside would fail with no cause on screen.
+func gpgPins(fingerprint, scope string, g gpgGrips) ([]gpgproxy.PinnedGrip, error) {
+	var pins []gpgproxy.PinnedGrip
+	if policy.GPGScopeHas(scope, policy.GPGScopeSign) {
+		if len(g.signers) == 0 {
+			return nil, fmt.Errorf("identity.gpg.fingerprint %q has no signing subkey, and "+
+				"snug signs only with a subkey.\n\n"+
+				"      The primary key also CERTIFIES: through it the sandbox could add a user\n"+
+				"      ID, bind a subkey or revoke the key, and those outlive the run. Add a\n"+
+				"      signing subkey on the host:  gpg --quick-add-key %s ed25519 sign",
+				fingerprint, fingerprint)
+		}
+		for _, grip := range g.signers {
+			pins = append(pins, gpgproxy.PinnedGrip{
+				Field: "identity.gpg.fingerprint", Grip: grip, Scope: gpgproxy.ScopeSign})
+		}
+	}
+	if policy.GPGScopeHas(scope, policy.GPGScopeDecrypt) {
+		if len(g.encryptors) == 0 {
+			return nil, fmt.Errorf("identity.gpg.fingerprint %q has no encryption subkey, so "+
+				"scope \"decrypt\" has nothing to decrypt with.\n"+
+				"      Drop \"decrypt\" from identity.gpg.scope, or add one on the host:\n"+
+				"      gpg --quick-add-key %s cv25519 encr", fingerprint, fingerprint)
+		}
+		for _, grip := range g.encryptors {
+			pins = append(pins, gpgproxy.PinnedGrip{
+				Field: "identity.gpg.fingerprint", Grip: grip, Scope: gpgproxy.ScopeDecrypt})
+		}
+	}
+	return pins, nil
+}
+
+// startGPGIdentity is what identity.gpg needs from the host: the Assuan proxy
+// to the host gpg-agent and the pinned key's PUBLIC keyring.
+//
+// ~/.gnupg itself (a 0700 tmpfs) and GNUPGHOME are Resolve's; this stages what
+// needs host state inside it.
 //
 // It is gated by its caller on the presence of the block (id.GPG is not the
 // zero value) rather than on a mode, because the block IS the proxy.
@@ -150,9 +198,20 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 	}
 
 	if dryRun {
+		// The public keyring is staged here too, so --dry-run shows the row a
+		// real run mounts. It is public material read from the host gpg; a host
+		// that does not know the key is a warning on a dry run, as a missing gh
+		// token is, because a dry run inspects a policy on hosts where the real
+		// run may never happen.
+		if keyring, kerr := gpgExportPublicKey(id.GPG.Fingerprint); kerr != nil {
+			fmt.Fprintln(os.Stderr, "snug: "+kerr.Error())
+			fmt.Fprintln(os.Stderr, "      (dry run: continuing, and the FILESYSTEM block below "+
+				"therefore has no pubring.kbx row)")
+		} else {
+			stageGPGKeyring(pol, keyring)
+		}
 		pol.BindSocket(sock, pol.Home+"/"+policy.GPGAgentSocketGuest,
 			identityProvenance(pol, "gpg"))
-		pol.AuthorEnv("GNUPGHOME", pol.Home+"/"+policy.GPGHomeGuest)
 		return cleanup, nil
 	}
 
@@ -162,35 +221,20 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		return nil, err
 	}
 
-	// The pinned set: the primary grip for signing and decrypting, plus the
-	// encryption subkey grip when the profile asked for decryption. A primary
-	// key IS a decryption key, so it decrypts with its own grip; the subkey is
-	// added so that a message addressed to the subkey — which is every message
-	// gpg produces for this key by default — grounds out on a pinned grip.
-	scope, serr := gpgScopeFor(id.GPG.Scope)
-	if serr != nil {
+	if _, err := gpgScopeFor(id.GPG.Scope); err != nil {
 		cleanup()
-		return nil, serr
+		return nil, err
 	}
-	pinned := []gpgproxy.PinnedGrip{{
-		Field: "identity.gpg.fingerprint",
-		Grip:  grips.primary,
-		Scope: scope,
-	}}
-	if policy.GPGScopeHas(id.GPG.Scope, policy.GPGScopeDecrypt) && grips.encryptor != "" {
-		pinned = append(pinned, gpgproxy.PinnedGrip{
-			Field: "identity.gpg.fingerprint",
-			Grip:  grips.encryptor,
-			Scope: gpgproxy.ScopeDecrypt,
-		})
+	pinned, err := gpgPins(id.GPG.Fingerprint, id.GPG.Scope, grips)
+	if err != nil {
+		cleanup()
+		return nil, err
 	}
 
-	upstream := gpgAgentSocket()
-	if upstream == "" {
+	upstream, err := gpgAgentSocket()
+	if err != nil {
 		cleanup()
-		return nil, fmt.Errorf("identity.gpg needs a running host gpg-agent: " +
-			"no socket at `gpgconf --list-dirs agent-socket`.\n\n" +
-			"      Start one with `gpg-connect-agent /bye` or let gpg start it, then retry.")
+		return nil, err
 	}
 
 	audit := func(string) {}
@@ -218,16 +262,20 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		cleanup()
 		return nil, kerr
 	}
+	stageGPGKeyring(pol, keyring)
+
+	pol.BindSocket(sock, pol.Home+"/"+policy.GPGAgentSocketGuest,
+		identityProvenance(pol, "gpg"))
+	return cleanup, nil
+}
+
+// stageGPGKeyring mounts the pinned key's public keyring read-only.
+func stageGPGKeyring(pol *policy.Policy, keyring []byte) {
 	pol.Replace(policy.Mount{
 		Guest: pol.Home + "/" + policy.GPGKeyringGuest, Kind: policy.KindData,
 		Access: policy.AccessRO, Content: keyring,
 		From: []string{identityProvenance(pol, "gpg")},
 	})
-
-	pol.BindSocket(sock, pol.Home+"/"+policy.GPGAgentSocketGuest,
-		identityProvenance(pol, "gpg"))
-	pol.AuthorEnv("GNUPGHOME", pol.Home+"/"+policy.GPGHomeGuest)
-	return cleanup, nil
 }
 
 // gpgScopeFor maps the profile's canonical scope spelling to the proxy's bit
@@ -266,24 +314,32 @@ func gpgScopeFor(scope string) (gpgproxy.Scope, error) {
 
 // gpgAgentSocket is the host's gpg-agent socket, from gpgconf, which is the
 // only authority on where it lives (it depends on GNUPGHOME, which the caller
-// may or may not have set).
-func gpgAgentSocket() string {
+// may or may not have set). Each failure names its own cause: "start an agent"
+// is the wrong advice when gpgconf itself is missing.
+func gpgAgentSocket() (string, error) {
 	gpgconf, err := exec.LookPath("gpgconf")
 	if err != nil {
-		return ""
+		return "", errors.New("identity.gpg needs gpgconf on the host to find the gpg-agent " +
+			"socket, and no gpgconf is on PATH")
 	}
-	cmd := exec.Command(gpgconf, "--list-dirs", "agent-socket")
-	cmd.Env = os.Environ()
-	out, err := cmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gpgHostTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, gpgconf, "--list-dirs", "agent-socket").Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("identity.gpg: `gpgconf --list-dirs agent-socket` failed: %v", err)
 	}
 	path := strings.TrimSpace(string(out))
-	if _, statErr := os.Stat(path); statErr != nil {
-		return ""
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("identity.gpg needs a running host gpg-agent, and there is no "+
+			"socket at %s.\n\n"+
+			"      Start one with `gpg-connect-agent /bye` or let gpg start it, then retry.", path)
 	}
-	return path
+	return path, nil
 }
+
+// gpgHostTimeout bounds each host gpg/gpgconf call. They read a keyring and
+// print; none of them prompts.
+const gpgHostTimeout = 30 * time.Second
 
 // gpgExportPublicKey is `gpg --export <fingerprint>`: the PUBLIC half only, the
 // bytes the sandbox's keyring holds. It never asks for a secret key.
@@ -292,8 +348,9 @@ func gpgExportPublicKey(fingerprint string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("identity.gpg needs gpg on the host, and none is on PATH")
 	}
-	cmd := exec.Command(gpg, "--batch", "--export", fingerprint)
-	cmd.Env = os.Environ()
+	ctx, cancel := context.WithTimeout(context.Background(), gpgHostTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, gpg, "--batch", "--export", "--", fingerprint)
 	var out, errs bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errs

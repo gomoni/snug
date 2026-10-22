@@ -194,6 +194,11 @@ type IdentityGh struct {
 // IdentityGPG pins one OpenPGP key, by FINGERPRINT, for signing and/or
 // decryption through snug's filtering proxy to the host's gpg-agent.
 //
+// A hostile process inside the sandbox can use this to sign anything as you
+// with the pinned signing subkey and to decrypt anything addressed to the
+// pinned encryption subkey, for as long as the run lasts. It cannot certify:
+// the primary key is never pinned (internal/cli/gpgidentity.go, gpgGrips).
+//
 // THERE IS NO `agent` KNOB, and its absence is the whole design: unlike
 // identity.ssh, where "no agent" is a real mode — the sandbox keeps its own
 // keys on its own disk — a pinned gpg key is USELESS without the agent. The
@@ -295,6 +300,12 @@ func GPGScopeHas(scope, cap string) bool {
 // must report it like every other bad key. internal/cli also calls it before
 // handing the value to gpg, so an unsettable spelling never reaches `gpg
 // --list-secret-keys`.
+// gpgSigns reports whether the identity pins a gpg key with the sign scope —
+// the one gpg pin git has a use for.
+func (id *Identity) gpgSigns() bool {
+	return id.Pinned("gpg") && GPGScopeHas(id.GPG.Scope, GPGScopeSign)
+}
+
 func ParseFingerprint(s string) (string, error) {
 	up := strings.ToUpper(s)
 	if up == "" {

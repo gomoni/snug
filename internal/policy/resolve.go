@@ -864,7 +864,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// identity.gpg pins, and only from them. One writer, one path: two code
 	// paths racing to author ~/.gitconfig is how the last silent displacement
 	// got in.
-	if p.Identity.Pinned("git") || p.Identity.Pinned("ssh") || p.Identity.Pinned("gpg") {
+	//
+	// A gpg pin counts only with the sign scope: a decrypt-only key has nothing
+	// to say to git, and authoring ~/.gitconfig for it would displace a user's
+	// own git config grant on behalf of a key unrelated to git.
+	if p.Identity.Pinned("git") || p.Identity.Pinned("ssh") || p.Identity.gpgSigns() {
 		if cfg := GitConfigFrom(p.Identity, home); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.gitconfig", Kind: KindData, Access: AccessRO,
@@ -900,6 +904,10 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				Content: ctx.KnownHosts, From: []string{p.IdentityProvenance("ssh")},
 			})
 		}
+	}
+
+	if err := resolveGPGHome(p, home); err != nil {
+		return nil, err
 	}
 
 	// The system-wide ssh_config is replaced on EVERY run, identity pinned or
@@ -1994,11 +2002,15 @@ func refuseTwoSigningKeys(p *Policy) error {
 	if !sshSigning || !gpgSigning {
 		return nil
 	}
-	return fmt.Errorf("profiles %q and %q: identity.git.signing_key and a sign-scoped "+
+	who := fmt.Sprintf("profiles %q and %q", p.IdentityOwner("git"), p.IdentityOwner("gpg"))
+	if p.IdentityOwner("git") == p.IdentityOwner("gpg") {
+		who = fmt.Sprintf("profile %q", p.IdentityOwner("git"))
+	}
+	return fmt.Errorf("%s: identity.git.signing_key and a sign-scoped "+
 		"identity.gpg both turn on git commit signing, but git signs with ONE format "+
 		"(gpg.format = ssh or openpgp), so one of the two keys would be pinned and never "+
 		"used. Keep one: drop identity.git.signing_key, or drop \"sign\" from identity.gpg.scope",
-		p.IdentityOwner("git"), p.IdentityOwner("gpg"))
+		who)
 }
 
 func refuseHalfNamedHost(p *Policy) error {
@@ -2082,4 +2094,39 @@ func visibleErr(err error) string {
 		return ""
 	}
 	return VisibleText(err.Error())
+}
+
+// resolveGPGHome gives identity.gpg its own ~/.gnupg: a 0700 tmpfs that the CLI
+// later fills with the proxy socket and the pinned key's public keyring, and
+// GNUPGHOME pointing at it. The mode is the reason it is a tmpfs of its own
+// rather than the 0755 anchor InstallAnchors would put there: gpg checks its
+// home's mode and printed "WARNING: unsafe permissions on homedir" on every
+// call under the anchor.
+//
+// A profile grant AT ~/.gnupg is refused rather than replaced. The tmpfs would
+// hide the whole subtree the grant exposes — subtraction, which Replace's
+// KindData exemption (same path, different content) does not cover — and the
+// grant it would hide is the host keyring and possibly the unfiltered agent
+// socket, the very hole this block exists to narrow. Deeper grants
+// (~/.gnupg/gpg.conf) mount after the tmpfs and stay visible; a profile's own
+// tmpfs there hides nothing.
+func resolveGPGHome(p *Policy, home string) error {
+	if !p.Identity.Pinned("gpg") {
+		return nil
+	}
+	guest := home + "/" + GPGHomeGuest
+	if old, ok := p.Mounts[guest]; ok && old.Kind != KindTmpfs {
+		return fmt.Errorf("%s grants %s, and identity.gpg (profile %q) gives the sandbox a "+
+			"generated ~/.gnupg whose S.gpg-agent is a one-key filtering proxy. The two cannot "+
+			"both hold: the host's ~/.gnupg is every private key and possibly the unfiltered "+
+			"agent socket.\n       Drop the %s grant, or grant single PUBLIC files under it",
+			provenance(old), guest, p.IdentityOwner("gpg"), guest)
+	}
+	perm := uint32(0o700)
+	p.Replace(Mount{
+		Guest: guest, Kind: KindTmpfs, Access: AccessRW, Perms: &perm,
+		From: []string{p.IdentityProvenance("gpg")},
+	})
+	p.AuthorEnv("GNUPGHOME", guest)
+	return nil
 }

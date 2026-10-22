@@ -285,6 +285,11 @@ func (p *Policy) BwrapFlags(uid, gid int, fds FDs) []string {
 			// one insertion away from a hard failure. bwrap fails closed here, which
 			// is why this is a correctness note and not a security note — unlike
 			// --seccomp after `--`, a misplaced --size cannot silently do nothing.
+			if m.Perms != nil {
+				// --perms and --size each modify the next --tmpfs and bwrap
+				// 0.12.0 accepts them in either order (measured, both 0700).
+				a = append(a, "--perms", fmt.Sprintf("%04o", *m.Perms))
+			}
 			a = append(a, "--size", strconv.FormatUint(p.TmpfsSizeBytes, 10), "--tmpfs", m.Guest)
 		case KindSymlink:
 			a = append(a, "--symlink", m.Host, m.Guest)

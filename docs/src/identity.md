@@ -168,8 +168,16 @@ block that names a fingerprint has already selected the proxy.
 | `"sign"` | sign with the key (`gpg --detach-sign`, and `git commit -S` — snug turns OpenPGP commit signing on) |
 | `"decrypt"` | decrypt a message addressed to the key |
 
-`scope = ["sign", "decrypt"]` grants both. The primary key signs; its encryption
-subkey decrypts, and snug resolves each keygrip from the fingerprint.
+`scope = ["sign", "decrypt"]` grants both. snug resolves the keygrips from the
+fingerprint, and pins **subkeys only**:
+
+- `"sign"` pins the key's signing subkeys. The primary key is never pinned,
+  because it also certifies: through it the sandbox could add a user ID to your
+  key, bind a subkey it holds, or revoke the key, and all of those outlive the
+  run. A key without a signing subkey is refused. Add one on the host with
+  `gpg --quick-add-key <fingerprint> ed25519 sign`.
+- `"decrypt"` pins the encryption subkeys, expired ones included, so mail
+  already addressed to them still decrypts. A key without one is refused.
 
 There is no `"encrypt"` value, deliberately: encrypting **to** the key uses only
 the public half, needs no agent, and so grants nothing a sandbox does not
@@ -177,9 +185,18 @@ already have. There is no `"auth"` value either: gpg-agent's ssh-emulation side
 is a protocol snug has not measured, and a value whose verbs are unenforced
 would be a scope in name only.
 
-A key pinned for `"decrypt"` cannot be used to sign, and a key pinned for
-`"sign"` cannot be used to decrypt: a decryption-only grant is not also a
-signing oracle, and the two keygrips carry the scope separately.
+A `"decrypt"` grant cannot sign, and a `"sign"` grant cannot decrypt. The agent
+keeps one selected key per connection whichever verb selected it, so the proxy
+also checks that the signing or decrypting command follows a selection made
+for that purpose.
+
+A hostile process inside the sandbox can use this block to sign anything as you
+with the pinned signing subkey, and to decrypt anything addressed to the pinned
+encryption subkey that it can read, for as long as the run lasts. It cannot
+certify, list or use your other keys, export key material, or decide where a
+passphrase prompt appears or what it says. A prompt for a sandbox request names
+snug and the keygrip, and appears wherever your agent shows prompts, never on
+the terminal the sandbox shares with you.
 
 ### `identity.gh`
 

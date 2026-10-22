@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type fakeAgent struct {
 	// scd records every SCD verb the fake agent saw. `SCD SERIALNO` is expected
 	// on the normal path; other SCD verbs are not.
 	scd []string
+	// pkdecrypt records every PKDECRYPT command line as it arrived, options
+	// included: the option selects what the agent returns.
+	pkdecrypt []string
 	// inquire records every line the fake agent read while waiting for an
 	// INQUIRE answer — the client's D payload and its END.
 	inquire []string
@@ -57,6 +61,61 @@ type fakeAgent struct {
 	// and will not use — a smartcard-backed key with no card, a locked agent,
 	// a passphrase prompt declined.
 	refuseSign map[string]bool
+	// options records every OPTION line the fake agent received, on any
+	// connection. The proxy's own startup probe sends some, so a test that
+	// asks "did the sandbox's OPTION reach the agent" compares a snapshot
+	// taken before with one taken after.
+	options []string
+	// setkeydesc records every SETKEYDESC line, for the same reason: the
+	// proxy writes its own after an admitted SIGKEY/SETKEY, and the sandbox's
+	// must never arrive.
+	setkeydesc []string
+	// preInquire is a list of INQUIRE keywords the fake agent asks before it
+	// answers PKSIGN, as the real agent asks PINENTRY_LAUNCHED around a
+	// pinentry and PASSPHRASE in loopback mode. Each answer the proxy gives
+	// lands in inquireAnswers; anything but END cancels the PKSIGN.
+	preInquire     []string
+	inquireAnswers []string
+	// bigReply makes PKSIGN answer with more data than the proxy's maxReply.
+	bigReply bool
+}
+
+func (a *fakeAgent) setPreInquire(keywords ...string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.preInquire = keywords
+}
+
+func (a *fakeAgent) setBigReply() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.bigReply = true
+}
+
+// snapshot helpers: a copy of a recorded list under the lock.
+func (a *fakeAgent) sawOptions() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.options...)
+}
+
+func (a *fakeAgent) sawSetKeyDesc() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.setkeydesc...)
+}
+
+func (a *fakeAgent) sawInquireAnswers() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.inquireAnswers...)
+}
+
+// addTo appends to one of the recorded lists under the lock.
+func (a *fakeAgent) addTo(list *[]string, s string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	*list = append(*list, s)
 }
 
 // setRefuseSign marks grip as listed-but-unsignable.
@@ -75,9 +134,23 @@ func (a *fakeAgent) refusesSign(g string) bool {
 	return a.refuseSign[strings.ToUpper(g)]
 }
 
+// shortDir is a fresh directory under /tmp. t.TempDir() embeds the test's name,
+// and with a subtest's "SETKEY 0000..." in it the socket path passes AF_UNIX's
+// 108-byte sun_path, so the bind fails on the fixture and not on the code
+// under test.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	d, err := os.MkdirTemp("", "gp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
+}
+
 func newFakeAgent(t *testing.T, holds ...string) *fakeAgent {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "upstream.sock")
+	path := filepath.Join(shortDir(t), "upstream.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -126,10 +199,18 @@ func (a *fakeAgent) serve(c net.Conn) {
 			selected = ""
 			line("OK")
 		case "OPTION":
+			a.addTo(&a.options, req)
 			line("OK")
 		case "GETINFO":
-			if strings.TrimSpace(args) == "version" {
+			// The host-state answers are what a real agent gives, so a test
+			// that they never reach the sandbox has something to leak.
+			switch strings.TrimSpace(args) {
+			case "version":
 				line("D 2.4.8")
+			case "socket_name":
+				line("D " + a.path)
+			case "pid":
+				line("D 4242")
 			}
 			line("OK")
 		case "HAVEKEY":
@@ -137,7 +218,11 @@ func (a *fakeAgent) serve(c net.Conn) {
 		case "KEYINFO":
 			a.handleKeyInfo(line, args)
 		case "SIGKEY", "SETKEY":
-			g := strings.ToUpper(strings.TrimSpace(args))
+			g := strings.TrimSpace(args)
+			if strings.ToUpper(name) == "SETKEY" {
+				g, _ = strings.CutPrefix(g, "--another ")
+			}
+			g = strings.ToUpper(g)
 			if !a.holdsGrip(g) {
 				line("ERR 67108881 No secret key")
 				continue
@@ -145,8 +230,16 @@ func (a *fakeAgent) serve(c net.Conn) {
 			selected = g
 			line("OK")
 		case "SETKEYDESC":
+			a.addTo(&a.setkeydesc, req)
 			line("OK")
 		case "SETHASH":
+			// The real agent checks the digest against the OpenPGP hash id: a
+			// SHA-256-sized digest under id 10 (SHA-512) is refused by a
+			// brainpoolP384r1 key with `Invalid length` (measured, 2.5.24).
+			if f := strings.Fields(args); len(f) == 2 && f[0] == "10" && len(f[1]) != 128 {
+				line("ERR 67109003 Invalid length <GPG Agent>")
+				continue
+			}
 			line("OK")
 		case "PKSIGN":
 			if selected == "" {
@@ -157,10 +250,42 @@ func (a *fakeAgent) serve(c net.Conn) {
 				line("ERR 67108881 No secret key")
 				continue
 			}
+			cancelled := false
+			a.mu.Lock()
+			asks := append([]string(nil), a.preInquire...)
+			big := a.bigReply
+			a.mu.Unlock()
+			for _, q := range asks {
+				line("INQUIRE " + q)
+				ans, err := readLine(r)
+				if err != nil {
+					return
+				}
+				a.addTo(&a.inquireAnswers, ans)
+				if ans != "END" {
+					line("ERR 67109141 IPC call has been cancelled")
+					cancelled = true
+					break
+				}
+			}
+			if cancelled {
+				continue
+			}
+			if big {
+				// 20 lines of 60 KB: past maxReply (1 MiB), each under maxLine.
+				chunk := strings.Repeat("A", 60*1024)
+				for range 20 {
+					if _, err := w.WriteString("D " + chunk + "\n"); err != nil {
+						return
+					}
+				}
+				w.Flush()
+			}
 			a.recordSign(selected)
 			line("D (7:sig-val(5:eddsa(1:r32:" + string(a.sigMarker) + ")(1:s32:x)))")
 			line("OK")
 		case "PKDECRYPT":
+			a.recordPkdecryptLine(req)
 			if selected == "" {
 				line("ERR 67108881 No secret key")
 				continue
@@ -182,16 +307,19 @@ func (a *fakeAgent) serve(c net.Conn) {
 				if strings.HasPrefix(reply, "D ") {
 					sawD = true
 				}
-				if strings.HasPrefix(reply, "END") {
+				if reply == "END" {
 					sawEnd = true
 					break
 				}
-				if strings.HasPrefix(reply, "CANCEL") {
+				// Exact, as the real agent matches them: `CAN` and `CANCEL`
+				// both end the inquiry, and a looser prefix match here would
+				// hide a proxy that forwards CANCELLED as a cancel.
+				if reply == "CAN" || reply == "CANCEL" {
 					break
 				}
 			}
 			if !sawD || !sawEnd {
-				line("ERR 67108881 No secret key")
+				line("ERR 67109141 IPC call has been cancelled")
 				continue
 			}
 			line("D (5:value33:" + string(a.sigMarker) + ")")
@@ -233,13 +361,15 @@ func (a *fakeAgent) handleHaveKey(line func(string), args string) {
 		line("OK")
 		return
 	}
+	// OK when ANY named grip is held, as the real agent answers (measured by
+	// the maintainer on 2.4.4 and 2.5.24: `HAVEKEY <held> 0000...` is OK).
 	for _, g := range strings.Fields(args) {
-		if !a.holdsGrip(strings.ToUpper(g)) {
-			line("ERR 67108881 No secret key")
+		if a.holdsGrip(strings.ToUpper(g)) {
+			line("OK")
 			return
 		}
 	}
-	line("OK")
+	line("ERR 67108881 No secret key")
 }
 
 func (a *fakeAgent) handleKeyInfo(line func(string), args string) {
@@ -276,6 +406,18 @@ func (a *fakeAgent) recordDecrypt(g string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.decryptCalls = append(a.decryptCalls, g)
+}
+
+func (a *fakeAgent) recordPkdecryptLine(req string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pkdecrypt = append(a.pkdecrypt, req)
+}
+
+func (a *fakeAgent) sawPkdecryptLines() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.pkdecrypt...)
 }
 
 func (a *fakeAgent) recordExport(req string) {
@@ -456,7 +598,7 @@ func (l *auditLog) lines() []string {
 // PinnedGrip values so a test can set a scope per grip.
 func newTestProxy(t *testing.T, a *fakeAgent, grips []PinnedGrip) (*Proxy, string, *auditLog) {
 	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "S.gpg-agent")
+	socketPath := filepath.Join(shortDir(t), "S.gpg-agent")
 	log := &auditLog{}
 	p, err := New(grips, a.path, socketPath, log.add)
 	if err != nil {

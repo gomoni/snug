@@ -97,6 +97,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeGrafts(out, rep, p)
 	describeContainers(out, p, rep.Containers)
 	describeCommitSigning(out, p)
+	describeGPG(out, rep.GPG)
 	describeSSH(out, p)
 	describeKube(out, rep.Kube)
 	describeCommands(out, p, env)

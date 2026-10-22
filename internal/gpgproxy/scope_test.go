@@ -22,6 +22,15 @@ func pinnedSignOnly() []PinnedGrip {
 	}
 }
 
+// pinnedDecryptAsCLI is what internal/cli pins for scope = ["decrypt"]: the
+// primary grip carries the profile's scope too, not only the subkey.
+func pinnedDecryptAsCLI() []PinnedGrip {
+	return []PinnedGrip{
+		{Field: "identity.gpg.fingerprint", Grip: gripPrimary, Scope: ScopeDecrypt},
+		{Field: "identity.gpg.fingerprint", Grip: gripSubkey, Scope: ScopeDecrypt},
+	}
+}
+
 func pinnedDecryptOnly() []PinnedGrip {
 	return []PinnedGrip{
 		{Field: "identity.gpg.fingerprint", Grip: gripSubkey, Scope: ScopeDecrypt},
@@ -34,7 +43,7 @@ func pinnedDecryptOnly() []PinnedGrip {
 // refuses every signature, which is a sandbox that looks configured and is not.
 func TestEmptyPinSetRefuses(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary)
-	_, err := New(nil, a.path, filepath.Join(t.TempDir(), "s.sock"), nil)
+	_, err := New(nil, a.path, filepath.Join(shortDir(t), "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted an empty pin set")
 	}
@@ -48,7 +57,7 @@ func TestEmptyPinSetRefuses(t *testing.T) {
 func TestZeroScopeRefuses(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary)
 	_, err := New([]PinnedGrip{{Field: "identity.gpg.fingerprint", Grip: gripPrimary}},
-		a.path, filepath.Join(t.TempDir(), "s.sock"), nil)
+		a.path, filepath.Join(shortDir(t), "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New accepted a grip with no scope")
 	}
@@ -66,7 +75,7 @@ func TestBadGripRefuses(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary)
 	for _, bad := range []string{"", "xyz", gripPrimary + "00", "zz" + gripPrimary[2:]} {
 		_, err := New([]PinnedGrip{{Field: "f", Grip: bad, Scope: ScopeSign}},
-			a.path, filepath.Join(t.TempDir(), "s.sock"), nil)
+			a.path, filepath.Join(shortDir(t), "s.sock"), nil)
 		if err == nil {
 			t.Errorf("New accepted grip %q", bad)
 		}
@@ -78,7 +87,7 @@ func TestBadGripRefuses(t *testing.T) {
 // its literal form.
 func TestUnheldGripRefusesTheRun(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary) // does NOT hold gripSubkey
-	_, err := New(pinnedBoth(), a.path, filepath.Join(t.TempDir(), "s.sock"), nil)
+	_, err := New(pinnedBoth(), a.path, filepath.Join(shortDir(t), "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New started with a grip the agent does not hold")
 	}
@@ -104,7 +113,7 @@ func TestUnreachableAgentRefuses(t *testing.T) {
 // TestEmptyUpstreamRefuses: an unset upstream is named, not dialled.
 func TestEmptyUpstreamRefuses(t *testing.T) {
 	_, err := New([]PinnedGrip{{Field: "f", Grip: gripPrimary, Scope: ScopeSign}},
-		"", filepath.Join(t.TempDir(), "s.sock"), nil)
+		"", filepath.Join(shortDir(t), "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New started with no upstream")
 	}
@@ -141,7 +150,7 @@ func TestDecryptGripIsNotSignProbed(t *testing.T) {
 func TestUnsignableGripRefusesTheRun(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary)
 	a.setRefuseSign(strings.ToUpper(gripPrimary))
-	_, err := New(pinnedSignOnly(), a.path, filepath.Join(t.TempDir(), "s.sock"), nil)
+	_, err := New(pinnedSignOnly(), a.path, filepath.Join(shortDir(t), "s.sock"), nil)
 	if err == nil {
 		t.Fatal("New started with a grip the agent holds but will not sign with")
 	}
@@ -218,20 +227,60 @@ func TestKeyInfoListShowsOnlyPinned(t *testing.T) {
 	}
 }
 
-// TestGetInfoVersionIsNotForwarded: the client must not be told the host
-// agent's version through the proxy.
-func TestGetInfoVersionIsNotForwarded(t *testing.T) {
+// TestGetInfoVersionIsTheAgents: gpg picks its protocol from the agent's
+// version, so the proxy forwards the question rather than answering a fixed
+// string. A fixed 2.4.8 made gpg 2.5 warn "server 'gpg-agent' is older than us"
+// on every call.
+func TestGetInfoVersionIsTheAgents(t *testing.T) {
 	a := newFakeAgent(t, gripPrimary)
 	_, sock, _ := newTestProxy(t, a, pinnedSignOnly())
 	c := dial(t, sock)
 	before := a.contactCount()
 	reply := c.send("GETINFO version")
-	joined := strings.Join(reply, "\n")
-	if !strings.Contains(joined, "D 2.4.8") {
-		t.Fatalf("GETINFO version answered %v, want a D line", reply)
+	if !strings.Contains(strings.Join(reply, "\n"), "D 2.4.8") {
+		t.Fatalf("GETINFO version answered %v, want the agent's D 2.4.8", reply)
 	}
-	if a.contactCount() != before {
-		t.Errorf("GETINFO version was forwarded to the agent")
+	if a.contactCount() == before {
+		t.Errorf("GETINFO version was answered locally, not by the agent")
+	}
+}
+
+// TestGetInfoHostStateIsForbidden: the GETINFO forms that describe the host
+// agent — its pid, its socket paths, its environment — are refused before the
+// agent is contacted. Measured on gpg-agent 2.5.24, std_session_env answers
+// GPG_TTY, DISPLAY and XAUTHORITY, and getenv answers any variable asked for.
+func TestGetInfoHostStateIsForbidden(t *testing.T) {
+	for _, what := range []string{"pid", "socket_name", "ssh_socket_name",
+		"std_session_env", "std_startup_env", "getenv HOME", "connections", "nonsense"} {
+		t.Run(what, func(t *testing.T) {
+			a := newFakeAgent(t, gripPrimary)
+			_, sock, audit := newTestProxy(t, a, pinnedSignOnly())
+			c := dial(t, sock)
+			before := a.contactCount()
+			reply := c.send("GETINFO " + what)
+			if got := terminalOf(reply); got != errForbidden {
+				t.Fatalf("GETINFO %s answered %v, want %q", what, reply, errForbidden)
+			}
+			if a.contactCount() != before {
+				t.Errorf("GETINFO %s reached the agent", what)
+			}
+			if !audit.contains("GETINFO") {
+				t.Errorf("GETINFO %s refused without an audit line: %v", what, audit.lines())
+			}
+		})
+	}
+}
+
+// TestRefusalIsForbiddenNotErrZero: a refusal carries the agent's own
+// GPG_ERR_FORBIDDEN. `ERR 0` is GPG_ERR_NO_ERROR to libgpg-error.
+func TestRefusalIsForbiddenNotErrZero(t *testing.T) {
+	a := newFakeAgent(t, gripPrimary)
+	_, sock, _ := newTestProxy(t, a, pinnedSignOnly())
+	c := dial(t, sock)
+	for _, cmd := range []string{"EXPORT_KEY " + gripPrimary, "FOOBAR"} {
+		if got := terminalOf(c.send(cmd)); got != errForbidden {
+			t.Errorf("%s answered %q, want %q", cmd, got, errForbidden)
+		}
 	}
 }
 
@@ -260,7 +309,7 @@ func TestSignRoundTrip(t *testing.T) {
 		"RESET",
 		"SIGKEY " + gripPrimary,
 		"SETKEYDESC snug+test",
-		"SETHASH 10 " + strings.Repeat("ab", 32),
+		"SETHASH 10 " + strings.Repeat("ab", 64),
 	} {
 		if got := terminalOf(c.send(cmd)); !strings.HasPrefix(got, "OK") {
 			t.Fatalf("%s answered %q, want OK", cmd, got)
@@ -366,6 +415,81 @@ func TestDecryptRoundTrip(t *testing.T) {
 	}
 	if got := a.sawDecrypt(); len(got) != 1 || got[0] != gripSubkey {
 		t.Fatalf("decrypts = %v, want one with %s", got, gripSubkey)
+	}
+}
+
+// TestPkDecryptKemOptionReachesAgent: gpg 2.5 sends `PKDECRYPT --kem=PGP` and
+// expects the agent to finish the ECDH derivation; forwarding a bare PKDECRYPT
+// made every 2.5 decryption fail with `Wrong secret key used`. Both the 2.4
+// and the 2.5 form must arrive exactly as sent.
+func TestPkDecryptKemOptionReachesAgent(t *testing.T) {
+	for _, cmd := range []string{"PKDECRYPT", "PKDECRYPT --kem=PGP", "PKDECRYPT --kem=PQC-PGP"} {
+		t.Run(cmd, func(t *testing.T) {
+			a := newFakeAgent(t, gripSubkey)
+			_, sock, _ := newTestProxy(t, a, pinnedDecryptOnly())
+			c := dial(t, sock)
+			if got := terminalOf(c.send("SETKEY " + gripSubkey)); !strings.HasPrefix(got, "OK") {
+				t.Fatalf("SETKEY: %q", got)
+			}
+			if err := writeLine(c.w, cmd); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.w.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			reply := c.answerInquire("(7:enc-val(4:ecdh(1:s4:abcd)(1:e4:efgh)))")
+			if !strings.Contains(strings.Join(reply, "\n"), "value33") {
+				t.Fatalf("%s reply carries no plaintext: %v", cmd, reply)
+			}
+			if got := a.sawPkdecryptLines(); len(got) != 1 || got[0] != cmd {
+				t.Fatalf("agent saw %q, want [%q]", got, cmd)
+			}
+		})
+	}
+}
+
+// TestSetKeyAnotherIsGripChecked: a composite (Kyber) subkey's second grip
+// arrives as `SETKEY --another <grip>`. A pinned decrypt grip is forwarded with
+// the option intact; an unpinned one is refused like a plain SETKEY.
+func TestSetKeyAnotherIsGripChecked(t *testing.T) {
+	a := newFakeAgent(t, gripSubkey, gripOther)
+	_, sock, _ := newTestProxy(t, a, pinnedDecryptOnly())
+	c := dial(t, sock)
+	if got := terminalOf(c.send("SETKEY " + gripSubkey)); !strings.HasPrefix(got, "OK") {
+		t.Fatalf("SETKEY <pinned>: %q", got)
+	}
+	if got := terminalOf(c.send("SETKEY --another " + gripSubkey)); !strings.HasPrefix(got, "OK") {
+		t.Fatalf("SETKEY --another <pinned>: %q", got)
+	}
+	before := a.contactCount()
+	c2 := dial(t, sock)
+	if got := terminalOf(c2.send("SETKEY --another " + gripOther)); !strings.HasPrefix(got, "ERR") {
+		t.Fatalf("SETKEY --another <unpinned> answered %q, want ERR", got)
+	}
+	if a.contactCount() != before {
+		t.Errorf("SETKEY --another <unpinned> reached the agent")
+	}
+}
+
+// TestPkDecryptUnknownOptionRefused: gpg-agent 2.5.24 ignores an option it does
+// not know, so the proxy forwards only the forms gpg sends and refuses the rest
+// before the agent sees them.
+func TestPkDecryptUnknownOptionRefused(t *testing.T) {
+	for _, cmd := range []string{"PKDECRYPT --bogus", "PKDECRYPT --kem=CMS", "PKDECRYPT --kem"} {
+		t.Run(cmd, func(t *testing.T) {
+			a := newFakeAgent(t, gripSubkey)
+			_, sock, _ := newTestProxy(t, a, pinnedDecryptOnly())
+			c := dial(t, sock)
+			if got := terminalOf(c.send("SETKEY " + gripSubkey)); !strings.HasPrefix(got, "OK") {
+				t.Fatalf("SETKEY: %q", got)
+			}
+			if got := terminalOf(c.send(cmd)); got != errForbidden {
+				t.Fatalf("%s answered %q, want %q", cmd, got, errForbidden)
+			}
+			if got := a.sawPkdecryptLines(); len(got) != 0 {
+				t.Fatalf("agent saw %q", got)
+			}
+		})
 	}
 }
 
@@ -489,6 +613,17 @@ func TestScdSerialnoForwardedButOtherScdRefused(t *testing.T) {
 			t.Errorf("%s was not audited as a smartcard refusal: %v", cmd, log.lines())
 		}
 	}
+	// What the agent saw: the one read-only query, and none of the verbs that
+	// drive the card.
+	saw := a.sawScd()
+	if len(saw) == 0 {
+		t.Error("control: the agent recorded no SCD at all, so the check below proves nothing")
+	}
+	for _, got := range saw {
+		if strings.TrimSpace(got) != "SCD SERIALNO" {
+			t.Errorf("the agent received %q", got)
+		}
+	}
 }
 
 // TestUnknownVerbRefused: an unrecognised command is refused, never guessed at.
@@ -579,5 +714,82 @@ func TestUpstreamUnreachableMidSession(t *testing.T) {
 	reply := c.send("RESET")
 	if !strings.HasPrefix(terminalOf(reply), "ERR") {
 		t.Fatalf("a dead upstream answered %v, want ERR", reply)
+	}
+}
+
+// ── scope crossing through the agent's one selected key ─────────────────────
+
+// TestDecryptScopeIsNotASigningOracle: gpg-agent keeps one selected key for
+// SIGKEY and SETKEY. Measured on 2.5.24 through the proxy under a decrypt-only
+// profile, `SETKEY <primary>`, SETHASH, PKSIGN returned a signature.
+func TestDecryptScopeIsNotASigningOracle(t *testing.T) {
+	a := newFakeAgent(t, gripPrimary, gripSubkey)
+	_, sock, _ := newTestProxy(t, a, pinnedDecryptAsCLI())
+	c := dial(t, sock)
+	if got := terminalOf(c.send("SETKEY " + gripPrimary)); !strings.HasPrefix(got, "OK") {
+		t.Fatalf("SETKEY <primary>: %q", got)
+	}
+	c.send("SETHASH 10 " + strings.Repeat("ab", 64))
+	if got := terminalOf(c.send("PKSIGN")); got != errForbidden {
+		t.Fatalf("PKSIGN after SETKEY answered %q, want %q", got, errForbidden)
+	}
+	if got := a.sawSign(); len(got) != 0 {
+		t.Fatalf("the agent signed under a decrypt-only scope: %v", got)
+	}
+}
+
+// TestSignSelectionIsNotADecryption: the mirror case, and `SETKEY --another`
+// after a SIGKEY, which would add a decrypt grip to a sign selection.
+func TestSignSelectionIsNotADecryption(t *testing.T) {
+	a := newFakeAgent(t, gripPrimary, gripSubkey)
+	_, sock, _ := newTestProxy(t, a, pinnedBoth())
+	c := dial(t, sock)
+	if got := terminalOf(c.send("SIGKEY " + gripPrimary)); !strings.HasPrefix(got, "OK") {
+		t.Fatalf("SIGKEY: %q", got)
+	}
+	if got := terminalOf(c.send("SETKEY --another " + gripSubkey)); !strings.HasPrefix(got, "ERR") {
+		t.Fatalf("SETKEY --another after SIGKEY answered %q, want ERR", got)
+	}
+	if got := terminalOf(c.send("PKDECRYPT")); got != errForbidden {
+		t.Fatalf("PKDECRYPT after SIGKEY answered %q, want %q", got, errForbidden)
+	}
+	if got := a.sawDecrypt(); len(got) != 0 {
+		t.Fatalf("the agent decrypted after a SIGKEY: %v", got)
+	}
+}
+
+// TestRefusedSelectionClearsTheSession: SIGKEY <pinned sign grip> succeeds, a
+// later refused SETKEY leaves the AGENT holding the sign grip, and the
+// following PKSIGN must not use it — nor may a RESET-cleared one.
+func TestRefusedSelectionClearsTheSession(t *testing.T) {
+	for _, between := range []string{"SETKEY " + gripOther, "RESET"} {
+		t.Run(between, func(t *testing.T) {
+			a := newFakeAgent(t, gripPrimary, gripOther)
+			_, sock, _ := newTestProxy(t, a, pinnedSignOnly())
+			c := dial(t, sock)
+			if got := terminalOf(c.send("SIGKEY " + gripPrimary)); !strings.HasPrefix(got, "OK") {
+				t.Fatalf("SIGKEY: %q", got)
+			}
+			c.send(between)
+			if got := terminalOf(c.send("PKSIGN")); got != errForbidden {
+				t.Fatalf("PKSIGN after %s answered %q, want %q", between, got, errForbidden)
+			}
+		})
+	}
+}
+
+// TestGetInfoTrailingArgumentRefused: the zero-argument GETINFO forms are
+// forwarded as the bare name, and one carrying a trailing word is refused
+// before the agent sees it (red team: `GETINFO version EVIL` was forwarded).
+func TestGetInfoTrailingArgumentRefused(t *testing.T) {
+	a := newFakeAgent(t, gripSubkey)
+	_, sock, _ := newTestProxy(t, a, pinnedDecryptOnly())
+	c := dial(t, sock)
+	before := a.contactCount()
+	if got := terminalOf(c.send("GETINFO version EVIL")); got != errForbidden {
+		t.Fatalf("GETINFO version EVIL answered %q, want %q", got, errForbidden)
+	}
+	if a.contactCount() != before {
+		t.Errorf("GETINFO version EVIL reached the agent")
 	}
 }

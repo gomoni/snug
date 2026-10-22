@@ -3,8 +3,8 @@
 // delete or otherwise reach any other key in your agent.
 //
 // Why a proxy rather than binding $GNUPGHOME/S.gpg-agent straight through:
-// gpg-agent's Assuan protocol has verbs beyond "sign" and "decrypt". Measured
-// against gpg 2.4.8, a raw passthrough hands the sandbox:
+// gpg-agent's Assuan protocol has verbs beyond "sign" and "decrypt". A raw
+// passthrough hands the sandbox (verbs from gpg-agent 2.5.24's HELP):
 //
 //   - HAVEKEY --list=1000, KEYINFO and KEYINFO --list: every keygrip in your
 //     agent, whether or not the profile named the key.
@@ -12,12 +12,15 @@
 //     PRIVATE KEY MATERIAL, transferred over the socket. `gpg --export-secret-keys`
 //     drives exactly this, and it is the verb that makes a raw socket a
 //     key-exfiltration primitive rather than a signing oracle.
-//   - DELETEKEY, IMPORTKEYS, MKKEY, KEYTOOL, PASSPHRASE, CLEARPASSPHRASE,
-//     CACHEDEC: mutation of, and denial of service against, the human's agent.
-//   - PRESET_PASSPHRASE and the pinentry verbs: a way to have your agent ask
-//     YOU for something the sandbox wrote.
+//   - DELETE_KEY, IMPORT_KEY, GENKEY, PASSWD, CLEAR_PASSPHRASE: mutation of,
+//     and denial of service against, the human's agent.
+//   - OPTION, SETKEYDESC and PRESET_PASSPHRASE: a way to choose where the
+//     human's pinentry appears and what it says, so the agent asks YOU for
+//     something the sandbox wrote.
 //
-// Pinning to one fingerprint's grips bounds the blast radius to one identity.
+// Every verb not named in session.command is refused. Pinning to one
+// fingerprint's SUBKEY grips bounds the blast radius to one identity, minus
+// certification.
 //
 // WHAT THIS CANNOT DO, and it is inherent rather than a gap to close later: it
 // cannot restrict WHAT is signed or decrypted. A signature oracle for a key is
@@ -26,7 +29,9 @@
 // ciphertext as a server-driven INQUIRE, so the proxy relays a blob it cannot
 // interpret, and it cannot tell you what was decrypted. Pinning bounds the
 // identity, not the actions. Every agent forwarder in existence has this
-// property.
+// property. What the proxy CAN hold is the verb: a key selected for decryption
+// never reaches PKSIGN, and the only question the agent may ask the sandbox is
+// INQUIRE CIPHERTEXT.
 //
 // THIS PACKAGE HOLDS KEYGRIPS, NEVER KEYS. It reads no key file, executes no
 // external program, and touches no filesystem path. The fingerprint -> keygrip
@@ -45,15 +50,16 @@ package gpgproxy
 import (
 	"bufio"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/gomoni/snug/internal/unixserve"
 )
 
 // maxLine bounds one Assuan line read from the sandbox. A command line names a
@@ -87,10 +93,10 @@ const maxReply = 1 << 20
 type Scope uint8
 
 const (
-	// ScopeSign permits SIGKEY <primary grip>, SETKEYDESC, SETHASH and PKSIGN.
+	// ScopeSign permits SIGKEY <grip>, SETHASH and a PKSIGN that follows it.
 	ScopeSign Scope = 1 << iota
-	// ScopeDecrypt permits SETKEY <primary or encryption-subkey grip>,
-	// SETKEYDESC and PKDECRYPT. It deliberately does NOT permit SIGKEY: a
+	// ScopeDecrypt permits SETKEY <grip> and a PKDECRYPT that follows it. It
+	// deliberately does NOT permit SIGKEY, nor a PKSIGN after SETKEY: a
 	// decryption-only grant must not double as a signing oracle.
 	ScopeDecrypt
 )
@@ -145,16 +151,9 @@ type Proxy struct {
 	pinned []grip
 
 	upstream string // the host's real gpg-agent socket
-	ln       net.Listener
 	audit    func(string)
 
-	// mu orders Serve's wg.Add against Close's wg.Wait: an Add that can run
-	// concurrently with a Wait on a zero counter is a misuse of WaitGroup, and
-	// the race detector reports it. Once closed is set, Serve adds nothing.
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
-	once   sync.Once
+	srv *unixserve.Server
 }
 
 // New prepares a proxy pinned to the given keygrips. No key material is read:
@@ -168,7 +167,17 @@ type Proxy struct {
 // Order is load-bearing: the grip set is checked before the upstream is, so a
 // profile error beats a host-state error; and the probe runs before the listener
 // is bound, so a refusal leaves no socket behind.
+//
+// The startup probe's pinentry, if the key is locked, is pointed at the
+// terminal and display in os.Getenv; NewEnv takes them from a caller instead.
 func New(grips []PinnedGrip, upstream, socketPath string, audit func(string)) (*Proxy, error) {
+	return NewEnv(grips, upstream, socketPath, audit, os.Getenv)
+}
+
+// NewEnv is New with the environment the startup probe's pinentry options are
+// read from passed in.
+func NewEnv(grips []PinnedGrip, upstream, socketPath string, audit func(string),
+	getenv func(string) string) (*Proxy, error) {
 	if len(grips) == 0 {
 		return nil, errors.New("gpg-agent proxy: no keygrip to pin. A proxy with an empty pin set " +
 			"advertises nothing and refuses every signature, which is a sandbox that looks " +
@@ -203,7 +212,7 @@ func New(grips []PinnedGrip, upstream, socketPath string, audit func(string)) (*
 			"gpgconf reports no agent socket), so there is nothing to proxy.\n" +
 			"      Start one with any gpg command, e.g.  gpg --list-keys")
 	}
-	if err := probeUpstream(upstream, pins); err != nil {
+	if err := probeUpstream(upstream, pins, getenv); err != nil {
 		return nil, err
 	}
 
@@ -223,40 +232,13 @@ func New(grips []PinnedGrip, upstream, socketPath string, audit func(string)) (*
 	if audit == nil {
 		audit = func(string) {}
 	}
-	return &Proxy{pinned: pins, upstream: upstream, ln: ln, audit: audit}, nil
+	return &Proxy{pinned: pins, upstream: upstream, srv: unixserve.New(ln), audit: audit}, nil
 }
 
-func (p *Proxy) Serve() {
-	for {
-		c, err := p.ln.Accept()
-		if err != nil {
-			return // listener closed
-		}
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
-			c.Close()
-			return
-		}
-		p.wg.Add(1)
-		p.mu.Unlock()
-		go func() {
-			defer p.wg.Done()
-			defer c.Close()
-			p.handle(c)
-		}()
-	}
-}
+func (p *Proxy) Serve() { p.srv.Serve(p.handle) }
 
-func (p *Proxy) Close() {
-	p.once.Do(func() {
-		p.mu.Lock()
-		p.closed = true
-		p.mu.Unlock()
-		p.ln.Close()
-		p.wg.Wait()
-	})
-}
+// Close stops the proxy and ends every live sandbox connection.
+func (p *Proxy) Close() { p.srv.Close() }
 
 // handle serves one client connection.
 //
@@ -293,8 +275,8 @@ func (p *Proxy) handle(sandbox net.Conn) {
 		if line == "" {
 			continue
 		}
-		if !s.command(line) {
-			s.w.Flush()
+		if !s.command(line) || s.ended {
+			_ = s.w.Flush()
 			return
 		}
 		if err := s.w.Flush(); err != nil {
@@ -314,6 +296,24 @@ type session struct {
 	upW    *bufio.Writer
 	upErr  error
 	upOpen bool
+
+	// ended is set when the session cannot continue in step with the agent —
+	// a reply cut off at maxReply, an INQUIRE relay that failed — so the
+	// connection is closed rather than left to read the rest of an old reply as
+	// the answer to the next command.
+	ended bool
+
+	// selected is the scope of the verb that last chose this connection's key:
+	// ScopeSign after an admitted SIGKEY, ScopeDecrypt after an admitted SETKEY,
+	// zero after RESET or any refused selection. PKSIGN needs ScopeSign and
+	// PKDECRYPT needs ScopeDecrypt.
+	//
+	// The grip check at SIGKEY/SETKEY is not enough on its own, because the
+	// agent keeps ONE selected key for both verbs. Measured on gpg-agent 2.5.24
+	// through this proxy under a decrypt-only profile: `SETKEY <primary grip>`,
+	// `SETHASH`, `PKSIGN` returned a sig-val — a decryption grant was a signing
+	// oracle.
+	selected Scope
 }
 
 func (s *session) close() {
@@ -334,8 +334,16 @@ func (s *session) upstream() (*bufio.Reader, *bufio.Writer, error) {
 		return s.upR, s.upW, s.upErr
 	}
 	s.upOpen = true
-	conn, err := net.Dial("unix", s.proxy.upstream)
+	// The dial, greeting and OPTION exchange are bounded; the commands after
+	// them are not, because PKSIGN and PKDECRYPT may wait on a pinentry a
+	// human answers.
+	conn, err := net.DialTimeout("unix", s.proxy.upstream, probeTimeout)
 	if err != nil {
+		s.upErr = err
+		return nil, nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(probeTimeout)); err != nil {
+		conn.Close()
 		s.upErr = err
 		return nil, nil, err
 	}
@@ -356,8 +364,13 @@ func (s *session) upstream() (*bufio.Reader, *bufio.Writer, error) {
 	// Propagate TTY/display context to the agent so pinentry behaves like gpg
 	// does. Without this, each new Assuan connection can spawn a different
 	// pinentry program than the one that was primed by gpg-connect-agent.
-	if err := probeSetOptions(s.upW, s.upR); err != nil {
-		_ = err
+	// No OPTION is sent here. A pinentry for a sandbox command takes the
+	// agent's own startup environment, never a tty or display the sandbox or
+	// snug's terminal names, because the sandbox shares that terminal and
+	// could read what the human types into it.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		s.upErr = err
+		return nil, nil, err
 	}
 	return s.upR, s.upW, nil
 }
@@ -377,7 +390,18 @@ func (s *session) command(line string) bool {
 		p.handleGetInfo(s, args)
 
 	// ── forwarded (grip + scope checked) ────────────────────────────────
-	case "RESET", "OPTION", "SETKEYDESC", "SETHASH":
+	case "RESET":
+		s.selected = 0
+		s.forward(line)
+	case "OPTION":
+		p.handleOption(s.w, args)
+	case "SETKEYDESC":
+		// The prompt text is the proxy's, written after an admitted
+		// SIGKEY/SETKEY. Measured through this proxy: a sandbox-authored
+		// SETKEYDESC ("system update needs your password") reached the host
+		// pinentry verbatim.
+		writeLine(s.w, "OK")
+	case "SETHASH":
 		s.forward(line)
 
 	case "SIGKEY":
@@ -385,37 +409,43 @@ func (s *session) command(line string) bool {
 	case "SETKEY":
 		s.handleSetKey(line, args, ScopeDecrypt)
 	case "PKSIGN":
+		if s.selected != ScopeSign {
+			p.refuse(s.w, "refused: pksign without a key selected by sigkey")
+			break
+		}
 		s.forward("PKSIGN")
 	case "PKDECRYPT":
-		s.handlePKDECRYPT()
+		if s.selected != ScopeDecrypt {
+			p.refuse(s.w, "refused: pkdecrypt without a key selected by setkey")
+			break
+		}
+		s.handlePKDECRYPT(line, args)
 
 	case "BYE":
-		writeLine(s.w, "OK closing connection")
+		_ = writeLine(s.w, "OK closing connection")
 		return false
 
 	// ── refused ─────────────────────────────────────────────────────────
-	case "KEYWRAP_KEY", "EXPORT_KEY", "IMPORT_KEYS", "IMPORTKEYS":
+	case "KEYWRAP_KEY", "EXPORT_KEY", "IMPORT_KEY":
 		// EXPORT_KEY is the verb that transfers PRIVATE KEY MATERIAL over the
 		// socket; `gpg --export-secret-keys` drives it. This refusal is the
 		// single most important line in the file.
 		p.refuse(s.w, "refused: sandbox tried to export private key material from the host agent")
-	case "DELETEKEY", "DELETE_KEY":
+	case "DELETE_KEY":
 		p.refuse(s.w, "refused: sandbox tried to delete a key from the host agent")
-	case "PASSPHRASE", "PRESET_PASSPHRASE", "CLEARPASSPHRASE", "GET_PASSPHRASE":
+	case "PASSWD", "PRESET_PASSPHRASE", "CLEAR_PASSPHRASE", "GET_PASSPHRASE":
 		p.refuse(s.w, "refused: sandbox tried to set or read a passphrase on the host agent")
-	case "CACHEDEC", "CACHE_TTL":
-		p.refuse(s.w, "refused: sandbox tried to change the host agent's cache policy")
-	case "SETKEYDESC_DUMMY", "MKKEY", "KEYTOOL", "GENKEY":
+	case "GENKEY", "KEYTOCARD", "KEYTOTPM", "KEYATTR", "PUT_SECRET", "GET_SECRET":
 		p.refuse(s.w, "refused: sandbox tried to create or manipulate keys in the host agent")
-	case "SETINFO", "SETEVENTS", "SETPININFO", "GETPININFO", "UPDATESTARTUPTTY",
-		"KILLAGENT", "RELOADAGENT", "GETEVENTCOUNTER":
+	case "UPDATESTARTUPTTY", "KILLAGENT", "RELOADAGENT", "GETEVENTCOUNTER":
 		p.refuse(s.w, "refused: sandbox tried to reconfigure or control the host agent")
 
 	case "SCD":
 		// MEASURED, and it cost a live test to learn: `SCD SERIALNO` is part of
 		// gpg's NORMAL path, not an attack. Every `gpg -d` sends it before
-		// SETKEY, and gpg's key listing sends it too; the host agent answers
-		// `ERR 67108983 No SmartCard daemon`. Refusing it wholesale broke
+		// SETKEY, and gpg's key listing sends it too; with no card, gpg-agent
+		// 2.4.4 and 2.5.24 answer `ERR 100696144 No such device <SCD>`
+		// (measured; scdaemon installed). Refusing it wholesale broke
 		// signing AND decryption with `problem with fast path key listing:
 		// Invalid IPC response`.
 		//
@@ -431,26 +461,59 @@ func (s *session) command(line string) bool {
 
 	default:
 		p.audit(fmt.Sprintf("refused: unknown gpg-agent command %q", truncate(name, 40)))
-		writeLine(s.w, "ERR 0 refused by snug: unknown command")
+		writeLine(s.w, errForbidden)
 	}
 	return true
 }
 
-// refuse audits and answers an ERROR. The code 0 is gpg-agent's own generic
-// failure; Assuan clients only need the ERR line to know to stop reading.
+// errForbidden is the refusal the host agent itself gives on its restricted
+// socket (agent-extra-socket), measured against gpg-agent 2.5.24 for
+// EXPORT_KEY, DELETE_KEY and GETINFO socket_name: GPG_ERR_FORBIDDEN (251) from
+// source GPG_ERR_SOURCE_GPGAGENT (4 << 24). Code 0 is GPG_ERR_NO_ERROR, so an
+// `ERR 0` line reads to libgpg-error as a failure that is also a success.
+const errForbidden = "ERR 67109115 Forbidden <snug>"
+
+// refuse audits and answers the agent's own Forbidden.
 func (p *Proxy) refuse(w *bufio.Writer, what string) {
 	p.audit(what)
-	writeLine(w, "ERR 0 refused by snug")
+	writeLine(w, errForbidden)
 }
 
 // ── the local answers ───────────────────────────────────────────────────────
 
+// handleOption answers OPTION locally and forwards none.
+//
+// OPTION sets the environment the host agent gives its pinentry, and every
+// value of it measured through the proxy was a hole: `ttyname=<host path>`
+// made pinentry-curses open that path on the HOST and overwrite it with the
+// prompt (a 9-byte file became 17792 bytes), `pinentry-mode=loopback` turned
+// the passphrase prompt into an INQUIRE the sandbox answers (unlimited
+// guessing), and `allow-pinentry-notify` makes the agent report the host
+// pinentry's pid and tty. The names gpg sends on every connection are
+// answered OK so gpg proceeds; pinentry-mode and anything unlisted is
+// refused.
+func (p *Proxy) handleOption(w *bufio.Writer, args string) {
+	name, _, _ := strings.Cut(strings.TrimSpace(args), "=")
+	name, _, _ = strings.Cut(name, " ")
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ttyname", "ttytype", "display", "xauthority", "putenv", "lc-ctype",
+		"lc-messages", "allow-pinentry-notify", "agent-awareness":
+		writeLine(w, "OK")
+	default:
+		p.refuse(w, fmt.Sprintf("refused: OPTION %q", truncate(name, 40)))
+	}
+}
+
 // handleHaveKey answers the two HAVEKEY forms the proxy must not forward.
 //
-// Measured against gpg 2.4.8:
+// Measured against gpg-agent 2.4.4 and 2.5.24:
 //
-//	HAVEKEY --list=N        -> D <N raw 20-byte grips concatenated> / OK
-//	HAVEKEY <grip> [...]    -> OK when ALL are held, ERR when any is not
+//	HAVEKEY --list=N        -> D <raw 20-byte grips concatenated> / OK
+//	HAVEKEY <grip> [...]    -> OK when ANY is held, ERR when none is
+//
+// (`HAVEKEY <held> 0000…` answered OK on both.) The proxy answers the same
+// question about its pin set. That matters with subkey-only pinning: gpg names
+// the primary and its subkeys on one line, and the primary is never pinned.
 //
 // Measured through this proxy, and it cost a live test to learn: the multi-grip
 // form gpg sends is `HAVEKEY <primary> <subkey>` — BOTH grips on ONE line, and
@@ -487,27 +550,25 @@ func (p *Proxy) handleHaveKey(w *bufio.Writer, args string) {
 			// "%0A" and this proxy was writing raw. Assuan escapes %, \n and
 			// \r in D lines; a grip is 20 arbitrary bytes, so roughly one grip
 			// in ninety needs it.
-			writeLine(w, "D "+assuanEscape(rawBytesToString(raw)))
+			writeLine(w, "D "+assuanEscape(concatGrips(raw)))
 		}
 		writeLine(w, "OK")
 		return
 	}
-	// HAVEKEY <grip> [<grip> ...]: the agent requires ALL named grips to be
-	// pinned here.
+	// HAVEKEY <grip> [<grip> ...]: OK when any named grip is pinned here.
 	for _, name := range strings.Fields(args) {
 		raw, err := parseGrip("HAVEKEY", name)
 		if err != nil {
-			writeLine(w, "ERR 67108881 No secret key")
-			return
+			continue
 		}
-		if !containsGrip(p.pinned, raw) {
-			// The agent's own text for a grip it does not hold, so a client
-			// sees the same thing it would see from a real agent.
-			writeLine(w, "ERR 67108881 No secret key")
+		if containsGrip(p.pinned, raw) {
+			writeLine(w, "OK")
 			return
 		}
 	}
-	writeLine(w, "OK")
+	// The agent's own text for a grip it does not hold, so a client sees the
+	// same thing it would see from a real agent.
+	writeLine(w, "ERR 67108881 No secret key")
 }
 
 // handleKeyInfo answers KEYINFO <grip> and KEYINFO --list locally, for the
@@ -538,27 +599,40 @@ func (p *Proxy) handleKeyInfo(w *bufio.Writer, args string) {
 	writeLine(w, "OK")
 }
 
-// handleGetInfo answers the GETINFO forms that describe the proxy rather than
-// the host agent, and forwards none.
+// handleGetInfo forwards the GETINFO forms a client needs to talk to the agent
+// and refuses the rest.
 //
-//   - version: a client that gates a feature on the agent version must not be
-//     told the HOST agent's version, because the agent behind the proxy may be
-//     a different one than snug measured against. Telling the truth here (a
-//     fixed string) is better than a forwarded lie whose value changes with the
-//     host. It is the one GETINFO that a gpg client reads on every connection.
-//   - pid / socket_name / ssh_socket_name: these name HOST paths and a process
-//     that is not inside the sandbox. Answering them would leak where the real
-//     agent lives and invite a client to try the ssh socket directly.
+// Measured against gpg-agent 2.5.24, the refused forms answer with HOST state:
+// `pid` and `connections` name the host process, `socket_name` and
+// `ssh_socket_name` the host paths (an invitation to try the ssh socket
+// directly), and `std_session_env`, `std_startup_env` and `getenv NAME` the
+// agent's environment — GPG_TTY, DISPLAY, XAUTHORITY and anything else it was
+// started with. The agent's own restricted socket forbids the same set.
 //
-// Anything else is forwarded, because it is a question about an OPTION the
-// client is about to set (cmd_has_option) and the agent is the authority.
+// `version` is forwarded, not answered locally. gpg compares it against its own
+// version and picks its protocol from the answer, so a fixed string is a lie
+// the client acts on: answering 2.4.8 to gpg 2.5 printed "server 'gpg-agent' is
+// older than us" on every call. The version names no path, process or secret.
+// `cmd_has_option` is a question about the protocol the agent speaks, so the
+// agent is the authority on it too.
 func (p *Proxy) handleGetInfo(s *session, args string) {
-	switch strings.TrimSpace(args) {
-	case "version":
-		writeLine(s.w, "D 2.4.8")
-		writeLine(s.w, "OK")
+	what := strings.TrimSpace(args)
+	name, rest := splitCommand(what)
+	switch name {
+	case "cmd_has_option":
+		// The one form that takes arguments: a command name and an option.
+		s.forward("GETINFO " + what)
+	case "version", "restricted", "s2k_count", "s2k_time", "s2k_count_cal",
+		"scd_running", "jent_active":
+		// No arguments, so none are passed on: a trailing word would reach a
+		// future agent that gives it a meaning, unreviewed.
+		if strings.TrimSpace(rest) != "" {
+			p.refuse(s.w, fmt.Sprintf("refused: GETINFO %s takes no argument", name))
+			return
+		}
+		s.forward("GETINFO " + name)
 	default:
-		s.forward("GETINFO " + strings.TrimSpace(args))
+		p.refuse(s.w, fmt.Sprintf("refused: GETINFO %q describes the host agent", truncate(name, 40)))
 	}
 }
 
@@ -579,10 +653,36 @@ func (p *Proxy) handleGetInfo(s *session, args string) {
 // (measured: `SETKEY 0000…` → `OK`), and only fails later at PKDECRYPT with
 // `No secret key`. So the guard must be here, at the verb that names the grip,
 // or a decrypt scope would be enforceable only after the INQUIRE is in flight.
+//
+// SETKEY may also carry `--another`: measured with gpg 2.5.24, a post-quantum
+// (composite Kyber) subkey has two grips and decryption sends `SETKEY <first>`
+// then `SETKEY --another <second>`. The second grip is checked exactly like the
+// first; the option changes which slot it fills, not what is required of it.
+//
+// `--another` ADDS a grip to the key a plain SETKEY selected, so it is admitted
+// only on a connection whose selection is already ScopeDecrypt: after a SIGKEY
+// it would turn a sign-scoped selection into a decryption.
 func (s *session) handleSetKey(line, args string, need Scope) {
 	p := s.proxy
 	verb := nameOf(line)
 	gripArg := strings.TrimSpace(args)
+	another := false
+	if need == ScopeDecrypt {
+		if rest, ok := strings.CutPrefix(gripArg, "--another "); ok {
+			gripArg = strings.TrimSpace(rest)
+			another = true
+		}
+	}
+	prev := s.selected
+	// Any refusal below leaves the agent holding whatever it held, so the
+	// selection is cleared rather than kept: the next PKSIGN/PKDECRYPT must
+	// not act on a key this connection did not just choose.
+	s.selected = 0
+	if another && prev != ScopeDecrypt {
+		p.audit("refused: setkey --another without a key selected by setkey")
+		writeLine(s.w, "ERR 67108881 No secret key")
+		return
+	}
 	raw, err := parseGrip(strings.ToUpper(verb), gripArg)
 	if err != nil {
 		p.audit(fmt.Sprintf("refused: malformed keygrip %q", truncate(gripArg, 60)))
@@ -602,25 +702,75 @@ func (s *session) handleSetKey(line, args string, need Scope) {
 		return
 	}
 	if need&ScopeDecrypt != 0 && !g.decrypt {
-		// Unreachable today (every pinned grip carries decrypt), kept so the
-		// two arms stay symmetric and a future sign-only grip cannot slip
-		// through SETKEY.
+		// A sign-only profile pins the primary grip with ScopeSign alone, so
+		// `SETKEY <primary>` lands here.
 		p.audit("refused: " + strings.ToLower(verb) + " for a grip without the decrypt scope")
 		writeLine(s.w, "ERR 67108881 No secret key")
 		return
 	}
+	s.selected = need
 	s.forward(line)
+	if !another {
+		what := "sign"
+		if need == ScopeDecrypt {
+			what = "decrypt"
+		}
+		s.tell("SETKEYDESC A+process+in+a+snug+sandbox+asks+to+" + what +
+			"+with+your+OpenPGP+key%0Akeygrip+" + strings.ToUpper(g.grip))
+	}
 }
 
 // forward relays one command to the session's upstream connection and copies
 // the reply back verbatim, until OK or ERR. This is the arm for the commands
-// that carry no grip of their own (RESET, OPTION, SETKEYDESC, SETHASH) and for
-// the terminal PKSIGN.
+// that carry no grip of their own (RESET, SETHASH) and for the terminal PKSIGN.
 //
 // It is also the arm that reaches the agent with state from earlier commands on
 // the same session: the SIGKEY a client sent two lines ago is on THIS
 // connection, so PKSIGN finds it.
 func (s *session) forward(line string) {
+	s.exchange(line, false)
+}
+
+// handlePKDECRYPT forwards a decryption request.
+//
+// Measured against gpg-agent 2.4.4 and 2.5.24, PKDECRYPT is SERVER-DRIVEN: after the client
+// sends `PKDECRYPT`, the agent sends
+//
+//	S INQUIRE_MAXLEN 4096
+//	INQUIRE CIPHERTEXT
+//
+// and WAITS for the client to answer with a D line and an END line before it
+// produces its own `D (5:value33:...)` and `OK`.
+//
+// The proxy does not parse or interpret the ciphertext: it relays an opaque
+// blob and an opaque value. It therefore cannot say WHAT was decrypted — that
+// residual is in the package comment, not a gap this function can close.
+//
+// The command line is forwarded WITH its option, because the option selects
+// what the agent returns. Measured with `gpg --debug ipc`: gpg 2.5.24 sends
+// `PKDECRYPT --kem=PGP` for a cv25519 subkey and expects the agent to finish
+// the ECDH key derivation itself; gpg 2.4 sends a bare `PKDECRYPT` and does the
+// derivation client-side. Dropping the option made every 2.5 decryption fail
+// with `Wrong secret key used`. The proxy relays whichever form the client
+// sends, so both versions keep the protocol they negotiated with the agent.
+func (s *session) handlePKDECRYPT(line, args string) {
+	if !pkdecryptOptionAllowed(args) {
+		s.proxy.refuse(s.w, fmt.Sprintf("refused: PKDECRYPT option %q", truncate(args, 40)))
+		return
+	}
+	s.exchange(line, true)
+}
+
+// exchange sends one command upstream and copies the reply to the sandbox
+// until OK or ERR.
+//
+// An INQUIRE from the agent is a question the AGENT asks, and only one is
+// relayed: `INQUIRE CIPHERTEXT` during PKDECRYPT, whose answer is the
+// ciphertext the sandbox brought. Every other INQUIRE is answered here, never
+// shown to the sandbox — PINENTRY_LAUNCHED with END (it names the host
+// pinentry's pid and tty), anything else with CAN, which the agent turns into
+// its own ERR.
+func (s *session) exchange(line string, ciphertext bool) {
 	p := s.proxy
 	upR, upW, err := s.upstream()
 	if err != nil {
@@ -644,8 +794,38 @@ func (s *session) forward(line string) {
 		}
 		total += len(reply)
 		if total > maxReply {
-			writeLine(s.w, "ERR 0 refused by snug: reply exceeded limit")
+			s.abort("refused: agent reply exceeded the limit")
 			return
+		}
+		if isInquire(reply) {
+			if ciphertext && reply == "INQUIRE CIPHERTEXT" {
+				if err := writeLine(s.w, reply); err != nil {
+					return
+				}
+				if err := s.w.Flush(); err != nil {
+					return
+				}
+				if err := relayInquireAnswer(s.r, upW); err != nil {
+					s.abort("refused: inquire answer: " + err.Error())
+					return
+				}
+				continue
+			}
+			answer := "CAN"
+			if strings.HasPrefix(reply, "INQUIRE PINENTRY_LAUNCHED") {
+				answer = "END"
+			} else {
+				p.audit(fmt.Sprintf("cancelled agent inquiry %q", truncate(reply, 60)))
+			}
+			if err := writeLine(upW, answer); err != nil {
+				p.upstreamUnreachable(s.w, err)
+				return
+			}
+			if err := upW.Flush(); err != nil {
+				p.upstreamUnreachable(s.w, err)
+				return
+			}
+			continue
 		}
 		if err := writeLine(s.w, reply); err != nil {
 			return
@@ -656,82 +836,59 @@ func (s *session) forward(line string) {
 	}
 }
 
-// handlePKDECRYPT forwards a decryption request. This is the arm that is NOT a
-// plain forwarding loop, and getting it wrong is a deadlock on every
-// decryption.
-//
-// Measured against gpg 2.4.8, PKDECRYPT is SERVER-DRIVEN: after the client
-// sends `PKDECRYPT`, the agent sends
-//
-//	S INQUIRE_MAXLEN 4096
-//	INQUIRE CIPHERTEXT
-//
-// and WAITS for the client to answer with a D line and an END line before it
-// produces its own `D (5:value33:...)` and `OK`. So the proxy cannot
-// "copy upstream responses until OK"; it must relay the INQUIRE to the client,
-// read exactly one D + END from the client, hand that to the agent, and only
-// then resume copying.
-//
-// The proxy does not parse or interpret the ciphertext: it relays an opaque
-// blob and an opaque value. It therefore cannot say WHAT was decrypted — that
-// residual is in the package comment, not a gap this function can close.
-func (s *session) handlePKDECRYPT() {
-	p := s.proxy
+// tell sends a command of the PROXY's own upstream and discards the reply. It
+// is for lines the sandbox did not write and must not see answered.
+func (s *session) tell(line string) {
 	upR, upW, err := s.upstream()
 	if err != nil {
-		p.upstreamUnreachable(s.w, err)
 		return
 	}
-	if err := writeLine(upW, "PKDECRYPT"); err != nil {
-		p.upstreamUnreachable(s.w, err)
+	if writeLine(upW, line) != nil || upW.Flush() != nil {
 		return
 	}
-	if err := upW.Flush(); err != nil {
-		p.upstreamUnreachable(s.w, err)
-		return
-	}
-	total := 0
 	for {
-		line, err := readLine(upR)
-		if err != nil {
-			p.upstreamUnreachable(s.w, err)
+		reply, err := readLine(upR)
+		if err != nil || isTerminal(reply) {
 			return
-		}
-		total += len(line)
-		if total > maxReply {
-			writeLine(s.w, "ERR 0 refused by snug: reply exceeded limit")
-			return
-		}
-		switch {
-		case isInquire(line):
-			// Relay the INQUIRE line to the sandbox, then read its answer.
-			if err := writeLine(s.w, line); err != nil {
-				return
-			}
-			if err := s.w.Flush(); err != nil {
-				return
-			}
-			if err := relayInquireAnswer(s.r, upW, s.w); err != nil {
-				return
-			}
-		default:
-			// A D, S, # or terminal OK/ERR line: pass it through unchanged.
-			if err := writeLine(s.w, line); err != nil {
-				return
-			}
-			if isTerminal(line) {
-				return
-			}
 		}
 	}
 }
 
-// relayInquireAnswer reads the sandbox's reply to an INQUIRE — the client
-// writes one or more D lines carrying the data, then an END line — and hands it
-// to the agent verbatim. Both directions are unbounded in principle, so both
-// are bounded here: a client that never sends END must not pin a goroutine, and
-// the total data must not exceed maxReply.
-func relayInquireAnswer(r *bufio.Reader, upW *bufio.Writer, w *bufio.Writer) error {
+// pkdecryptOptionAllowed is the option set PKDECRYPT may carry: the forms gpg
+// sends, measured with `gpg --debug ipc` — bare (2.4), `--kem=PGP` (2.5, an
+// ECDH subkey) and `--kem=PQC-PGP` (2.5, a composite Kyber subkey). Anything
+// else is refused rather than forwarded. Measured against gpg-agent
+// 2.5.24: it also accepts `--kem` and `--kem=CMS`, refuses `--kem=PQC` and
+// `--kem=FOO` as "invalid KEM algorithm", and silently IGNORES an option it
+// does not know (`PKDECRYPT --bogus` went on to INQUIRE CIPHERTEXT) — so a
+// forwarded unknown option would reach a future agent that does know it,
+// unreviewed.
+func pkdecryptOptionAllowed(args string) bool {
+	switch strings.TrimSpace(args) {
+	case "", "--kem=PGP", "--kem=PQC-PGP":
+		return true
+	}
+	return false
+}
+
+// isInquireEnd reports whether a client line ends an INQUIRE answer. Measured:
+// gpg-agent 2.5.24 takes `CAN` as a cancel (`ERR 67109141 IPC call has been
+// cancelled`), and gpg-connect-agent answers an INQUIRE it has no data for with
+// `CANCEL`. A prefix test for "CANCEL" alone missed `CAN` and left the proxy
+// waiting while the client waited for the agent.
+func isInquireEnd(line string) bool {
+	return line == "END" || line == "CAN" || line == "CANCEL"
+}
+
+// relayInquireAnswer reads the sandbox's reply to an INQUIRE — D lines, then
+// END, or CAN to decline — and hands it to the agent verbatim, refusing any
+// other line. The data is
+// bounded by maxReply; the TIME is not, because the client is the one supplying
+// the ciphertext, and a silent client holds only its own connection, which
+// Close ends with the sandbox.
+//
+// The terminators are matched whole; see isInquireEnd.
+func relayInquireAnswer(r *bufio.Reader, upW *bufio.Writer) error {
 	total := 0
 	for {
 		line, err := readLine(r)
@@ -740,10 +897,18 @@ func relayInquireAnswer(r *bufio.Reader, upW *bufio.Writer, w *bufio.Writer) err
 		}
 		total += len(line)
 		if total > maxReply {
-			// Tell the agent to stop waiting, then the sandbox.
-			_ = writeLine(upW, "END")
+			return errors.New("exceeded the limit")
+		}
+		// Only data, END and CAN belong in an INQUIRE answer. Measured on
+		// gpg-agent 2.5.24: any other line aborts the INQUIRE and every line
+		// after it runs as an ordinary command — `PKDECRYPT`, `X`,
+		// `KEYINFO --list`, `END` through this proxy returned the agent's
+		// unpinned keygrips on the client's next command. So nothing else is
+		// passed on, and the session ends.
+		if !isInquireEnd(line) && !strings.HasPrefix(line, "D ") {
+			_ = writeLine(upW, "CAN")
 			_ = upW.Flush()
-			return errors.New("inquire answer exceeded limit")
+			return fmt.Errorf("line %q in an inquire answer", truncate(line, 20))
 		}
 		if err := writeLine(upW, line); err != nil {
 			return err
@@ -751,12 +916,24 @@ func relayInquireAnswer(r *bufio.Reader, upW *bufio.Writer, w *bufio.Writer) err
 		if err := upW.Flush(); err != nil {
 			return err
 		}
-		// END terminates the client's answer to the INQUIRE. CANCEL is the
-		// protocol's own way of declining, and is relayed too.
-		if strings.HasPrefix(line, "END") || strings.HasPrefix(line, "CANCEL") {
+		if isInquireEnd(line) {
 			return nil
 		}
 	}
+}
+
+// abort ends a session that has lost step with the agent: the client gets a
+// terminal ERR, the upstream connection is closed (sticky, so nothing reads the
+// rest of its reply), and the sandbox connection is closed after this command.
+func (s *session) abort(what string) {
+	s.proxy.audit(what)
+	writeLine(s.w, errForbidden)
+	if s.up != nil {
+		s.up.Close()
+		s.up = nil
+	}
+	s.upErr = errors.New(what)
+	s.ended = true
 }
 
 // upstreamUnreachable audits and answers the agent's own failure for "no key
@@ -842,8 +1019,9 @@ func hexVal(c byte) (byte, bool) {
 // ── Assuan line helpers ─────────────────────────────────────────────────────
 
 // assuanEscape percent-escapes a D-line payload: % becomes %25, LF becomes %0A
-// and CR becomes %0D. Measured against gpg 2.4.8: the agent writes a keygrip
-// containing the byte 0x0A as the three characters "%0A". A D line is
+// and CR becomes %0D, as Assuan requires of every D line, and gpg's fast-path
+// listing failed with `Invalid IPC response` through this proxy while it wrote
+// a grip's 0x0A byte raw (the contributor's live test). A D line is
 // newline-terminated, so an unescaped 0x0A would end the line early and the
 // client would read a truncated payload.
 //
@@ -948,7 +1126,8 @@ func writeLine(w *bufio.Writer, s string) error {
 // isTerminal reports whether an Assuan reply line ends the server's response
 // for the current command.
 func isTerminal(line string) bool {
-	return strings.HasPrefix(line, "OK") || strings.HasPrefix(line, "ERR")
+	return line == "OK" || strings.HasPrefix(line, "OK ") ||
+		line == "ERR" || strings.HasPrefix(line, "ERR ")
 }
 
 // isInquire reports whether a line from the agent is an INQUIRE the client must
@@ -978,11 +1157,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-func sha256Sum(b []byte) []byte {
-	sum := sha256.Sum256(b)
-	return sum[:]
-}
-
 // hexString renders bytes as lowercase hex, the form gpg prints and accepts.
 func hexString(b []byte) string {
 	const digits = "0123456789abcdef"
@@ -993,11 +1167,9 @@ func hexString(b []byte) string {
 	return string(out)
 }
 
-// rawBytesToString converts a byte slice to a string without a copy being
-// observable. Go strings are immutable, so a copy is made; this exists to name
-// the conversion rather than hide it, and is only ever used on keygrips, which
-// are public.
-func rawBytesToString(b [][20]byte) []byte {
+// concatGrips joins raw keygrips into one byte string, the HAVEKEY --list
+// payload before escaping.
+func concatGrips(b [][20]byte) []byte {
 	out := make([]byte, 0, len(b)*20)
 	for _, r := range b {
 		out = append(out, r[:]...)
@@ -1022,40 +1194,34 @@ func atoiSafe(s string) (int, error) {
 	return n, nil
 }
 
-func probeSetOptions(w *bufio.Writer, r *bufio.Reader) error {
-	// Try to mirror gpg's behavior: tell the agent about the TTY and display
-	// so it can spawn pinentry in the right context.
+func probeSetOptions(w *bufio.Writer, r *bufio.Reader, getenv func(string) string) {
+	// The startup probe's pinentry, if the key is locked, belongs on snug's own
+	// terminal or display: the sandbox does not exist yet. The options are
+	// per-connection; nothing here changes the agent's startup environment.
 	setOption := func(opt string) {
 		_ = writeLine(w, "OPTION "+opt)
 		_ = w.Flush()
-		// OPTION may return OK or ERR; consume the reply if present.
-		line, err := readLine(r)
-		if err != nil {
-			return
-		}
-		_ = line
+		_, _ = readLine(r) // OK, or ERR for an option this agent lacks
 	}
-	if v := os.Getenv("GPG_TTY"); v != "" {
+	if v := getenv("GPG_TTY"); v != "" {
 		setOption("ttyname=" + v)
-		setOption("ttytype=linux")
-		setOption("putenv=GPG_TTY=" + v)
-	} else if v := os.Getenv("TERM"); v != "" {
+	}
+	if v := getenv("TERM"); v != "" {
 		setOption("ttytype=" + v)
 	}
-	for _, key := range []string{"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP", "GNOME_DESKTOP_SESSION_ID", "DESKTOP_SESSION"} {
-		if v := os.Getenv(key); v != "" {
-			setOption(key + "=" + v)
+	if v := getenv("DISPLAY"); v != "" {
+		setOption("display=" + v)
+	}
+	if v := getenv("XAUTHORITY"); v != "" {
+		setOption("xauthority=" + v)
+	}
+	// Measured on gpg-agent 2.5.24, `OPTION DISPLAY=:9` is `Unknown option`;
+	// the variables without an OPTION name of their own travel as putenv.
+	for _, key := range []string{"WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"} {
+		if v := getenv(key); v != "" {
 			setOption("putenv=" + key + "=" + v)
 		}
 	}
-	// Some agents need this to actually use the options for the current session
-	_ = writeLine(w, "UPDATESTARTUPTTY")
-	_ = w.Flush()
-	line, err := readLine(r)
-	if err == nil {
-		_ = line
-	}
-	return nil
 }
 
 // ── the startup probe ───────────────────────────────────────────────────────
@@ -1085,7 +1251,7 @@ const probeTimeout = 5 * time.Second
 // asking on the human's behalf, before a sandbox exists, and nothing it learns
 // reaches one — the only thing said about the agent's contents in any refusal
 // is whether the PINNED grip is among them.
-func probeUpstream(upstream string, pins []grip) error {
+func probeUpstream(upstream string, pins []grip, getenv func(string) string) error {
 	deadline := time.Now().Add(probeTimeout)
 	conn, err := (&net.Dialer{Deadline: deadline}).Dial("unix", upstream)
 	if err != nil {
@@ -1108,23 +1274,10 @@ func probeUpstream(upstream string, pins []grip) error {
 		}
 	}
 	// Set up TTY/display context so the agent can spawn pinentry correctly,
-	// just like the gpg CLI does. The agent may ignore these, but without them
-	// a new Assuan connection (from a process different from gpg) often fails to
-	// start a GUI or tty pinentry with "Inappropriate ioctl for device".
-	if err := probeSetOptions(w, r); err != nil {
-		// Non-fatal: the agent might not support all options; continue and let
-		// the actual sign probe report a clearer error if pinentry fails.
-		_ = err
-	}
-	// Set up TTY/display context so the agent can spawn pinentry correctly,
-	// just like the gpg CLI does. The agent may ignore these, but without them
-	// a new Assuan connection (from a process different from gpg) often fails to
-	// start a GUI or tty pinentry with "Inappropriate ioctl for device".
-	if err := probeSetOptions(w, r); err != nil {
-		// Non-fatal: the agent might not support all options; continue and let
-		// the actual sign probe report a clearer error if pinentry fails.
-		_ = err
-	}
+	// just like the gpg CLI does. Without it a new Assuan connection (from a
+	// process other than gpg) can fail to start a GUI or tty pinentry with
+	// "Inappropriate ioctl for device".
+	probeSetOptions(w, r, getenv)
 	// One HAVEKEY per grip: the multi-grip form answers a single ERR when ANY
 	// is missing, which would not say WHICH pin the profile got wrong.
 	for _, g := range pins {
@@ -1161,7 +1314,7 @@ func probeUpstream(upstream string, pins []grip) error {
 		if !g.sign {
 			continue
 		}
-		if err := probeSign(conn, g); err != nil {
+		if err := probeSign(conn, r, w, g); err != nil {
 			return err
 		}
 	}
@@ -1169,7 +1322,8 @@ func probeUpstream(upstream string, pins []grip) error {
 }
 
 // signProbePrefix domain-separates the probe digest so the signature snug gets
-// back cannot be replayed as anything. The bytes hashed are this 17-byte prefix
+// back is not useful as a signature over anything else; snug also discards it.
+// The bytes hashed are this 17-byte prefix
 // followed by 32 bytes from crypto/rand: fresh per key, per run, and not
 // influenced by anything outside this function.
 //
@@ -1202,20 +1356,25 @@ const signProbeTimeout = 2 * time.Minute
 // It sends SIGKEY, SETKEYDESC, SETHASH and PKSIGN exactly as a client would
 // (measured order), so a host that refuses the sequence refuses the probe for
 // the same reason it would refuse the real thing.
-func probeSign(conn net.Conn, g grip) error {
+//
+// It reads and writes through the probe's own r and w: a second bufio.Reader on
+// the same conn would lose anything the first had already buffered.
+func probeSign(conn net.Conn, r *bufio.Reader, w *bufio.Writer, g grip) error {
 	nonce := make([]byte, signProbeNonceBytes)
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("generating the startup signature probe for %s: %w", g.field, err)
 	}
-	// SETHASH 10 <hex> takes the SHA-256 of the payload it is given; the agent
-	// wants the DIGEST, not the payload. Send the digest of (prefix||nonce).
-	digest := sha256Sum(append([]byte(signProbePrefix), nonce...))
+	// SETHASH <algo> <hex> takes a DIGEST, and <algo> is the OpenPGP hash id:
+	// 10 is SHA-512, so the digest must be 64 bytes. A 32-byte digest under id
+	// 10 happened to sign with ed25519 and was refused by a brainpoolP384r1
+	// key with `ERR 67109003 Invalid length` (measured, gpg-agent 2.5.24).
+	// SHA-512 is long enough for every curve and RSA size gpg generates.
+	sum := sha512.Sum512(append([]byte(signProbePrefix), nonce...))
+	digest := sum[:]
 
 	if err := conn.SetDeadline(time.Now().Add(signProbeTimeout)); err != nil {
 		return probeSignNoAnswer(g, err)
 	}
-	r := bufio.NewReaderSize(conn, 4096)
-	w := bufio.NewWriter(conn)
 	expectOK := func(cmd string) error {
 		if err := writeLine(w, cmd); err != nil {
 			return err
@@ -1274,7 +1433,7 @@ func probeSign(conn net.Conn, g grip) error {
 			"      snug asks for ONE signature at startup, over a probe digest of its own,\n"+
 			"      because it authors `gpg.format = openpgp` and `commit.gpgsign = true` in the\n"+
 			"      sandbox's ~/.gitconfig: a key the agent will not USE fails every commit inside.\n"+
-			"      Reproduce by hand:  echo snug | gpg --detach-sign -u %s\n"+
+			"      Reproduce by hand:  echo snug | gpg --detach-sign -u <the key %s names>\n"+
 			"      Or remove identity.gpg from the profile.",
 			g.field, g.grip, g.field)
 	}
@@ -1287,7 +1446,7 @@ func probeSignSignRefused(g grip, cause error, elapsed time.Duration) error {
 		"      it authors `commit.gpgsign = true` inside. A key the agent LISTS but will not\n"+
 		"      USE fails every signed commit inside with an error naming no cause.\n"+
 		"      The agent answered after %s.\n"+
-		"      Reproduce by hand:  echo snug | gpg --detach-sign -u %s\n"+
+		"      Reproduce by hand:  echo snug | gpg --detach-sign -u <the key %s names>\n"+
 		"      Or remove identity.gpg from the profile.",
 		g.field, g.grip, cause, elapsed.Round(time.Millisecond), g.field)
 }

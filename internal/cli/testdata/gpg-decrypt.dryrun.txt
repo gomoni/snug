@@ -1,0 +1,3 @@
+GPG      ~/.gnupg/S.gpg-agent is a filtering proxy to your host gpg-agent
+         key        6732361300BBFDAE7F22972CD4381E1CE2880244, the only key listed or usable
+         decrypt    anything addressed to the key that the sandbox can read
