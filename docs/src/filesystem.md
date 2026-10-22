@@ -73,6 +73,8 @@ path `/opt/$HOME`, and `$HOME/bin` is refused because it is not absolute.
 | `{target}` | the directory given on the command line, symlinks resolved, see [Host symlinks](#host-symlinks) |
 | `{target_parent}` | the parent of `{target}` |
 | `{home}` | your account's home directory (`getent passwd`), symlinks resolved, see [Host symlinks](#host-symlinks) and [The home directory](#the-home-directory) |
+| `{lbrace}` | a literal `{` |
+| `{rbrace}` | a literal `}` |
 | `~/` | `{home}/`, only as the first two characters |
 
 Variables expand in `ro`, `rw`, `tmpfs`, `symlink`, `optional`. A path

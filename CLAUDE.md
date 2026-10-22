@@ -38,8 +38,9 @@ Break any of these and the project has lost its point.
    *One exception, and it is snug's own writing, not a profile's.* Generated
    `KindData` mounts (`/etc/resolv.conf`, the identity files `~/.gitconfig`,
    `~/.ssh/config`, `known_hosts`) are assigned **directly into `p.Mounts`** at
-   the end of `Resolve` — they skip `join`, and `rejectMasking` exempts
-   `KindData` by kind. 
+   the end of `Resolve` — they skip `join`, and `rejectMasking` exempts them by
+   `Mount.Authored`, not by kind: a `KindData` file a profile writes
+   (`[[profile.NAME.file]]`) goes through `join` and is judged like any grant.
 
 2. **Deny by default.** Every visible path traces to exactly one explicit grant.
    **Corollary — wanting "X but not Y" means X was too coarse a grant.** The

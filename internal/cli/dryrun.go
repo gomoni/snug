@@ -126,6 +126,9 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 		if m.Kind == policy.KindData && m.Perms != nil && *m.Perms&0o111 != 0 {
 			kind = "exec"
 		}
+		if m.Kind == policy.KindData && !m.Authored {
+			kind = "file"
+		}
 		opt := ""
 		if m.Optional {
 			opt = " (optional)"
@@ -206,11 +209,16 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  NOT GRANTED (never mounted — these read as absent, they are not hidden;")
-	fmt.Fprintln(out, "  where it says \"host's\", snug generates its own file at that path instead):")
+	// Each line that has something else at its path says so itself ("host's;
+	// snug generates its own here", "host's; profile X writes a file here"),
+	// so the heading only has to say what the bare lines mean.
+	fmt.Fprintln(out, "  NOT GRANTED (your host's copy is not in the sandbox — not hidden, never")
+	fmt.Fprintln(out, "  mounted; a note in brackets says what is there instead):")
 	for _, line := range rep.NotGranted {
 		fmt.Fprintf(out, "    %s\n", line)
 	}
+
+	describeFiles(out, rep.Files)
 
 	fmt.Fprintln(out)
 	describeEnvironment(out, p, env)
@@ -242,6 +250,44 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	if refusedBy != nil {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "REFUSED: %v\n", refusedBy)
+	}
+}
+
+// describeFiles prints the FILES block: the full text of every file a profile
+// wrote, because the FILESYSTEM row says only that a file exists and the text is
+// what the program reading it will obey. Nothing is printed when no profile
+// wrote one, so a screen without the key is byte-identical to what it was.
+//
+// Every line and value goes through visibleValue: the text is profile text, and
+// a tab or a newline inside it must not read as a row of this screen. The hash
+// is of the bytes as written, before that escaping.
+func describeFiles(out io.Writer, files []reportFile) {
+	if len(files) == 0 {
+		return
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "FILES  (text a profile wrote; read-only 0444; snug did not write these)")
+	for _, f := range files {
+		if f.Displaced {
+			fmt.Fprintf(out, "  %s  from %s  replaced by a file snug generates; its content is not shown\n",
+				visibleValue(f.Guest), visibleValue(strings.Join(f.From, "+")))
+			continue
+		}
+		fmt.Fprintf(out, "  %s  from %s  %s, %s, sha256 %s\u2026\n", visibleValue(f.Guest),
+			visibleValue(strings.Join(f.From, "+")), plural(f.Lines, "line"), plural(f.Bytes, "byte"),
+			f.SHA256[:12])
+		for _, ph := range f.Placeholders {
+			fmt.Fprintf(out, "      %s = %s\n", visibleValue(ph.Text), visibleValue(ph.Value))
+		}
+		body := strings.TrimSuffix(f.Content, "\n")
+		if f.Content != "" {
+			for _, line := range strings.Split(body, "\n") {
+				fmt.Fprintf(out, "      | %s\n", visibleValue(line))
+			}
+		}
+		if f.NoFinalLF {
+			fmt.Fprintln(out, "      (no trailing newline)")
+		}
 	}
 }
 
@@ -3017,6 +3063,10 @@ func notGranted(p *policy.Policy) []string {
 			absent = append(absent, "~/"+c+" (host's; snug generates its own here)")
 			continue
 		}
+		if by := profileFilesAt(p, full); by != "" {
+			absent = append(absent, "~/"+c+" (host's; profile "+by+" writes a file here)")
+			continue
+		}
 		absent = append(absent, "~/"+c)
 	}
 	if len(absent) > 0 {
@@ -3158,7 +3208,10 @@ func notGranted(p *policy.Policy) []string {
 // staged by BindSocket is authored and is not KindData.
 func authored(p *policy.Policy, guest string) bool {
 	for _, m := range p.Mounts {
-		if !m.Authored {
+		// An Anchor is only the empty directory snug mounts above another
+		// mount; whatever wrote the mount beneath it is what this answers for,
+		// and a profile file's anchor would otherwise read as snug's.
+		if !m.Authored || m.Anchor {
 			continue
 		}
 		if guest == m.Guest || strings.HasPrefix(m.Guest, guest+"/") {
@@ -3166,6 +3219,26 @@ func authored(p *policy.Policy, guest string) bool {
 		}
 	}
 	return false
+}
+
+// profileFilesAt names the profiles that wrote a `file` at guest or beneath it,
+// joined with "+", and is "" when none did. It is the profile-written
+// counterpart of authored, kept separate because the two sentences differ: one
+// says snug wrote the file, the other that the profile did. Profile names are
+// grammar-checked, so they need no escaping here.
+func profileFilesAt(p *policy.Policy, guest string) string {
+	var names []string
+	for g, f := range p.Files {
+		if guest == g || strings.HasPrefix(g, guest+"/") {
+			for _, n := range f.From {
+				if !slices.Contains(names, string(n)) {
+					names = append(names, string(n))
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	return strings.Join(names, "+")
 }
 
 // covered reports whether a host path is reachable through some grant.

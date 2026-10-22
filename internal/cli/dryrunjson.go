@@ -352,6 +352,9 @@ type jsonDoc struct {
 	ChdirBytes       byteList     `json:"chdir_bytes,omitempty"`
 	Profiles         jsonProfiles `json:"profiles"`
 	Mounts           []jsonMount  `json:"mounts"`
+	// Files is the FILES block: the text of every `file` a profile wrote.
+	// Absent when none did, so a document without the key is unchanged.
+	Files []jsonFile `json:"files,omitempty"`
 	// EngineView is the grafts array. The Go field avoids the name `Grafts`
 	// for the same reason jsonMount.SnugAuthored avoids `Authored`: policy's
 	// TestOnlyGraftWritesGrafts greps the module for an assignment to a
@@ -426,6 +429,25 @@ type jsonRefusal struct {
 type jsonProfiles struct {
 	Selected []string `json:"selected"`
 	Implied  []string `json:"implied"`
+}
+
+// jsonFile is one profile-written file. Content is the text as written, and
+// SHA256 is the full digest of its bytes. It is text the profile author wrote
+// and is printed whole on purpose; see reportFile.
+type jsonFile struct {
+	Guest        string            `json:"guest"`
+	From         []string          `json:"from"`
+	Bytes        int               `json:"bytes"`
+	SHA256       string            `json:"sha256"`
+	Content      string            `json:"content"`
+	Placeholders []jsonPlaceholder `json:"placeholders"`
+	// Displaced: snug's own file replaced this one; content is not shown.
+	Displaced bool `json:"displaced,omitempty"`
+}
+
+type jsonPlaceholder struct {
+	Text  string `json:"text"`
+	Value string `json:"value"`
 }
 
 // jsonMount is one grant. The field set is the FILESYSTEM block's, with two
@@ -913,6 +935,15 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 		jm.Guest, jm.GuestBytes = e.text(m.Guest)
 		jm.Host, jm.HostBytes = e.text(m.Host)
 		doc.Mounts = append(doc.Mounts, jm)
+	}
+
+	for _, f := range rep.Files {
+		jf := jsonFile{Guest: f.Guest, From: f.From, Bytes: f.Bytes, SHA256: f.SHA256,
+			Content: f.Content, Placeholders: []jsonPlaceholder{}, Displaced: f.Displaced}
+		for _, ph := range f.Placeholders {
+			jf.Placeholders = append(jf.Placeholders, jsonPlaceholder{Text: ph.Text, Value: ph.Value})
+		}
+		doc.Files = append(doc.Files, jf)
 	}
 
 	doc.EngineView = make([]jsonGraft, 0, len(rep.Grafts))

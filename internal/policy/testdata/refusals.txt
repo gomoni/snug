@@ -54,10 +54,24 @@ home directory /home/h\x1b[2K\x1b[1Asnug: verified safe\u202e resolves through t
       If you made that link, make the account's home directory (getent passwd field 6) /data/u\x1b[2K\x1b[1Asnug: verified safe\u202e itself (usermod -d). If you did not, delete it and treat everything near it as sandbox-written.
 
 == join_conflict_different_content ==
-conflict at /generated: two different generated contents (from gen-a and from gen-b)
+conflict at /generated: two different file contents (from gen-a and from gen-b); select one
 
 == join_conflict_different_perms ==
 conflict at /generated: mode 0600 (from gen-a) and 0644 (from gen-b)
+
+== profile_file_under_a_bind ==
+profile gitconf puts a file the profile writes at /etc/gitconfig, which is inside /etc from profile @sys.
+       That hides what /etc already exposes there, and profiles may only ever grant.
+       Grant the parts of /etc you meant instead of masking the parts you did not.
+
+== profile_file_outside_the_include_closure ==
+profile "conf": file /etc/gitconfig, line 1: {profile.id.identity.ssh.host} names "id", which is neither "conf" nor a profile it includes, so the text would depend on what else the run selects. Add include = ["id"] to "conf", or write the value.
+
+== profile_file_unknown_placeholder ==
+profile "conf": file /etc/gitconfig, line 2: unknown placeholder {homee}: the placeholders are {home}, {lbrace}, {rbrace}, {target_parent}, {target} and {profile.NAME.KEY} with KEY one of identity.gh.host, identity.gh.user, identity.git.email, identity.git.name, identity.kubectl.context, identity.kubectl.credential, identity.kubectl.server, identity.ssh.agent, identity.ssh.host
+
+== profile_file_displaced_by_a_generated_file ==
+profile conf writes a file at /home/u/.gitconfig, but snug generates that file for this selection (from identity:id+replaces:conf). A profile file never replaces a generated one. write path = "/etc/gitconfig": git reads that system-scope file below the generated global one, and snug's pins (user, signing, insteadOf, safe.directory) still win there.
 
 == kind_conflict_tmpfs_over_sys_bind ==
 conflict at /usr: bind (from @sys) vs tmpfs (from hide-ssl).

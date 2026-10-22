@@ -345,6 +345,13 @@ func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map
 			}
 			guests = append(guests, filepath.Clean(g))
 		}
+		for _, f := range prof.File {
+			g, err := expandVars(f.Path, vars)
+			if err != nil {
+				continue
+			}
+			guests = append(guests, filepath.Clean(g))
+		}
 		for _, s := range prof.Symlink {
 			at, err := expandVars(s.At, vars)
 			if err != nil {

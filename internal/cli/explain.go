@@ -82,11 +82,15 @@ func explainWhat(out io.Writer, p *policy.Policy) {
 // would be surprised by: what is WRITABLE. A read-only grant is the boring
 // case; a writable one is a decision.
 func explainFilesystem(out io.Writer, p *policy.Policy) {
-	var rw, ro, generated int
+	var rw, ro, generated, written int
 	var writable []string
 	for _, m := range p.SortedMounts() {
 		if m.Kind == policy.KindData {
-			generated++
+			if m.Authored {
+				generated++
+			} else {
+				written++
+			}
 			continue
 		}
 		if m.Access == policy.AccessRW {
@@ -104,6 +108,10 @@ func explainFilesystem(out io.Writer, p *policy.Policy) {
 		plural(ro, "path"), rw)
 	fmt.Fprintf(out, "  %s snug generates itself rather than binding from your host.\n",
 		plural(generated, "file"))
+	if written > 0 {
+		fmt.Fprintf(out, "  %s your profiles wrote, read-only (see FILES in --dry-run).\n",
+			plural(written, "file"))
+	}
 	fmt.Fprintln(out, "  Everything else on this machine is not missing by a rule — it was never")
 	fmt.Fprintln(out, "  granted, so there is nothing there to deny.")
 	if len(writable) > 0 {

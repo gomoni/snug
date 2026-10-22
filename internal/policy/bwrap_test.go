@@ -94,6 +94,11 @@ func goldenCases() []goldenCase {
 		// a host element reaching either operand would show here: nothing in
 		// the selection inherits or sanitises them.
 		{"declared", declaredProbeSelection(), testCtx(), declaredProbeEnv},
+		// The review artifact for `file`: no prior golden selects a profile
+		// that writes one. The reviewable lines are the `--perms 0444` /
+		// `--ro-bind-data` pair for the file, inside @home's tmpfs, and the
+		// absence of any host path behind it.
+		{"profile-file", append(append([]ProfileName{}, testDefaults...), "filed"), testCtx(), nil},
 	}
 }
 

@@ -1,7 +1,7 @@
 package policy
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -154,5 +154,6 @@ func VisibleText(s string) string {
 	if utf8.ValidString(s) && !strings.ContainsFunc(s, IsForgingRune) {
 		return s
 	}
-	return strings.Trim(fmt.Sprintf("%q", s), `"`)
+	q := strconv.Quote(s)
+	return q[1 : len(q)-1]
 }

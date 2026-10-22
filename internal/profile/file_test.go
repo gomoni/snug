@@ -707,6 +707,7 @@ func TestNoTOMLKeyProducesATopology(t *testing.T) {
 		nil, // RW
 		nil, // Tmpfs
 		nil, // Symlink
+		nil, // File
 		nil, // Optional
 		nil, // Plugins
 		nil, // ListenNames
