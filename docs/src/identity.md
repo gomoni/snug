@@ -190,6 +190,54 @@ keeps one selected key per connection whichever verb selected it, so the proxy
 also checks that the signing or decrypting command follows a selection made
 for that purpose.
 
+#### Your gpg.conf
+
+The gpg client inside makes the digest, cipher and trust choices your host's
+gpg makes. snug reads your `gpg.conf` (the one gpg reads: `gpg.conf-<version>`
+first, as gpg does) and the system-wide one in gpg's sysconfdir
+(`/etc/gnupg/gpg.conf`), and writes the sandbox its own copy of each holding
+only these options:
+
+- digest and cipher choices: `personal-digest-preferences`,
+  `personal-cipher-preferences`, `personal-aead-preferences`, `digest-algo`,
+  `cert-digest-algo`, `cipher-algo`, `aead-algo`, `s2k-mode`, `s2k-digest-algo`,
+  `s2k-cipher-algo`, `s2k-count`, `force-aead`, `no-symkey-cache`
+- what verification rejects: `weak-digest`, `disable-cipher-algo`,
+  `disable-pubkey-algo`, `assert-pubkey-algo`, `require-cross-certification`,
+  `require-backsigs`, `require-secmem`, `require-pqc-encryption`
+- compliance and trust: `compliance`, `require-compliance`, `trust-model`,
+  `completes-needed`, `marginals-needed`, `max-cert-depth`, `min-cert-level`,
+  `trusted-key`, `tofu-default-policy`, `assert-signer`
+- what an encrypted message gives away: `throw-keyids`, `no-throw-keyids`,
+  `disable-signer-uid`, `personal-compress-preferences`, `compress-algo`,
+  `compress-level`, `bzip2-compress-level`, `no-compress`
+- gpg's other spellings of the above: `personal-cipher-prefs`,
+  `personal-compress-prefs`, `compression-algo`, `force-ocb`, `use-ocb-sym`,
+  and the compliance shortcuts `gnupg`, `openpgp`, `rfc2440`, `rfc4880`,
+  `rfc4880bis`, `pgp6`, `pgp7`, `pgp8`, `no-pgp2`, `no-pgp6`, `no-pgp7`,
+  `no-pgp8`
+
+Each line keeps your spelling and your file's order. gpg's `[force]` locks one
+spelling, not the option behind it, so rewriting `openpgp` to
+`compliance openpgp` would change what a forced line overrides. `trusted-key`
+and `assert-signer` are carried only as key IDs or fingerprints: gpg also
+accepts a file name there, and a file inside the sandbox is not your file.
+
+The sandbox's own `gpg.conf` also ends with `disable-dirmngr`, which snug adds
+itself. The sandbox's keyring is read-only, so a key looked up over the network
+could never be imported, and the lookup would only tell the network which
+address you asked about.
+
+The system file's `[force]`, `[ignore]` and `[ignore-all]` lines are kept in
+place, so gpg inside applies them as yours does. Everything else stays behind:
+options that run a program (`exec-path`, `photo-viewer`), that reach the
+network (`keyserver`, `auto-key-retrieve`, `auto-key-locate`), and the
+relaxations (`allow-weak-digest-algos`, `always-trust`, and the like). Without a
+relaxation, gpg inside is stricter than yours, never looser.
+
+If snug cannot read either file, or a kept option has a value it cannot write
+back exactly, it refuses to start and names the file and line.
+
 A hostile process inside the sandbox can use this block to sign anything as you
 with the pinned signing subkey, and to decrypt anything addressed to the pinned
 encryption subkey that it can read, for as long as the run lasts. It cannot

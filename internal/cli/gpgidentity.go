@@ -170,7 +170,8 @@ func gpgPins(fingerprint, scope string, g gpgGrips) ([]gpgproxy.PinnedGrip, erro
 }
 
 // startGPGIdentity is what identity.gpg needs from the host: the Assuan proxy
-// to the host gpg-agent and the pinned key's PUBLIC keyring.
+// to the host gpg-agent, the pinned key's PUBLIC keyring, and gpg.conf files
+// generated from the host's (probeGPGConf).
 //
 // ~/.gnupg itself (a 0700 tmpfs) and GNUPGHOME are Resolve's; this stages what
 // needs host state inside it.
@@ -209,6 +210,11 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 				"therefore has no pubring.kbx row)")
 		} else {
 			stageGPGKeyring(pol, keyring)
+		}
+		if cerr := probeAndStageGPGConf(pol, verbose); cerr != nil {
+			fmt.Fprintln(os.Stderr, "snug: "+cerr.Error())
+			fmt.Fprintln(os.Stderr, "      (dry run: continuing; a real run refuses here, and the "+
+				"FILESYSTEM block below therefore has no gpg.conf row)")
 		}
 		pol.BindSocket(sock, pol.Home+"/"+policy.GPGAgentSocketGuest,
 			identityProvenance(pol, "gpg"))
@@ -263,6 +269,10 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		return nil, kerr
 	}
 	stageGPGKeyring(pol, keyring)
+	if err := probeAndStageGPGConf(pol, verbose); err != nil {
+		cleanup()
+		return nil, err
+	}
 
 	pol.BindSocket(sock, pol.Home+"/"+policy.GPGAgentSocketGuest,
 		identityProvenance(pol, "gpg"))

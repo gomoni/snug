@@ -19,12 +19,14 @@ const goldenGPGFingerprint = "6732361300BBFDAE7F22972CD4381E1CE2880244"
 // gpgGoldenPolicy resolves the builtin defaults plus one profile pinning
 // goldenGPGFingerprint with the given scope, and stages what a dry run stages:
 // the agent socket from startGPGIdentity and, standing in for the host's
-// `gpg --export`, a fixed keyring. The host gpg is pointed at an empty
-// throwaway GNUPGHOME so nothing on the machine running the suite is read.
+// `gpg --export`, a fixed keyring. gpg and gpgconf are fakeGPGConfHost's, over
+// an empty homedir and sysconfdir, so nothing on the machine running the suite
+// is read and the generated gpg.conf row is the same on every machine.
 func gpgGoldenPolicy(t *testing.T, scope string) *policy.Policy {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("GNUPGHOME", shortGnupgHome(t))
+	fakeGPGConfHost(t, "2.5.24")
 	reg, err := profile.Builtins()
 	if err != nil {
 		t.Fatal(err)

@@ -33,6 +33,7 @@ FILESYSTEM  (deny-by-default; every line is a grant, there are no deny rules)
   tmpfs  /home/u/.local (max 1 GiB)                     (snug anchor)
   tmpfs  /home/u/proj (max 1 GiB)                       (snug anchor)
   rw     /home/u/.gnupg/S.gpg-agent (from /run/user/1000/snug/run-N/gpg-agent.sock) identity:signer
+  data   /home/u/.gnupg/gpg.conf                        identity:signer
   data   /home/u/.gnupg/pubring.kbx                     identity:signer
   tmpfs  /home/u/.local/share (max 1 GiB)               @home
   tmpfs  /home/u/.local/state (max 1 GiB)               @home
