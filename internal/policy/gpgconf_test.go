@@ -7,11 +7,13 @@ import (
 	"testing"
 )
 
-// carriedLines is the non-comment, non-blank lines of a generated gpg.conf.
+// carriedLines is the non-comment, non-blank lines of a generated gpg.conf
+// that came from the host: snug's own trailing disable-dirmngr is left out
+// (TestGPGConfUserFileDisablesDirmngr holds it).
 func carriedLines(b []byte) []string {
 	var out []string
 	for l := range strings.SplitSeq(string(b), "\n") {
-		if l != "" && !strings.HasPrefix(l, "#") {
+		if l != "" && !strings.HasPrefix(l, "#") && l != "disable-dirmngr" {
 			out = append(out, l)
 		}
 	}
@@ -198,15 +200,16 @@ func TestGoldenGPGConf(t *testing.T) {
 // allowlisted spelling, or refused.
 func TestGPGConfFromCarriesWhatTheRedTeamSawDropped(t *testing.T) {
 	for _, tc := range []struct{ src, want string }{
-		{"personal-cipher-prefs AES128\n", "personal-cipher-preferences AES128"},
-		{"force-ocb\n", "force-aead"},
-		{"use-ocb-sym\n", "force-aead"},
+		// Carried as written: [force] locks a spelling (TestGPGConfKeepsTheHostsSpelling).
+		{"personal-cipher-prefs AES128\n", "personal-cipher-prefs AES128"},
+		{"force-ocb\n", "force-ocb"},
+		{"use-ocb-sym\n", "use-ocb-sym"},
 		{"digest-algo\vSHA256\n", "digest-algo SHA256"},
 		{"weak-digest\fSHA224\n", "weak-digest SHA224"},
 		{"personal-cipher-preferences\rAES128\n", "personal-cipher-preferences AES128"},
 		{"force-aead\v\n", "force-aead"},
 		// The last compliance wins on the host, so it must be the last here.
-		{"compliance openpgp\ngnupg\n", "compliance openpgp\ncompliance gnupg"},
+		{"compliance openpgp\ngnupg\n", "compliance openpgp\ngnupg"},
 	} {
 		got, err := GPGConfFrom([]byte(tc.src), "/h/gpg.conf", false)
 		if err != nil {
@@ -238,7 +241,7 @@ func TestGPGConfSummaryNamesDropsNotValues(t *testing.T) {
 	src := []byte("keyserver hkps://keys.example\nexec-path /tmp\n" +
 		"personal-cipher-prefs AES256\nkeyserver hkps://other\nopenpgp\n")
 	carried, dropped := GPGConfSummary(src, false)
-	if strings.Join(carried, " ") != "personal-cipher-preferences compliance" {
+	if strings.Join(carried, " ") != "personal-cipher-prefs openpgp" {
 		t.Errorf("carried = %q", carried)
 	}
 	if strings.Join(dropped, " ") != "keyserver exec-path" {
@@ -251,5 +254,95 @@ func TestGPGConfSummaryNamesDropsNotValues(t *testing.T) {
 	}
 	if c, d := GPGConfSummary([]byte("digest-algo \"x\n"), false); c != nil || d != nil {
 		t.Errorf("a refused file summarised as %q / %q", c, d)
+	}
+}
+
+// TestGPGConfUserFileDisablesDirmngr: the user file always ends with snug's
+// disable-dirmngr, whatever the host sets (red team: with the host's
+// no-auto-key-locate left behind, gpg inside did a WKD lookup through a
+// dirmngr it started itself). The system file does not carry it: it is the
+// user file's line, after everything the host wrote.
+func TestGPGConfUserFileDisablesDirmngr(t *testing.T) {
+	for _, src := range []string{"", "no-auto-key-locate\n", "digest-algo SHA256\n"} {
+		got, err := GPGConfFrom([]byte(src), "/h/gpg.conf", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(string(got), "\ndisable-dirmngr\n") {
+			t.Errorf("user file from %q does not end in disable-dirmngr:\n%s", src, got)
+		}
+	}
+	got, err := GPGConfFrom([]byte("digest-algo SHA256\n"), "/etc/gnupg/gpg.conf", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "\ndisable-dirmngr") {
+		t.Errorf("the system file carries disable-dirmngr:\n%s", got)
+	}
+}
+
+// TestGPGConfKeepsTheHostsSpelling: aliases and compliance shortcuts are
+// carried as written, never rewritten. gpg's [force] locks one option-table
+// entry, and a shortcut is a different entry from `compliance`: measured by
+// the red team, system `[force] openpgp` + user `compliance gnupg` gave
+// AES256/SHA-256 on the host and 3DES/SHA-1 in the sandbox once both had been
+// rewritten to `compliance`. no-pgp2/6/7/8 are shortcuts too (they set
+// compliance back to gnupg) and were dropped before.
+func TestGPGConfKeepsTheHostsSpelling(t *testing.T) {
+	sys, err := GPGConfFrom([]byte("[force]\nopenpgp\npersonal-cipher-preferences AES\n"), "/etc/gnupg/gpg.conf", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(carriedLines(sys), "|"); got != "[force]|openpgp|personal-cipher-preferences AES" {
+		t.Errorf("system file carried %q", got)
+	}
+	user, err := GPGConfFrom([]byte("compliance gnupg\nno-pgp6\npersonal-cipher-prefs AES256\n"+
+		"personal-compress-prefs Uncompressed\ncompression-algo none\nuse-ocb-sym\n"), "/h/gpg.conf", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "compliance gnupg|no-pgp6|personal-cipher-prefs AES256|personal-compress-prefs Uncompressed|" +
+		"compression-algo none|use-ocb-sym"
+	if got := strings.Join(carriedLines(user), "|"); got != want {
+		t.Errorf("user file carried %q, want %q", got, want)
+	}
+}
+
+// TestGPGConfCarriesWhatAMessageLeaks: throw-keyids, disable-signer-uid and
+// the compression choices are carried (red team: the host wrote keyid
+// 0000000000000000 and no compressed packet; the sandbox wrote the real key
+// ID and compressed with algo 2 while these were dropped).
+func TestGPGConfCarriesWhatAMessageLeaks(t *testing.T) {
+	src := "throw-keyids\ndisable-signer-uid\ncompress-algo none\ncompress-level 0\n" +
+		"bzip2-compress-level 0\npersonal-compress-preferences Uncompressed\nno-compress\nno-throw-keyids\n"
+	got, err := GPGConfFrom([]byte(src), "/h/gpg.conf", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := carriedLines(got); strings.Join(lines, "\n")+"\n" != src {
+		t.Errorf("carried %q, want every line of %q", lines, src)
+	}
+}
+
+// TestGPGConfKeyIDOptionsRefuseAFileName: assert-signer and trusted-key also
+// take a FILE name to gpg (red team: `assert-signer signers.txt` read
+// ./signers.txt, which inside the sandbox is the project directory). snug
+// carries the key-ID form and refuses anything else rather than drop the
+// host's check.
+func TestGPGConfKeyIDOptionsRefuseAFileName(t *testing.T) {
+	for _, ok := range []string{
+		"assert-signer 6732361300BBFDAE7F22972CD4381E1CE2880244\n",
+		"assert-signer 0x6732361300BBFDAE7F22972CD4381E1CE2880244, D4381E1CE2880244\n",
+		"trusted-key 0xD4381E1CE2880244\n",
+	} {
+		if _, err := GPGConfFrom([]byte(ok), "/h/gpg.conf", false); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"assert-signer signers.txt\n", "trusted-key keys.d\n", "assert-signer ABC\n"} {
+		_, err := GPGConfFrom([]byte(bad), "/h/gpg.conf", false)
+		if err == nil || !strings.Contains(err.Error(), "not a key ID or fingerprint") {
+			t.Errorf("%q = %v, want the key-ID refusal", bad, err)
+		}
 	}
 }

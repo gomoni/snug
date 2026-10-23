@@ -208,10 +208,25 @@ only these options:
 - compliance and trust: `compliance`, `require-compliance`, `trust-model`,
   `completes-needed`, `marginals-needed`, `max-cert-depth`, `min-cert-level`,
   `trusted-key`, `tofu-default-policy`, `assert-signer`
+- what an encrypted message gives away: `throw-keyids`, `no-throw-keyids`,
+  `disable-signer-uid`, `personal-compress-preferences`, `compress-algo`,
+  `compress-level`, `bzip2-compress-level`, `no-compress`
+- gpg's other spellings of the above: `personal-cipher-prefs`,
+  `personal-compress-prefs`, `compression-algo`, `force-ocb`, `use-ocb-sym`,
+  and the compliance shortcuts `gnupg`, `openpgp`, `rfc2440`, `rfc4880`,
+  `rfc4880bis`, `pgp6`, `pgp7`, `pgp8`, `no-pgp2`, `no-pgp6`, `no-pgp7`,
+  `no-pgp8`
 
-gpg's other spellings of these (`personal-cipher-prefs`, `force-ocb`, and the
-compliance shortcuts such as `openpgp`) are carried too, rewritten to the names
-above, in your file's order.
+Each line keeps your spelling and your file's order. gpg's `[force]` locks one
+spelling, not the option behind it, so rewriting `openpgp` to
+`compliance openpgp` would change what a forced line overrides. `trusted-key`
+and `assert-signer` are carried only as key IDs or fingerprints: gpg also
+accepts a file name there, and a file inside the sandbox is not your file.
+
+The sandbox's own `gpg.conf` also ends with `disable-dirmngr`, which snug adds
+itself. The sandbox's keyring is read-only, so a key looked up over the network
+could never be imported, and the lookup would only tell the network which
+address you asked about.
 
 The system file's `[force]`, `[ignore]` and `[ignore-all]` lines are kept in
 place, so gpg inside applies them as yours does. Everything else stays behind:

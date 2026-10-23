@@ -169,8 +169,9 @@ func TestStageGPGConfMountsBothFilesGenerated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for guest, want := range map[string]string{
-		"/etc/gnupg/gpg.conf":            "[force]\nweak-digest SHA224\n",
-		"/home/u/" + policy.GPGConfGuest: "\npersonal-digest-preferences SHA256\n",
+		"/etc/gnupg/gpg.conf": "[force]\nweak-digest SHA224\n",
+		"/home/u/" + policy.GPGConfGuest: "\npersonal-digest-preferences SHA256\n\n" +
+			"# snug: no dirmngr — the sandbox's keyring is read-only.\ndisable-dirmngr\n",
 	} {
 		m, ok := pol.Mounts[guest]
 		if !ok {

@@ -25,11 +25,23 @@ const (
 // signs, which cipher encrypts, which digests a signature may not use, which
 // trust model and compliance mode decide validity.
 //
+// It also carries the choices that decide what an encrypted message LEAKS:
+// `throw-keyids` (measured: the host wrote keyid 0000000000000000, the
+// sandbox the real key ID until it was carried), `disable-signer-uid`, and
+// compression, which hosts turn off against compression-before-encryption
+// side channels (`compress-algo none` measured: no compressed packet on the
+// host, `compressed packet: algo=2` in the sandbox until carried).
+//
 // It is an ALLOWLIST because gpg.conf is partly a command table: `exec-path`,
 // `photo-viewer` and `verify-options show-photos` name programs to run, and
 // `keyserver`, `keyserver-options`, `auto-key-retrieve` and `auto-key-locate`
-// send the sandbox to the network on gpg's initiative. None of those, and
-// nothing naming a file or socket, is on this list.
+// send the sandbox to the network on gpg's initiative. None of those is on
+// this list, and nothing naming a file or socket: `assert-signer` and
+// `trusted-key` also accept a FILE name (measured: `assert-signer signers.txt`
+// read ./signers.txt), so they carry hex key IDs only (gpgConfHexOptions).
+// Leaving the network ones behind is not enough on its own — gpg's DEFAULT
+// does a WKD lookup through a dirmngr it starts itself — so the user file
+// always ends in `disable-dirmngr` (renderGPGConf).
 //
 // The `allow-*` relaxations and their kin (`allow-weak-digest-algos`,
 // `allow-weak-key-signatures`, `allow-old-cipher-algos`, `ignore-mdc-error`,
@@ -43,13 +55,15 @@ const (
 // second-guessing one.
 //
 // Dropping a line is safe only if no carried line depends on it, and two kinds
-// of gpg option do: an ALIAS of a carried option (gpgConfAliases) and a
-// SHORTCUT that sets a carried option's value (gpgConfShortcuts). Both are
-// rewritten to the carried spelling in place, so the host's last-one-wins
-// order survives. Measured by the red team on gpg 2.5.24: a dropped
-// `personal-cipher-prefs AES128` left the sandbox encrypting with AES256, and
-// a dropped `gnupg` after a carried `compliance openpgp` left `gpg -c` inside
-// on 3DES and SHA-1 where the host used AES256 and SHA-256.
+// of gpg option do: an ALIAS of a carried option (`personal-cipher-prefs`) and
+// a SHORTCUT that sets a carried option's value (`gnupg`, `openpgp`, `no-pgp6`
+// … set `compliance`). Both are carried AS WRITTEN, never rewritten to the
+// canonical spelling: gpg records `[force]` per option-table entry, and an
+// alias or a shortcut is a different entry from the option it sets. Measured
+// by the red team on gpg 2.5.24: system `[force] openpgp` with user
+// `compliance gnupg` gave AES256/SHA-256 on the host and, once both were
+// rewritten to `compliance`, 3DES/SHA-1 in the sandbox; a dropped
+// `personal-cipher-prefs AES128` or `gnupg` gave the same class of downgrade.
 //
 // A hostile process inside is not bound by any of this — it can point gpg at a
 // GNUPGHOME of its own. The files exist so that git and every other HONEST
@@ -80,6 +94,11 @@ var GPGConfOptions = map[string]bool{
 	"tofu-default-policy":         true,
 	"assert-signer":               true,
 
+	"personal-compress-preferences": true,
+	"compress-algo":                 true,
+	"compress-level":                true,
+	"bzip2-compress-level":          true,
+
 	"require-compliance":          false,
 	"require-cross-certification": false,
 	"require-backsigs":            false,
@@ -87,28 +106,56 @@ var GPGConfOptions = map[string]bool{
 	"require-pqc-encryption":      false,
 	"force-aead":                  false,
 	"no-symkey-cache":             false,
+	"throw-keyids":                false,
+	"no-throw-keyids":             false,
+	"disable-signer-uid":          false,
+	"no-compress":                 false,
+
+	// Aliases, as `gpg --dump-options` lists them.
+	"personal-cipher-prefs":   true,
+	"personal-compress-prefs": true,
+	"compression-algo":        true,
+	"force-ocb":               false,
+	"use-ocb-sym":             false,
+
+	// Compliance shortcuts: each sets `compliance` (no-pgpN back to gnupg).
+	"gnupg":      false,
+	"openpgp":    false,
+	"rfc2440":    false,
+	"rfc4880":    false,
+	"rfc4880bis": false,
+	"pgp6":       false,
+	"pgp7":       false,
+	"pgp8":       false,
+	"no-pgp2":    false,
+	"no-pgp6":    false,
+	"no-pgp7":    false,
+	"no-pgp8":    false,
 }
 
-// gpgConfAliases maps each second spelling `gpg --dump-options` lists for a
-// carried option to the option it is.
-var gpgConfAliases = map[string]string{
-	"personal-cipher-prefs": "personal-cipher-preferences",
-	"force-ocb":             "force-aead",
-	"use-ocb-sym":           "force-aead",
-}
+// gpgConfHexOptions take a key ID or fingerprint — and, to gpg, alternatively
+// a file name. snug carries the key-ID form only.
+var gpgConfHexOptions = map[string]bool{"trusted-key": true, "assert-signer": true}
 
-// gpgConfShortcuts maps each argument-less compliance shortcut `gpg
-// --dump-options` lists to the `compliance` line it sets: a `gnupg` after
-// `compliance openpgp` overrode it on the host (measured, above).
-var gpgConfShortcuts = map[string]string{
-	"gnupg":      "compliance gnupg",
-	"openpgp":    "compliance openpgp",
-	"rfc2440":    "compliance rfc2440",
-	"rfc4880":    "compliance rfc4880",
-	"rfc4880bis": "compliance rfc4880bis",
-	"pgp6":       "compliance pgp6",
-	"pgp7":       "compliance pgp7",
-	"pgp8":       "compliance pgp8",
+// gpgConfHexOK is one or more key IDs or fingerprints (8 to 64 hex digits,
+// optional 0x), separated by blanks or commas.
+func gpgConfHexOK(v string) bool {
+	fields := strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == ',' })
+	if len(fields) == 0 {
+		return false
+	}
+	for _, f := range fields {
+		f = strings.TrimPrefix(strings.TrimPrefix(f, "0x"), "0X")
+		if len(f) < 8 || len(f) > 64 {
+			return false
+		}
+		for _, r := range f {
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // gpgConfBlanks is what gpg takes as the gap between an option and its
@@ -224,13 +271,6 @@ func gpgConfRead(src []byte, host string, system bool) (carried, dropped []strin
 				"digits and dashes), so snug cannot tell which option the host's gpg reads it as; "+
 				"fix or remove the line", where, VisibleText(name))
 		}
-		if short, ok := gpgConfShortcuts[name]; ok && arg == "" {
-			carried = append(carried, short)
-			continue
-		}
-		if canonical, ok := gpgConfAliases[name]; ok {
-			name = canonical
-		}
 		takesArg, ok := GPGConfOptions[name]
 		if !ok {
 			if !slices.Contains(dropped, name) {
@@ -249,6 +289,11 @@ func gpgConfRead(src []byte, host string, system bool) (carried, dropped []strin
 		case takesArg && arg == "":
 			return nil, nil, fmt.Errorf("%s: %s needs an argument. The host's gpg refuses this "+
 				"line too (\"missing argument\"); give it one or remove it", where, name)
+		case takesArg && gpgConfHexOptions[name] && !gpgConfHexOK(arg):
+			return nil, nil, fmt.Errorf("%s: %s %q is not a key ID or fingerprint. gpg also reads "+
+				"a FILE name here, and a file in the sandbox is not the host's file, so snug "+
+				"carries key IDs only; leaving the line out would drop the host's check. "+
+				"Write the fingerprints in gpg.conf", where, name, VisibleText(arg))
 		case takesArg && !gpgConfValueOK(arg):
 			return nil, nil, fmt.Errorf("%s: %s %q is not shaped like an algorithm list, a "+
 				"number or a key ID, so snug will not write it into the sandbox's gpg.conf, "+
@@ -329,19 +374,30 @@ func renderGPGConf(host string, system bool, carried []string) []byte {
 	}
 	fmt.Fprintf(&b, "# %s.\n", VisibleText(host))
 	b.WriteString("#\n")
-	b.WriteString("# Only cryptographic and trust choices are carried (digest, cipher,\n")
-	b.WriteString("# weak-digest, compliance, trust model), each line written by snug.\n")
+	b.WriteString("# Only cryptographic, trust and leak choices are carried (digest,\n")
+	b.WriteString("# cipher, weak-digest, compliance, trust model, key-ID hiding,\n")
+	b.WriteString("# compression), each line written by snug.\n")
 	b.WriteString("# Options that run a program or reach the network (exec-path,\n")
 	b.WriteString("# photo-viewer, keyserver, auto-key-retrieve, auto-key-locate) and\n")
 	b.WriteString("# the allow-* relaxations are left behind.\n")
 	if len(carried) == 0 {
 		b.WriteString("#\n# The host's file sets none of the carried options.\n")
-		return []byte(b.String())
-	}
-	b.WriteString("\n")
-	for _, l := range carried {
-		b.WriteString(l)
+	} else {
 		b.WriteString("\n")
+		for _, l := range carried {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+	}
+	if !system {
+		// snug's own line, not the host's. gpg's DEFAULT auto-key-locate does a
+		// WKD lookup through a dirmngr it starts itself (measured inside: with
+		// the host's no-auto-key-locate left behind, encrypting to
+		// wk@gnupg.org fetched over WKD and failed only at "no writable
+		// keyring found"). The staged keyring is read-only, so no lookup can
+		// import anything: what one does is tell the network which address
+		// the sandbox asked about. Nothing that works inside is lost.
+		b.WriteString("\n# snug: no dirmngr — the sandbox's keyring is read-only.\ndisable-dirmngr\n")
 	}
 	return []byte(b.String())
 }

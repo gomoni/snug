@@ -507,7 +507,7 @@ func TestIdentityGPGCarriesHostGPGConf(t *testing.T) {
 	h := newGPGHost(t)
 	proj, _ := target(t)
 	// personal-cipher-prefs is gpg's alias for personal-cipher-preferences:
-	// snug must carry it under the long name, not drop it as unknown.
+	// snug must carry it, as written, not drop it as unknown.
 	conf := "personal-digest-preferences SHA256\nweak-digest SHA224\npersonal-cipher-prefs AES128\n" +
 		"keyserver hkps://keys.example.invalid\nexec-path /nonexistent\nallow-weak-digest-algos\n"
 	if err := os.WriteFile(filepath.Join(h.home, "gpg.conf"), []byte(conf), 0o600); err != nil {
@@ -563,7 +563,7 @@ echo hi | gpg --batch --trust-model always -o enc.gpg -e -r `+h.fpr+`; echo "enc
 `).mustRun(t)
 	if c := cipherOf(filepath.Join(proj, "enc.gpg")); c != "AES.OCB" {
 		t.Errorf("a message encrypted inside uses %q, want AES.OCB (the host's "+
-			"personal-cipher-prefs AES128, carried under its long name):\n%s", c, r.out)
+			"personal-cipher-prefs AES128, carried as written):\n%s", c, r.out)
 	}
 	packets, _ := section(r.out, "PKT")
 	if d := digestAlgo(packets); d != "8" {
@@ -573,7 +573,7 @@ echo hi | gpg --batch --trust-model always -o enc.gpg -e -r `+h.fpr+`; echo "enc
 	carried, _ := section(r.out, "CONF")
 	lines := strings.Split(carried, "\n")
 	for _, want := range []string{"personal-digest-preferences SHA256", "weak-digest SHA224",
-		"personal-cipher-preferences AES128"} {
+		"personal-cipher-prefs AES128"} {
 		if !slices.Contains(lines, want) {
 			t.Errorf("the sandbox's gpg.conf lacks %q:\n%s", want, carried)
 		}
@@ -609,5 +609,59 @@ func TestIdentityGPGRefusesAnUncarriableGPGConf(t *testing.T) {
 	}
 	if !strings.Contains(r.out, p+":2") || !strings.Contains(r.out, "personal-digest-preferences") {
 		t.Errorf("the refusal does not name %s:2 and the option:\n%s", p, r.out)
+	}
+}
+
+// TestIdentityGPGHidesWhatTheHostHides: the host's gpg.conf sets throw-keyids
+// and compress-algo none, and a message encrypted inside carries no recipient
+// key ID (keyid 0000000000000000) and no compressed packet, as the host's
+// does. The control is the host under --no-options: the real key ID and a
+// compressed packet, so the assertions inside discriminate. Inside, gpg also
+// starts no dirmngr when it cannot find a recipient: snug's disable-dirmngr
+// stops the WKD lookup gpg's default would make (red team, #689).
+func TestIdentityGPGHidesWhatTheHostHides(t *testing.T) {
+	budget(t, 30*time.Second)
+	h := newGPGHost(t)
+	proj, _ := target(t)
+	if err := os.WriteFile(filepath.Join(h.home, "gpg.conf"),
+		[]byte("throw-keyids\ncompress-algo none\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// What a host-encrypted message shows, decrypted by the host so the
+	// compressed packet (inside the encryption) is visible too.
+	packetsOf := func(enc string) string {
+		out, errs, err := h.gpgRun(nil, "--list-packets", enc)
+		if err != nil {
+			t.Fatalf("host could not list %s: %v\n%s", enc, err, errs)
+		}
+		return out + errs
+	}
+	ctl := filepath.Join(t.TempDir(), "ctl.gpg")
+	if _, errs, err := h.gpgRun(bytes.Repeat([]byte("hi "), 200), "--no-options", "--trust-model", "always",
+		"-o", ctl, "-e", "-r", h.fpr); err != nil {
+		t.Fatalf("control: host could not encrypt: %v\n%s", err, errs)
+	}
+	if p := packetsOf(ctl); strings.Contains(p, "keyid 0000000000000000") || !strings.Contains(p, "compressed packet") {
+		t.Fatalf("control: without the file the host hides the key ID or skips compression; "+
+			"the test cannot discriminate:\n%s", p)
+	}
+
+	r := runEnv(t, h.profile(h.fpr, "sign"), []string{"-p", "gpgid"}, proj, `
+yes hi | head -200 | gpg --batch --trust-model always -o enc.gpg -e -r `+h.fpr+`; echo "enc-exit=[$?]"
+echo hi | gpg --batch -e -r nobody@example.org >/dev/null 2>&1
+ls -a "$GNUPGHOME" | grep -c dirmngr | sed 's/^/dirmngr=/'
+`).mustRun(t)
+	if !strings.Contains(r.out, "enc-exit=[0]") {
+		t.Fatalf("encryption inside failed:\n%s", r.out)
+	}
+	p := packetsOf(filepath.Join(proj, "enc.gpg"))
+	if !strings.Contains(p, "keyid 0000000000000000") {
+		t.Errorf("a message encrypted inside names its recipient's key ID; the host's throw-keyids was dropped:\n%s", p)
+	}
+	if strings.Contains(p, "compressed packet") {
+		t.Errorf("a message encrypted inside is compressed; the host's compress-algo none was dropped:\n%s", p)
+	}
+	if !strings.Contains(r.out, "dirmngr=0") {
+		t.Errorf("gpg inside started a dirmngr for an unknown recipient:\n%s", r.out)
 	}
 }
