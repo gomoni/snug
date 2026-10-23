@@ -2031,7 +2031,9 @@ func TestOfflineHasOnlyLoopback(t *testing.T) {
 
 	r := run(t, nil, proj, list).mustRun(t)
 	if got := strings.Fields(r.out); len(got) != 1 || got[0] != "lo" {
-		t.Errorf("offline sandbox has interfaces %v, want only lo", got)
+		t.Errorf("offline sandbox has interfaces %v, want only lo "+
+			"(gre0/gretap0/erspan0 and the like are kernel fallback tunnels: "+
+			"sysctl net.core.fb_tunnels_only_for_init_net=1)", got)
 	}
 
 	// CONTROL: with `net` the same command reports a second interface. Without
