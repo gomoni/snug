@@ -73,6 +73,8 @@ listen_names = ["web"]
   prints a URL carrying a one-time token.
 - A door name is lowercase letters, digits and single interior dashes, at most
   32 characters.
-- snug starts the command through a two-line `/bin/sh` script that sets
-  `LISTEN_PID` to the command's own pid, which only the sandbox knows. The
-  selection must grant `/bin/sh` (`@sys` does).
+- snug starts the command through its own wrapper, which sets `LISTEN_PID`
+  and runs the command in its place. This feature does not need networking
+  enabled or a shell.
+- `/snug/lib/snug/wrapper` is snug's own executable, bound read-only and not
+  on `PATH`. `--dry-run` shows it as `bind /proc/self/exe` with a note.

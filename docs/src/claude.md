@@ -43,6 +43,42 @@ it has already expired. Run `claude` on the host to refresh it, or log in again
 inside with `/login` (see [`login`](#login)). A login made inside is not saved
 on the host; the next run starts from the host token again.
 
+## `settings.json`
+
+The host's `~/.claude/settings.json` and the target's `.claude/settings.json` and
+`.claude/settings.local.json` are filtered and most of their content is ignored.
+The following keys are passed; the rest is ignored.
+
+- `model`
+- `theme`
+- `editorMode`
+- `verbose`
+- `alwaysThinkingEnabled`
+- `autoCompactEnabled`
+- `includeCoAuthoredBy`
+- `prefersReducedMotion`
+- `spinnerTipsEnabled`
+- `skipWorkflowUsageWarning`
+
+Additionally:
+
+- A value that does not look like a plain name (a `model` containing
+  a path, for example) is dropped.
+- The file is read as strict JSON, up to 1 MiB. So comments, a trailing comma or
+  a larger file carry nothing.
+- `snug -v` and `snug --dry-run` say what is carried and what is not.
+- `~/.claude/settings.json` inside the sandbox is writable, so `claude` inside
+  can write there. The host file remains untouched, of course. The target's copies
+  are read-only.
+- `/etc/claude-code/managed-settings.json` is not visible inside, so an
+  organisation's managed policy does not apply.
+- A target settings file that is a symlink, a directory or anything else but
+  a plain file refuses the run.
+- A profile granting `~/.claude/settings.json` still gets the filtered file on
+  top. A `.claude/settings.json` in any other
+  directory a profile grants is not filtered, and Claude Code reads it when
+  started there.
+
 ## The target opens without the trust dialog
 
 Claude Code normally asks "Quick safety check" before it opens a directory
@@ -94,16 +130,20 @@ login = ["claude"]
 - snug opens the page on the host with `xdg-open`, found on your `PATH`, and
   needs `DISPLAY` or `WAYLAND_DISPLAY` set. `xdg-open` would fall
   back to a text browser otherwise.
-- Inside, `BROWSER` is `/snug/bin/snug-browser`, which hands the URL to snug.
-  snug opens only Claude's own login page, for Claude Code's own client, at
-  most five times per run and at most once every 30 seconds. Anything else is
-  refused, and nothing opens:
+- `BROWSER` inside the sandbox points to `/snug/lib/snug/browser`, a link to snug's own
+  executable (see [HTTP doors](network.md#http-doors-listen_names)). It passes the
+  URL out to snug on the host, which opens it in the host's default browser.
+- snug opens only Claude's own login page, for Claude Code's own client, at
+  most five times per run. Anything else is refused, and nothing opens:
 
   ```text
   $ $BROWSER https://example.com/
   snug: login bridge: refused an open request from the sandbox — not the Claude login URL snug pins (scheme, host or path): https://example.com/. Nothing was opened.
   ```
 
+- snug sets `BROWSER` itself, so a run where another profile also sets
+  `BROWSER` in `environ` is refused.
+- The browser `xdg-open` starts is yours and may outlive the sandbox itself.
 - snug answers the browser's callback itself and passes the sandbox only the
   code and state, never a cookie.
 

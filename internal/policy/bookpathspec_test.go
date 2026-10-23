@@ -10,9 +10,10 @@ import (
 // TestBookPathSpecExamplesAreWhatSplitSpecDoes runs every row of the path
 // spec examples table in docs/src/filesystem.md through splitSpec, with the
 // variable values the page states above the table. A row with `—` in both
-// columns is one the page says is refused.
+// columns is one the page says is refused. The `:` and `{` table it checks
+// after is in docs/src/variables.md.
 func TestBookPathSpecExamplesAreWhatSplitSpecDoes(t *testing.T) {
-	const page = "../../docs/src/filesystem.md"
+	page := "../../docs/src/filesystem.md"
 	data, err := os.ReadFile(page)
 	if err != nil {
 		t.Fatal(err)
@@ -48,8 +49,13 @@ func TestBookPathSpecExamplesAreWhatSplitSpecDoes(t *testing.T) {
 		t.Fatalf("%s: found %d accepted and %d refused example rows; the table moved or changed shape", page, accepted, refused)
 	}
 
-	// The `:` and `{` table: each refused row's quoted error is what
-	// splitSpec says.
+	// The `:` and `{` table, on the variables page: each refused row's quoted
+	// error is what splitSpec says.
+	page = "../../docs/src/variables.md"
+	data, err = os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
 	refusal := regexp.MustCompile("(?m)^\\| `[^`]+` \\| `([^`]+)` \\| refused: `([^`]+)`")
 	matched := 0
 	for _, r := range refusal.FindAllStringSubmatch(string(data), -1) {

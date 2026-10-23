@@ -55,6 +55,39 @@ proxy forwards only a part: `podman build`, `podman run -d`, `podman wait`,
 `podman logs` and `podman rm` work, but `podman run` without `-d` is refused,
 because it attaches to the container and the proxy does not forward attach.
 
+- `docker cp` is refused. The engine runs beside the sandbox, not in it (see
+  [the diagram](img/topology-engine.svg)). It can give access to more files
+  than the configuration allows.
+
+- A host `podman` that is a shim into the host (`host-spawn`,
+  `flatpak-spawn`, ...) is replaced by snug's own `podman`, which calls the
+  `docker` client if the sandbox has one. `snug` only filters container
+  requests and ships no client of its own.
+
+## `docker build`
+
+snug sets `DOCKER_BUILDKIT=0`, so `docker build` uses the classic builder,
+whose options the proxy filters.
+
+This is a default, not a bound: a process inside can set
+`DOCKER_BUILDKIT=1`. What BuildKit can then reach is not yet measured, see
+[#690](https://github.com/gomoni/snug/issues/690).
+
+## Image signatures
+
+The engine checks images against a signature policy built from the host's
+`policy.json`:
+
+- `insecureAcceptAnything`, `reject` and `signedBy` carry over. Key files a
+  `signedBy` names are copied for the engine.
+- Any other requirement, such as `sigstoreSigned` or `signedBaseLayer`,
+  refuses the run and names the requirement and the file.
+- A host with no `policy.json` gets a policy that accepts any image. A plain
+  podman on that host pulls nothing, so here the sandbox is more permissive
+  than the host; `--dry-run` says so.
+- The policy applies to pulls. An image already in the target's storage keeps
+  running under a stricter policy.
+
 ## Storage per target directory
 
 Every target directory gets its own container storage. Images, containers
