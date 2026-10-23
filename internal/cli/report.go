@@ -379,6 +379,9 @@ type reportContainers struct {
 	PodmanStub           bool
 	PodmanStubClient     string
 	PodmanStubClientPath string
+	// PodmanStubWritable is a PATH directory the stub searches first that the
+	// payload can write, which makes the client the payload's choice.
+	PodmanStubWritable string
 	// SignaturePolicySource is the host file the engine's signature policy is
 	// PROJECTED from, empty when this host configured none. It is host text.
 	SignaturePolicySource string
@@ -808,7 +811,7 @@ func buildContainersReport(env policy.Environ, p *policy.Policy,
 	}
 	if m, ok := p.Mounts[policy.PodmanStubGuest]; ok && m.Authored {
 		c.PodmanStub = true
-		c.PodmanStubClient, c.PodmanStubClientPath = p.PodmanStubClient(env)
+		c.PodmanStubClient, c.PodmanStubClientPath, c.PodmanStubWritable = p.PodmanStubClient(env)
 	}
 	// AFTER the PodmanOff early return above: this is the one host read in this
 	// function, and a run with no engine must not make it.

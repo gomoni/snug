@@ -1680,6 +1680,10 @@ func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ, c *re
 			} else {
 				fmt.Fprintf(out, "         This sandbox has NEITHER on PATH, so the stub refuses every command.\n")
 			}
+			if c != nil && c.PodmanStubWritable != "" {
+				fmt.Fprintf(out, "         BUT %s is on PATH and WRITABLE from inside, and the stub searches it\n", policy.VisibleText(c.PodmanStubWritable))
+				fmt.Fprintf(out, "         first: a 'docker' the payload drops there is what 'podman' runs.\n")
+			}
 		case m.Host != "":
 			// Read m.Access rather than asserting it. This line said "and
 			// read-only" unconditionally, and a profile staging a `rw` bind got

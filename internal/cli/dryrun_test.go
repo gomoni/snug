@@ -435,6 +435,10 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	if got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}, c) }); !strings.Contains(got, "NEITHER") {
 		t.Errorf("COMMANDS block does not say the stub finds no client: %q", got)
 	}
+	c.PodmanStubWritable = "/home/u/proj"
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}, c) }); !strings.Contains(got, "BUT /home/u/proj is on PATH and WRITABLE") {
+		t.Errorf("COMMANDS block does not say the client is the payload's to choose: %q", got)
+	}
 
 	// CONTROL: without a detected shim, no podman profile grants a stub, and
 	// the block must not print at all — a block that always prints proves

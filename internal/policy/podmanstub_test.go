@@ -140,10 +140,31 @@ func TestPodmanStubClientIsWhatTheStubWouldExec(t *testing.T) {
 		{"docker not executable", clientHost{"/usr/bin/podman-remote": 0o755, "/usr/bin/docker": 0o644}, "podman-remote", "/usr/bin/podman-remote"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			name, guest := p.PodmanStubClient(tc.host)
+			name, guest, writable := p.PodmanStubClient(tc.host)
+			if writable != "" {
+				t.Errorf("writable = %q, want none: nothing on this PATH is a writable grant", writable)
+			}
 			if name != tc.want || guest != tc.path {
 				t.Errorf("PodmanStubClient = %q at %q, want %q at %q", name, guest, tc.want, tc.path)
 			}
 		})
+	}
+}
+
+// TestPodmanStubClientNamesAWritablePATHDirectory: a profile that puts a
+// writable directory on PATH, even after /usr/bin, lets the payload drop a
+// docker the stub execs, so a client named from what is on disk now is not
+// the answer and --dry-run must say so (red team, issue #691).
+func TestPodmanStubClientNamesAWritablePATHDirectory(t *testing.T) {
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "@podman-socket"},
+		testCtxWithPodmanShim(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	p.AuthorEnvList("PATH", []string{p.Target}, "test")
+	host := clientHost{"/usr/bin/podman-remote": 0o755}
+	name, _, writable := p.PodmanStubClient(host)
+	if name != "podman-remote" || writable != p.Target {
+		t.Fatalf("PodmanStubClient = %q, writable %q; want podman-remote with %s writable", name, writable, p.Target)
 	}
 }

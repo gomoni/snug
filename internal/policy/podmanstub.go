@@ -45,11 +45,13 @@ var PodmanStubClients = []string{"docker", "podman-remote"}
 // payload's PATH, minus StagedBinDir and relative entries as the stub skips
 // them, reaches as an executable regular file. It follows guest and host links
 // through walkLinks, so it is the kernel's answer rather than a lexical one.
-// "" when there is none, which is the stub refusing every command.
+// name is "" when there is none, which is the stub refusing every command.
 //
-// A file only a tmpfs or generated mount supplies is not judged: nothing at
-// Resolve knows what the payload will have written there.
-func (p *Policy) PodmanStubClient(host HostLinks) (name, guest string) {
+// writable is the first PATH directory the stub searches before reaching that
+// answer that the payload can write a command into (IsShadowSlot). When it is
+// set the answer is the payload's to change: a `docker` dropped there is what
+// the stub execs, whatever is on disk now.
+func (p *Policy) PodmanStubClient(host HostLinks) (name, guest, writable string) {
 	path, _ := p.EnvValue("PATH")
 	v := p.SandboxView()
 	for _, name := range PodmanStubClients {
@@ -57,15 +59,18 @@ func (p *Policy) PodmanStubClient(host HostLinks) (name, guest string) {
 			if !filepath.IsAbs(dir) || filepath.Clean(dir) == StagedBinDir {
 				continue
 			}
+			if writable == "" && v.IsShadowSlot(host, dir) {
+				writable = dir
+			}
 			g := filepath.Join(dir, name)
 			_, _, _, end, hostAt := v.walkLinks(host, g)
 			if end != walkLanded || hostAt == "" {
 				continue
 			}
 			if fi, err := host.Lstat(hostAt); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-				return name, g
+				return name, g, writable
 			}
 		}
 	}
-	return "", ""
+	return "", "", writable
 }

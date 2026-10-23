@@ -666,6 +666,10 @@ type jsonContainers struct {
 	PodmanStubClient          string   `json:"podman_stub_client,omitempty"`
 	PodmanStubClientPath      string   `json:"podman_stub_client_path,omitempty"`
 	PodmanStubClientPathBytes byteList `json:"podman_stub_client_path_bytes,omitempty"`
+	// A payload-writable PATH directory searched first: the client is then
+	// whatever the payload writes there.
+	PodmanStubWritable      string   `json:"podman_stub_writable,omitempty"`
+	PodmanStubWritableBytes byteList `json:"podman_stub_writable_bytes,omitempty"`
 }
 
 type jsonEnvVar struct {
@@ -1022,6 +1026,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			PodmanStubClient:          c.PodmanStubClient,
 		}
 		jc.PodmanStubClientPath, jc.PodmanStubClientPathBytes = e.text(c.PodmanStubClientPath)
+		jc.PodmanStubWritable, jc.PodmanStubWritableBytes = e.text(c.PodmanStubWritable)
 		// Both are environment variables' VALUES — host text, and the reason
 		// the human block puts them through visibleValue.
 		jc.EngineBinary, jc.EngineBinaryBytes = e.text(c.EngineBinary)
