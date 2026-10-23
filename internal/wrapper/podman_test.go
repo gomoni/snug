@@ -159,3 +159,33 @@ func TestIsPodmanStub(t *testing.T) {
 		}
 	}
 }
+
+// Each client's own global spellings of "another engine" are refused before the
+// subcommand (red team round 2, issue #691: `podman -H=tcp://... ps` reached
+// docker), and the same letters after it are the subcommand's own flags.
+func TestRefusedFlag(t *testing.T) {
+	for _, tc := range []struct {
+		client string
+		args   []string
+		want   string
+	}{
+		{"docker", []string{"-H=tcp://10.0.0.1:2375", "ps"}, "-H=tcp://10.0.0.1:2375"},
+		{"docker", []string{"-Htcp://10.0.0.1:2375", "ps"}, "-Htcp://10.0.0.1:2375"},
+		{"docker", []string{"--host", "tcp://x", "ps"}, "--host"},
+		{"docker", []string{"--context=other", "ps"}, "--context=other"},
+		{"docker", []string{"-c", "other", "ps"}, "-c"},
+		{"docker", []string{"--config=/tmp", "ps"}, "--config=/tmp"},
+		{"docker", []string{"run", "-c", "512", "alpine"}, ""},
+		{"docker", []string{"run", "-h", "box", "alpine"}, ""},
+		{"docker", []string{"ps", "--url=x"}, "--url=x"},
+		{"podman-remote", []string{"-r", "ps"}, "-r"},
+		{"podman-remote", []string{"-c", "other", "ps"}, "-c"},
+		{"podman-remote", []string{"--identity=/k", "ps"}, "--identity=/k"},
+		{"podman-remote", []string{"run", "-c", "512", "alpine"}, ""},
+		{"podman-remote", []string{"--log-level=debug", "ps"}, ""},
+	} {
+		if got := refusedFlag(tc.client, tc.args); got != tc.want {
+			t.Errorf("refusedFlag(%s, %q) = %q, want %q", tc.client, tc.args, got, tc.want)
+		}
+	}
+}

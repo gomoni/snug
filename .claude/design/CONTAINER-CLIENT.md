@@ -120,8 +120,11 @@ then `podman-remote` (`policy.PodmanStubClients`) found on `PATH`, skipping
 `/snug/bin` and relative entries — every directory for `docker` before any for
 `podman-remote`, because the proxy speaks the compat API it was written for and
 a foreground `docker run` works there. Neither found: exit **125** naming both.
-Connection-shaping flags (`--remote`, `--url`, `--connection`, `--root`,
-`--runroot`, `--runtime`, anywhere in argv) are refused on both paths.
+Connection-shaping flags are refused on both paths: podman's (`--remote`,
+`--url`, `--connection`, `--root`, `--runroot`, `--runtime`) anywhere in argv,
+and each client's own global spelling before the subcommand — docker's `-H`,
+`--host`, `-c`, `--context`, `--config`, podman-remote's `-r`, `-c`,
+`--identity`. Not after it: there `-c` is `--cpu-shares` to `run`.
 
 - `docker`: forward only a compiled-in allowlist of docker subcommands;
   everything else exits **125** with a snug-authored message. Allowlist not
@@ -141,7 +144,11 @@ says needs its abuse sentence first.
 **`--dry-run`:** the FILESYSTEM block shows the link and the wrapper bind; a
 `COMMANDS` block names the stub, what it forwards, that `/usr/bin/podman` is
 untouched, and which client this sandbox's `PATH` reaches, or that it reaches
-neither (`Policy.PodmanStubClient`; JSON `containers.podman_stub_client`).
+neither (`Policy.PodmanStubClient`; JSON `containers.podman_stub_client`). When
+a `PATH` directory or client path searched first is writable from inside
+(`IsShadowSlot`, which follows host links into the payload's `/tmp` and sees a
+file granted `rw` in a read-only directory), it says the client is the
+payload's to choose (`podman_stub_writable`).
 Golden: `internal/policy/testdata/podman-socket.bwrap.txt`.
 
 **Build selectors:** `DOCKER_BUILDKIT=0` is set for `Podman != Off` and is a

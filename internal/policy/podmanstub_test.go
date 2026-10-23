@@ -100,9 +100,13 @@ func TestPodmanStubIsALinkToTheWrapper(t *testing.T) {
 	}
 }
 
-// clientHost is a host with executables at the given paths and nothing else
-// but the directories above them.
+// clientHost is a host with files at the given paths, symlinks named by a
+// mode of fs.ModeSymlink and a target in linkTargets, and nothing else but
+// the directories above them.
 type clientHost map[string]fs.FileMode
+
+// linkTargets is every clientHost symlink's target, by host path.
+var linkTargets = map[string]string{"/h/c3/docker": "/tmp/docker"}
 
 func (h clientHost) Lstat(p string) (fs.FileInfo, error) {
 	if m, ok := h[p]; ok {
@@ -116,7 +120,10 @@ func (h clientHost) Lstat(p string) (fs.FileInfo, error) {
 	return nil, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
 }
 
-func (clientHost) Readlink(p string) (string, error) {
+func (h clientHost) Readlink(p string) (string, error) {
+	if h[p]&fs.ModeSymlink != 0 {
+		return linkTargets[p], nil
+	}
 	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
 }
 
@@ -166,5 +173,46 @@ func TestPodmanStubClientNamesAWritablePATHDirectory(t *testing.T) {
 	name, _, writable := p.PodmanStubClient(host)
 	if name != "podman-remote" || writable != p.Target {
 		t.Fatalf("PodmanStubClient = %q, writable %q; want podman-remote with %s writable", name, writable, p.Target)
+	}
+}
+
+// TestPodmanStubClientNamesAWritableClientPath is the same question asked of
+// the client path rather than its directory (red team round 2, issue #691):
+// a host link under a read-only bind pointing into the payload's /tmp, and a
+// client file granted rw inside a read-only directory. Both directories are
+// read-only, and in both the payload decides what `podman` runs.
+func TestPodmanStubClientNamesAWritableClientPath(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mounts []Mount
+		host   clientHost
+		dir    string
+	}{
+		{"host link into /tmp", []Mount{
+			{Guest: "/d", Host: "/h/c3", Kind: KindBind, Access: AccessRO},
+		}, clientHost{"/h/c3/docker": fs.ModeSymlink | 0o777}, "/d"},
+		{"rw file in a ro directory", []Mount{
+			{Guest: "/c", Host: "/h/c2", Kind: KindBind, Access: AccessRO},
+			{Guest: "/c/docker", Host: "/h/c2/docker", Kind: KindBind, Access: AccessRW},
+		}, clientHost{"/h/c2/docker": 0o755}, "/c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "@podman-socket"},
+				testCtxWithPodmanShim(), newFakeEnv())
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			for _, m := range tc.mounts {
+				p.Mounts[m.Guest] = m
+			}
+			p.AuthorEnvList("PATH", []string{tc.dir}, "test")
+			if p.IsShadowSlot(tc.host, tc.dir) {
+				t.Fatalf("control: %s itself is a writable slot, so this would not test the client path", tc.dir)
+			}
+			_, _, writable := p.PodmanStubClient(tc.host)
+			if want := tc.dir + "/docker"; writable != want {
+				t.Fatalf("writable = %q, want %q", writable, want)
+			}
+		})
 	}
 }

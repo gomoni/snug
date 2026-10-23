@@ -47,10 +47,12 @@ var PodmanStubClients = []string{"docker", "podman-remote"}
 // through walkLinks, so it is the kernel's answer rather than a lexical one.
 // name is "" when there is none, which is the stub refusing every command.
 //
-// writable is the first PATH directory the stub searches before reaching that
-// answer that the payload can write a command into (IsShadowSlot). When it is
-// set the answer is the payload's to change: a `docker` dropped there is what
-// the stub execs, whatever is on disk now.
+// writable is the first PATH directory, or client path in one, that the stub
+// searches before reaching that answer and that the payload can write a
+// command into (IsShadowSlot). The path is asked as well as the directory: a
+// host link under a read-only bind can point into the payload's /tmp, and a
+// file can be granted rw inside a read-only directory. When it is set the
+// answer is the payload's to change, whatever is on disk now.
 func (p *Policy) PodmanStubClient(host HostLinks) (name, guest, writable string) {
 	path, _ := p.EnvValue("PATH")
 	v := p.SandboxView()
@@ -63,6 +65,9 @@ func (p *Policy) PodmanStubClient(host HostLinks) (name, guest, writable string)
 				writable = dir
 			}
 			g := filepath.Join(dir, name)
+			if writable == "" && v.IsShadowSlot(host, g) {
+				writable = g
+			}
 			_, _, _, end, hostAt := v.walkLinks(host, g)
 			if end != walkLanded || hostAt == "" {
 				continue

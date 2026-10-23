@@ -54,6 +54,41 @@ var connectionShapingFlags = []string{
 	"--remote", "--url", "--connection", "--root", "--runroot", "--runtime",
 }
 
+// globalConnectionFlags are each client's own spellings of the same thing,
+// global flags only: they are refused before the subcommand and not after it,
+// where `-c` is --cpu-shares to both `docker run` and `podman run`. A short flag
+// matches with its value attached (-Htcp://...), as the clients parse it.
+var globalConnectionFlags = map[string][]string{
+	"docker":        {"-H", "--host", "-c", "--context", "--config"},
+	"podman-remote": {"-r", "-c", "--identity"},
+}
+
+// refusedFlag is the first argument that selects another engine or connection
+// for client, or "".
+func refusedFlag(client string, args []string) string {
+	beforeCmd := true
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			beforeCmd = false
+		}
+		for _, f := range connectionShapingFlags {
+			if a == f || strings.HasPrefix(a, f+"=") {
+				return a
+			}
+		}
+		if !beforeCmd {
+			continue
+		}
+		for _, f := range globalConnectionFlags[client] {
+			short := !strings.HasPrefix(f, "--")
+			if a == f || strings.HasPrefix(a, f+"=") || (short && strings.HasPrefix(a, f)) {
+				return a
+			}
+		}
+	}
+	return ""
+}
+
 // IsPodmanStub reports whether this process is the podman stub: invoked by the
 // name podman (a shell's PATH search passes the bare word, an absolute exec
 // the full path) AND executing the image bound at policy.WrapperGuest. The
@@ -81,15 +116,11 @@ func Podman(args []string, path string, stderr io.Writer) int {
 		return exitStub
 	}
 
-	for _, a := range args {
-		for _, f := range connectionShapingFlags {
-			if a == f || strings.HasPrefix(a, f+"=") {
-				fmt.Fprintf(stderr, "snug: stub refuses '%s' -- it selects a different engine, connection or\n"+
-					"      storage than the one this sandbox was given. Run '%s %s' directly if\n"+
-					"      that is really what you want.\n", a, client, strings.Join(args, " "))
-				return exitStub
-			}
-		}
+	if a := refusedFlag(client, args); a != "" {
+		fmt.Fprintf(stderr, "snug: stub refuses '%s' -- it selects a different engine, connection or\n"+
+			"      storage than the one this sandbox was given. Run '%s %s' directly if\n"+
+			"      that is really what you want.\n", a, client, strings.Join(args, " "))
+		return exitStub
 	}
 
 	if client == "docker" {
