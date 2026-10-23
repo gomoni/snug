@@ -71,7 +71,9 @@ snug's and impersonate snug's own diagnostics.*
 **Acceptable, because it grants no capability.** `PATH` is not an access control:
 the sandbox already controls its own execution, `$HOME` and `PATH`, and can
 ignore `PATH` entirely with an absolute path. Nothing crosses the boundary — the
-stub is `/bin/sh` text delivered from a memfd with no host reference in it.
+stub is snug's own static binary, the read-only wrapper bind the payload can
+already read and run (`policy.WrapperGuest`'s abuse sentence), under another
+name.
 
 Two constraints follow and both are load-bearing:
 
@@ -93,9 +95,13 @@ Two constraints follow and both are load-bearing:
 > stages, not only the staged file and its own directory: see
 > `policy.StagedBinDir`.
 
-**Mechanism.** `/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
-`From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so
-`rejectMasking` skips it — no new exemption). Detection is impure and lives in
+**Mechanism.** `/snug/bin/podman` (`policy.PodmanStubGuest`), `KindSymlink` to
+`/snug/lib/snug/wrapper`, `From ["(snug)"]`, installed via `Policy.Replace`
+(sets `Authored`, so `rejectMasking` skips it — no new exemption); the wrapper
+bind is staged with it. It needs no shell inside. `cli.Main` runs the stub
+(`internal/wrapper/podman.go`) when argv[0]'s basename is `podman` AND
+`os.Executable()` is `WrapperGuest` — a shell's PATH search passes the bare
+word, and the second half keeps a host snug installed as `podman` the CLI. Detection is impure and lives in
 `internal/cli/podmanshim.go`, returning a value type carried into `policy.Context` as
 `HostShims`, exactly as `LegacyTIOCSTI` is — so `Resolve` stays pure and the
 goldens stay deterministic.
@@ -109,22 +115,34 @@ The stub must beat `/usr/bin/podman` — its whole job — and must LOSE to any
 profile entry, because a profile entry is an explicit human grant.
 
 **Stub behaviour:** a dispatcher, never a translator. Argv is forwarded
-byte-for-byte; the stub only decides yes or no. Forward only a compiled-in
-allowlist of *docker* subcommands; everything else exits **125** with a
-snug-authored message. Allowlist not denylist, because a too-small allowlist
-refuses in snug's voice while a too-small denylist lets docker answer `unknown
-command` — `podmanshim.go` point 1.
-snug allowlists the tool it *delegates to* (docker's command set is stable), not
-the one it impersonates (podman's grows every release).
+byte-for-byte; the stub only decides yes or no. It execs the first of `docker`,
+then `podman-remote` (`policy.PodmanStubClients`) found on `PATH`, skipping
+`/snug/bin` and relative entries — every directory for `docker` before any for
+`podman-remote`, because the proxy speaks the compat API it was written for and
+a foreground `docker run` works there. Neither found: exit **125** naming both.
+Connection-shaping flags (`--remote`, `--url`, `--connection`, `--root`,
+`--runroot`, `--runtime`, anywhere in argv) are refused on both paths.
+
+- `docker`: forward only a compiled-in allowlist of docker subcommands;
+  everything else exits **125** with a snug-authored message. Allowlist not
+  denylist, because a too-small allowlist refuses in snug's voice while a
+  too-small denylist lets docker answer `unknown command` — `podmanshim.go`
+  point 1. snug allowlists the tool it *delegates to* (docker's command set is
+  stable), not the one it impersonates (podman's grows every release).
+- `podman-remote`: podman's own CLI, so everything else is forwarded verbatim.
+  The proxy is the filter (`libpodcreate.go`, `libpodlifecycle.go`); a `run`
+  without `-d` is refused there, since attach is not forwarded.
 
 **Scope: `podman` only**, gated on `Podman != PodmanOff`. Not a scan of
 `/usr/bin` — that is what turns "snug authored one replacement" into "snug
 replaces host binaries it judges broken", the general mechanism SECRETS.md §4.3
 says needs its abuse sentence first.
 
-**`--dry-run`:** renders `KindData` with an executable bit as kind `exec`, and a
-`COMMANDS` block names the stub, what it forwards, and that `/usr/bin/podman` is
-untouched. Golden: `internal/policy/testdata/podman-socket.bwrap.txt`.
+**`--dry-run`:** the FILESYSTEM block shows the link and the wrapper bind; a
+`COMMANDS` block names the stub, what it forwards, that `/usr/bin/podman` is
+untouched, and which client this sandbox's `PATH` reaches, or that it reaches
+neither (`Policy.PodmanStubClient`; JSON `containers.podman_stub_client`).
+Golden: `internal/policy/testdata/podman-socket.bwrap.txt`.
 
 **Build selectors:** `DOCKER_BUILDKIT=0` is set for `Podman != Off` and is a
 *tightening*, not a convenience: with BuildKit, `docker build` never POSTs

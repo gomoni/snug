@@ -100,7 +100,7 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 	describeGPG(out, rep.GPG)
 	describeSSH(out, p)
 	describeKube(out, rep.Kube)
-	describeCommands(out, p, env)
+	describeCommands(out, p, env, rep.Containers)
 	describeClaude(out, p)
 	describeTTY(out, rep)
 	describeSeccomp(out, rep.Seccomp)
@@ -119,11 +119,10 @@ func renderHuman(out io.Writer, rep Report, p *policy.Policy, args []string, cfg
 			kind = m.Access.String()
 		}
 		// A KindData file with an executable permission bit is CODE, not
-		// config — the podman stub is the one case of this today (see
-		// podmanstub.go). Kind.String() itself stays "data" for every other
-		// caller; this is a dry-run-only rendering so a human scanning the
-		// FILESYSTEM block sees "this one runs" at a glance rather than
-		// having to notice a permission column.
+		// config. Kind.String() itself stays "data" for every other caller;
+		// this is a dry-run-only rendering so a human scanning the FILESYSTEM
+		// block sees "this one runs" at a glance rather than having to notice
+		// a permission column.
 		if m.Kind == policy.KindData && m.Perms != nil && *m.Perms&0o111 != 0 {
 			kind = "exec"
 		}
@@ -1650,7 +1649,7 @@ func describeSSH(out io.Writer, p *policy.Policy) {
 // bind gets the one-line form: what it is and where it came from is a profile's
 // grant, already on the FILESYSTEM lines above, and repeating it here would be
 // two places to keep true.
-func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ) {
+func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ, c *reportContainers) {
 	var staged []string
 	for guest := range p.Mounts {
 		if strings.HasPrefix(guest, policy.StagedBinDir+"/") {
@@ -1666,15 +1665,21 @@ func describeCommands(out io.Writer, p *policy.Policy, env policy.Environ) {
 		fmt.Fprintf(out, "COMMANDS  %s\n", guest)
 		m := p.Mounts[guest]
 		switch {
-		case guest == policy.StagedBinDir+"/podman" && m.Authored:
+		case guest == policy.PodmanStubGuest && m.Authored:
 			fmt.Fprintf(out, "         podman on this host resolves to a shim that cannot reach the host from\n")
 			fmt.Fprintf(out, "         inside a sandbox (distrobox-host-exec, host-spawn or flatpak-spawn), so\n")
-			fmt.Fprintf(out, "         snug staged a dispatcher ahead of it on PATH: it forwards a fixed\n")
-			fmt.Fprintf(out, "         allowlist of docker subcommands to 'docker', byte for byte, and refuses\n")
-			fmt.Fprintf(out, "         everything else by name — never a flag rewrite, never a translation.\n")
-			fmt.Fprintf(out, "         It is read-only (see the FILESYSTEM line above: 'exec', not writable),\n")
-			fmt.Fprintf(out, "         and /usr/bin/podman is UNTOUCHED — still reachable by its absolute path,\n")
-			fmt.Fprintf(out, "         just no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+			fmt.Fprintf(out, "         snug staged a stub ahead of it on PATH: a link to its own wrapper. It\n")
+			fmt.Fprintf(out, "         forwards to the first of %s on PATH: docker gets\n", strings.Join(policy.PodmanStubClients, " or "))
+			fmt.Fprintf(out, "         a fixed allowlist of its subcommands byte for byte, podman-remote\n")
+			fmt.Fprintf(out, "         everything. Flags that pick another engine or connection are refused by\n")
+			fmt.Fprintf(out, "         name, and nothing is rewritten or translated. It is read-only, and\n")
+			fmt.Fprintf(out, "         /usr/bin/podman is UNTOUCHED — still reachable by its absolute path, just\n")
+			fmt.Fprintf(out, "         no longer first on PATH. See .claude/design/CONTAINER-CLIENT.md §8.\n")
+			if c != nil && c.PodmanStubClient != "" {
+				fmt.Fprintf(out, "         This sandbox: %s, at %s.\n", c.PodmanStubClient, policy.VisibleText(c.PodmanStubClientPath))
+			} else {
+				fmt.Fprintf(out, "         This sandbox has NEITHER on PATH, so the stub refuses every command.\n")
+			}
 		case m.Host != "":
 			// Read m.Access rather than asserting it. This line said "and
 			// read-only" unconditionally, and a profile staging a `rw` bind got

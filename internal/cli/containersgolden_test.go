@@ -344,6 +344,8 @@ func TestEveryHostTextFieldInTheContainersBlockCarriesItsBytes(t *testing.T) {
 	snugAuthored := map[string]bool{
 		"Socket":       true,
 		"EngineSource": true,
+		// One of policy.PodmanStubClients; its path is the host text.
+		"PodmanStubClient": true,
 	}
 
 	typ := reflect.TypeOf(jsonContainers{})

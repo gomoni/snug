@@ -130,11 +130,9 @@ func TestGoldenDryRunJSON(t *testing.T) {
 	}{
 		// The document a bare `snug --dry-run --json <dir>` produces.
 		{"defaults", profile.BuiltinDefaults(), false, "", engine.SignaturePolicySummary{}, ""},
-		// An engine run: the CONTAINERS block appears, the topology grows the
-		// engine process and its capability bounding set, and the FILESYSTEM
-		// block gains the staged podman stub — the one mount whose
-		// "executable" is true, which is the fact behind the human column's
-		// "exec" word.
+		// An engine run: the CONTAINERS block appears, and the topology grows
+		// the engine process and its capability bounding set. No shim is
+		// detected, so podman_stub is false.
 		{"podman-socket", []policy.ProfileName{"@sys", "@target-rw", "@podman-socket"}, false, "", engine.SignaturePolicySummary{}, ""},
 		// The network object's own axis: an EGRESS selection, so a consumer
 		// reading mode/egress/host_loopback/abstract_sockets off this document

@@ -71,7 +71,7 @@ type EnvEntry struct {
 	// Empty for a VerbSnug entry, which has Note instead.
 	From []string
 
-	// Note is why snug authored this entry — "base", "podman stub". VerbSnug
+	// Note is why snug authored this entry — "base", "staged bin". VerbSnug
 	// only; it is what the provenance column shows where a profile name would
 	// otherwise go.
 	Note string

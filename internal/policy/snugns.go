@@ -68,9 +68,10 @@ const StagedBinDir = SnugDir + "/bin"
 const SnugLibDir = SnugDir + "/lib/snug"
 
 // WrapperGuest is snug's OWN running executable, bound read-only by descriptor
-// whenever a selection opens an http door or sets login = ["claude"]. It is the
-// door's entry (DoorExecVerb) and, through BrowserGuest, the login bridge's
-// BROWSER (internal/wrapper).
+// whenever a selection opens an http door, sets login = ["claude"] or stages
+// the podman stub. It is the door's entry (DoorExecVerb), through BrowserGuest
+// the login bridge's BROWSER, and through PodmanStubGuest the podman stub
+// (internal/wrapper).
 //
 // Both used to be /bin/sh scripts, so a feature with nothing to do with a shell
 // refused a selection that granted none, and ran whatever /bin/sh a profile
@@ -90,8 +91,8 @@ const WrapperGuest = SnugLibDir + "/wrapper"
 // WrapperNote is the line --dry-run puts under WrapperGuest's row, whose host
 // side reads /proc/self/exe and would otherwise look like a procfs grant.
 const WrapperNote = "snug's own running executable, bound by descriptor; the payload can read " +
-	"and run it. Not on PATH: it is the http door's entry (" + DoorExecVerb + ") and, as " +
-	BrowserGuest + ", the login bridge's BROWSER"
+	"and run it. Not on PATH: it is the http door's entry (" + DoorExecVerb + "), as " +
+	BrowserGuest + " the login bridge's BROWSER, and as " + PodmanStubGuest + " the podman stub"
 
 // BrowserGuest is a symlink to WrapperGuest, and BROWSER names it. It is not
 // "wrapper <verb>" because a consumer may exec $BROWSER as one path without

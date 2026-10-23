@@ -15,6 +15,10 @@
 --perms 0755
 --dir /snug/bin
 --perms 0755
+--dir /snug/lib
+--perms 0755
+--dir /snug/lib/snug
+--perms 0755
 --dir /run
 --perms 0755
 --dir /snug
@@ -47,12 +51,12 @@
 --remount-ro /dev
 --size 1073741824
 --tmpfs /dev/shm
---ro-bind-fd 15 /etc
---ro-bind-fd 16 /opt
+--ro-bind-fd 14 /etc
+--ro-bind-fd 15 /opt
 --proc /proc
 --size 1073741824
 --tmpfs /tmp
---ro-bind-fd 17 /usr
+--ro-bind-fd 16 /usr
 --ro-bind-data 10 /etc/group
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
@@ -67,13 +71,13 @@
 --tmpfs /home/u/.local
 --size 1073741824
 --tmpfs /home/u/proj
---perms 0755
---ro-bind-data 14 /snug/bin/podman
+--symlink /snug/lib/snug/wrapper /snug/bin/podman
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind-fd 18 /home/u/proj/sub
+--bind-fd 17 /home/u/proj/sub
+--ro-bind-fd 18 /snug/lib/snug/wrapper
 --remount-ro /
 --clearenv
 --setenv HOME /home/u

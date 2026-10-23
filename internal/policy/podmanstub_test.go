@@ -1,14 +1,10 @@
 package policy
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io/fs"
 	"strings"
 	"testing"
 )
-
-const podmanStubGuest = StagedBinDir + "/podman"
 
 // TestPodmanStubStagedOnlyForADetectedShim is the positive/negative pair for
 // the trigger CONTAINER-CLIENT.md §8 specifies: staging follows detection,
@@ -20,7 +16,7 @@ func TestPodmanStubStagedOnlyForADetectedShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, ok := withShim.Mounts[podmanStubGuest]; !ok {
+	if _, ok := withShim.Mounts[PodmanStubGuest]; !ok {
 		t.Error("a detected shim + a podman profile must stage the stub, and did not")
 	}
 
@@ -28,7 +24,7 @@ func TestPodmanStubStagedOnlyForADetectedShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, ok := withoutShim.Mounts[podmanStubGuest]; ok {
+	if _, ok := withoutShim.Mounts[PodmanStubGuest]; ok {
 		t.Error("no shim was detected (ctx.HostShims is empty), but the stub was staged anyway")
 	}
 }
@@ -45,7 +41,7 @@ func TestPodmanStubStagedOnlyWhenPodmanIsSelected(t *testing.T) {
 	if p.Podman != PodmanOff {
 		t.Fatalf("test fixture error: expected PodmanOff, got %s", p.Podman)
 	}
-	if _, ok := p.Mounts[podmanStubGuest]; ok {
+	if _, ok := p.Mounts[PodmanStubGuest]; ok {
 		t.Error("stub staged despite no podman profile being selected")
 	}
 }
@@ -80,226 +76,74 @@ func TestPodmanStubBeatsUsrBinPodmanButLosesToProfilePath(t *testing.T) {
 	}
 }
 
-// TestPodmanStubIsReadOnlyAndExecutable pins the two load-bearing properties
-// from CONTAINER-CLIENT.md §8's constraint 1 at the Mount level: Access must
-// be AccessRO (so BwrapFlags emits --ro-bind-data, unwritable from inside —
-// see bwrap.go), and Perms must carry an executable bit, or the sandbox
-// cannot run it at all.
-func TestPodmanStubIsReadOnlyAndExecutable(t *testing.T) {
+// TestPodmanStubIsALinkToTheWrapper: the stub is snug's own image under the
+// name podman, so it runs in a selection with no /bin/sh (issue #691), and the
+// wrapper bind it points at is staged with it. Authored, or rejectMasking
+// would treat it as a profile grant.
+func TestPodmanStubIsALinkToTheWrapper(t *testing.T) {
 	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "@podman-socket"},
 		testCtxWithPodmanShim(), newFakeEnv())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	m, ok := p.Mounts[podmanStubGuest]
+	m, ok := p.Mounts[PodmanStubGuest]
 	if !ok {
 		t.Fatal("stub not staged")
 	}
-	if m.Access != AccessRO {
-		t.Errorf("stub Access = %s, want ro", m.Access)
+	if m.Kind != KindSymlink || m.Host != WrapperGuest || !m.Authored {
+		t.Errorf("stub = %s -> %s (authored %v), want an authored symlink to %s",
+			m.Kind, m.Host, m.Authored, WrapperGuest)
 	}
-	if m.Perms == nil || *m.Perms&0o111 == 0 {
-		t.Errorf("stub Perms = %v, want an executable bit set", m.Perms)
-	}
-	if !m.Authored {
-		t.Error("stub must be Authored (snug's own write), or rejectMasking would treat it as a profile grant")
+	w, ok := p.Mounts[WrapperGuest]
+	if !ok || w.Kind != KindBind || w.Host != SelfExeHost || w.Access != AccessRO {
+		t.Errorf("wrapper mount = %+v (present %v), want a read-only bind of %s", w, ok, SelfExeHost)
 	}
 }
 
-// TestPodmanStubScriptRefusesToEmbedAHostileShimPath is podmanStubScript's own
-// fail-closed guard: the ONE host-derived string in the generated script
-// (the shim's resolved path) is interpolated only inside a quoted heredoc,
-// and staging is refused outright — never silently truncated or escaped —
-// when the path could break out of it.
-func TestPodmanStubScriptRefusesToEmbedAHostileShimPath(t *testing.T) {
+// clientHost is a host with executables at the given paths and nothing else
+// but the directories above them.
+type clientHost map[string]fs.FileMode
+
+func (h clientHost) Lstat(p string) (fs.FileInfo, error) {
+	if m, ok := h[p]; ok {
+		return fakeInfo{name: p, mode: m}, nil
+	}
+	for q := range h {
+		if strings.HasPrefix(q, p+"/") {
+			return fakeInfo{name: p, dir: true, mode: fs.ModeDir | 0o755}, nil
+		}
+	}
+	return nil, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
+}
+
+func (clientHost) Readlink(p string) (string, error) {
+	return "", &fs.PathError{Op: "readlink", Path: p, Err: fs.ErrInvalid}
+}
+
+// TestPodmanStubClientIsWhatTheStubWouldExec is --dry-run's answer to "which
+// client will the stub use": docker before podman-remote whatever the PATH
+// order, a file without an execute bit is not a client, and none is "".
+func TestPodmanStubClientIsWhatTheStubWouldExec(t *testing.T) {
+	p, err := Resolve(testRegistry(), []ProfileName{"@sys", "@target-rw", "@podman-socket"},
+		testCtxWithPodmanShim(), newFakeEnv())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
 	for _, tc := range []struct {
-		name     string
-		resolved string
+		name       string
+		host       clientHost
+		want, path string
 	}{
-		{"a newline", "/usr/bin/distrobox-host-exec\nrm -rf /"},
-		{"a line equal to the delimiter", podmanStubDelim},
+		{"neither", clientHost{"/usr/bin/true": 0o755}, "", ""},
+		{"podman-remote only", clientHost{"/usr/bin/podman-remote": 0o755}, "podman-remote", "/usr/bin/podman-remote"},
+		{"both", clientHost{"/usr/bin/podman-remote": 0o755, "/usr/bin/docker": 0o755}, "docker", "/usr/bin/docker"},
+		{"docker not executable", clientHost{"/usr/bin/podman-remote": 0o755, "/usr/bin/docker": 0o644}, "podman-remote", "/usr/bin/podman-remote"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := podmanStubScript(HostShim{Name: "podman", Resolved: tc.resolved})
-			if err == nil {
-				t.Fatalf("podmanStubScript(%q) succeeded; it must refuse to stage", tc.resolved)
+			name, guest := p.PodmanStubClient(tc.host)
+			if name != tc.want || guest != tc.path {
+				t.Errorf("PodmanStubClient = %q at %q, want %q at %q", name, guest, tc.want, tc.path)
 			}
 		})
 	}
-}
-
-// TestPodmanStubScriptIsWellFormedForAnOrdinaryPath is the positive control
-// for the guard above: an ordinary resolved path must still produce a script,
-// or the guard would be indistinguishable from staging being broken outright.
-func TestPodmanStubScriptIsWellFormedForAnOrdinaryPath(t *testing.T) {
-	script, err := podmanStubScript(HostShim{Name: "podman", Resolved: "/usr/bin/distrobox-host-exec"})
-	if err != nil {
-		t.Fatalf("podmanStubScript: %v", err)
-	}
-	if !strings.HasPrefix(script, "#!/bin/sh") {
-		t.Error("stub is not a POSIX sh script")
-	}
-	if !strings.Contains(script, "/usr/bin/distrobox-host-exec") {
-		t.Error("stub does not mention the detected shim path")
-	}
-	// The header COMMENT is allowed to say "it never sets DOCKER_HOST" (and
-	// does); what must never appear is an actual assignment or a `-H` flag
-	// baked into the exec line.
-	if strings.Contains(script, "DOCKER_HOST=") || strings.Contains(script, "exec docker -H") {
-		t.Error("stub sets DOCKER_HOST or -H itself; the red team constraint is that it never does " +
-			"(CONTAINER-CLIENT.md §9) — it must inherit whatever snug already set")
-	}
-	if !strings.Contains(script, "exec docker \"$@\"") {
-		t.Error("stub does not forward argv byte-for-byte to docker")
-	}
-}
-
-// TestPodmanStubScriptIsSyntacticallyValidSh runs the generated stub through
-// `sh -n` (parse only, nothing executes). The template is built with
-// fmt.Sprintf and four substitutions; a stray %s, an unbalanced quote in a
-// generated case arm, or a heredoc delimiter typo would all be invisible to
-// every other test here, which only greps the text.
-func TestPodmanStubScriptIsSyntacticallyValidSh(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no `sh` on this host to check syntax with")
-	}
-	script, err := podmanStubScript(HostShim{Name: "podman", Resolved: "/usr/bin/distrobox-host-exec"})
-	if err != nil {
-		t.Fatalf("podmanStubScript: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "podman")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	out, err := exec.Command(sh, "-n", path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("sh -n rejects the generated stub: %v\n%s", err, out)
-	}
-}
-
-// TestPodmanStubScriptDispatchesAtRuntime actually RUNS the generated script
-// against a fake `docker` on PATH — not merely a grep of the text, which
-// TestPodmanStubScriptIsWellFormedForAnOrdinaryPath already is. This is the
-// one test in the package that executes anything; it earns the exception by
-// checking the property the whole mechanism exists for: an allowlisted
-// subcommand reaches "docker" with argv intact, and a refused one exits 125
-// with a message that says "snug" and "stub" and never reaches "docker" at
-// all.
-func TestPodmanStubScriptDispatchesAtRuntime(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no `sh` on this host to run the stub with")
-	}
-	script, err := podmanStubScript(HostShim{Name: "podman", Resolved: "/usr/bin/distrobox-host-exec"})
-	if err != nil {
-		t.Fatalf("podmanStubScript: %v", err)
-	}
-
-	bin := t.TempDir()
-	stub := filepath.Join(bin, "podman")
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// A fake `docker` that just echoes its argv, so a test can tell "reached
-	// docker with argv X" from "the stub refused it" without a real engine.
-	fakeDocker := filepath.Join(bin, "docker")
-	if err := os.WriteFile(fakeDocker, []byte("#!/bin/sh\necho DOCKER_REACHED \"$@\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	run := func(args ...string) (out string, exitCode int) {
-		cmd := exec.Command(sh, append([]string{stub}, args...)...)
-		cmd.Env = []string{"PATH=" + bin}
-		b, err := cmd.CombinedOutput()
-		code := 0
-		if ee, ok := err.(*exec.ExitError); ok {
-			code = ee.ExitCode()
-		} else if err != nil {
-			t.Fatalf("running the stub: %v", err)
-		}
-		return string(b), code
-	}
-
-	t.Run("an allowlisted subcommand reaches docker with argv intact", func(t *testing.T) {
-		out, code := run("run", "--rm", "alpine", "echo", "hi")
-		if code != 0 {
-			t.Fatalf("exit %d, want 0: %s", code, out)
-		}
-		if !strings.Contains(out, "DOCKER_REACHED run --rm alpine echo hi") {
-			t.Errorf("argv not forwarded intact: %s", out)
-		}
-	})
-
-	t.Run("a podman-only subcommand is refused with a specific reason and never reaches docker", func(t *testing.T) {
-		out, code := run("pod", "ps")
-		if code != 125 {
-			t.Errorf("exit %d, want 125: %s", code, out)
-		}
-		if strings.Contains(out, "DOCKER_REACHED") {
-			t.Error("reached the fake docker; podman-only subcommands must never forward")
-		}
-		if !strings.Contains(out, "snug:") || !strings.Contains(out, "stub") {
-			t.Errorf("refusal message does not identify itself as snug's stub: %s", out)
-		}
-	})
-
-	t.Run("an unrecognised subcommand is refused generically and never reaches docker", func(t *testing.T) {
-		out, code := run("totally-made-up-subcommand")
-		if code != 125 {
-			t.Errorf("exit %d, want 125: %s", code, out)
-		}
-		if strings.Contains(out, "DOCKER_REACHED") {
-			t.Error("reached the fake docker for an unknown subcommand")
-		}
-		if !strings.Contains(out, "snug:") || !strings.Contains(out, "stub") {
-			t.Errorf("refusal message does not identify itself as snug's stub: %s", out)
-		}
-	})
-
-	t.Run("a connection-shaping flag is refused wherever it appears in argv", func(t *testing.T) {
-		out, code := run("run", "--remote", "--rm", "alpine")
-		if code != 125 {
-			t.Errorf("exit %d, want 125: %s", code, out)
-		}
-		if strings.Contains(out, "DOCKER_REACHED") {
-			t.Error("reached the fake docker with a connection-shaping flag present")
-		}
-	})
-
-	t.Run("without docker on PATH, the no-client message names the shim and exits 125", func(t *testing.T) {
-		// The stub's own heredoc needs `cat` on PATH (an external binary, not a
-		// shell builtin) even to print the "no docker" message — this fixture
-		// supplies exactly that and nothing named "docker", rather than reusing
-		// the real host PATH, which could legitimately have a real docker
-		// installed and make this case pass for the wrong reason.
-		noDocker := t.TempDir()
-		catPath, err := exec.LookPath("cat")
-		if err != nil {
-			t.Skip("no `cat` on this host to build the fixture with")
-		}
-		if err := os.Symlink(catPath, filepath.Join(noDocker, "cat")); err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.Command(sh, stub, "ps")
-		cmd.Env = []string{"PATH=" + noDocker}
-		b, err := cmd.CombinedOutput()
-		code := 0
-		if ee, ok := err.(*exec.ExitError); ok {
-			code = ee.ExitCode()
-		} else if err != nil {
-			t.Fatalf("running the stub: %v", err)
-		}
-		out := string(b)
-		if code != 125 {
-			t.Errorf("exit %d, want 125: %s", code, out)
-		}
-		if !strings.Contains(out, "/usr/bin/distrobox-host-exec") {
-			t.Errorf("message does not name the detected shim path: %s", out)
-		}
-		if !strings.Contains(out, "snug:") || !strings.Contains(out, "stub") {
-			t.Errorf("message does not identify itself as snug's stub: %s", out)
-		}
-	})
 }

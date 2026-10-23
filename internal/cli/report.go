@@ -372,6 +372,13 @@ type reportContainers struct {
 	ToolchainRoot      string
 	RegistrySearch     []string
 	SignaturesVerified bool
+	// PodmanStub is whether policy.PodmanStubGuest is staged, and
+	// PodmanStubClient and PodmanStubClientPath are the client it will exec
+	// and the guest path it finds it at (policy.PodmanStubClient). Both are ""
+	// for a staged stub that finds neither, which refuses every command.
+	PodmanStub           bool
+	PodmanStubClient     string
+	PodmanStubClientPath string
 	// SignaturePolicySource is the host file the engine's signature policy is
 	// PROJECTED from, empty when this host configured none. It is host text.
 	SignaturePolicySource string
@@ -439,7 +446,7 @@ type reportEnvEntry struct {
 	Verb  string
 	From  []string
 	// AuthoredBy is policy.EnvEntry.Note: why SNUG authored this entry
-	// ("base", "podman stub", "--chdir" for the synthetic PWD row), set only
+	// ("base", "staged bin", "--chdir" for the synthetic PWD row), set only
 	// for a VerbSnug entry (or PWD's bwrap-authored row), which has no From.
 	//
 	// RENAMED from this field's original name "Note" (refs #332 F1a). The old
@@ -798,6 +805,10 @@ func buildContainersReport(env policy.Environ, p *policy.Policy,
 		// The engine holds no CAP_NET_ADMIN, so it cannot reconfigure this
 		// namespace to publish a port.
 		PortMapping: false,
+	}
+	if m, ok := p.Mounts[policy.PodmanStubGuest]; ok && m.Authored {
+		c.PodmanStub = true
+		c.PodmanStubClient, c.PodmanStubClientPath = p.PodmanStubClient(env)
 	}
 	// AFTER the PodmanOff early return above: this is the one host read in this
 	// function, and a run with no engine must not make it.

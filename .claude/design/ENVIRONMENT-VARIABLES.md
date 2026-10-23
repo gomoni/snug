@@ -82,7 +82,7 @@ not do this; **no comment may claim snug refuses the flat form.** A `python3 -m
 tomllib` refusal is a TOML 1.0 parser.
 
 **No `@stubs-in-path` profile.** Its abuse sentence cannot be written (the stub
-is read-only, generated, allowlisted; `/usr/bin/podman` is still reachable by
+is read-only, snug's own binary, allowlisted; `/usr/bin/podman` is still reachable by
 absolute path), and a profile that grants nothing is a preference wearing a
 profile's clothes. The two existing gates already select the exact intersection
 (genuine podman and shim, stub; otherwise none, with a warning), and a third
