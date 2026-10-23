@@ -1,8 +1,8 @@
 # The container client and the `podman` stub
 
-Why the proxy serves the docker-compat schema and not podman's own, what the
-staged `podman` stub may and may not do, and what the red team measured against
-the proxy. How a user runs containers is in `docs/src/containers.md`.
+What the staged `podman` stub may and may not do, and what the red team
+measured against the proxy. How a user runs containers is in
+`docs/src/containers.md`.
 
 Section numbers are cited from Go comments; they are not contiguous.
 
@@ -19,36 +19,6 @@ that talks to the host's `dockerd` cannot be written: docker's engine is a
 rootful daemon, so a filter bug would be root rather than uid 1000, and the
 engine's namespaces and storage would not be snug's to control. That is the
 failure class of the distrobox shim.
-
-## 3. Why `podman-remote` is not the client
-
-**It speaks the libpod-native API, and snug refuses body-bearing libpod routes
-by design.** `internal/dockerproxy/proxy.go` recognises both path shapes and
-refuses libpod ones that carry a body it would have to inspect:
-
-> the libpod-native API is not supported for POST /images/pull. snug filters the
-> docker-compat schema, and the libpod body is a different shape that this filter
-> cannot read — forwarding it unexamined would bypass every check.
-
-That refusal is correct. The measurement that decides the design is narrower and
-worse: **no flag keeps `podman-remote` on the docker-compat side of the wire.**
-
-```
-podman-remote create --pull=never docker.io/library/alpine
-→ refused at POST /images/pull        # it pulls anyway, natively
-```
-
-So supporting `podman-remote` is not a matter of documenting an invocation. It
-requires teaching the filter libpod's request schema — a **second** filter over a
-different wire format, whose `SpecGenerator` for `containers/create` is
-substantially larger than docker's `HostConfig` and moves with podman versions.
-That is the D-Bus argument aimed at ourselves: *a filtering proxy that is 95%
-correct is a sandbox that is 0% sound*, and doing it twice doubles the surface
-invariant 6 has to keep consistent.
-
-**`podman-remote` is supported for read-only inspection and nothing else**:
-`version`, `info`, `ps` and `images` answer; `pull`, `create` and `run` are
-refused at the libpod routes. `docker` is the client the proxy is written for.
 
 ## 4. `docker cp` is refused
 
@@ -71,7 +41,9 @@ snug's and impersonate snug's own diagnostics.*
 **Acceptable, because it grants no capability.** `PATH` is not an access control:
 the sandbox already controls its own execution, `$HOME` and `PATH`, and can
 ignore `PATH` entirely with an absolute path. Nothing crosses the boundary — the
-stub is `/bin/sh` text delivered from a memfd with no host reference in it.
+stub is snug's own static binary, the read-only wrapper bind the payload can
+already read and run (`policy.WrapperGuest`'s abuse sentence), under another
+name.
 
 Two constraints follow and both are load-bearing:
 
@@ -93,12 +65,10 @@ Two constraints follow and both are load-bearing:
 > stages, not only the staged file and its own directory: see
 > `policy.StagedBinDir`.
 
-**Mechanism.** `/snug/bin/podman`, `KindData`, `AccessRO`, `Perms 0755`,
-`From ["(snug)"]`, installed via `Policy.Replace` (sets `Authored`, so
-`rejectMasking` skips it — no new exemption). Detection is impure and lives in
-`internal/cli/podmanshim.go`, returning a value type carried into `policy.Context` as
-`HostShims`, exactly as `LegacyTIOCSTI` is — so `Resolve` stays pure and the
-goldens stay deterministic.
+**Mechanism.** `/snug/bin/podman` is a `KindSymlink` to the wrapper, installed
+via `Policy.Replace` (`Authored`, so `rejectMasking` skips it — no new
+exemption). Detection is impure (`internal/cli/podmanshim.go`) and reaches
+`Resolve` as `Context.HostShims`, so `Resolve` stays pure.
 
 **Trigger:** resolves to a basename in `{distrobox-host-exec, host-spawn,
 flatpak-spawn}`. NOT "is a symlink". The `#!` heuristic is fine for *warning* and
@@ -108,23 +78,19 @@ too broad to license *staging*.
 The stub must beat `/usr/bin/podman` — its whole job — and must LOSE to any
 profile entry, because a profile entry is an explicit human grant.
 
-**Stub behaviour:** a dispatcher, never a translator. Argv is forwarded
-byte-for-byte; the stub only decides yes or no. Forward only a compiled-in
-allowlist of *docker* subcommands; everything else exits **125** with a
-snug-authored message. Allowlist not denylist, because a too-small allowlist
-refuses in snug's voice while a too-small denylist lets docker answer `unknown
-command` — `podmanshim.go` point 1.
-snug allowlists the tool it *delegates to* (docker's command set is stable), not
-the one it impersonates (podman's grows every release).
+**Stub behaviour:** a dispatcher, never a translator: argv is forwarded
+byte-for-byte or refused. Which client it execs, the docker allowlist and the
+refused connection flags are in `internal/wrapper/podman.go`; the proxy, not the
+stub, is the filter.
 
 **Scope: `podman` only**, gated on `Podman != PodmanOff`. Not a scan of
 `/usr/bin` — that is what turns "snug authored one replacement" into "snug
 replaces host binaries it judges broken", the general mechanism SECRETS.md §4.3
 says needs its abuse sentence first.
 
-**`--dry-run`:** renders `KindData` with an executable bit as kind `exec`, and a
-`COMMANDS` block names the stub, what it forwards, and that `/usr/bin/podman` is
-untouched. Golden: `internal/policy/testdata/podman-socket.bwrap.txt`.
+**`--dry-run`:** names the stub, that `/usr/bin/podman` is untouched, and the
+client this sandbox's `PATH` reaches (`Policy.PodmanStubClient`). Golden:
+`internal/policy/testdata/podman-socket.bwrap.txt`.
 
 **Build selectors:** `DOCKER_BUILDKIT=0` is set for `Podman != Off` and is a
 *tightening*, not a convenience: with BuildKit, `docker build` never POSTs
@@ -178,12 +144,7 @@ to skip a check.**
 
 **Concerns to carry into the implementation:**
 
-- **`docker cp` — the equivalence argument in §4.2 is unsound**, independently of
-  `host-bridge` reaching the same verdict. `exec tar` is confined by the
-  container's mount namespace; `GET`/`PUT /archive` is serviced by the **engine,
-  outside the sandbox, as the host uid**, and archive path resolution is the home
-  of the CVE-2018-15664 symlink-escape class. Allowing it would rest safety on
-  *podman's* path resolution rather than on snug's boundary.
+- **`docker cp`** — see §4.
 - **The stub must never set `DOCKER_HOST` or `-H` to anything but the proxy.**
   This is the one way the first staged executable could carry authority the
   payload lacks. The property holds structurally; `TestContainerSocketNeverExposesEngineSocketDir` guards it.

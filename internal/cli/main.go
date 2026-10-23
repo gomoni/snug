@@ -81,10 +81,14 @@ func (c config) startsNothing() bool { return c.dryRun || c.explain }
 func Main() {
 	argv := os.Args[1:]
 
-	// Inside a sandbox, as policy.WrapperGuest or the policy.BrowserGuest link to
-	// it. Keyed on the exact argv[0] bwrap and BROWSER's consumer exec, so the
-	// image there runs these two modes and never the CLI: a consumer handing
-	// $BROWSER a URL must not reach target resolution with it.
+	// Inside a sandbox, as policy.WrapperGuest or a link to it. BROWSER and the
+	// door key on the exact argv[0] their consumers exec, so the image there
+	// runs these modes and never the CLI: a consumer handing $BROWSER a URL must
+	// not reach target resolution with it. The podman stub cannot: a shell's
+	// PATH search passes the bare word, so it keys on the name AND the image.
+	if exe, err := os.Executable(); err == nil && wrapper.IsPodmanStub(os.Args[0], exe) {
+		os.Exit(wrapper.Podman(argv, os.Getenv("PATH"), os.Stderr))
+	}
 	switch os.Args[0] {
 	case policy.BrowserGuest:
 		os.Exit(wrapper.Browser(policy.BrowserFIFOGuest, argv, os.Stderr))

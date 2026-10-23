@@ -659,6 +659,17 @@ type jsonContainers struct {
 	ToolchainRootIsDir         bool     `json:"toolchain_root_is_dir"`
 	Logins                     bool     `json:"logins"`
 	PortMapping                bool     `json:"port_mapping"`
+	// The podman stub and the client it will exec; client and path are empty
+	// for a stub that finds neither. The path comes from PATH, which a
+	// profile writes, so it carries a bytes sibling.
+	PodmanStub                bool     `json:"podman_stub"`
+	PodmanStubClient          string   `json:"podman_stub_client,omitempty"`
+	PodmanStubClientPath      string   `json:"podman_stub_client_path,omitempty"`
+	PodmanStubClientPathBytes byteList `json:"podman_stub_client_path_bytes,omitempty"`
+	// A payload-writable PATH directory searched first: the client is then
+	// whatever the payload writes there.
+	PodmanStubWritable      string   `json:"podman_stub_writable,omitempty"`
+	PodmanStubWritableBytes byteList `json:"podman_stub_writable_bytes,omitempty"`
 }
 
 type jsonEnvVar struct {
@@ -677,7 +688,7 @@ type jsonEnvVar struct {
 
 // jsonEnvEntry's field set was renamed one day after this format shipped
 // (refs #332 F1a): the JSON key `note` used to carry policy.EnvEntry.Note
-// (snug's own AUTHORSHIP reason, "base", "podman stub"), not
+// (snug's own AUTHORSHIP reason, "base", "staged bin"), not
 // policy.EnvNote's text (what the tool DOES with the value) — so a consumer
 // reading `note` got "" for the one entry that had an annotation, with
 // `unchecked:false` beside it reading as approval. `note` is retired rather
@@ -925,8 +936,7 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			Optional:     m.Optional,
 			SnugAuthored: m.Authored,
 			// The fact behind the human column's "exec" word: a KindData file
-			// with an executable permission bit is CODE, not config (the
-			// podman stub is the one case today).
+			// with an executable permission bit is CODE, not config.
 			Executable:      m.Kind == policy.KindData && m.Perms != nil && *m.Perms&0o111 != 0,
 			HostIsRunScoped: m.RunScoped,
 		}
@@ -1012,7 +1022,11 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 			ToolchainRootIsDir:        c.ToolchainRootIsDir,
 			Logins:                    c.Logins,
 			PortMapping:               c.PortMapping,
+			PodmanStub:                c.PodmanStub,
+			PodmanStubClient:          c.PodmanStubClient,
 		}
+		jc.PodmanStubClientPath, jc.PodmanStubClientPathBytes = e.text(c.PodmanStubClientPath)
+		jc.PodmanStubWritable, jc.PodmanStubWritableBytes = e.text(c.PodmanStubWritable)
 		// Both are environment variables' VALUES — host text, and the reason
 		// the human block puts them through visibleValue.
 		jc.EngineBinary, jc.EngineBinaryBytes = e.text(c.EngineBinary)

@@ -60,9 +60,10 @@ because it attaches to the container and the proxy does not forward attach.
   than the configuration allows.
 
 - A host `podman` that is a shim into the host (`host-spawn`,
-  `flatpak-spawn`, ...) is replaced by snug's own `podman`, which calls the
-  `docker` client if the sandbox has one. `snug` only filters container
-  requests and ships no client of its own.
+  `flatpak-spawn`, ...) is replaced by snug's wrapper at `/snug/bin/podman`.
+  It executes the sandbox's `docker` or `podman-remote` binary, if one is
+  inside the sandbox; `--dry-run` tells which it found. snug itself does not
+  act as a docker client.
 
 ## `docker build`
 

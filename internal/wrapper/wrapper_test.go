@@ -21,6 +21,10 @@ func TestMain(m *testing.M) {
 		os.Unsetenv(childEnv)
 		os.Exit(DoorExec(os.Args[1:], os.Stderr))
 	}
+	if os.Getenv(podmanChildEnv) == "1" {
+		os.Unsetenv(podmanChildEnv)
+		os.Exit(Podman(os.Args[1:], os.Getenv("PATH"), os.Stderr))
+	}
 	os.Exit(m.Run())
 }
 

@@ -749,32 +749,22 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	// 3b. If podman resolves to a host-escape shim on this host AND a podman
-	// profile is selected, stage a dispatcher stub ahead of it on PATH rather
-	// than leave a binary that fails cryptically from inside. Gated on
-	// p.Podman so a sandbox that never asked for containers never sees it.
-	// See podmanstub.go and CONTAINER-CLIENT.md §8 for the abuse sentence and
-	// the two load-bearing constraints (unwritable; every message says
-	// "stub").
+	// profile is selected, stage a stub ahead of it on PATH rather than leave
+	// a binary that fails cryptically from inside. Gated on p.Podman so a
+	// sandbox that never asked for containers never sees it. The stub is snug's
+	// own wrapper under the name podman (internal/wrapper/podman.go); see
+	// CONTAINER-CLIENT.md §8 for the abuse sentence and the two load-bearing
+	// constraints (unwritable; every message says "stub").
 	//
 	// It goes in StagedBinDir because EVERY executable snug puts in front of the
 	// payload goes there, whether snug generated it (this stub) or a profile
 	// bound it (@claude's binary). Nothing decides a directory locally.
-	if p.Podman != PodmanOff {
-		for _, shim := range ctx.HostShims {
-			if shim.Name != "podman" {
-				continue
-			}
-			content, err := podmanStubScript(shim)
-			if err != nil {
-				return nil, err
-			}
-			perm := uint32(0755)
-			p.Replace(Mount{
-				Guest: StagedBinDir + "/podman", Kind: KindData, Access: AccessRO,
-				Perms: &perm, Content: []byte(content), From: []string{"(snug)"},
-			})
-			break
-		}
+	podmanStub := p.Podman != PodmanOff && slices.ContainsFunc(ctx.HostShims,
+		func(s HostShim) bool { return s.Name == "podman" })
+	if podmanStub {
+		p.Replace(Mount{
+			Guest: PodmanStubGuest, Kind: KindSymlink, Host: WrapperGuest, From: []string{"(snug)"},
+		})
 	}
 
 	// The http door's descriptor handover. The sandbox's entry becomes snug's
@@ -821,9 +811,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.AuthorEnv("BROWSER", BrowserGuest)
 	}
 
-	// snug's own executable, once for both features above, so Replace never
-	// records snug replacing itself. A selection with neither has no wrapper.
-	if len(p.ListenNames) > 0 || p.Login.Has(LoginClaude) {
+	// snug's own executable, once for the three features above, so Replace
+	// never records snug replacing itself. A selection with none has no wrapper.
+	if podmanStub || len(p.ListenNames) > 0 || p.Login.Has(LoginClaude) {
 		p.Replace(Mount{
 			Guest: WrapperGuest, Kind: KindBind, Access: AccessRO,
 			Host: SelfExeHost, From: []string{"(snug)"},

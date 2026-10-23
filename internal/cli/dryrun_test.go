@@ -396,7 +396,7 @@ func captureFile(t *testing.T, fn func(io.Writer)) string {
 }
 
 // TestDescribeCommandsNamesTheStagedStub is the --dry-run review artifact for
-// the podman dispatcher stub: it must be legible as "a new executable is
+// the podman stub: it must be legible as "a new executable is
 // running before the tool you typed", not just a line in FILESYSTEM that
 // happens to read "exec" instead of "data" (CLAUDE.md's staged-executable
 // abuse sentence, CONTAINER-CLIENT.md §8).
@@ -414,7 +414,8 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}) })
+	c := &reportContainers{PodmanStub: true, PodmanStubClient: "docker", PodmanStubClientPath: "/usr/bin/docker"}
+	got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}, c) })
 	if !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("no COMMANDS block: %q", got)
 	}
@@ -427,12 +428,23 @@ func TestDescribeCommandsNamesTheStagedStub(t *testing.T) {
 	if !strings.Contains(got, "/usr/bin/podman") || !strings.Contains(got, "UNTOUCHED") {
 		t.Errorf("COMMANDS block does not say /usr/bin/podman is untouched: %q", got)
 	}
+	if !strings.Contains(got, "This sandbox: docker, at /usr/bin/docker.") {
+		t.Errorf("COMMANDS block does not name the client the stub will exec: %q", got)
+	}
+	c.PodmanStubClient, c.PodmanStubClientPath = "", ""
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}, c) }); !strings.Contains(got, "NEITHER") {
+		t.Errorf("COMMANDS block does not say the stub finds no client: %q", got)
+	}
+	c.PodmanStubWritable = "/home/u/proj"
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, p, policy.OSEnviron{}, c) }); !strings.Contains(got, "BUT /home/u/proj is on PATH and WRITABLE") {
+		t.Errorf("COMMANDS block does not say the client is the payload's to choose: %q", got)
+	}
 
 	// CONTROL: without a detected shim, no podman profile grants a stub, and
 	// the block must not print at all — a block that always prints proves
 	// nothing about the staging condition.
 	plain := resolveFor(t, []policy.ProfileName{"@sys", "@home", "@target-rw"})
-	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain, policy.OSEnviron{}) }); got != "" {
+	if got := captureFile(t, func(f io.Writer) { describeCommands(f, plain, policy.OSEnviron{}, nil) }); got != "" {
 		t.Errorf("COMMANDS block printed with no stub staged: %q", got)
 	}
 }
@@ -789,12 +801,10 @@ func TestDryRunDropLineDoesNotRenderControlCharsVerbatim(t *testing.T) {
 	}
 }
 
-// TestFilesystemBlockRendersTheStubAsExec pins the dry-run-only kind
-// rendering: a KindData mount with an executable permission bit reads "exec"
-// in the FILESYSTEM block, not "data" — the one visual cue that this line is
-// code rather than config, without a human having to notice a permission
-// column.
-func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
+// TestFilesystemBlockRendersTheStubAsALinkToTheWrapper: the stub's FILESYSTEM
+// line names what runs under the name podman — snug's own image, bound from
+// /proc/self/exe — so a human sees it is snug's code and not a script.
+func TestFilesystemBlockRendersTheStubAsALinkToTheWrapper(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 	ctx := policy.Context{
@@ -815,11 +825,9 @@ func TestFilesystemBlockRendersTheStubAsExec(t *testing.T) {
 	dryRun(newEnvFakeEnv(), &buf, p, args, config{}, nil, nil)
 	got := buf.String()
 
-	if !strings.Contains(got, "exec   "+policy.StagedBinDir+"/podman") {
-		t.Errorf("FILESYSTEM block does not render the stub as kind 'exec':\n%s", got)
-	}
-	if strings.Contains(got, "data   "+policy.StagedBinDir+"/podman") {
-		t.Errorf("FILESYSTEM block still renders the stub as kind 'data'")
+	want := "link   " + policy.PodmanStubGuest + " -> " + policy.WrapperGuest
+	if !strings.Contains(got, want) || !strings.Contains(got, policy.WrapperGuest+" (from "+policy.SelfExeHost+")") {
+		t.Errorf("FILESYSTEM block does not render the stub as a link to the wrapper bind (%q):\n%s", want, got)
 	}
 }
 

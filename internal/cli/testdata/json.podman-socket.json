@@ -401,7 +401,8 @@
     "engine_binary_is_regular_file": false,
     "toolchain_root_is_dir": false,
     "logins": false,
-    "port_mapping": false
+    "port_mapping": false,
+    "podman_stub": false
   },
   "environment": [
     {
