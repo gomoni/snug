@@ -24,10 +24,10 @@
 --symlink usr/sbin /sbin
 --size 1073741824
 --tmpfs /tmp
---ro-bind-fd 18 /usr
+--ro-bind-fd 19 /usr
 --ro-bind-data 10 /etc/group
---ro-bind-fd 19 /etc/ld.so.cache
---ro-bind-fd 20 /etc/ld.so.conf
+--ro-bind-fd 20 /etc/ld.so.cache
+--ro-bind-fd 21 /etc/ld.so.conf
 --ro-bind-data 11 /etc/nsswitch.conf
 --ro-bind-data 12 /etc/passwd
 --ro-bind-data 13 /etc/resolv.conf
@@ -48,13 +48,14 @@
 --tmpfs /home/u/.local
 --size 1073741824
 --tmpfs /home/u/proj
---bind-fd 21 /home/u/.gnupg/S.gpg-agent
---ro-bind-data 17 /home/u/.gnupg/pubring.kbx
+--bind-fd 22 /home/u/.gnupg/S.gpg-agent
+--ro-bind-data 17 /home/u/.gnupg/gpg.conf
+--ro-bind-data 18 /home/u/.gnupg/pubring.kbx
 --size 1073741824
 --tmpfs /home/u/.local/share
 --size 1073741824
 --tmpfs /home/u/.local/state
---bind-fd 22 /home/u/proj/sub
+--bind-fd 23 /home/u/proj/sub
 --remount-ro /
 --clearenv
 --setenv GNUPGHOME /home/u/.gnupg

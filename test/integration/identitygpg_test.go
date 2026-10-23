@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -476,5 +477,137 @@ func TestIdentityGPGProxyDiesWithSnug(t *testing.T) {
 	}
 	if _, err := os.Stat(h.agentSocket); err != nil {
 		t.Errorf("the host agent's socket is gone: %v", err)
+	}
+}
+
+// digestAlgo is the `digest algo N` of the first signature packet in a
+// `gpg --list-packets` dump, or "" when there is none.
+func digestAlgo(packets string) string {
+	for line := range strings.SplitSeq(packets, "\n") {
+		if _, rest, ok := strings.Cut(line, "digest algo "); ok {
+			n, _, _ := strings.Cut(rest, ",")
+			return strings.TrimSpace(n)
+		}
+	}
+	return ""
+}
+
+// TestIdentityGPGCarriesHostGPGConf: the host's gpg.conf asks for SHA-256
+// signatures, and a signature made inside the sandbox uses SHA-256 (OpenPGP
+// digest algo 8). The sandbox's generated gpg.conf carries that line and the
+// weak-digest one, and leaves behind the lines that name a program, the
+// network or a relaxation.
+//
+// The control is the host itself: the same gpg on the same home signs with
+// algo 8 reading the file and with something else under --no-options, which
+// skips it — so the assertion inside discriminates, rather than passing on a
+// gpg whose default is already SHA-256.
+func TestIdentityGPGCarriesHostGPGConf(t *testing.T) {
+	budget(t, 30*time.Second)
+	h := newGPGHost(t)
+	proj, _ := target(t)
+	// personal-cipher-prefs is gpg's alias for personal-cipher-preferences:
+	// snug must carry it under the long name, not drop it as unknown.
+	conf := "personal-digest-preferences SHA256\nweak-digest SHA224\npersonal-cipher-prefs AES128\n" +
+		"keyserver hkps://keys.example.invalid\nexec-path /nonexistent\nallow-weak-digest-algos\n"
+	if err := os.WriteFile(filepath.Join(h.home, "gpg.conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hostDigest := func(extra ...string) string {
+		sig, errs, err := h.gpgRun([]byte("hi"), append(extra, "-u", h.fpr, "--sign")...)
+		if err != nil {
+			t.Fatalf("control: host gpg could not sign: %v\n%s", err, errs)
+		}
+		packets, _, _ := h.gpgRun([]byte(sig), "--list-packets")
+		return digestAlgo(packets)
+	}
+	if d := hostDigest(); d != "8" {
+		t.Fatalf("control: host gpg reading the file signs with digest algo %q, want 8", d)
+	}
+	if d := hostDigest("--no-options"); d == "8" || d == "" {
+		t.Fatalf("control: host gpg WITHOUT the file signs with digest algo %q; "+
+			"the test cannot tell the file was carried", d)
+	}
+	// The cipher a message was encrypted with, as the host's `gpg -v -d`
+	// names it: "AES.OCB encrypted data" for AES128, "AES256.OCB" otherwise.
+	cipherOf := func(path string) string {
+		_, errs, err := h.gpgRun(nil, "-v", "-d", path)
+		if err != nil {
+			t.Fatalf("host could not decrypt %s: %v\n%s", path, err, errs)
+		}
+		for line := range strings.SplitSeq(errs, "\n") {
+			if c, ok := strings.CutSuffix(strings.TrimPrefix(line, "gpg: "), " encrypted data"); ok {
+				return c
+			}
+		}
+		return ""
+	}
+	hostEnc := func(out string, extra ...string) {
+		if _, errs, err := h.gpgRun([]byte("hi"), append(extra, "--trust-model", "always",
+			"-o", out, "-e", "-r", h.fpr)...); err != nil {
+			t.Fatalf("control: host gpg could not encrypt: %v\n%s", err, errs)
+		}
+	}
+	ctl := t.TempDir()
+	hostEnc(filepath.Join(ctl, "with.gpg"))
+	hostEnc(filepath.Join(ctl, "without.gpg"), "--no-options")
+	if with, without := cipherOf(filepath.Join(ctl, "with.gpg")), cipherOf(filepath.Join(ctl, "without.gpg")); with != "AES.OCB" || without == with {
+		t.Fatalf("control: host encrypts with %q reading the file and %q without; "+
+			"want AES.OCB and something else", with, without)
+	}
+
+	r := runEnv(t, h.profile(h.fpr, "sign"), []string{"-p", "gpgid"}, proj, `
+echo "CONF-BEGIN"; cat "$GNUPGHOME/gpg.conf"; echo "CONF-END"
+echo "PKT-BEGIN"; echo hi | gpg --batch -u `+h.fpr+` --sign | gpg --batch --list-packets 2>&1; echo "PKT-END"
+echo hi | gpg --batch --trust-model always -o enc.gpg -e -r `+h.fpr+`; echo "enc-exit=[$?]"
+`).mustRun(t)
+	if c := cipherOf(filepath.Join(proj, "enc.gpg")); c != "AES.OCB" {
+		t.Errorf("a message encrypted inside uses %q, want AES.OCB (the host's "+
+			"personal-cipher-prefs AES128, carried under its long name):\n%s", c, r.out)
+	}
+	packets, _ := section(r.out, "PKT")
+	if d := digestAlgo(packets); d != "8" {
+		t.Errorf("a signature made inside uses digest algo %q, want 8 (the host's "+
+			"personal-digest-preferences SHA256):\n%s", d, r.out)
+	}
+	carried, _ := section(r.out, "CONF")
+	lines := strings.Split(carried, "\n")
+	for _, want := range []string{"personal-digest-preferences SHA256", "weak-digest SHA224",
+		"personal-cipher-preferences AES128"} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("the sandbox's gpg.conf lacks %q:\n%s", want, carried)
+		}
+	}
+	for _, line := range lines {
+		for _, bad := range []string{"keyserver", "exec-path", "allow-weak-digest-algos"} {
+			if strings.HasPrefix(line, bad) {
+				t.Errorf("the sandbox's gpg.conf carries %q", line)
+			}
+		}
+	}
+}
+
+// TestIdentityGPGRefusesAnUncarriableGPGConf: a host gpg.conf line snug cannot
+// render faithfully refuses the run, naming the file and line, instead of
+// starting the sandbox on gpg's compiled-in default for that option. The value
+// is one the host's gpg ACCEPTS (an unterminated quote), so the refusal is
+// snug's and not a copy of gpg's own.
+func TestIdentityGPGRefusesAnUncarriableGPGConf(t *testing.T) {
+	budget(t, 30*time.Second)
+	h := newGPGHost(t)
+	proj, _ := target(t)
+	p := filepath.Join(h.home, "gpg.conf")
+	if err := os.WriteFile(p, []byte("# host\npersonal-digest-preferences \"SHA256\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, errs, err := h.gpgRun([]byte("hi"), "-u", h.fpr, "--sign"); err != nil {
+		t.Fatalf("control: the host's gpg rejects the file itself: %v\n%s", err, errs)
+	}
+	r := runEnv(t, h.profile(h.fpr, "sign"), []string{"-p", "gpgid"}, proj, "echo started")
+	if r.ran || r.code == 0 {
+		t.Fatalf("the sandbox started over an uncarriable gpg.conf (ran=%v exit=%d):\n%s", r.ran, r.code, r.out)
+	}
+	if !strings.Contains(r.out, p+":2") || !strings.Contains(r.out, "personal-digest-preferences") {
+		t.Errorf("the refusal does not name %s:2 and the option:\n%s", p, r.out)
 	}
 }
