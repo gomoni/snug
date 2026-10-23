@@ -229,3 +229,27 @@ func TestGPGConfFromRefusesAnOptionNameItCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// TestGPGConfSummaryNamesDropsNotValues: every option left behind is named
+// once, by keyword; no value (a URL, a path) reaches the summary, and the
+// carried list uses the carried spelling (an alias resolved). A refused file
+// summarises as nothing.
+func TestGPGConfSummaryNamesDropsNotValues(t *testing.T) {
+	src := []byte("keyserver hkps://keys.example\nexec-path /tmp\n" +
+		"personal-cipher-prefs AES256\nkeyserver hkps://other\nopenpgp\n")
+	carried, dropped := GPGConfSummary(src, false)
+	if strings.Join(carried, " ") != "personal-cipher-preferences compliance" {
+		t.Errorf("carried = %q", carried)
+	}
+	if strings.Join(dropped, " ") != "keyserver exec-path" {
+		t.Errorf("dropped = %q, want each dropped keyword once", dropped)
+	}
+	for _, d := range append(carried, dropped...) {
+		if strings.ContainsAny(d, "/: ") {
+			t.Errorf("summary entry %q carries a value", d)
+		}
+	}
+	if c, d := GPGConfSummary([]byte("digest-algo \"x\n"), false); c != nil || d != nil {
+		t.Errorf("a refused file summarised as %q / %q", c, d)
+	}
+}

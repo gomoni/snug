@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -158,10 +159,43 @@ func SortedGPGConfOptions() []string {
 // cannot carry faithfully: an argument missing, present on a flag, or shaped
 // like nothing a crypto or trust option takes. Dropping that line would give
 // the sandbox gpg's compiled-in default for the option — the silent downgrade
-// this file exists to prevent. Lines naming any other option are left behind
-// without comment; that is what the allowlist means.
+// this file exists to prevent. Lines naming any other option are left behind;
+// GPGConfSummary names them (never their values) for the -v log, because
+// every drop is named (.claude/design/GENERATED-CONFIG.md §6a).
 func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
-	var carried []string
+	carried, _, err := gpgConfRead(src, host, system)
+	if err != nil {
+		return nil, err
+	}
+	return renderGPGConf(host, system, carried), nil
+}
+
+// GPGConfSummary is the option NAMES one host file contributes (carried) and
+// those it leaves behind (dropped), each once, in file order — for the -v log
+// and for deciding whether the user file carries anything at all. Values are
+// never returned: a keyserver URL or a path is the host user's, not a
+// screen's. A file GPGConfFrom refuses summarises as nothing; the refusal is
+// what the human sees.
+func GPGConfSummary(src []byte, system bool) (carried, dropped []string) {
+	lines, dropped, err := gpgConfRead(src, "", system)
+	if err != nil {
+		return nil, nil
+	}
+	for _, l := range lines {
+		if l[0] == '[' {
+			continue
+		}
+		name, _, _ := strings.Cut(l, " ")
+		if !slices.Contains(carried, name) {
+			carried = append(carried, name)
+		}
+	}
+	return carried, dropped
+}
+
+// gpgConfRead is GPGConfFrom's parse: the carried lines as snug renders them,
+// and the names of the options left behind.
+func gpgConfRead(src []byte, host string, system bool) (carried, dropped []string, err error) {
 	for i, raw := range strings.Split(string(src), "\n") {
 		line := strings.Trim(raw, gpgConfBlanks)
 		if line == "" || line[0] == '#' {
@@ -170,13 +204,13 @@ func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
 		where := fmt.Sprintf("%s:%d", host, i+1)
 		if line[0] == '[' {
 			if !system {
-				return nil, fmt.Errorf("%s: %q is a meta command, which gpg accepts only in "+
+				return nil, nil, fmt.Errorf("%s: %q is a meta command, which gpg accepts only in "+
 					"the system-wide gpg.conf. The host's gpg refuses this file too; remove the line",
 					where, VisibleText(line))
 			}
 			m, err := gpgConfMetaLine(line)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %v", where, err)
+				return nil, nil, fmt.Errorf("%s: %v", where, err)
 			}
 			carried = append(carried, m)
 			continue
@@ -186,7 +220,7 @@ func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
 			name, arg = line[:i], strings.Trim(line[i:], gpgConfBlanks)
 		}
 		if !gpgConfNameOK(name) {
-			return nil, fmt.Errorf("%s: %q is not spelled like a gpg option (lowercase letters, "+
+			return nil, nil, fmt.Errorf("%s: %q is not spelled like a gpg option (lowercase letters, "+
 				"digits and dashes), so snug cannot tell which option the host's gpg reads it as; "+
 				"fix or remove the line", where, VisibleText(name))
 		}
@@ -199,6 +233,9 @@ func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
 		}
 		takesArg, ok := GPGConfOptions[name]
 		if !ok {
+			if !slices.Contains(dropped, name) {
+				dropped = append(dropped, name)
+			}
 			continue
 		}
 		if len(arg) >= 2 && arg[0] == '"' && arg[len(arg)-1] == '"' {
@@ -206,14 +243,14 @@ func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
 		}
 		switch {
 		case !takesArg && arg != "":
-			return nil, fmt.Errorf("%s: %s takes no argument, and this line gives it %q. "+
+			return nil, nil, fmt.Errorf("%s: %s takes no argument, and this line gives it %q. "+
 				"snug cannot tell what the host's gpg makes of it; write the option alone",
 				where, name, VisibleText(arg))
 		case takesArg && arg == "":
-			return nil, fmt.Errorf("%s: %s needs an argument. The host's gpg refuses this "+
+			return nil, nil, fmt.Errorf("%s: %s needs an argument. The host's gpg refuses this "+
 				"line too (\"missing argument\"); give it one or remove it", where, name)
 		case takesArg && !gpgConfValueOK(arg):
-			return nil, fmt.Errorf("%s: %s %q is not shaped like an algorithm list, a "+
+			return nil, nil, fmt.Errorf("%s: %s %q is not shaped like an algorithm list, a "+
 				"number or a key ID, so snug will not write it into the sandbox's gpg.conf, "+
 				"and leaving it out would hand the sandbox gpg's compiled-in default instead. "+
 				"Spell it as gpg(1) does, e.g. `personal-digest-preferences SHA512 SHA384`",
@@ -225,7 +262,7 @@ func GPGConfFrom(src []byte, host string, system bool) ([]byte, error) {
 			carried = append(carried, name)
 		}
 	}
-	return renderGPGConf(host, system, carried), nil
+	return carried, dropped, nil
 }
 
 func gpgConfNameOK(name string) bool {

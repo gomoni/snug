@@ -213,3 +213,43 @@ func TestProbeGPGConfRefusesAFIFO(t *testing.T) {
 		t.Errorf("a FIFO at %s probed as %v", p, err)
 	}
 }
+
+// TestStageGPGConfRefusesBesideAProfileStub: a profile's own grant at
+// ~/.gnupg/gpg.conf and a generated file are two authors for one path, so
+// staging refuses, naming both, when the host's user file carries anything —
+// never displacing the stub. With nothing carried the stub stays as the only
+// author and no user file is generated (control). A grant at a versioned
+// name is refused whatever the host sets: gpg would read it instead.
+func TestStageGPGConfRefusesBesideAProfileStub(t *testing.T) {
+	stubbed := func(guest string) *policy.Policy {
+		return &policy.Policy{Home: "/home/u", Mounts: map[string]policy.Mount{
+			guest: {Guest: guest, Host: "/x/stub", Kind: policy.KindBind, Access: policy.AccessRO,
+				From: []string{"gpg-stub"}},
+		}}
+	}
+	userGuest := "/home/u/" + policy.GPGConfGuest
+	carrying := gpgConfFiles{user: []byte("digest-algo SHA256\n"), userPath: "/h/.gnupg/gpg.conf"}
+
+	pol := stubbed(userGuest)
+	err := stageGPGConf(pol, carrying)
+	if err == nil || !strings.Contains(err.Error(), "gpg-stub") || !strings.Contains(err.Error(), "/h/.gnupg/gpg.conf") {
+		t.Fatalf("stageGPGConf beside a stub = %v, want a refusal naming the stub and the host file", err)
+	}
+	if pol.Mounts[userGuest].Kind != policy.KindBind {
+		t.Error("the refused stage displaced the stub")
+	}
+
+	pol = stubbed(userGuest)
+	if err := stageGPGConf(pol, gpgConfFiles{user: []byte("keyserver hkps://x\n"), userPath: "/h/.gnupg/gpg.conf"}); err != nil {
+		t.Fatalf("nothing carried, yet: %v", err)
+	}
+	if m := pol.Mounts[userGuest]; m.Kind != policy.KindBind || m.Authored {
+		t.Errorf("with nothing carried the stub must stay, got %+v", m)
+	}
+
+	versioned := userGuest + "-2.5"
+	pol = stubbed(versioned)
+	if err := stageGPGConf(pol, gpgConfFiles{}); err == nil || !strings.Contains(err.Error(), versioned) {
+		t.Errorf("a grant at %s = %v, want a refusal naming it", versioned, err)
+	}
+}

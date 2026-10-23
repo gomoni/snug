@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -173,19 +174,51 @@ func gpgUserConfNames(version string) []string {
 	return append(out, policy.GPGSystemConfName)
 }
 
-// probeAndStageGPGConf is probeGPGConf followed by stageGPGConf.
-func probeAndStageGPGConf(pol *policy.Policy) error {
+// probeAndStageGPGConf is probeGPGConf followed by stageGPGConf, and under -v
+// names what each host file carried and what it left behind, by option name
+// only (every drop is named: .claude/design/GENERATED-CONFIG.md §6a).
+func probeAndStageGPGConf(pol *policy.Policy, verbose bool) error {
 	f, err := probeGPGConf()
 	if err != nil {
 		return err
 	}
-	return stageGPGConf(pol, f)
+	if err := stageGPGConf(pol, f); err != nil {
+		return err
+	}
+	if verbose {
+		for _, src := range []struct {
+			path   string
+			b      []byte
+			system bool
+		}{{f.systemPath, f.system, true}, {f.userPath, f.user, false}} {
+			if src.b == nil {
+				continue
+			}
+			carried, dropped := policy.GPGConfSummary(src.b, src.system)
+			fmt.Fprintf(os.Stderr, "snug: gpg.conf %s: carried %s; left on the host %s\n",
+				policy.VisibleText(src.path), gpgConfNames(carried), gpgConfNames(dropped))
+		}
+	}
+	return nil
+}
+
+func gpgConfNames(names []string) string {
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, " ")
 }
 
 // stageGPGConf mounts the generated gpg.conf files: the user one always, so
 // --dry-run shows what the sandbox's gpg reads even on a host that sets
 // nothing, and the system one only where the host has one, so the sandbox's
 // gpg sees the same files present as the host's.
+//
+// A profile's own grant at ~/.gnupg/gpg.conf (a stub a human wrote) is
+// REFUSED when the host's user file carries anything, never displaced: two
+// authors for one file, and either silent winner drops the other's options.
+// When the host's user file carries nothing, the stub stays and no user file
+// is generated — the stub is then the only author.
 func stageGPGConf(pol *policy.Policy, f gpgConfFiles) error {
 	userHost := f.userPath
 	if userHost == "" {
@@ -195,20 +228,46 @@ func stageGPGConf(pol *policy.Policy, f gpgConfFiles) error {
 	if err != nil {
 		return fmt.Errorf("identity.gpg: %v", err)
 	}
+	var system []byte
 	if f.system != nil {
-		system, err := policy.GPGConfFrom(f.system, f.systemPath, true)
-		if err != nil {
+		if system, err = policy.GPGConfFrom(f.system, f.systemPath, true); err != nil {
 			return fmt.Errorf("identity.gpg: %v", err)
 		}
+	}
+	userGuest := pol.Home + "/" + policy.GPGConfGuest
+	// gpg reads the first of gpg.conf-<version>…gpg.conf (probeGPGConf), so a
+	// grant at a versioned name would be read INSTEAD of the generated file,
+	// carried options and all, whatever the host sets.
+	for guest, m := range pol.Mounts {
+		if strings.HasPrefix(guest, userGuest+"-") && !m.Anchor {
+			return fmt.Errorf("%s grants %s, which the sandbox's gpg reads in place of the %s "+
+				"identity.gpg (profile %q) generates from the host's.\n"+
+				"       Drop the grant", strings.Join(m.From, "+"), policy.VisibleText(guest),
+				userGuest, pol.IdentityOwner("gpg"))
+		}
+	}
+	stub, haveStub := pol.Mounts[userGuest]
+	haveStub = haveStub && !stub.Anchor
+	if haveStub {
+		if carried, _ := policy.GPGConfSummary(f.user, false); len(carried) > 0 {
+			return fmt.Errorf("identity.gpg (profile %q) generates %s from the host's %s, and "+
+				"%s also grants that path.\n"+
+				"       Two authors cannot both hold one file. Drop the grant, or move what it "+
+				"sets into the host's gpg.conf", pol.IdentityOwner("gpg"), userGuest,
+				policy.VisibleText(f.userPath), strings.Join(stub.From, "+"))
+		}
+	}
+	if system != nil {
 		pol.Replace(policy.Mount{
 			Guest: f.systemPath, Kind: policy.KindData, Access: policy.AccessRO,
 			Content: system, From: []string{identityProvenance(pol, "gpg")},
 		})
 	}
-	pol.Replace(policy.Mount{
-		Guest: pol.Home + "/" + policy.GPGConfGuest, Kind: policy.KindData,
-		Access: policy.AccessRO, Content: user,
-		From: []string{identityProvenance(pol, "gpg")},
-	})
+	if !haveStub {
+		pol.Replace(policy.Mount{
+			Guest: userGuest, Kind: policy.KindData, Access: policy.AccessRO, Content: user,
+			From: []string{identityProvenance(pol, "gpg")},
+		})
+	}
 	return nil
 }

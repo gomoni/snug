@@ -211,7 +211,7 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		} else {
 			stageGPGKeyring(pol, keyring)
 		}
-		if cerr := probeAndStageGPGConf(pol); cerr != nil {
+		if cerr := probeAndStageGPGConf(pol, verbose); cerr != nil {
 			fmt.Fprintln(os.Stderr, "snug: "+cerr.Error())
 			fmt.Fprintln(os.Stderr, "      (dry run: continuing; a real run refuses here, and the "+
 				"FILESYSTEM block below therefore has no gpg.conf row)")
@@ -269,7 +269,7 @@ func startGPGIdentity(pol *policy.Policy, id *policy.Identity, verbose, dryRun b
 		return nil, kerr
 	}
 	stageGPGKeyring(pol, keyring)
-	if err := probeAndStageGPGConf(pol); err != nil {
+	if err := probeAndStageGPGConf(pol, verbose); err != nil {
 		cleanup()
 		return nil, err
 	}
