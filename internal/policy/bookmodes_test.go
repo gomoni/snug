@@ -57,10 +57,10 @@ func TestBookProfileKeysListExactlyTheParsedModes(t *testing.T) {
 }
 
 // TestBookListsExactlyThePathVariablesResolveBuilds checks the variable table
-// in docs/src/filesystem.md against Resolve's variable map, in both
+// in docs/src/variables.md against Resolve's variable map, in both
 // directions. The `~/` row is expandVars' prefix rule, not a map entry.
 func TestBookListsExactlyThePathVariablesResolveBuilds(t *testing.T) {
-	const page = "../../docs/src/filesystem.md"
+	const page = "../../docs/src/variables.md"
 	data, err := os.ReadFile(page)
 	if err != nil {
 		t.Fatal(err)

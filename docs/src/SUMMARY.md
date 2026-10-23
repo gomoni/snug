@@ -4,6 +4,7 @@
 
 - [Configuration files](configuration.md)
 - [Profiles](profiles.md)
+- [Variables](variables.md)
 - [Filesystem grants](filesystem.md)
 - [Environment](environment.md)
 - [Network](network.md)

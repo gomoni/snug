@@ -59,7 +59,7 @@ A variable's type decides which verbs (operations) it accepts. Unsupported verbs
 |---|---|---|---|---|---|
 | `set` | string | sets a scalar | profiles must agree on the value | scalar | yes |
 | `merge` | string or array of strings | adds elements to a list | union, sorted, duplicates removed | path-list, if its row allows it | only if the profile declares it `path-list` |
-| `prepend` | string or array of strings | puts elements at the front of a list, in the order written | one profile per variable | path-list, if its row allows it | only if the profile declares it `path-list` |
+| `prepend` | string or array of strings | puts elements at the front of a list, in the order written | one value per variable; profiles writing the identical list agree, different lists are an error | path-list, if its row allows it | only if the profile declares it `path-list` |
 | `inherit` | `true` | copies the host's value, if the host has one | union | scalar | yes |
 | `sanitise` | `true` | copies the host's list, keeping only elements that are granted inside and hold the host's content | union | path-list, if its row allows it | no |
 
@@ -75,10 +75,17 @@ A variable's type decides which verbs (operations) it accepts. Unsupported verbs
   the list, so a declared `path-list` never takes it.
 - A string in `merge` or `prepend` is **one** element. `snug` never splits a
   value. So always write `["/a", "/b"]`, not `"/a:/b"`.
+- A variable name must match `[A-Za-z_][A-Za-z0-9_]*` and anything else is refused
+  when the profile loads.
+- `sanitise` can keep variables empty, but never unset them.
+- `← not granted` in `snug --dry-run` or `snug profile show` means the
+  path is not granted by any profile.
+- `← writable from inside` marks a `PATH` directory the sandboxed program can
+  write to. 
 - `inherit` and `sanitise` take `true`. `false` is an error: nothing was
   inherited to begin with, so there is nothing to turn off.
 - `set`, `merge` and `prepend` values expand `{target}`, `{home}` and the
-  other [path variables](filesystem.md#variables).
+  other [variables](variables.md).
 
 ## Declaring a type
 

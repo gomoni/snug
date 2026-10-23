@@ -24,13 +24,14 @@ symlink  = [{ at = "/usr/local/bin/python", target = "/usr/bin/python3" }]
 | `rw` | list of path specs | a writable bind of a host path. Be aware writes reaches the host, there's no middle layer |
 | `tmpfs` | list of guest paths | an empty writable directory in memory, at most [`tmpfs_size`](#tmpfs) (default 1 GiB) |
 | `symlink` | list of `{ at, target }` | a symlink at guest path `at` pointing to `target` |
+| `file` | list of `{ path, content }` tables | a read-only file (mode `0444`) at `path` holding the text `content` |
 | `optional` | list of paths | nothing by itself; an `ro` or `rw` host path must exist, and listing it here skips it instead when it is absent |
 
 ## Path specs
 
 A path grant is read-only (`ro`) or read-write (`rw`). Host paths, which are
 not granted remain not accessible inside the sandbox. The spec is split at the
-first `:`. After variable expansion (for example `{target}`) both sides must be absolute.
+first `:`. After [variable](variables.md) expansion (for example `{target}`) both sides must be absolute.
 
 - `HOST` — bind host `HOST` at the same path inside, or
 - `HOST:GUEST` — bind host `HOST` at `GUEST` inside.
@@ -64,31 +65,8 @@ The examples below assume `{home}` (or `~`) is `/home/me` and the `{target}` is
 
 ### Variables
 
-Those are NOT environment variables. The home directory is spelled `{home}` or
-`~`. `$HOME` has no meaning and is taken as it. `/opt/$HOME` is the literal
-path `/opt/$HOME`, and `$HOME/bin` is refused because it is not absolute.
-
-| variable | value |
-|---|---|
-| `{target}` | the directory given on the command line, symlinks resolved, see [Host symlinks](#host-symlinks) |
-| `{target_parent}` | the parent of `{target}` |
-| `{home}` | your account's home directory (`getent passwd`), symlinks resolved, see [Host symlinks](#host-symlinks) and [The home directory](#the-home-directory) |
-| `{lbrace}` | a literal `{` |
-| `{rbrace}` | a literal `}` |
-| `{colon}` | a literal `:` |
-| `~/` | `{home}/`, only as the first two characters |
-
-Variables expand in `ro`, `rw`, `tmpfs`, `symlink`, `optional`. A path
-containing `:` or `{` cannot be written in a spec. A `:` or `{` that comes from
-a variable's value is part of the path:
-
-| path to grant | spec | result |
-|---|---|---|
-| `/mnt/a:b` | `/mnt/a:b` | refused: `both sides must be absolute paths`; split into host `/mnt/a`, guest `b` |
-| `/tmp/{foo}` | `/tmp/{foo}` | refused: `unknown variable {foo}` |
-| `/mnt/a:b` | `/mnt` | works; grants the whole parent |
-| `/w/x:y`, snug run on it | `{target}` | works; `/w/x:y` on both sides |
-| `/tmp/{foo}`, snug run on it | `{target}` | works; `/tmp/{foo}` on both sides |
+`{target}`, `{home}`, `~/` and the other variables are described in
+[Variables](variables.md).
 
 ## Host symlinks
 
@@ -180,6 +158,104 @@ snug: grant /opt/lnk/x (from p) resolves through the symlink /opt/lnk -> /proc,
       be made there. Remove the grant, or point the symlink somewhere else
 ```
 
+## `file`
+
+```toml
+[[profile.work.file]]
+path = "/etc/gitconfig"
+content = """
+[init]
+	defaultBranch = main
+"""
+```
+
+`path` is a guest path, absolute after expansion; `~/` and `{home}` work in
+it. `content` is the whole text of the file, written verbatim: snug adds no
+newline and removes none. `content = ""` is an empty file, and a `file` with no
+`content` is refused. Nothing is read from the host and nothing is created on
+it. The file is read-only, mode `0444`, and is gone when the sandbox exits.
+There is no `rw` form and no `mode` key.
+
+The double brackets are TOML's array of tables: each `[[profile.NAME.file]]`
+block adds one file, so a profile writes as many as it has blocks.
+
+```toml
+[[profile.work.file]]
+path = "/etc/gitconfig"
+content = "..."
+
+[[profile.work.file]]
+path = "~/.config/pip/pip.conf"
+content = "..."
+```
+
+`file = [{ path = "…", content = "…" }, …]` is the same list written inline;
+the block form reads better when `content` spans lines.
+
+**What a hostile process inside the sandbox can do with it:** read the text,
+and nothing more. It cannot write, replace or unlink the file. The power is the
+author's: whatever program reads `path` obeys the text. `/etc/gitconfig` is a
+command table git executes (`core.sshCommand`, `credential.helper`,
+`alias.x = "!cmd"`, `core.pager`). It is exactly the power of
+`ro = ["<stub>:/etc/gitconfig"]`, with no host file opened. Write only what you
+would write in that stub.
+
+**Never put a credential in `content`.** `snug --dry-run` and
+`snug profile show` print the full text and its SHA-256.
+
+The text must be valid UTF-8 with no control character except newline and tab,
+and at most 64 KiB, before and after expansion. A longer text belongs in a file
+you bind with `ro = ["<file>:<path>"]`. Two profiles writing the same `path`
+combine only when the text is identical; different text is refused, naming both.
+
+A `file` is a grant like any other. It may sit inside a `tmpfs` (`{home}` is
+one), and is refused inside a `ro` or `rw` bind, because that would hide what
+the bind shows there. Nothing can be granted beneath it.
+
+### Placeholders
+
+`content` expands the [variables](variables.md) and `{profile.NAME.KEY}`: a
+value another profile pins. `KEY` is
+`identity.` followed by a leaf that is not a host path, for example
+`{profile.work-id.identity.ssh.host}`. `identity.ssh.key`,
+`identity.git.signing_key` and `identity.kubectl.kubeconfig` are host paths snug
+reads, and are refused. `~/` is not expanded in `content`.
+
+```toml
+[profile.work]
+include = ["work-id"]
+
+[[profile.work.file]]
+path = "/etc/gitconfig"
+content = """
+[url "git@{profile.work-id.identity.ssh.host}:"]
+	pushInsteadOf = https://{profile.work-id.identity.ssh.host}/
+"""
+```
+
+`NAME` must be the profile that writes the file or one it includes, so the text
+never depends on what else a run selects. A placeholder whose key is unset is
+refused, and is never expanded to nothing. Expansion is one pass: a value that
+contains `{` is data, not another placeholder. A value that contains a control
+character, a newline in `{target}` for one, is refused.
+
+### Where git reads it
+
+snug generates `~/.gitconfig` for an `identity.git` and pins user, signing,
+`insteadOf` and `safe.directory` there. Git reads `/etc/gitconfig` at system
+scope, below the global file, so a `file` at `/etc/gitconfig` adds to the
+generated one and cannot override those pins. `--show-scope` reports `system`
+for it.
+
+### Generated paths
+
+A `file` at a path snug generates for the same selection is refused, naming the
+generated file and what to do instead: `~/.gitconfig`, `~/.ssh/config`,
+`~/.ssh/known_hosts`, `/etc/resolv.conf`, `/etc/passwd`, `/etc/group`,
+`/etc/nsswitch.conf` and the account files an `identity` stages. snug has no
+layer for ssh configuration, so `{home}/.ssh/config` is refused with that
+wording. Builtin profiles carry no `file`.
+
 ## `optional`
 
 ```toml
@@ -256,6 +332,7 @@ A grant inside another grant must not hide what the outer one shows:
 | outer grant | a grant inside it is |
 |---|---|
 | `tmpfs` | allowed: there is nothing to hide |
+| a [`file`](#file) | refused: nothing can be mounted inside a file |
 | `ro`/`rw` of host `H` | allowed only when it binds the same tree, `H/sub` at `…/sub`; anything else is refused |
 
 ## Paths snug owns

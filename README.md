@@ -96,7 +96,7 @@ $ echo $?
 
 ## Quick install
 
-One needs an up to date Go compiler.
+`snug` must be built with `CGO_ENABLED=0`.
 
 ```bash
 # build the binary
