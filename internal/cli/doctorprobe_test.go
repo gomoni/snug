@@ -57,3 +57,24 @@ func TestParseNetDevIgnoresAnythingThatIsNotAnInterfaceList(t *testing.T) {
 		})
 	}
 }
+
+// TestOnlyFallbackTunnelsNamesTheHostSetting: a host with ip_gre loaded put
+// gre0, gretap0 and erspan0 in every sandbox, and doctor said only "this should
+// not happen". Those devices are the kernel's, so doctor names the sysctl; any
+// other extra interface keeps the generic alarm.
+func TestOnlyFallbackTunnelsNamesTheHostSetting(t *testing.T) {
+	for _, tc := range []struct {
+		in   []string
+		want bool
+	}{
+		{[]string{"lo", "gre0", "gretap0", "erspan0"}, true},
+		{[]string{"lo", "sit0"}, true},
+		{[]string{"lo"}, false},
+		{[]string{"lo", "gre0", "eth0"}, false},
+		{[]string{"lo", "snug0"}, false},
+	} {
+		if got := onlyFallbackTunnels(tc.in); got != tc.want {
+			t.Errorf("onlyFallbackTunnels(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

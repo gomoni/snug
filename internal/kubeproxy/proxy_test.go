@@ -92,6 +92,22 @@ type pfix struct {
 	amu    sync.Mutex
 }
 
+// waitAudit returns once the proxy has written at least n audit lines, or after
+// 5s. A forwarded request is audited after the response is written, so a client
+// that has read its answer can look before the line exists.
+func (f *pfix) waitAudit(n int) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		f.amu.Lock()
+		got := len(f.audit)
+		f.amu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // start runs a proxy on loopback in front of up, at server path prefix pfx.
 func start(t *testing.T, up *upstream, pfx string, mod func(*Config)) *pfix {
 	t.Helper()
@@ -564,6 +580,7 @@ func TestKubeProxyAuditNeverCarriesTheToken(t *testing.T) {
 	f := start(t, up, "", nil)
 	raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
 	raw(t, f.addr, "GET /api HTTP/1.1\r\nHost: x\r\nImpersonate-User: a\r\nConnection: close\r\n\r\n")
+	f.waitAudit(2)
 	f.amu.Lock()
 	defer f.amu.Unlock()
 	if len(f.audit) < 2 {

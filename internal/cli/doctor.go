@@ -232,7 +232,11 @@ func doctor(argv []string) int {
 			// Fatal, and this one has earned it: the interfaces parsed cleanly
 			// and there is something in the namespace that should not be there.
 			fmt.Printf("  ❌ network namespace has more than loopback: %s\n", strings.Join(got, " "))
-			fmt.Println("     this should not happen — the sandbox may not be isolated")
+			if onlyFallbackTunnels(got) {
+				fmt.Print(doctorFallbackTunnelsMessage)
+			} else {
+				fmt.Println("     this should not happen — the sandbox may not be isolated")
+			}
 			ok = false
 		}
 	}
@@ -769,6 +773,38 @@ func parseNetDev(out string) []string {
 	}
 	return names
 }
+
+// fallbackTunnels are the devices a tunnel module creates in every new network
+// namespace while net.core.fb_tunnels_only_for_init_net is 0, the kernel
+// default. The list is the one Documentation/admin-guide/sysctl/net.rst gives.
+// Measured: with ip_gre loaded, every sandbox listed lo gre0 gretap0 erspan0.
+var fallbackTunnels = map[string]bool{
+	"tunl0": true, "gre0": true, "gretap0": true, "erspan0": true,
+	"sit0": true, "ip6tnl0": true, "ip6gre0": true,
+}
+
+// onlyFallbackTunnels reports whether every interface besides lo is a kernel
+// fallback tunnel, so doctor can name the host setting instead of guessing.
+// It stays a failure: snug promises an offline sandbox holds only lo.
+func onlyFallbackTunnels(ifaces []string) bool {
+	extra := 0
+	for _, n := range ifaces {
+		if n == "lo" {
+			continue
+		}
+		if !fallbackTunnels[n] {
+			return false
+		}
+		extra++
+	}
+	return extra > 0
+}
+
+const doctorFallbackTunnelsMessage = `     a tunnel module (ip_gre, ipip, sit, ip6_tunnel…) is loaded and the kernel
+     adds its fallback devices to every new network namespace, the sandbox's too
+     fix: sudo sysctl -w net.core.fb_tunnels_only_for_init_net=1
+          (persist it in /etc/sysctl.d/), or unload the module if nothing uses it
+`
 
 // ── podman's helper binaries ────────────────────────────────────────────────
 //
