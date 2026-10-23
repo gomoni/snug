@@ -73,3 +73,23 @@ func TestBookPathSpecExamplesAreWhatSplitSpecDoes(t *testing.T) {
 		}
 	}
 }
+
+// TestColonVariableIsNotTheHostGuestDivider fails if splitSpec expands before
+// it splits: {colon} would then put a second divider into the spec.
+func TestColonVariableIsNotTheHostGuestDivider(t *testing.T) {
+	vars := pathVars("/t", "/h")
+	for _, tc := range []struct{ spec, host, guest string }{
+		{"/mnt/a{colon}b", "/mnt/a:b", "/mnt/a:b"},
+		{"/mnt/a{colon}b:/g", "/mnt/a:b", "/g"},
+		{"/h:/g{colon}x", "/h", "/g:x"},
+	} {
+		host, guest, err := splitSpec(tc.spec, vars)
+		if err != nil {
+			t.Errorf("%q: %v", tc.spec, err)
+			continue
+		}
+		if host != tc.host || guest != tc.guest {
+			t.Errorf("%q = host %q guest %q, want host %q guest %q", tc.spec, host, guest, tc.host, tc.guest)
+		}
+	}
+}

@@ -528,3 +528,22 @@ func TestProfileFileThroughSymlinkRefuses(t *testing.T) {
 		t.Fatal("a profile file under the /bin -> usr/bin symlink was accepted")
 	}
 }
+
+func TestColonVariableWritesALiteralColonInFileContentAndScalarEnviron(t *testing.T) {
+	reg := fileReg(map[ProfileName]*Profile{
+		"w": {Name: "w",
+			File:    gitconfig("a{colon}b"),
+			Environ: EnvGrants{Set: map[string]string{"MARK": "x{colon}y"}},
+		},
+	})
+	p, err := resolveFile(t, reg, "@target-rw", "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(p.Mounts["/etc/gitconfig"].Content); got != "a:b" {
+		t.Errorf("content = %q", got)
+	}
+	if v := p.Env["MARK"]; len(v.Entries) == 0 || v.Entries[0].Value != "x:y" {
+		t.Errorf("environ value = %+v", v)
+	}
+}

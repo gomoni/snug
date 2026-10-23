@@ -519,7 +519,7 @@ func (p *Policy) rejectHostHomeBind() error {
 				"       are written into it. A bind at that path takes it from them.\n"+
 				"       Pick a guest path that is not your home or above it, e.g.\n"+
 				"       ro = [\"%s:/mnt/...\"] in your own profile.",
-				provenance(m), where, what, m.Access, VisibleText(m.Host))
+				provenance(m), where, what, m.Access, VisibleText(specText(m.Host)))
 		}
 		return fmt.Errorf("profile %s binds %s, which is %s (%s).\n"+
 			"       That is the largest grant snug can emit: every credential under it is\n"+

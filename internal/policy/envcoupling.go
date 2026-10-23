@@ -358,7 +358,12 @@ func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map
 				continue
 			}
 			at = filepath.Clean(at)
-			target := s.Target
+			// Expanded like At: Resolve hands bwrap the expanded target, and a
+			// verdict about the raw text is a verdict about a different link.
+			target, err := expandVars(s.Target, vars)
+			if err != nil {
+				continue
+			}
 			if !filepath.IsAbs(target) {
 				target = filepath.Join(filepath.Dir(at), target)
 			}
