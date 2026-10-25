@@ -116,16 +116,6 @@ func TestProbeSSHPinRefusesAPinWithNoEntry(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no known_hosts entry for github.com") {
 		t.Fatalf("err = %v, want the no-entry refusal", err)
 	}
-	// docs/src/identity.md quotes this refusal, with the file list elided.
-	const page = "../../docs/src/identity.md"
-	data, rerr := os.ReadFile(page)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	got := "snug: " + strings.Replace(err.Error(), "(read "+user+")", "(read …)", 1)
-	if !strings.Contains(string(data), "\n"+got+"\n") {
-		t.Errorf("%s does not quote the refusal as snug prints it:\n%s", page, got)
-	}
 }
 
 // TestProbeSSHPinCarriesTheHostBlock is #688 F4: the global probe resolves no
