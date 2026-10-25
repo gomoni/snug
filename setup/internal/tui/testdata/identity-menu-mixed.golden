@@ -1,0 +1,20 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ssh
+  ( ) none   suggested
+        no ssh key in the sandbox
+  (•) a
+        ssh   github.com  a
+
+  git
+  (•) none   suggested
+        no git author in the sandbox
+
+  gh
+  ( ) none   suggested
+        no gh login in the sandbox
+▸ (•) b
+        gh    github.com/b-user
+        ! b: gh not logged in as b-user on github.com — gh auth login --hostname github.com
+
+ j/k move  space pick or toggle  ? why  esc back

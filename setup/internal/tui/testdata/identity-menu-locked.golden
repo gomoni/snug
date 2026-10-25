@@ -1,0 +1,23 @@
+snug-setup  ~/work/snug-setup  IDENTITY
+
+  ssh
+  ( ) none   suggested
+        no ssh key in the sandbox
+  (•) a
+        ssh   github.com  a
+
+  git
+  (•) none   suggested
+        no git author in the sandbox
+
+  gh
+▸ (•) none — locked: a pins this: github.com/a-user   suggested
+  ( ) a
+        gh    github.com/a-user
+        ! a: gh not logged in as a-user on github.com — gh auth login --hostname github.com
+  ( ) b
+        gh    github.com/b-user
+        ! b: gh not logged in as b-user on github.com — gh auth login --hostname github.com
+        ! conflicts with a on gh
+
+ j/k move  space pick or toggle  ? why  esc back
