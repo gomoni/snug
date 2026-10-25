@@ -317,10 +317,10 @@ func pinSuiteKnownHosts(dir string) error {
 
 // sshWrapper writes dir/ssh-wrapper/ssh, running realSSH with
 // UserKnownHostsFile set to knownHosts and GlobalKnownHostsFile set to an
-// empty file, and returns the directory. The global half is not optional: a
-// GitHub runner's system-wide known_hosts holds github.com, which satisfied
-// the pin in TestPinnedSSHWithNoKnownHostsEntryRefuses on CI (snug exited 0)
-// while passing on a host without one.
+// empty file, and returns the directory. The global half is not optional:
+// with only the user half redirected, TestPinnedSSHWithNoKnownHostsEntryRefuses
+// saw snug exit 0 on a GitHub runner, so some file ssh reads there besides the
+// user one named github.com.
 func sshWrapper(dir, knownHosts string) (string, error) {
 	bin := filepath.Join(dir, "ssh-wrapper")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
