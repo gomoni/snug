@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -23,10 +22,9 @@ import (
 const sshProbeHost = "snug-probe.invalid"
 
 // sshProbeTimeout bounds the probe. Issue #42 asks what happens when ssh
-// hangs, and this is the answer: the chain comes back empty and the fixed
-// SystemSSHConfigPaths list is what the run uses, which is where snug was
-// before discovery existed. It is generous because the thing that can be slow
-// is not ssh — see the Match exec paragraph on sshConfigChain.
+// hangs, and this is the answer: the run refuses and names the probe (#688
+// F2). It is generous because the thing that can be slow is not ssh — see the
+// Match exec paragraph on probeSSHConfig.
 const sshProbeTimeout = 5 * time.Second
 
 // probeSSHConfig asks this host's ssh two questions in one invocation: WHICH
@@ -56,7 +54,8 @@ const sshProbeTimeout = 5 * time.Second
 //     takes the home directory from getpwuid, so overriding the variable
 //     changes nothing (also measured).
 //   - So the probe runs whatever the HOST USER's own ssh config says, on the
-//     host, at snug startup, once per run. That file is not reachable by
+//     host, at snug startup, once per run — twice when identity.ssh is
+//     pinned, since probeSSHPin asks again for the pinned host. That file is not reachable by
 //     sandboxed material: no shipped profile grants ~/.ssh, and Validate
 //     refuses any bind covering $HOME (#220), so a payload can neither write
 //     the file nor plant an Include target it names. It is the user's own
@@ -67,30 +66,54 @@ const sshProbeTimeout = 5 * time.Second
 // A host with no ssh at all returns nothing, with nothing on screen: there is
 // no ssh inside the sandbox to fail either, and the fixed list still covers
 // the ordinary spellings. Any OTHER failure — a timeout, a probe that exits
-// non-zero — IS named on stderr, because that is the case where snug tried to
-// find out and could not, and the human is the only one who can tell whether
-// their host is one of the exotic ones.
-func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues) {
+// non-zero, a value snug cannot write back — REFUSES the run (#688 F2, F3):
+// the sandbox's ssh would otherwise run on its compiled-in defaults, which on a
+// crypto-policy host are weaker than the host's (measured: requiredrsasize 1024
+// against the host's 2048, aes192-ctr and umac-64 back in the lists), and an
+// `aside` the human sees only under -v is a silent downgrade.
+func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues, error) {
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sshProbeTimeout)
-	defer cancel()
-
 	// -G resolves and prints the configuration without connecting; -v makes it
 	// name every file it read while doing so. BatchMode keeps a probe from ever
 	// becoming a prompt. One invocation answers both questions: WHICH file
 	// (stderr) and WHAT IT SAYS (stdout).
-	cmd := exec.CommandContext(ctx, ssh, "-G", "-v", "-o", "BatchMode=yes", sshProbeHost)
+	stdout, stderr, err := runSSHProbe(ssh, "-G", "-v", "-o", "BatchMode=yes", sshProbeHost)
+	if err != nil {
+		return nil, nil, sshProbeError(sshProbeHost, err, stderr)
+	}
+	chain := parseSSHConfigChain(stderr, home)
+	values, err := parseSSHValues(stdout)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n.isVerbose() {
+		if len(chain) == 0 {
+			n.aside("snug: ssh named no system-wide config file\n")
+		} else {
+			n.aside("snug: ssh reads system-wide config from %s\n",
+				policy.VisibleText(strings.Join(chain, " ")))
+		}
+		n.aside("snug: ssh config carried into the sandbox: %s\n", sshValuesLine(values))
+	}
+	return chain, values, nil
+}
+
+// runSSHProbe runs one bounded `ssh -G` and returns what it printed.
+func runSSHProbe(ssh string, args ...string) (stdout, stderr string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sshProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ssh, args...)
 	// WaitDelay bounds the wait for cmd.Run's own I/O goroutines once the
 	// context kills ssh itself: a `Match exec` child inheriting the stdout or
 	// stderr pipe would otherwise hold Run open past sshProbeTimeout for as
 	// long as that child lives (internal/getent.Run's WaitDelay is the same
 	// fix for the same shape).
 	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
 	// cmd.Env stays nil, so the probe inherits the HOST user's environment —
 	// the opposite of every other exec in this project, and deliberate. The
 	// `cmd.Env = []string{}` rule (internal/sandbox/exec.go) exists because
@@ -102,51 +125,31 @@ func probeSSHConfig(home string, n *notes) ([]string, policy.SSHValues) {
 	// Stdin stays nil, which exec makes /dev/null: a `Match exec` command in
 	// the user's config inherits it, and a probe is not a place for something
 	// to start reading the terminal snug was launched from.
-	if err := cmd.Run(); err != nil {
-		n.aside("snug: could not ask ssh which configuration files it reads (%v), "+
-			"so snug falls back to the two spellings it knows (%s) and to OpenSSH's\n"+
-			"      compiled-in algorithm defaults. On a host that spells it a third way, ssh "+
-			"inside the sandbox will fail with `Bad owner or permissions`.\n",
-			err, strings.Join(policy.SystemSSHConfigPaths, " and "))
-		return nil, nil
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		err = fmt.Errorf("it did not finish within %s", sshProbeTimeout)
 	}
-	chain := parseSSHConfigChain(stderr.String(), home)
-	values := sshValuesDelta(parseSSHValues(stdout.String()), sshDefaultValues(ctx, ssh))
-	if n.isVerbose() {
-		if len(chain) == 0 {
-			n.aside("snug: ssh named no system-wide config file\n")
-		} else {
-			n.aside("snug: ssh reads system-wide config from %s\n",
-				policy.VisibleText(strings.Join(chain, " ")))
-		}
-		n.aside("snug: ssh config carried into the sandbox: %s\n", sshValuesLine(values))
-	}
-	return chain, values
+	return out.String(), errb.String(), err
 }
 
-// sshDefaultValues is OpenSSH's compiled-in configuration, measured rather
-// than assumed: `-F /dev/null` makes ssh read that file and NOTHING else — not
-// the user's config, not the system-wide one (measured on OpenSSH_10.3p1, and
-// it is why -F cannot be used to skip only the user's file).
-//
-// It exists so snug can carry the DIFFERENCE. Without it the generated file
-// would restate the sandbox ssh's own defaults on every host, which is a
-// larger file, a larger golden diff, and a standing claim that snug knows
-// better than the binary — on a host that customises nothing there is nothing
-// to restore.
-//
-// A failure here returns nothing, and the caller then treats every effective
-// value as a difference. That is the fail-SAFE direction for this particular
-// comparison: it carries MORE of the host's own policy, never less, and every
-// value still has to pass the whitelist and sshValueOK.
-func sshDefaultValues(ctx context.Context, ssh string) policy.SSHValues {
-	cmd := exec.CommandContext(ctx, ssh, "-G", "-F", os.DevNull, "-o", "BatchMode=yes", sshProbeHost)
-	cmd.WaitDelay = time.Second // the same bound probeSSHConfig sets, for the same reason
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
+// sshProbeError names the failed probe and what ssh itself said: the last
+// stderr line that is not -v's debug chatter, which is where ssh puts the
+// reason ("Bad owner or permissions on …", "No user exists for uid …").
+func sshProbeError(host string, err error, stderr string) error {
+	said := ""
+	for line := range strings.SplitSeq(stderr, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "debug") {
+			said = line
+		}
 	}
-	return parseSSHValues(string(out))
+	if said != "" {
+		err = fmt.Errorf("%v: %s", err, policy.VisibleText(said))
+	}
+	return fmt.Errorf("could not read this host's ssh configuration: `ssh -G %s` failed (%v). "+
+		"Without it the sandbox's ssh would run on OpenSSH's compiled-in defaults, which can be "+
+		"weaker than this host's. Run `ssh -G %s` yourself and fix what it reports; a slow or "+
+		"failing `Match exec` in ~/.ssh/config is the usual cause",
+		host, err, host)
 }
 
 // parseSSHValues keeps the whitelisted keys out of `ssh -G` output.
@@ -159,13 +162,12 @@ func sshDefaultValues(ctx context.Context, ssh string) policy.SSHValues {
 // `Include` in the host's file needs no handling here, and neither do the
 // `^`/`+`/`-` list modifiers: what comes back is already expanded.
 //
-// A value that is not shaped like an algorithm list or an integer is dropped
-// and NAMED, never escaped. policy.sshValueOK applies the identical predicate
-// when rendering — two filters for the same reason GitConfigFrom
-// also drops control characters: this is the last place a host
-// string can be stopped before it is a directive in a file the sandbox's ssh
-// obeys.
-func parseSSHValues(out string) policy.SSHValues {
+// A whitelisted value that is not shaped like what the key takes REFUSES the
+// run, never escaped and never dropped (#688 F3): dropping it hands the key to
+// the sandbox ssh's compiled-in default. policy.SSHValueOK is the predicate,
+// and the renderers apply it again — this is the last place a host string can
+// be stopped before it is a directive in a file the sandbox's ssh obeys.
+func parseSSHValues(out string) (policy.SSHValues, error) {
 	v := policy.SSHValues{}
 	for _, line := range strings.Split(out, "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), " ")
@@ -179,62 +181,16 @@ func parseSSHValues(out string) policy.SSHValues {
 		if _, seen := v[key]; seen {
 			continue
 		}
-		if !sshValueShape(value) {
-			fmt.Fprintf(os.Stderr, "snug: dropping ssh %s: the value is not shaped like an "+
-				"algorithm list or a number (%s), so snug does not carry it into the config "+
-				"it generates; the sandbox's ssh uses its compiled-in default for it\n",
-				key, policy.VisibleText(value))
-			continue
+		if !policy.SSHValueOK(key, value) {
+			return nil, fmt.Errorf("this host's ssh resolves %s to %s, which snug cannot write "+
+				"back into the ssh config it generates for the sandbox, and leaving it out would "+
+				"run the sandbox's ssh on its compiled-in default for it. Check `ssh -G` output "+
+				"for %s",
+				policy.SSHKeySpelling(key), policy.VisibleText(value), key)
 		}
 		v[key] = value
 	}
-	return v
-}
-
-// sshValueShape is the extractor's copy of policy.sshValueOK's predicate. It
-// is duplicated deliberately rather than exported: the two answer the same
-// question at two sinks, and the one in policy is what actually gates the
-// bytes — this one exists so the drop can be NAMED on stderr, which a pure
-// package cannot do.
-func sshValueShape(v string) bool {
-	if v == "" || len(v) > 4096 {
-		return false
-	}
-	for _, r := range v {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == ',' || r == '-' || r == '_' || r == '.' || r == '@' || r == '+':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// sshValuesDelta keeps only what this host says that OpenSSH's compiled-in
-// defaults do not. On the development host that is exactly the crypto
-// policy's contribution — measured:
-//
-//	requiredrsasize             1024 -> 2048
-//	ciphers, macs, kexalgorithms, casignaturealgorithms,
-//	pubkeyacceptedalgorithms, hostbasedacceptedalgorithms, gssapikexalgorithms
-//
-// and nothing else, which is the whole of what issue #43 says the sandbox
-// loses. RequiredRSASize is the entry with security content: without it the
-// sandbox's ssh accepts a 1024-bit RSA host or user key that the host's ssh
-// refuses.
-func sshValuesDelta(effective, defaults policy.SSHValues) policy.SSHValues {
-	out := policy.SSHValues{}
-	for k, v := range effective {
-		if d, ok := defaults[k]; ok && d == v {
-			continue
-		}
-		out[k] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return v, nil
 }
 
 // sshValuesLine renders the extraction for the verbose log. The KEYS are
@@ -243,7 +199,7 @@ func sshValuesDelta(effective, defaults policy.SSHValues) policy.SSHValues {
 // the same contract gitValuesLine has.
 func sshValuesLine(v policy.SSHValues) string {
 	if len(v) == 0 {
-		return "(nothing — this host resolves to OpenSSH's compiled-in defaults)"
+		return "(nothing — ssh printed none of the keys snug carries)"
 	}
 	var b strings.Builder
 	for _, k := range policy.SortedSSHKeys() {

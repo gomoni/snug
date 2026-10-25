@@ -1605,23 +1605,37 @@ func stateOf(pid int) string {
 // descendantsOf returns every readable pid whose ancestry reaches root within a
 // few hops, root excluded — the whole sandbox tree, including pasta, which is a
 // child of snug rather than of the stage.
+//
+// Each pid's parent is read ONCE per call and the walk runs over that map.
+// Reading it again at every hop measured 18.5ms a scan against 7.4ms this way
+// (135 pids of this uid, a desktop session), and the stage's bwrap lived about
+// 30ms before the stage was gone in a sampled `@net` run. Polling callers such
+// as TestASignalWhileThePayloadIsParkedNeverReleasesIt missed that window on
+// that desktop every time (0 of 6 runs), and failed their precondition after
+// 30s; 3 of 3 passed with this.
 func descendantsOf(root int) []int {
-	var out []int
+	parent := map[int]int{}
 	for _, pid := range allPIDs() {
+		if pp, ok := ppidOf(pid); ok {
+			parent[pid] = pp
+		}
+	}
+	var out []int
+	for pid := range parent {
 		if pid == root {
 			continue
 		}
 		p := pid
 		for hop := 0; hop < 8; hop++ {
-			parent, ok := ppidOf(p)
+			pp, ok := parent[p]
 			if !ok {
 				break
 			}
-			if parent == root {
+			if pp == root {
 				out = append(out, pid)
 				break
 			}
-			p = parent
+			p = pp
 		}
 	}
 	return out

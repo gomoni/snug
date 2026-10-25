@@ -17,9 +17,15 @@ Host ssh.example
 	User git
 	IdentitiesOnly yes
 	IdentityFile /home/u/.ssh/id_snug.pub
-	StrictHostKeyChecking accept-new
+	StrictHostKeyChecking yes
 	UserKnownHostsFile /home/u/.ssh/known_hosts
+	RevokedHostKeys /home/u/.ssh/revoked_host_keys
+	KexAlgorithms mlkem768x25519-sha256
+	RequiredRSASize 3072
 
 ── /home/u/.ssh/known_hosts ──
 # entries for ssh.example, filtered by the caller before Resolve sees them
 ssh.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIQ==
+
+── /home/u/.ssh/revoked_host_keys ──
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIg==

@@ -76,8 +76,8 @@ func TestSystemSSHConfigCarriesOnlyWhitelistedKeys(t *testing.T) {
 // keys are snug's own — they got there by matching the whitelist — but the
 // values are a host binary's stdout, and ssh_config's grammar ends a directive
 // at a newline and starts a comment at `#`. A value that could MEAN something
-// to that parser is dropped, never escaped: the key then falls back to the
-// sandbox ssh's compiled-in default, which is where it was before #43.
+// to that parser is skipped, never escaped. internal/cli refuses the run on
+// such a value before it gets here (#688 F3); this is the second filter.
 func TestSystemSSHConfigDropsAValueItCannotWriteSafely(t *testing.T) {
 	cases := map[string]string{
 		"a newline":       "2048\nProxyCommand touch /tmp/PWNED",
@@ -106,9 +106,8 @@ func TestSystemSSHConfigDropsAValueItCannotWriteSafely(t *testing.T) {
 }
 
 // TestSystemSSHConfigWithNothingToCarryIsCommentOnly pins the shape a host
-// that customises nothing gets: the file every host got before #43. Only
-// values DIFFERING from OpenSSH's compiled-in defaults are carried (the
-// extractor measures both), so this is the ordinary case, not the exotic one.
+// with no ssh to ask gets: every whitelisted value is carried otherwise (#688
+// F6).
 func TestSystemSSHConfigWithNothingToCarryIsCommentOnly(t *testing.T) {
 	got := string(SystemSSHConfigFrom(nil))
 	if d := directiveLines(got); len(d) != 0 {
@@ -157,4 +156,29 @@ func directiveLines(file string) []string {
 		}
 	}
 	return out
+}
+
+// TestStrictHostKeyCheckingCarriesButNeverLoosensThePin: the host's own value
+// reaches the system-wide file, so an unpinned host is checked as the host
+// checks it (redteam on #688 measured `yes` on the host and `ask` inside),
+// while the pinned host stays at `yes` whatever the block matching it says.
+func TestStrictHostKeyCheckingCarriesButNeverLoosensThePin(t *testing.T) {
+	for _, v := range []string{"true", "false", "ask", "accept-new"} {
+		if !SSHValueOK("stricthostkeychecking", v) {
+			t.Errorf("SSHValueOK refuses %q, which ssh -G prints", v)
+		}
+	}
+	for _, v := range []string{"yes", "true\nProxyCommand x", "ask #", ""} {
+		if SSHValueOK("stricthostkeychecking", v) {
+			t.Errorf("SSHValueOK admits %q", v)
+		}
+	}
+	if sys := string(SystemSSHConfigFrom(SSHValues{"stricthostkeychecking": "true"})); !strings.Contains(sys, "\nStrictHostKeyChecking true\n") {
+		t.Errorf("system file does not carry the host's StrictHostKeyChecking:\n%s", sys)
+	}
+	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy}}
+	cfg := string(id.SSHConfig("/home/u", SSHValues{"stricthostkeychecking": "false"}, false))
+	if strings.Count(cfg, "StrictHostKeyChecking") != 1 || !strings.Contains(cfg, "\tStrictHostKeyChecking yes\n") {
+		t.Errorf("pin block does not hold StrictHostKeyChecking yes alone:\n%s", cfg)
+	}
 }

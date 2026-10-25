@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gomoni/snug/internal/policy"
 )
 
 // authoredAccount builds the root a harness needs when it runs snug inside a
@@ -41,8 +43,9 @@ type authoredAccount struct {
 	// symlinks, except /proc and /dev, which the caller mounts to suit its own
 	// pid namespace.
 	Root []string
-	// Account is the two data binds and the read-only remount of the root. It
-	// must come after every other mount so nothing is bound over the files.
+	// Account is the two data binds, the authored system ssh_config and the
+	// read-only remount of the root. It must come after every other mount so
+	// nothing is bound over the files.
 	Account []string
 
 	passwd, group string
@@ -96,8 +99,24 @@ func newAuthoredAccount(t *testing.T) authoredAccount {
 	a.Account = []string{
 		"--ro-bind-data", "3", "/etc/passwd",
 		"--ro-bind-data", "4", "/etc/group",
-		"--remount-ro", "/",
 	}
+	// A snug sandbox replaces the system-wide ssh_config with one it authors,
+	// because the host's is root-owned and reads as 65534 here, where one uid
+	// is mapped: the host's ssh then refuses it (measured: "Bad owner or
+	// permissions on /usr/etc/ssh/ssh_config.d/50-suse.conf", exit 255), and
+	// the inner snug refuses the run when its ssh probe fails (#688). The
+	// harness authors one too, owned by this uid and with no Include, so the
+	// root has the shape a snug sandbox has.
+	sshConfig := filepath.Join(dir, "ssh_config")
+	if err := os.WriteFile(sshConfig, []byte("# authored by the integration harness\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range policy.SystemSSHConfigPaths {
+		if _, err := os.Stat(p); err == nil {
+			a.Account = append(a.Account, "--ro-bind", sshConfig, p)
+		}
+	}
+	a.Account = append(a.Account, "--remount-ro", "/")
 	return a
 }
 
