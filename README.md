@@ -7,32 +7,23 @@
 
 ## What is it
 
-A lightweight sandboxing tool for Linux. Provides the safe environment, but integrated with a
-host itself as much as possible (and safe).
+A lightweight, opinionated sandbox for Linux, well integrated with the host.
 
 Main properties are
 
-1. **No root or daemon**: It does not require a `root`, `suid` helpers or an external daemon.
-2. **Modern Linux capabilities**: Uses `bwrap`, `pasta` and all modern Linux features
-   like namespaces, the `at` family of syscalls, seccomp, drops the capabilities, and more ..., to build
-   the isolation.
-4. **Hide the host by default**:  the host system is hidden by default - your `~/.ssh/` is never visible
-   inside a sandbox. If it exposes sensitive parts, those are filtered by the tool.
-5. **Integrates with host**: While `~/.ssh` is missing, `snug` can run an `ssh-agent` inside a sandbox with
-   EXACTLY the keys needed for a job. It brings a concept of account to multi-account tools like `gh`.
-4. **Declarative configuration**: TOML configuration and a concept of profiles, which are the Lego bricks
-   building the sandbox itself. Additionally it tries to give user all information about how sandbox is going
-   to be build.
-6. **Avoids supply chain attacks**: Written in Go (with string nocgo policy) with a minimal set of 3rd party
-   dependencies.
-7. **Podman inside**: Runs own `podman` engine allowing docker-based workflows inside.
-8. **HTTP Doors**: Can expose HTTP ports from a sandbox on demand. Uses a systemd activation protocol, so
-   sandboxed process can NEVER decide to do so.
+1. **Rootless, daemonless**: No `suid` helpers, no root at any point.
+1. **Declarative**: TOML profiles, which can be combined together. `--dry-run` shows every grant.
+1. **Modern Linux tools**: `bwrap`, `pasta`, namespaces, seccomp, dropped capabilities.
+1. **Protects the host**: no `~/.ssh/`, `~/.gnupg` or `~/.kube/` inside. Host parts are hidden by default.
+1. **Safe host integration**: proxies for `ssh-agent`, `gpg-agent` and the Kubernetes API, filtered configuration for `claude`.
+1. **Podman engine**: safe podman engine enabling docker-style dev workflows.
+1. **Network off by default**: `@net` adds egress through `pasta`. Host loopback stays unreachable.
+1. **HTTP doors**: host can open a door into sandbox using systemd socket activation protocol.
+1. **Small supply chain**: Go without cgo, two dependencies (a TOML parser, `golang.org/x/sys`).
 
-> **Alpha state**
-> The work is focused towards finalizing the internal architecture, the profile model.
-> What IS NOT STABLE is the command line interface, the configuration options and so.
-> So BEWARE: architecture, options, CLI and configuration may and will be changed.
+> **Project state**
+> The internal architecture, the profile model, CLI options and a configuration
+> are expected to be well defined and stable. However it still MAY change.
 > Use at your own discretion.
 
 > **LLM generated code**
@@ -41,30 +32,61 @@ Main properties are
 > AI agents (redteam, policy, sandbox-tester) regularly try to escape the sandbox closing
 > the doors once they're discovered.
 
-## Usage
+## Why (not) pick snug
 
-Two flags read the sandbox back to you and start nothing: `snug --explain`
-says in prose what the sandbox would be and — the part no other output can
-give you — what it would NOT have, and `snug --dry-run` prints `ALL` the
-details of how a given sandbox will be constructed. Both page through `$PAGER`
-on a terminal.
+There is a spectrum of tools to choose from. There's a global non-isolated
+shell on one side, shell scripts calling bwrap, dev containers and full
+virtual machines.
 
-The default profiles are `@sys`, `@home` and `@target-rw`; see
-[Selecting profiles](docs/src/configuration.md#selecting-profiles).
+`snug` itself is a `bwrap` sandbox with bells and whistles like `pasta`
+support for networking, proxies for ssh and gpg and support for a fully
+isolated podman engine.
+
+That means it
+
+- shares the kernel
+- shares the storage
+- can share the egress network
+- expects all tools installed
+
+So use snug if
+
+- You're fine with sharing the same kernel. Otherwise use a virtual machine, Firecracker, gVisor or similar.
+- You're fine with it not installing anything. Use a dev container otherwise.
+- You're happy with your tooling. Keep using it.
+
+## Quick install
+
+`snug` must be built with `CGO_ENABLED=0`, so the easiest way is to type `make build`.
 
 ```bash
-# Entering a sandbox
-$ echo "hello from host" > hello
-snug ~/src/myproject
+# build the binary
+$ make build
+# inspect if the system can run snug - reports missing dependencies
+$ ./bin/snug doctor
+# fix subuids - I am sure most Linux users have no idea
+# what this is and what to write there - use -w in case you're OK with snug writing to /etc
+$ ./bin/snug fix subuid
+```
 
-# ~/.ssh and so is NOT ACCESSIBLE by default
-🔒 snug:~/src/myproject> ls ~/.ssh
+## Example
+
+```bash
+$ cd ~/src/myproject
+$ echo "hello from host" > hello
+
+# Entering a sandbox
+$ snug ~/src/myproject
+
+# ~/.ssh and the like are not accessible by default
+🔒 snug:~/src/myproject$ ls ~/.ssh
 ls: cannot access '/home/you/.ssh': No such file or directory
 
-# The parent was never granted: an empty skeleton, and writes to it evaporate
+# The parent is hidden, because it was not granted by any profile.
 🔒 snug:~/src/myproject$ ls ..
 myproject
-🔒 snug:~/src/myproject$ echo "hello" > ../hello   # succeeds; the host never sees it
+# succeeds, but it's stored in a tmpfs and lost on exit
+🔒 snug:~/src/myproject$ echo "hello" > ../hello
 
 # the target directory is read-write because of @target-rw
 🔒 snug:~/src/myproject$ cat hello
@@ -76,439 +98,33 @@ hello from snug
 # Network is not available
 🔒 snug:~/src/myproject$ curl https://example.com
 curl: (6) Could not resolve host: example.com
+🔒 snug:~/src/myproject$ exit
+
+# @net adds egress
+$ snug -p @net ~/src/myproject
+🔒 snug:~/src/myproject$ curl -s -o /dev/null -w '%{http_code}\n' https://example.com
+200
 ```
 
-### A verb and a directory share one namespace
+## User guide
 
-`doctor`, `profile`, `config`, `proxy`, `engine`, `fix` and `help` are read as
-subcommands, never as a directory to sandbox. Write the path form for a
-directory named like one — `snug ./config`. If both are here, snug refuses
-rather than guessing:
+Unlike the code, the [user guide](docs/src/README.md) is reviewed by me, so any mistakes are my own oversight.
 
-```
-$ snug config
-snug: "config" is both a subcommand and a directory here, so snug will not guess.
-      snug ./config      sandbox the directory
-      snug config ...    run the subcommand   (snug help lists them)
-$ echo $?
-64
-```
-
-## Quick install
-
-`snug` must be built with `CGO_ENABLED=0`.
-
-```bash
-# build the binary
-$ make build
-# inspect if the system can run snug - reports missing dependencies,
-$ ./bin/snug doctor
-# fix subuids - I am sure most of Linux users have no idea
-# what is this and what to write there - use -w in case you're OK with snug writing to /etc
-$ ./bin/snug fix subuid
-```
-
-## The profile
-
-A sandbox starts empty. Every hole into it is granted by a named _profile_,
-and profiles combine like Lego bricks. See the [user guide](docs/src/README.md)
-and [Profiles](docs/src/profiles.md).
-
-## A second session is a second sandbox
-
-Run `snug` again on the same directory and you get another sandbox, not another
-shell in the first one. The two share exactly the host-backed writable surface
-their profiles grant — the target directory, and the container store if a
-`@podman*` profile is selected — and nothing else: separate home-directory tmpfs,
-separate `/tmp`, separate pids, separate environment. `snug --dry-run` prints
-the whole shared list under `SHARED`.
-
-That sharing is a channel in both directions. One sandbox writes
-`.git/hooks/pre-commit`, `Makefile`, `CLAUDE.md`, `.envrc` or `package.json`;
-the other's tools execute or obey it, under the other's credentials, with no
-cooperation needed from it. Where the container store is shared, a layer one
-sandbox's engine pulls is a layer the other's engine runs. If that is not what
-you want, use two directories.
-
-There is no way to put a process inside a sandbox that is already running.
-Joining one meant landing in its namespaces, where `/proc/<pid>/environ` and
-`/proc/<pid>/fd` of the payload are readable and writable by a same-uid
-process — the leak runs both ways, and no flag closes it. From outside the
-sandbox you are the host user and `nsenter` is still yours, unconfined.
-
-## The architecture
-
-The project started as a `agent-sandbox.sh` script. The features around
-embedded podman, the necessity to run podman inside the same network namespace,
-and a limitation of some Linux syscalls to a single-threaded code, that all
-required `snug` to became multiprocess thing.
-
-Yet there is **no daemon**. Nothing survives you. `snug` simply reexec itself several time
-implementing a distinct stages of a sandbox itself.
-
-### The plain shape — no network
-
-![snug with no network: snug on the host clones an intermediate user, pid and mount namespace; `snug __inpidns` mounts that namespace's /proc and execs bwrap, which is pid 1 there; the sandbox's own pid namespace nests below it with init as pid 1 and your command inside. Two long-lived processes.](docs/src/img/topology-plain.svg)
-
-### With `@net` — one more process, and it is the point
-
-`pasta` gives the sandbox internet access without giving it your network. It
-needs a network namespace to attach to *before* the sandbox exists, and an
-unprivileged process cannot hand one over after the fact. So snug builds one
-first, in a helper called the **stage**:
-
-![snug with @net: snug on the host, pasta attached to the network namespace N from outside it, and the stage P1 inside the user namespace U it created. P1 made N, pinned it by a descriptor and left, so it sits in an empty netns of its own, and it dropped CAP_SYS_PTRACE before forking anything. Inside N, `snug __innetns` execs bwrap into an intermediate pid namespace from P1, and bwrap's own pid namespace holds init and your command, which stays parked until snug sees pasta still running. Four long-lived processes.](docs/src/img/topology-net.svg)
-
-### With a container engine — one more process, and it is a SIBLING of the sandbox
-
-`@podman-socket` gives the payload a `podman` that is not your host's: snug
-starts one engine per sandbox and joins it to the sandbox's own network
-namespace. The payload never talks to that engine either — it talks to a
-filtering proxy snug serves on a socket bound in at `/snug/podman.sock`.
-
-![snug with a container engine: the same shape as @net, with a second child of the stage inside N and snug on the host serving the filtering proxy at /snug/podman.sock. The bwrap leg is the full sandbox, its payload parked until the engine answers; `snug __inengine`, forked once bwrap's mounts exist, execs podman system service, which joins N by setns and has a mount view copied from the sandbox's, its own pid, ipc, uts and cgroup namespaces and capabilities dropped to EngineCapBounding. They are siblings sharing only N and U.](docs/src/img/topology-engine.svg)
-
-- **A container's network IS the sandbox's.** There is no per-container bridge
-  and no `podman run -p`. With `@net` a container reaches the internet; without
-  it, a container reaches nothing. That is the whole reason the engine sits
-  where it sits.
-- **An offline run starts a stage too, and no pasta.** The engine needs the
-  stage for its user namespace, not for the network:
-  `snug --dry-run -p @podman-socket .` lists four processes and pasta is not
-  one of them.
-- **The engine sees a DERIVED view, not the host tree.** Its root is the
-  sandbox's root plus the grafts `--dry-run` lists under ENGINE VIEW. Your home
-  directory is not in it, so `~/.ssh` is not something a container can bind —
-  structurally, not by a rule that names it.
-- **The payload never reaches the host's podman.** It reaches the proxy, which
-  judges each request and refuses what is not on its list; foreground
-  `podman run` is one of the refusals.
-
-### What dies when
-
-```
-    you press Ctrl-C     -> your command gets it, and up to 1s to handle it and
-                            exit. Its own exit code is then what snug reports.
-                            Press again to stop waiting.
-    kill -TERM snug      -> same, and snug relays the signal inward: your
-                            command is in its own session where a terminal
-                            cannot reach it
-    your command ignores -> killed when the second is up; snug exits 128+signal,
-                            exactly as before
-    snug exits normally  -> stage, pasta, bwrap, init and your command all go
-    snug is SIGKILLed    -> same, and your command gets NOTHING: no code of
-                            snug's runs. Every helper is armed to die with its
-                            parent before it is useful, so there is no window
-                            where killing snug leaves the sandbox behind
-```
-
-The second is snug's number, not your command's: a command that ignores the
-signal cannot hold teardown open. `snug --dry-run` prints which of the two
-delivery paths this host gives you — whether Ctrl-C reaches your command
-directly depends on `--new-session`, which snug passes when this kernel still
-allows TIOCSTI or when nothing snug was started with is a terminal.
-
-The SIGKILL line is why there is no `snug stop` and no stale-state file to
-clean up by hand. If you want to check rather than trust, the integration suite
-asserts it on every run — `test/integration/orphan_test.go` sweeps every
-catchable signal at every startup offset on both topologies.
-
-## What snug defends against
-
-The first and most important aspect is that it prevents a filesystem access. So
-no `~/.ssh`, no `~/.aws`, no browser or desktop keyring, no tokens, no
-`~/Documents` or `~/.bashrc` access. By a design it prevents an access to Wayland,
-systemd, PulseAudio, X11 or any other sockets, which can be used for a sandbox escape.
-
-| defended | how |
-|---|---|
-| `~/.ssh`, `~/.aws`, `~/.gnupg`, keyrings, browser profiles | never mounted |
-| your other projects | never mounted |
-| host services on `127.0.0.1` | private netns |
-| X11 keylogging, D-Bus, the desktop session | not mounted; netns-scoped |
-| host persistence (`.bashrc`, autostart, cron) | the home directory is an ephemeral tmpfs |
-| one session's Claude credential from another session | private mount and pid namespaces; staged files are memfd-backed and have no path to name |
-
-A credential minted *inside* a session is covered too. `/login` writes a full
-set, `refreshToken` included, to `~/.claude/.credentials.json` on the sandbox's
-own tmpfs; a second session cannot read it. Not "cannot be read" — same uid on
-the host, so `/proc/<pid>/root`, `nsenter` and gdb are still yours. The line
-runs between sandboxes, not between you and a process you started. What still
-crosses is the shared target: one sandbox plants `.git/hooks/pre-commit`, the
-other's `git commit` runs it. `TestOneSessionsClaudeCredentialIsNotReadableFromAnother`
-(`test/integration`) asserts the two negatives, host positive control included.
-
-## What snug does not defend against
-
-Kernel zero days - the security perimeter is a Linux itself, so escape by
-exploit is possible. Run the VM if expects more strict isolation though.
-
-Your own profiles. snug's line runs between the sandbox and the host: inside is
-hostile by assumption, outside stands you, picking profiles. It does not
-second-guess you.
-
-`rw = ["{home}"]` really does hand over your real home directory. `environ.set EDITOR =
-"/tmp/upload-everything"` really does give the next `git commit` a program you
-chose. All holes, all on screen in `--dry-run`, all yours. Unix tool, enough
-rope.
-
-A host already set up against snug. Grants reaching snug's own state (engine
-store, runtime dirs, identity keys) are refused through any spelling the mount
-table shows: bind alias, submount, `/proc/self/root`, distrobox `/run/host`. An
-overlay already on your host with the store as a layer is not seen: `ro`/`rw`
-on the merged dir passes. Nothing inside the sandbox can create one.
-
-A peer run with a different `$XDG_RUNTIME_DIR` or `$TMPDIR`. Its per-run dirs
-sit where this run never looks, so a grant covering them is not refused.
-`--dry-run` says so.
-
-What snug does not offer is a command-line flag that hands over everything at
-once. A capability whose only bound is a flag is one that gets used — the flag is
-documented, greppable, and named in the error telling you what to type — so every
-grant is a profile you can read on a screen instead.
-
-What snug owes you is that the screen does not lie. Every grant traces to one
-profile that named it, nothing is visible that no profile granted, and a row
-says what snug knows about the value — including when it knows nothing
-(`← unknown`). So read `--dry-run`, not the profile's name.
-
-snug refuses three things, and none of them is "too dangerous for you":
-
-- **mechanism** — a NUL in a value writes a bwrap flag of its own, a newline
-  forges a row on that very screen;
-- **names snug owns** — `HOME`, `PATH`, `SNUG*`. A profile that could set
-  `SNUG_PROFILES` could lie to the artifact you check;
-- **wrong operation for the type** — `sanitise MANPATH` would ADD directories,
-  because an empty element there is an instruction, not a gap.
-
-`snug doctor` may get louder about profiles that are dangerous but correct
-(issue #80). It will not refuse to run one.
-
-**A KNOWN GAP, and it is the sharpest one on this page: with `@claude`, the
-sandbox can reach your account's other Claude Code sessions.** `@claude` stages
-a working credential and `@net` gives egress — both deliberate, both what make
-the profile useful — and Claude Code's session mesh reaches peers over the
-network, through Anthropic's servers. snug's boundary is this MACHINE. The
-session mesh is your ACCOUNT.
-
-It is not a sandbox escape: no filesystem, no kernel, no host process, no
-namespace. It is an authority escape *iff the peer is less confined than the
-sender*, and the case that matters is a Remote Control session on another
-machine — unsandboxed, with that machine's files and credentials. A payload
-inside snug that can send it instructions has a deputy outside every boundary
-snug draws.
-
-**snug cannot close this and is not going to pretend otherwise.** The only
-mechanisms available are a filtering proxy over TLS to Anthropic — which would
-have to tell "the agent doing its job" from "the agent messaging a peer" on the
-same host, same credential, same protocol — or removing the credential or the
-egress, which is removing the feature. A filtering proxy that is 95% correct is
-a sandbox that is 0% sound.
-
-snug sets two of Claude Code's own controls against it, as a default and not
-a boundary; see [Claude Code](docs/src/claude.md#other-claude-code-sessions).
-
-The complete goals and non-goals — what host state snug protects, what it
-deliberately does not, and worked prevented/not-prevented examples — live in
-[`.claude/design/THREAT-MODEL.md`](.claude/design/THREAT-MODEL.md).
-
-## Verifying the sandbox
-
-[`scripts/README.md`](scripts/README.md) indexes the checks `make verify` runs,
-the payloads, and — in its last section — the procedures a human follows by hand.
-Those are what nothing runs: a claim needing two logged-in accounts, a live
-`gh`, a `sudo truncate`, a real engine host, a browser, or a measurement of one
-machine. Everything else is a Go test or a numbered script.
-
-The project also keeps an in-house red team (`.claude/agents/redteam.md`) whose
-job is to escape. It runs before every milestone lands, and it keeps earning its
-keep. 
-
- * a host-environment leak readable at `/proc/1/environ`
- * a masking rule that covered one of two spellings
- * a seccomp filter that was requested but never installed
- * a directory on stdin that bypassed every mount grant
- * a `clone3` call that created a nested user namespace
- * a `--secret` source that climbed out of the build context with `..` and
-   read an arbitrary host file.
- * and so on
-
-## Status
-
-This is alpha status - while the basic concept feels solid, more real world usage are needed.
-
-The builtin profiles, their dependencies and the CLI - all of this may be
-refined in the near future.
-
-## Drafts — designed, not built
-
-What credentials reach a sandbox:
-[`SECRETS.md`](.claude/design/SECRETS.md) carries the severity model, the three
-mechanisms, and the shapes that are refused with the measurement that refused
-them. What ships is one pinned ssh key through a filtering agent proxy, a
-five-key projection of Claude Code's credentials with the refresh half dropped,
-and a generated `~/.gitconfig`.
-
-**Known gaps live in the [issue tracker](https://github.com/gomoni/snug/issues),
-never here** — each one carries a severity label and the measurement that
-confirmed it. A list in prose goes stale; a list with issue numbers does not.
-
-## Documentation
-
-[`docs/`](docs/src/README.md) is the configuration reference — profiles,
-grants, environment, network, identity, containers — as an mdBook
-(`mdbook build docs`). Its tables and generated pages are checked against the
-code by `make gate`.
-
-[`scripts/`](scripts/) is the checklist: `make verify` walks the numbered checks,
-and [`scripts/README.md`](scripts/README.md) indexes them and carries the by-hand
-half. Run them rather than trusting this file.
-
-Design and research material is **not** user documentation — it is the best
-record that exists, written for the people building snug and measured against
-real hosts. It lives under [`.claude/design/`](.claude/design/), and
-[`INDEX.md`](.claude/design/INDEX.md) is the way in: architecture, threat model,
-the policy model, and a table of every topic document with what it settles.
+[`.claude/design/`](.claude/design/INDEX.md) is design material for Claude.
 
 ## Requirements
 
-MIT licensed. Linux with unprivileged user namespaces, `bubblewrap`, Go 1.26+ to build,
-`pasta` for networking. Works inside `distrobox` and other containers — nested
-user namespaces are fine. `snug doctor` tells you where you stand, and names the
-exact sysctl when something is missing.
+- Linux with unprivileged user namespaces
+- `bubblewrap`
+- `getent` from glibc or musl-utils
+- `pasta` and `/dev/net/tun` for `@net`
+- a delegated subuid/subgid range and `newuidmap`/`newgidmap` for `@net` and containers
+- `podman` with `crun`, `conmon`, `netavark`, `aardvark-dns` and `catatonit` for `@podman-*`
+- Go 1.26+ to build
 
-**`getent` on the host, from glibc.** snug writes the sandbox's own one-line
-`/etc/passwd` and `/etc/group` so that the home directory there is the sandbox's `HOME`, and
-takes the user name, group name and home directory from `getent passwd`/`getent group`.
-`getent` is snug's only source of host account data — the subuid owner `snug doctor`
-and the container engine look up too — and resolves through glibc NSS, so sssd
-and LDAP accounts work. It is run only from `/usr/bin/getent` or `/bin/getent`,
-and only when root owns it and every directory above it; `$PATH` is not searched.
-No fallback: no usable `getent` or no entry for your uid means snug refuses.
-Package: `glibc` (openSUSE), `libc-bin` (Debian/Ubuntu), `glibc-common` (Fedora),
-`musl-utils` (musl). `snug doctor` reports it only when missing.
+`snug doctor` checks all of these and tells you how to fix them. Details, including
+running snug inside a container: [Requirements](docs/src/requirements.md).
 
-**Networking also needs `/dev/net/tun`**: `pasta` puts a tap device in the
-sandbox's own network namespace, so the node has to be present and openable.
-A bare host wants `modprobe tun`; a container is not given the node by default
-and needs `--device /dev/net/tun` (docker and podman spell it the same way).
-Without it a sandbox starts and then `-p @net` fails with `pasta exited before
-the network came up: Failed to open() /dev/net/tun: No such file or directory`.
-`snug doctor` opens the node itself rather than only reporting pasta's version.
+## License
 
-**Inside a container, two host-level settings are not reachable from within it.**
-`kernel.apparmor_restrict_unprivileged_userns` must be 0 on the machine running
-the container — it is not namespaced, so it can only be set outside — and the
-container must not mask `/proc` (`docker: --security-opt systempaths=unconfined`,
-`podman: --security-opt unmask=/proc`), because the kernel refuses a fresh procfs
-mount inside a user namespace while the mounter's view of `/proc` is obstructed.
-`snug doctor` names whichever of the two is in the way rather than blaming the
-user namespace for both.
-
-### Delegated subuid/subgid ranges
-
-`@net` and the container engine need a **subuid/subgid range delegated to your
-user**, because the stage maps namespace ids onto it. `/etc/subuid` and
-`/etc/subgid` each need a line for you, and `newuidmap`/`newgidmap` (package
-`shadow`) must be installed with their file capabilities intact:
-
-```
-you:100000:65536
-```
-
-snug reads the **first** range for your user in each file and refuses with the
-suggested line when there is none. `usermod --add-subuids 100000-165535
---add-subgids 100000-165535 you` writes it; editing the files directly works
-too, and is the only way while you are logged in — `usermod` refuses with `user
-you is currently used by process N`.
-
-**Inside a container, the range must fit the container's own uid map**, and this
-is the failure worth naming because the error does not mention subuid at all.
-A rootless `distrobox`/`podman` container maps a bounded window of host ids, so
-a range outside it does not exist to delegate:
-
-```console
-$ cat /proc/self/uid_map
-         0          1       1000
-      1000          0          1
-      1001       1001      64535
-$ podman info
-Error: ... running `/usr/bin/newuidmap PID 0 1000 1 1 100000 65536`:
-newuidmap: write to uid_map failed: Operation not permitted
-```
-
-The map ends at 65535, so `you:100000:65536` names nothing. Pick a range inside
-it, above your own uid — `you:1001:64535` for the map above. The same applies to
-snug's stage, which delegates the range it finds.
-
-Re-create the container and `/etc/subuid` goes with it, so put the line in the
-container's own setup rather than adding it by hand:
-
-```ini
-# ~/.config/distrobox/distrobox.ini
-[yourbox]
-init_hooks=grep -q '^you:' /etc/subuid || echo 'you:1001:64535' >> /etc/subuid
-init_hooks=grep -q '^you:' /etc/subgid || echo 'you:1001:64535' >> /etc/subgid
-```
-
-**Do not let an init hook symlink `/usr/bin/podman` at a host-escape helper** —
-`distrobox`'s own suggested hook does exactly that, and snug then refuses the
-engine (see below). The engine tests skip rather than fail, so the suite stays
-green having measured nothing.
-
-### Containers
-
-`@podman-socket` and `@podman-build` additionally need a podman engine and its
-**helper binaries** — `conmon`, `netavark`, `aardvark-dns`, `catatonit` and
-**`crun`**. podman looks these up by absolute directory, so each has to sit in a
-directory podman is told about. A distribution install puts them there:
-
-| binary | package's location |
-|---|---|
-| `podman`, `conmon`, `crun`, `catatonit`, `pasta` | `/usr/bin` |
-| `netavark`, `aardvark-dns` | `/usr/libexec/podman` |
-
-**`crun`, not `runc`, and they are not interchangeable here.** snug asks podman
-for `cgroups = "disabled"` whenever the host's cgroup delegation is not usable —
-which is every sandbox that is itself inside a container — and `runc` does not
-implement that mode. With runc installed and crun absent, a build returns 200
-and the container create then returns
-
-```
-500 {"cause":"invalid argument","message":"container create: requested OCI runtime
-runc is not compatible with NoCgroups: invalid argument"}
-```
-
-Install crun. runc alongside it is harmless and unused.
-
-`rootlessport` is **not** in the list, deliberately: snug publishes no ports (the
-engine holds no `CAP_NET_ADMIN`), so a missing `rootlessport` changes nothing
-snug can do, and two development hosts run the container tests green without it
-anywhere on the system.
-
-Install the distribution packages. snug resolves `podman` from `PATH` and does
-not ship or download an engine.
-
-**If `/usr/bin/podman` is a symlink to `distrobox-host-exec`** (or another
-host-escape helper), snug refuses to run the engine through it: it forwards to
-the host's podman over a filesystem socket no network namespace touches, so a
-container would land on the host while `--dry-run` still described this sandbox.
-Install the real package. For a shell that reaches the host's engine on purpose,
-`podman system connection add host unix:///run/user/$(id -u)/podman/podman.sock`
-plus an alias — never a symlink at `/usr/bin/podman`, and never a global
-`CONTAINER_HOST`, since snug execs `podman` to run its own engine.
-A `podman` resolving to `podman-remote` is refused the same way: a client
-build has no engine to run.
-
-`snug doctor` checks for them, so a host missing one says so before the first
-container rather than during it:
-
-```console
-$ ./bin/snug doctor
-  ✅ podman's helper binaries are all findable
-```
-
-A host with `runc` and no `crun` is reported as missing
-`crun (runc is present, and cannot run with cgroups disabled on this host)`
-rather than as "crun or runc", because the either/or advice is what lets the
-create above fail with a green tick behind it.
+MIT
