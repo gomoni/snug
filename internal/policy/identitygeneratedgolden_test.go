@@ -43,6 +43,10 @@ func TestGoldenGeneratedIdentityFiles(t *testing.T) {
 
 	ctx := testCtx()
 	ctx.KnownHosts = []byte(knownHostsFixture)
+	// The pinned host's own `ssh -G` half and its RevokedHostKeys file (#688),
+	// injected the same way.
+	ctx.HostSSHPinConfig = SSHValues{"kexalgorithms": "mlkem768x25519-sha256", "requiredrsasize": "3072"}
+	ctx.RevokedHostKeys = []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIg==\n")
 
 	p, err := Resolve(reg, append(append([]ProfileName{}, testDefaults...), "pinned"), ctx, newFakeEnv())
 	if err != nil {
@@ -63,6 +67,7 @@ func TestGoldenGeneratedIdentityFiles(t *testing.T) {
 	gitconfig := content(ctx.Home + "/.gitconfig")
 	sshconfig := content(ctx.Home + "/.ssh/config")
 	knownHosts := content(ctx.Home + "/.ssh/known_hosts")
+	revoked := content(ctx.Home + "/" + RevokedHostKeysGuest)
 
 	// THE ASSERTION #454 EXISTS FOR: ssh.example (identity.ssh.host) feeds the
 	// ~/.ssh/config Host line, git's insteadOf and (via the injected fixture)
@@ -90,8 +95,8 @@ func TestGoldenGeneratedIdentityFiles(t *testing.T) {
 	}
 
 	got := fmt.Sprintf("── %s/.gitconfig ──\n%s\n── %s/.ssh/config ──\n%s\n"+
-		"── %s/.ssh/known_hosts ──\n%s",
-		ctx.Home, gitconfig, ctx.Home, sshconfig, ctx.Home, knownHosts)
+		"── %s/.ssh/known_hosts ──\n%s\n── %s/%s ──\n%s",
+		ctx.Home, gitconfig, ctx.Home, sshconfig, ctx.Home, knownHosts, ctx.Home, RevokedHostKeysGuest, revoked)
 
 	path := filepath.Join("testdata", "identity-generated.txt")
 	if *update {
