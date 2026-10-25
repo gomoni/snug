@@ -103,7 +103,10 @@ func TestSSHConfigChainOnThisHost(t *testing.T) {
 		t.Skip("no ssh on this host; there is nothing to ask")
 	}
 	home := t.TempDir() // not the real home: this asserts the filter, not the host
-	chain, _ := probeSSHConfig(home, nil)
+	chain, _, err := probeSSHConfig(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, p := range chain {
 		if !strings.HasPrefix(p, "/") {
 			t.Errorf("chain entry %q is not absolute", p)
@@ -131,11 +134,53 @@ func TestProbeSSHConfigWaitDelayBoundsAChildHoldingThePipe(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	start := time.Now()
-	probeSSHConfig(t.TempDir(), nil)
+	_, _, err := probeSSHConfig(t.TempDir(), nil)
 	elapsed := time.Since(start)
 	if want := sshProbeTimeout + 2*time.Second; elapsed > want {
 		t.Fatalf("probeSSHConfig took %s to return, want at most %s: WaitDelay is not "+
 			"bounding the wait for a child holding the pipe", elapsed, want)
+	}
+	if err == nil {
+		t.Fatal("a probe that timed out returned no error; the sandbox's ssh would run on " +
+			"compiled-in defaults with nothing on screen (#688 F2)")
+	}
+}
+
+// TestSSHProbeFailureRefuses is #688 F2: a host ssh that exits non-zero, or
+// takes longer than sshProbeTimeout (the shape of a slow `Match exec`), used to
+// go to an aside printed only under -v, and the run went ahead on OpenSSH's
+// compiled-in defaults.
+func TestSSHProbeFailureRefuses(t *testing.T) {
+	for name, body := range map[string]string{
+		"exits non-zero": "#!/bin/sh\necho 'debug1: Reading configuration data /x' >&2\necho 'ssh: bad config' >&2\nexit 255\n",
+		"times out":      "#!/bin/sh\nexec /bin/sleep 30\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			chain, values, err := probeSSHConfig(t.TempDir(), nil)
+			if err == nil {
+				t.Fatalf("probeSSHConfig = %q, %v, nil; want a refusal", chain, values)
+			}
+			if name == "times out" && !strings.Contains(err.Error(), "did not finish within") {
+				t.Errorf("a timeout is not named as one: %v", err)
+			}
+			// ssh's own reason, not -v's debug lines before it: "Bad owner or
+			// permissions on <file>" is the one a human can act on.
+			if name == "exits non-zero" && (!strings.Contains(err.Error(), "ssh: bad config") ||
+				strings.Contains(err.Error(), "debug1")) {
+				t.Errorf("refusal does not carry ssh's own reason alone: %v", err)
+			}
+			if !strings.Contains(err.Error(), "ssh -G") {
+				t.Errorf("refusal does not name the probe to rerun: %v", err)
+			}
+			if _, err := probeSSHPin(t.TempDir(), "github.com"); err == nil {
+				t.Error("probeSSHPin went ahead on a probe that failed")
+			}
+		})
 	}
 }
 
@@ -152,23 +197,26 @@ identityfile ~/.ssh/id_rsa
 permitlocalcommand no
 sendenv LANG
 forwardx11trusted yes
-`
-
-const measuredDefaults = `user michal
-hostname snug-probe.invalid
-requiredrsasize 1024
-ciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-ctr
-macs hmac-sha2-256-etm@openssh.com,hmac-sha1-etm@openssh.com
-forwardx11trusted no
+rekeylimit 0 0
 `
 
 func TestParseSSHValuesKeepsOnlyTheWhitelist(t *testing.T) {
-	got := parseSSHValues(measuredValues)
+	got, err := parseSSHValues(measuredValues)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got["requiredrsasize"] != "2048" {
 		t.Errorf("requiredrsasize = %q, want 2048 — it is the one entry with security "+
 			"content: without it the sandbox accepts a 1024-bit RSA key the host refuses",
 			got["requiredrsasize"])
+	}
+	// #688 F6: every whitelisted value is carried, including one equal to
+	// OpenSSH's compiled-in default, so the sandbox's ssh does not have to
+	// share the host's defaults.
+	if got["macs"] == "" || got["rekeylimit"] != "0 0" {
+		t.Errorf("macs = %q, rekeylimit = %q; both are whitelisted and must be carried in full",
+			got["macs"], got["rekeylimit"])
 	}
 	// ssh_config is a command table. Every key here names a program or a file,
 	// and read-only does not demote one into data — which is why snug generates
@@ -180,61 +228,42 @@ func TestParseSSHValuesKeepsOnlyTheWhitelist(t *testing.T) {
 	}
 }
 
-func TestSSHValuesDeltaIsWhatTheHostAddsToTheDefaults(t *testing.T) {
-	got := sshValuesDelta(parseSSHValues(measuredValues), parseSSHValues(measuredDefaults))
-
-	if got["requiredrsasize"] != "2048" {
-		t.Errorf("requiredrsasize = %q, want 2048 (the host raises it from 1024)", got["requiredrsasize"])
-	}
-	if _, ok := got["ciphers"]; !ok {
-		t.Error("ciphers was dropped; the host's list differs from the compiled-in one")
-	}
-	// The half that keeps the generated file small — and the goldens quiet on a
-	// host that customises nothing. macs is IDENTICAL to the default here, so
-	// restating it would be snug claiming to restore something nothing lost.
-	if v, ok := got["macs"]; ok {
-		t.Errorf("carried macs = %q although it equals OpenSSH's compiled-in value", v)
-	}
-}
-
-// TestSSHValuesDeltaWithNoDefaultsCarriesEverything pins the fail-safe
-// direction of the second probe: if `ssh -G -F /dev/null` cannot be run, snug
-// has no defaults to subtract and carries the host's values whole. That is
-// more of the host's own policy, never less, and every value still has to pass
-// the whitelist and the shape predicate.
-func TestSSHValuesDeltaWithNoDefaultsCarriesEverything(t *testing.T) {
-	got := sshValuesDelta(parseSSHValues(measuredValues), nil)
-	for _, k := range []string{"requiredrsasize", "ciphers", "macs"} {
-		if _, ok := got[k]; !ok {
-			t.Errorf("%s was dropped with no defaults to compare against", k)
-		}
-	}
-}
-
-func TestParseSSHValuesDropsAValueItCannotWriteSafely(t *testing.T) {
+// TestSSHValueDropRefuses is #688 F3: a whitelisted value snug cannot write
+// back used to be dropped with a warning, and the sandbox's ssh then used its
+// compiled-in default for it (measured: requiredrsasize 1024 against the host's
+// 2048).
+func TestSSHValueDropRefuses(t *testing.T) {
 	// ssh will not print these — it is the host's own binary and it quotes
 	// nothing — but the file snug writes is parsed by ssh, and the extractor is
 	// the sink where a value stops being a string and starts being a directive.
 	// Assert the predicate, not the source's good manners.
 	for name, line := range map[string]string{
-		"a directive smuggled after a newline": "requiredrsasize 2048\nproxycommand touch /tmp/PWNED",
-		"a comment":                            "requiredrsasize 2048 # rest",
-		"an escape sequence":                   "requiredrsasize 2048\x1b[2J",
-		"a quote":                              "ciphers \"aes256-ctr\"",
+		"the measured shape":   "requiredrsasize 2048 (x)",
+		"a comment":            "requiredrsasize 2048 # rest",
+		"an escape sequence":   "requiredrsasize 2048\x1b[2J",
+		"a quote":              "ciphers \"aes256-ctr\"",
+		"a rekeylimit unit":    "rekeylimit 1G 3600",
+		"a third rekey number": "rekeylimit 1 2 3",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := parseSSHValues(line + "\n")
-			for k, v := range got {
-				if strings.ContainsAny(v, " \t\"#\n\x1b") {
-					t.Fatalf("carried %s = %q", k, v)
-				}
+			if got, err := parseSSHValues(line + "\n"); err == nil {
+				t.Fatalf("parseSSHValues(%q) = %q, nil; want a refusal", line, got)
 			}
-			// POSITIVE CONTROL: the same parser, one good line, must still keep
-			// it — otherwise this passes on a parser that returns nothing.
-			if ok := parseSSHValues("requiredrsasize 2048\n"); ok["requiredrsasize"] != "2048" {
-				t.Fatalf("the control line was dropped too, so this case proves nothing: %q", ok)
+			// POSITIVE CONTROL: the same parser, good lines, must still keep
+			// them — otherwise this passes on a parser that refuses everything.
+			ok, err := parseSSHValues("requiredrsasize 2048\nrekeylimit 1073741824 3600\n")
+			if err != nil || ok["requiredrsasize"] != "2048" || ok["rekeylimit"] != "1073741824 3600" {
+				t.Fatalf("the control lines were refused too, so this case proves nothing: %q, %v", ok, err)
 			}
 		})
+	}
+}
+
+// A non-whitelisted key is never judged at all: ssh prints values snug would
+// refuse (proxycommand's spaces) on every host.
+func TestParseSSHValuesIgnoresTheShapeOfWhatItDoesNotCarry(t *testing.T) {
+	if _, err := parseSSHValues("proxycommand /usr/bin/nc %h %p\nsendenv LANG LC_*\n"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -246,12 +275,15 @@ func TestProbeSSHConfigOnThisHost(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("no ssh on this host; there is nothing to ask")
 	}
-	_, values := probeSSHConfig(t.TempDir(), nil)
+	_, values, err := probeSSHConfig(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for k, v := range values {
 		if !slices.Contains(policy.SSHKeyWhitelist, k) {
 			t.Errorf("probe returned %q, which is not in the whitelist", k)
 		}
-		if !sshValueShape(v) {
+		if !policy.SSHValueOK(k, v) {
 			t.Errorf("probe returned %s = %q, which snug would not write", k, v)
 		}
 	}

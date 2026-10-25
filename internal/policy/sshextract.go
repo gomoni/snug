@@ -9,7 +9,9 @@ import (
 // SSHKeyWhitelist is every key snug will carry from the host's system-wide
 // ssh_config into the file it generates in its place. Nothing on this list
 // names a program, a file, a socket or a credential: each one names
-// ALGORITHMS, except RequiredRSASize, which is an integer.
+// ALGORITHMS, except RequiredRSASize, which is an integer, RekeyLimit,
+// which is two (bytes and seconds, as `ssh -G` prints them), and
+// StrictHostKeyChecking, which is one of four words.
 //
 // It is a WHITELIST and must stay one, for the reason ssh_config is replaced
 // at all: it is a COMMAND TABLE. ProxyCommand, LocalCommand, `Match exec`,
@@ -38,6 +40,8 @@ var SSHKeyWhitelist = []string{
 	"hostbasedacceptedalgorithms",
 	"gssapikexalgorithms",
 	"requiredrsasize",
+	"rekeylimit",
+	"stricthostkeychecking",
 }
 
 // sshKeySpelling is how each whitelisted key is written in the generated file.
@@ -54,6 +58,8 @@ var sshKeySpelling = map[string]string{
 	"hostbasedacceptedalgorithms": "HostbasedAcceptedAlgorithms",
 	"gssapikexalgorithms":         "GSSAPIKexAlgorithms",
 	"requiredrsasize":             "RequiredRSASize",
+	"rekeylimit":                  "RekeyLimit",
+	"stricthostkeychecking":       "StrictHostKeyChecking",
 }
 
 // SSHValues is the whitelisted subset of this host's system-wide ssh
@@ -61,9 +67,10 @@ var sshKeySpelling = map[string]string{
 // caller extracts it — running a host binary is not the resolver's job — and
 // this package only renders it.
 //
-// It carries only the values that DIFFER from OpenSSH's compiled-in defaults
-// (internal/cli measures both), which is what keeps the generated file empty
-// of directives on a host that customises nothing.
+// It carries EVERY whitelisted key the host's ssh printed, not the difference
+// from OpenSSH's compiled-in defaults (#688 F6): a delta assumes the sandbox's
+// ssh has the host's defaults, and an older or differently patched build would
+// apply its own, possibly wider, ones to every key the delta left out.
 type SSHValues map[string]string
 
 // SortedSSHKeys is the whitelist in a stable order, for rendering and for the
@@ -74,9 +81,12 @@ func SortedSSHKeys() []string {
 	return out
 }
 
-// sshValueOK is the second filter on a value, after the extractor's. It admits
-// exactly the shape every whitelisted key has — an algorithm list or an
-// integer — and nothing else.
+// SSHValueOK reports whether v is a value snug is willing to write for the
+// whitelisted key: an algorithm list, for RequiredRSASize and RekeyLimit the
+// decimal integers `ssh -G` prints, and for StrictHostKeyChecking one of the
+// four words it prints. The extractor in internal/cli refuses
+// the run on a value that fails it, and the renderers here skip one, so a
+// value that reaches a generated file has passed it twice.
 //
 // It is written as an ALLOWED SET rather than a list of dangerous characters,
 // which is the lesson gitQuote's five measured failures paid for: a value
@@ -84,15 +94,21 @@ func SortedSSHKeys() []string {
 // value MEAN to the parser" answered once, not per character someone thought
 // of. ssh_config's grammar ends a directive at a newline, starts a comment at
 // `#`, and treats whitespace and `"` as structure — none of which can survive
-// this predicate. A legitimate value cannot contain them either: an algorithm
-// name is [A-Za-z0-9] plus `-`, `_`, `.`, `@` and `+`, joined by commas.
-//
-// The remedy here is a DROP, which is a downgrade (that key falls back to the
-// sandbox ssh's compiled-in default), so the predicate deliberately does not
-// try to be clever: an unrecognisable value means snug does not understand
-// what it is carrying, and carrying it anyway is how a generated file becomes
-// a directive nobody wrote.
-func sshValueOK(v string) bool {
+// this predicate, except RekeyLimit's one separating space, which is the
+// grammar's own. A legitimate algorithm name is [A-Za-z0-9] plus `-`, `_`,
+// `.`, `@` and `+`, joined by commas.
+func SSHValueOK(key, v string) bool {
+	switch key {
+	case "requiredrsasize":
+		return sshDigits(v)
+	case "rekeylimit":
+		size, secs, ok := strings.Cut(v, " ")
+		return ok && sshDigits(size) && sshDigits(secs)
+	case "stricthostkeychecking":
+		// How `ssh -G` prints it: yes and no come back as true and false,
+		// and off as false (OpenSSH_10.6p1).
+		return v == "true" || v == "false" || v == "ask" || v == "accept-new"
+	}
 	if v == "" || len(v) > 4096 {
 		return false
 	}
@@ -107,6 +123,18 @@ func sshValueOK(v string) bool {
 	return true
 }
 
+func sshDigits(v string) bool {
+	if v == "" || len(v) > 20 {
+		return false
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // carriedSSHKeys is which whitelisted keys a given SSHValues actually
 // contributes to the generated file: present, and shaped like something snug
 // is willing to write. It is the same predicate SystemSSHConfigFrom applies,
@@ -114,7 +142,7 @@ func sshValueOK(v string) bool {
 func carriedSSHKeys(v SSHValues) []string {
 	var out []string
 	for _, k := range SortedSSHKeys() {
-		if val, ok := v[k]; ok && sshValueOK(val) {
+		if val, ok := v[k]; ok && SSHValueOK(k, val) {
 			out = append(out, k)
 		}
 	}
@@ -169,13 +197,14 @@ func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
 // with security content, RequiredRSASize 2048 -> OpenSSH's compiled-in 1024,
 // so the sandbox's ssh would accept a 1024-bit RSA key the host's would
 // refuse. Now snug reads the host's EFFECTIVE values with `ssh -G`, keeps
-// SSHKeyWhitelist — algorithm lists and an integer, nothing that names a
+// SSHKeyWhitelist — algorithm lists and integers, nothing that names a
 // program, a file or a socket — and writes them here. Two properties hold it
 // down:
 //
-//   - Only values DIFFERING from the compiled-in defaults are carried
-//     (internal/cli measures both), so on a host that customises nothing this
-//     file is byte-identical to the comment-only one it replaces.
+//   - EVERY whitelisted value is written, not the difference from the
+//     compiled-in defaults (#688 F6), so the file states the host's policy
+//     whole and does not depend on the sandbox's ssh sharing the host's
+//     defaults.
 //   - The lists are EXPANDED by the same ssh that will read them back. `ssh
 //     -G` resolves `^`/`+`/`-` modifiers, so no modifier syntax survives into
 //     this file, and the binary that expanded them is the binary in the
@@ -184,9 +213,10 @@ func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
 //     loudly ("Bad SSH2 cipher spec"), never silently, and disclosed in the
 //     SSH block of --dry-run.
 //
-// A value snug does not recognise is DROPPED rather than escaped (sshValueOK):
-// the key then falls back to the sandbox ssh's compiled-in default, which is
-// exactly where it was before #43.
+// A value snug does not recognise REFUSES the run in internal/cli, and is
+// skipped here rather than escaped (SSHValueOK): falling back to the sandbox
+// ssh's compiled-in default for it would be the silent downgrade #688 F3
+// measured.
 //
 // This is a REPLACEMENT, not masking: snug authors it, the sandbox still
 // sees a file at that path, and no profile's grant is silently subtracted
@@ -243,21 +273,19 @@ func SystemSSHConfigFrom(v SSHValues) []byte {
 	b.WriteString("# in is root-owned too.\n")
 	b.WriteString("#\n")
 	b.WriteString("# If snug pinned an identity it also generated ~/.ssh/config; otherwise\n")
-	b.WriteString("# ssh's compiled-in defaults are all that apply.\n")
+	b.WriteString("# this file is the only ssh configuration in the sandbox.\n")
 
 	var carried []string
 	for _, k := range SortedSSHKeys() {
 		val, ok := v[k]
-		if !ok || !sshValueOK(val) {
+		if !ok || !SSHValueOK(k, val) {
 			continue
 		}
 		carried = append(carried, k)
 	}
 	if len(carried) == 0 {
 		b.WriteString("#\n")
-		b.WriteString("# This host's ssh resolves every algorithm list and RequiredRSASize to\n")
-		b.WriteString("# OpenSSH's compiled-in defaults, so there was nothing to carry over\n")
-		b.WriteString("# and the sandbox's ssh reaches the same values on its own.\n")
+		b.WriteString("# This host has no ssh to ask, so there was nothing to carry over.\n")
 		return []byte(b.String())
 	}
 
@@ -269,8 +297,6 @@ func SystemSSHConfigFrom(v SSHValues) []byte {
 	b.WriteString("# PKCS11Provider, IdentityFile, IdentityAgent, ControlPath) is left\n")
 	b.WriteString("# behind: a read-only bind of a command table supplies it rather than\n")
 	b.WriteString("# stopping it, which is why this file is generated at all.\n")
-	b.WriteString("#\n")
-	b.WriteString("# Only values that DIFFER from OpenSSH's compiled-in defaults are here.\n")
 	for _, k := range carried {
 		fmt.Fprintf(&b, "%s %s\n", sshKeySpelling[k], v[k])
 	}

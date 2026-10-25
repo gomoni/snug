@@ -186,7 +186,7 @@ func TestSSHConfigDoesNotOfferTheSigningKeyForAuthentication(t *testing.T) {
 		SSH: IdentitySSH{Agent: SSHAgentProxy, Key: "/home/u/.ssh/id_ed25519.pub"},
 		Git: IdentityGit{SigningKey: "/home/u/.ssh/id_ed25519_signing.pub"},
 	}
-	cfg := string(id.SSHConfig("/home/u"))
+	cfg := string(id.SSHConfig("/home/u", nil, false))
 
 	n := strings.Count(cfg, "IdentityFile")
 	if n != 1 {
@@ -339,5 +339,36 @@ func TestRefuseUnhostlikeHostCatchesSyntax(t *testing.T) {
 	// POSITIVE CONTROL: an ordinary forge name, in both blocks.
 	if err := resolve("ghe.corp-1.example", "ghe.corp-1.example"); err != nil {
 		t.Fatalf("an ordinary host name was refused: %v", err)
+	}
+}
+
+// TestIdentitySSHConfigNeverAcceptNew is #688 F1: `accept-new` against a
+// read-only known_hosts accepted ANY key for a pin with no entry, on every run.
+// The pin's own algorithm values and RevokedHostKeys reach its Host block (F4,
+// F5), and a value SSHValueOK refuses does not.
+func TestIdentitySSHConfigNeverAcceptNew(t *testing.T) {
+	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy, Host: "git.example"}}
+	cfg := string(id.SSHConfig("/home/u", SSHValues{
+		"kexalgorithms":   "mlkem768x25519-sha256",
+		"requiredrsasize": "3072",
+		"ciphers":         "aes256-ctr\n\tProxyCommand touch /tmp/PWNED",
+	}, true))
+	for _, want := range []string{
+		"\tStrictHostKeyChecking yes\n",
+		"\tKexAlgorithms mlkem768x25519-sha256\n",
+		"\tRequiredRSASize 3072\n",
+		"\tRevokedHostKeys /home/u/" + RevokedHostKeysGuest + "\n",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("generated ~/.ssh/config lacks %q:\n%s", want, cfg)
+		}
+	}
+	for _, bad := range []string{"accept-new", "ProxyCommand", "Ciphers"} {
+		if strings.Contains(cfg, bad) {
+			t.Errorf("generated ~/.ssh/config carries %q:\n%s", bad, cfg)
+		}
+	}
+	if strings.Contains(string(id.SSHConfig("/home/u", nil, false)), "RevokedHostKeys") {
+		t.Error("RevokedHostKeys written for a host that names none")
 	}
 }

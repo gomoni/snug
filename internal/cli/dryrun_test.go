@@ -872,8 +872,10 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	if !strings.Contains(got, "65534") {
 		t.Errorf("SSH block does not explain the mechanism (one mapped uid -> 65534): %q", got)
 	}
-	if !strings.Contains(got, "RequiredRSASize") {
-		t.Errorf("SSH block does not name the one lossy entry with security content: %q", got)
+	// The fixture has no HostSSHConfig, which is a host with no ssh to ask:
+	// the block must say nothing was carried rather than print nothing.
+	if !strings.Contains(got, "nothing was carried") {
+		t.Errorf("SSH block does not say nothing was carried: %q", got)
 	}
 
 	// CONTROL: a selection covering NEITHER SystemSSHConfigPaths entry must
@@ -928,18 +930,11 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 	}
 }
 
-// TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried is invariant 5 applied
-// to the one entry in this feature's loss that has security content. The block
-// names RequiredRSASize twice over — in the carried list when the host raises
-// it, and in the cost paragraph when it does not — and only the second case
-// needs a test, because the first is what every crypto-policy host produces
-// and would hide a cost paragraph that had quietly stopped mentioning it.
-//
-// A host that customises only its cipher list is the shape that discriminates:
-// something IS carried, so the block takes the carried branch, and
-// RequiredRSASize is still OpenSSH's compiled-in 1024 inside against the
-// host's own value.
-func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
+// TestDescribeSSHNamesEveryCarriedKey holds the carried list to what the host's
+// ssh printed. RequiredRSASize is the entry with security content: a block
+// that named the algorithm lists and quietly dropped it would hide the one
+// value that decides whether a 1024-bit RSA key is accepted inside.
+func TestDescribeSSHNamesEveryCarriedKey(t *testing.T) {
 	reg := loadTestRegistry(t)
 	home, target := testTree(t)
 
@@ -950,20 +945,16 @@ func TestDescribeSSHNamesRequiredRSASizeWhenItIsNotCarried(t *testing.T) {
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
-		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr"}}
+		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr", "requiredrsasize": "2048"}}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
-	if !strings.Contains(got, "Ciphers") {
-		t.Fatalf("the SSH block does not name the key that WAS carried, so this test is "+
-			"not exercising the carried branch at all:\n%s", got)
-	}
-	if !strings.Contains(got, "RequiredRSASize") {
-		t.Errorf("the SSH block names no RequiredRSASize on a host that does not raise it; "+
-			"the sandbox then accepts a 1024-bit RSA key with nothing on screen saying so, "+
-			"which is invariant 5 reopened for this feature:\n%s", got)
+	for _, want := range []string{"Ciphers", "RequiredRSASize"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the SSH block does not name carried key %s:\n%s", want, got)
+		}
 	}
 }
 
