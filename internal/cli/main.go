@@ -657,7 +657,16 @@ func run(cfg config) int {
 		command = []string{shell}
 	}
 
-	sshConfigs, sshValues := probeSSHConfig(home, notes)
+	sshConfigs, sshValues, err := probeSSHConfig(home, notes)
+	if err != nil {
+		return refuse(cfg, exitPolicy, err)
+	}
+	var pin sshPin
+	if host, pinned := identitySSHPin(reg, selected); pinned {
+		if pin, err = probeSSHPin(home, host); err != nil {
+			return refuse(cfg, exitPolicy, err)
+		}
+	}
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
 
@@ -672,7 +681,7 @@ func run(cfg config) int {
 		LegacyTIOCSTI:   legacyTIOCSTI(),
 		StdioTerminals:  stdioTerminals(),
 		HostNameservers: hostNameservers(),
-		KnownHosts:      knownHostsFor(identitySSHHost(reg, selected)),
+		KnownHosts:      pin.knownHosts,
 		HostPasswdHome:  pwHome,
 		HostUserName:    name,
 		HostGroupName:   gname,
@@ -681,8 +690,11 @@ func run(cfg config) int {
 		// why the fixed list is still the floor (issues #42, #43).
 		HostSSHConfigs: sshConfigs,
 		HostSSHConfig:  sshValues,
-		HostShims:      detectHostShims(),
-		TmpfsSizeBytes: tmpfsSizeBytes,
+		// The pinned host's own half of the same question (#688).
+		HostSSHPinConfig: pin.values,
+		RevokedHostKeys:  pin.revoked,
+		HostShims:        detectHostShims(),
+		TmpfsSizeBytes:   tmpfsSizeBytes,
 		// Every snug configuration directory a run could read, so Resolve can
 		// refuse a writable grant reaching one. Derived from the same author
 		// as profile.ConfigDirs and configPath, so the check cannot disagree

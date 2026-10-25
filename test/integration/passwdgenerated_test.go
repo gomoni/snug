@@ -113,7 +113,7 @@ func TestSSHReadsGeneratedConfigUnderSyntheticHOME(t *testing.T) {
 	env := writeProfiles(t, map[string]string{"pinned": pinned}, append(fixtureHome(home), "SSH_AUTH_SOCK="+sock)...)
 
 	r := runEnv(t, env, []string{"-p", "pinned"}, proj, "ssh -G github.com").mustRun(t)
-	for _, want := range []string{"identitiesonly yes", "stricthostkeychecking accept-new"} {
+	for _, want := range []string{"identitiesonly yes", "stricthostkeychecking true"} {
 		if !strings.Contains(r.out, "\n"+want+"\n") {
 			t.Errorf("ssh inside did not read the generated config under a synthetic HOME, "+
 				"with no pwlink profile: no %q:\n%s", want, r.out)

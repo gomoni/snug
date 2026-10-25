@@ -93,6 +93,40 @@ snug generates `~/.ssh/config` and a `known_hosts` holding only `host`.
 With the proxy, the generated git config also rewrites `https://HOST/` to
 `git@HOST:`, so clones over https push over ssh.
 
+#### Your ssh configuration
+
+The ssh client inside checks `host` at least as strictly as your host's ssh
+does. Before starting, snug runs `ssh -G -l git HOST` on the host and carries:
+
+- the algorithm lists and limits of whatever `Host` or `Match` block matches
+  `host`: `Ciphers`, `MACs`, `KexAlgorithms`, `HostKeyAlgorithms`,
+  `PubkeyAcceptedAlgorithms`, `CASignatureAlgorithms`,
+  `HostbasedAcceptedAlgorithms`, `GSSAPIKexAlgorithms`, `RequiredRSASize`,
+  `RekeyLimit`, `StrictHostKeyChecking` (for `host` itself always yes)
+- every `known_hosts` line for `host` from the files that ssh reads (yours and
+  the system-wide ones), hashed lines, `@revoked` and `@cert-authority`
+  included
+- the `RevokedHostKeys` file, copied to `~/.ssh/revoked_host_keys`
+
+The generated config sets `StrictHostKeyChecking yes`, so a key that is not in
+`known_hosts` is refused. snug refuses to start when your host has no entry for
+`host`:
+
+```text
+snug: identity.ssh: this host has no known_hosts entry for github.com (read …). The sandbox's ssh refuses a host key it cannot check rather than trusting the first one it is shown. Connect once from the host (`ssh -T git@github.com`), check the fingerprint against the one github.com publishes, and run snug again
+```
+
+snug refuses to start when your configuration sets `HostName`, `Port`,
+`HostKeyAlias` or `KnownHostsCommand` for `host`. The generated config
+connects to `host` on port 22 and checks its key under that name, so the keys
+and revocations your ssh would check elsewhere would not apply inside.
+
+The system-wide ssh config snug writes in every sandbox carries the same keys
+from your global configuration. A `Host` block for any host other than
+`host` does not reach the sandbox. snug also refuses to start when
+`ssh -G` fails or takes longer than 5 seconds (a slow `Match exec` is the usual
+cause), or prints a value snug cannot write back.
+
 ### `identity.git`
 
 | key | value |

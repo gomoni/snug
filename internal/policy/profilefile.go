@@ -412,7 +412,7 @@ func generatedFileLayer(p *Policy, g string) string {
 	case g == p.Home+"/.gitconfig":
 		return "write path = \"/etc/gitconfig\": git reads that system-scope file below the " +
 			"generated global one, and snug's pins (user, signing, insteadOf, safe.directory) still win there."
-	case g == p.Home+"/.ssh/config", g == p.Home+"/.ssh/known_hosts":
+	case g == p.Home+"/.ssh/config", g == p.Home+"/.ssh/known_hosts", g == p.Home+"/"+RevokedHostKeysGuest:
 		return "snug has no layer for ssh configuration yet; the generated file is what ssh reads at user scope."
 	case base == "hosts.yml", g == p.Home+"/.kube/config", base == "allowed_signers",
 		strings.HasPrefix(base, "id_snug") && strings.HasSuffix(base, ".pub"):

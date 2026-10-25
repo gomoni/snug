@@ -1603,9 +1603,7 @@ func describeSSH(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "         mapped); OpenSSH refuses such a file, so ssh, git-over-ssh, scp\n")
 	fmt.Fprintf(out, "         and rsync -e ssh all die without this\n")
 	if len(p.SystemSSHCarried) == 0 {
-		fmt.Fprintf(out, "         cost       the host's system-wide defaults do not apply — this host\n")
-		fmt.Fprintf(out, "                    resolves the algorithm lists and RequiredRSASize to\n")
-		fmt.Fprintf(out, "                    OpenSSH's compiled-in values anyway, so nothing was lost\n")
+		fmt.Fprintf(out, "         cost       this host has no ssh to ask, so nothing was carried\n")
 		return
 	}
 	var spelled []string
@@ -1627,11 +1625,10 @@ func describeSSH(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "         left out   everything that names a program, a file or a socket —\n")
 	fmt.Fprintf(out, "                    ProxyCommand, Match exec, KnownHostsCommand, PKCS11Provider,\n")
 	fmt.Fprintf(out, "                    IdentityFile, IdentityAgent, ControlPath\n")
-	fmt.Fprintf(out, "         cost       anything else the host's file said is gone, and a key not\n")
-	fmt.Fprintf(out, "                    named above — RequiredRSASize included, when it is absent —\n")
-	fmt.Fprintf(out, "                    falls back to OpenSSH's compiled-in value (1024 for that\n")
-	fmt.Fprintf(out, "                    one). An algorithm name this sandbox's ssh does not know is\n")
-	fmt.Fprintf(out, "                    a loud failure (`Bad SSH2 cipher spec`), never a silent one\n")
+	fmt.Fprintf(out, "         cost       anything else the host's file said is gone. Every value\n")
+	fmt.Fprintf(out, "                    the host's ssh printed for these keys is written, so an\n")
+	fmt.Fprintf(out, "                    algorithm name this sandbox's ssh does not know is a loud\n")
+	fmt.Fprintf(out, "                    failure (`Bad SSH2 cipher spec`), never a silent one\n")
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which

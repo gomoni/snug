@@ -251,7 +251,7 @@ for it.
 
 A `file` at a path snug generates for the same selection is refused, naming the
 generated file and what to do instead: `~/.gitconfig`, `~/.ssh/config`,
-`~/.ssh/known_hosts`, `/etc/resolv.conf`, `/etc/passwd`, `/etc/group`,
+`~/.ssh/known_hosts`, `~/.ssh/revoked_host_keys`, `/etc/resolv.conf`, `/etc/passwd`, `/etc/group`,
 `/etc/nsswitch.conf` and the account files an `identity` stages. snug has no
 layer for ssh configuration, so `{home}/.ssh/config` is refused with that
 wording. Builtin profiles carry no `file`.

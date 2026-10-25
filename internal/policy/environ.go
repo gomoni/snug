@@ -309,13 +309,20 @@ type Context struct {
 	// system-wide ssh configuration — algorithm lists and RequiredRSASize,
 	// nothing that names a program, a file or a socket — extracted by the
 	// caller with `ssh -G` because running a host binary is not the
-	// resolver's job. Only keys in SSHKeyWhitelist ever appear here, and only
-	// where the host's value DIFFERS from OpenSSH's compiled-in default.
-	//
-	// Empty is the ordinary case and costs nothing: the generated file then
-	// carries no directives and the sandbox's ssh uses the same compiled-in
-	// defaults the host's does (issue #43).
+	// resolver's job. Only keys in SSHKeyWhitelist ever appear here, every one
+	// the host's ssh printed (#688 F6). Empty only when the host has no ssh.
 	HostSSHConfig SSHValues
+
+	// HostSSHPinConfig is the same extraction for the pinned identity.ssh.host
+	// (`ssh -G <host>`), rendered into the generated ~/.ssh/config's Host block,
+	// so a `Host <pin>` block in the user's own config is not replaced by the
+	// global values (#688 F4). Nil when no ssh identity is pinned.
+	HostSSHPinConfig SSHValues
+
+	// RevokedHostKeys is the content of the file the host's ssh names as
+	// RevokedHostKeys for the pinned host, staged at RevokedHostKeysGuest. Nil
+	// when it names none; a non-nil empty slice is an empty file.
+	RevokedHostKeys []byte
 
 	// HostPasswdHome is field 6 (pw_dir) of this account's passwd entry,
 	// exactly as the account database spells it. Home is the same
@@ -336,9 +343,10 @@ type Context struct {
 	HostUserName  string
 	HostGroupName string
 
-	// KnownHosts is the subset of the host's known_hosts for the pinned host,
-	// filtered by the caller. Binding the whole file would tell the sandbox
-	// every host you have ever connected to.
+	// KnownHosts is the subset of the host's known_hosts files (user and
+	// global, as `ssh -G <host>` names them) for the pinned host, filtered by
+	// the caller, @revoked and @cert-authority lines included. Binding the
+	// whole file would tell the sandbox every host you have ever connected to.
 	KnownHosts []byte
 
 	// HostAddresses is every address the host holds, as text, the same set

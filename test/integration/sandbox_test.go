@@ -111,6 +111,15 @@ var (
 	// belongs here rather than under t.TempDir, which is removed when the
 	// first test that asked for it ends — see fakeHostEtc.
 	integrationTmp string
+
+	// suiteKnownHosts is the known_hosts file every snug in this suite reads
+	// for a pinned identity.ssh, holding github.com, the pin every test uses.
+	// See pinSuiteKnownHosts.
+	suiteKnownHosts string
+
+	// realSSH is the host's ssh, behind the wrapper pinSuiteKnownHosts puts
+	// first on PATH. Empty when the host has none.
+	realSSH string
 )
 
 // cmdTimeout bounds every snug invocation. Nothing in this suite should take
@@ -262,9 +271,59 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	if err := pinSuiteKnownHosts(dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// suiteGitHubHostKey is a throwaway key under github.com's name. No test
+// verifies github.com's real key: the one test that connects there passes
+// UserKnownHostsFile=/dev/null itself.
+const suiteGitHubHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcgUwK96NCQlqjPZlPkFyqH6IrvXdrKEmVT0asbOPTC"
+
+// pinSuiteKnownHosts puts an `ssh` first on this process's PATH that runs the
+// real one with UserKnownHostsFile pointing at suiteKnownHosts.
+//
+// snug refuses a pinned identity.ssh whose host has no known_hosts entry
+// (#688), and it learns which files to read from `ssh -G`, which takes the
+// user's files from getpwuid rather than $HOME, so neither a fixture home nor
+// HOME can redirect it. Without this the suite would pass on a machine whose
+// real ~/.ssh/known_hosts happens to hold github.com and refuse every pinned
+// test on one that does not. A -o on the command line wins over every config
+// file, so the wrapper changes that one setting and nothing else. A test that
+// asserts the refusal sets its own PATH.
+func pinSuiteKnownHosts(dir string) error {
+	suiteKnownHosts = filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(suiteKnownHosts, []byte("github.com "+suiteGitHubHostKey+"\n"), 0o600); err != nil {
+		return err
+	}
+	ssh, err := exec.LookPath("ssh")
+	if err != nil {
+		return nil // no ssh: snug reads OpenSSH's default locations, and no test runs ssh
+	}
+	realSSH = ssh
+	bin, err := sshWrapper(dir, suiteKnownHosts)
+	if err != nil {
+		return err
+	}
+	return os.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// sshWrapper writes dir/ssh-wrapper/ssh, running realSSH with
+// UserKnownHostsFile set to knownHosts, and returns the directory.
+func sshWrapper(dir, knownHosts string) (string, error) {
+	bin := filepath.Join(dir, "ssh-wrapper")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		return "", err
+	}
+	wrapper := "#!/bin/sh\nexec " + realSSH + " -o UserKnownHostsFile=" + knownHosts + " \"$@\"\n"
+	return bin, os.WriteFile(filepath.Join(bin, "ssh"), []byte(wrapper), 0o755)
 }
 
 // ── host capability gates ───────────────────────────────────────────────────

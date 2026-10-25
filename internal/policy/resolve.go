@@ -905,7 +905,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// mounted at all, so the sandbox learns nothing about which hosts or keys
 	// you have.
 	if id := p.Identity; id != nil {
-		if cfg := id.SSHConfig(home); len(cfg) > 0 {
+		if cfg := id.SSHConfig(home, ctx.HostSSHPinConfig, ctx.RevokedHostKeys != nil); len(cfg) > 0 {
 			p.Replace(Mount{
 				Guest: home + "/.ssh/config", Kind: KindData, Access: AccessRO,
 				Content: cfg, From: []string{p.IdentityProvenance("ssh")},
@@ -917,6 +917,12 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				Guest: home + "/.ssh/known_hosts", Kind: KindData, Access: AccessRO,
 				Content: ctx.KnownHosts, From: []string{p.IdentityProvenance("ssh")},
 			})
+			if ctx.RevokedHostKeys != nil {
+				p.Replace(Mount{
+					Guest: home + "/" + RevokedHostKeysGuest, Kind: KindData, Access: AccessRO,
+					Content: ctx.RevokedHostKeys, From: []string{p.IdentityProvenance("ssh")},
+				})
+			}
 		}
 	}
 
@@ -1972,7 +1978,7 @@ func refuseUnhostlikeHost(name ProfileName, id Identity) error {
 		{"identity.ssh.host", id.SSH.Host},
 		{"identity.gh.host", id.Gh.Host},
 	} {
-		if h.v == "" || isHostName(h.v) {
+		if h.v == "" || IsHostName(h.v) {
 			continue
 		}
 		return fmt.Errorf("profile %q: %s = %s is not a host name. snug writes it unquoted "+
@@ -1984,7 +1990,10 @@ func refuseUnhostlikeHost(name ProfileName, id Identity) error {
 	return nil
 }
 
-func isHostName(s string) bool {
+// IsHostName reports whether s is spelled as a bare host name: letters, digits,
+// '.' and '-', never starting with '-' or '.'. internal/cli asks it before the
+// name reaches the host's ssh argv, where a leading '-' is an option.
+func IsHostName(s string) bool {
 	if s[0] == '-' || s[0] == '.' {
 		return false
 	}
