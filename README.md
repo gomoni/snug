@@ -122,8 +122,7 @@ Unlike the code, the [user guide](docs/src/README.md) is reviewed by me, so any 
 - `podman` with `crun`, `conmon`, `netavark`, `aardvark-dns` and `catatonit` for `@podman-*`
 - Go 1.26+ to build
 
-`snug doctor` checks all of these and tells you how to fix them. Details, including
-running snug inside a container: [Requirements](docs/src/requirements.md).
+`snug doctor` checks all of these and tells how to fix them.
 
 ## License
 
