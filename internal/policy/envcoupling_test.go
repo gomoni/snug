@@ -509,3 +509,27 @@ func TestCouplingRefusalEscapesAForgingRuneInTheExpandedValue(t *testing.T) {
 		t.Errorf("the escaped form of the newline never reached the refusal: %v", err)
 	}
 }
+
+// TestCouplingFileGrantCoversOnlyItsOwnPath fails if a `file` grant covers
+// paths below it (#686). A file has no descendants, so a variable naming one
+// names nothing inside. The control names the file itself.
+func TestCouplingFileGrantCoversOnlyItsOwnPath(t *testing.T) {
+	for _, env := range []EnvGrants{
+		{Set: map[string]string{"KUBECONFIG": "/srv/cfile/sub/x"}},
+		{Prepend: map[string][]string{"PATH": {"/srv/cfile/bin"}}},
+	} {
+		reg := testRegistry()
+		reg["below"] = &Profile{Name: "below", File: []FileGrant{{Path: "/srv/cfile", Content: "x"}}, Environ: env}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "below"}, testCtx(), newFakeEnv())
+		if err == nil || !strings.Contains(err.Error(), "which it does not grant") {
+			t.Errorf("%+v below a file grant: err = %v, want the coupling refusal", env, err)
+		}
+	}
+
+	reg := testRegistry()
+	reg["exact"] = &Profile{Name: "exact", File: []FileGrant{{Path: "/srv/cfile", Content: "x"}},
+		Environ: EnvGrants{Set: map[string]string{"KUBECONFIG": "/srv/cfile"}}}
+	if _, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "exact"}, testCtx(), newFakeEnv()); err != nil {
+		t.Fatalf("a variable naming the file grant itself was refused: %v", err)
+	}
+}

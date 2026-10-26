@@ -532,7 +532,8 @@ func (p *Policy) EngineView() (View, bool) {
 
 // GrantsGuestPath reports whether some grant covers a path, read verbatim as a
 // guest path. Coverage is downward with no depth limit, on `/` boundaries — the
-// same lexical containment the mount rules use.
+// same lexical containment the mount rules use — except below a file, where
+// the kernel answers ENOTDIR and the walk ends walkNowhere (#686).
 //
 // Exported because --dry-run marks an authored value naming a path nothing
 // grants (§4.2), and that mark MUST be computed by the same predicate the filter
@@ -825,9 +826,10 @@ func (v View) walkLinks(host HostLinks, guest string) (final Mount, at string, r
 				queue = append(walkQueueComponents(m.Host), queue...)
 			case m.Kind == KindData && len(queue) > 0:
 				// A generated FILE with more path left below it: ENOTDIR
-				// inside, the same as a real file under a bind would give.
-				// at stays "" — the walk never confirmed a path past here.
-				return m, "", replaceable, walkLanded, ""
+				// inside, so the path names nothing (#686). The file is a
+				// mountpoint and rejectMasking refuses any grant below it, so
+				// nothing can ever appear there.
+				return Mount{}, "", replaceable, walkNowhere, ""
 			default:
 				pos = next
 			}
@@ -868,19 +870,32 @@ func (v View) walkLinks(host HostLinks, guest string) (final Mount, at string, r
 
 		fi, lerr := host.Lstat(h)
 		switch {
-		case errors.Is(lerr, fs.ErrNotExist), errors.Is(lerr, syscall.ENOTDIR):
-			// Nothing on the host at this name, or an ancestor of it is not a
-			// directory: judged by the bind itself, same as every read-only
-			// grant already was before host links were followed at all.
+		case errors.Is(lerr, fs.ErrNotExist):
+			// Nothing on the host at this name: judged by the bind itself,
+			// same as every read-only grant already was before host links
+			// were followed at all.
 			return m, "", replaceable, walkLanded, h
+		case errors.Is(lerr, syscall.ENOTDIR):
+			// The bind's own root is a file: every component past it was
+			// Lstat'd one at a time, so a deeper file stops at the arm below
+			// first. Nothing exists under a file (#686), and a bind's root is
+			// a mountpoint the payload cannot unlink, rw or not, so nothing
+			// ever will.
+			return Mount{}, "", replaceable, walkNowhere, ""
 		case lerr != nil:
 			return Mount{}, "", replaceable, walkUnknown, ""
 		}
 
 		if fi.Mode()&fs.ModeSymlink == 0 {
 			if !fi.IsDir() {
-				// A file where the walk expected a directory: ENOTDIR inside,
-				// same as the bind's own content would give.
+				// A file where the walk expected a directory: ENOTDIR inside.
+				// With path left below it, that names nothing (#686) — unless
+				// the payload can write the directory holding the file, in
+				// which case it can `rm` the file and `mkdir` its own, so the
+				// bind still answers for the name, writable as it is.
+				if len(queue) > 0 && !mountIsWritable(m) && !v.hostAliased(h) {
+					return Mount{}, "", replaceable, walkNowhere, ""
+				}
 				return m, "", replaceable, walkLanded, h
 			}
 			pos = next
