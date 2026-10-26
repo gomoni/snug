@@ -446,19 +446,21 @@ func containerEnv(pol *policy.Policy) {
 	// speaking the compat API finds the same proxy. snug targets podman.
 	pol.AuthorEnv("CONTAINER_HOST", "unix://"+containerSocketGuest)
 	pol.AuthorEnv("DOCKER_HOST", "unix://"+containerSocketGuest)
-	// DOCKER_BUILDKIT=0 is a TIGHTENING, not a convenience: with BuildKit on
-	// (docker's own default), `docker build` never POSTs to /build at all — it
-	// tries to boot a moby/buildkit builder CONTAINER instead, and negotiates
-	// build options over a buildkit session the /build query-string filter in
-	// internal/dockerproxy never inspects. Forcing the classic path is what
-	// makes `docker build` go through the one endpoint snug actually filters.
-	//
-	// It is also attacker-overridable: the payload can set
-	// DOCKER_BUILDKIT=1 itself and boot a buildkit builder (its `create` is
-	// still filtered), then negotiate `RUN --mount=type=bind,...` over the
-	// buildkit session — a channel the /build filter cannot see. So this
-	// default is not the only backstop; it narrows the common case, and the
-	// buildkit session itself is not something snug filters at all.
+	// DOCKER_BUILDKIT=0 is a CONVENIENCE, not a bound: it sends `docker build`
+	// down the classic path, a tar POSTed to /build, the one build endpoint the
+	// proxy serves. The payload can write DOCKER_BUILDKIT=1 itself, and what
+	// that buys was measured (issue #690, docker 29.7.2-ce, buildx 0.36.1,
+	// inside `@podman-build @net`): the client first asks for the engine's
+	// built-in BuildKit over `POST /grpc` (Upgrade: h2c), which the proxy's
+	// route allowlist refuses, as it does /session and /build?version=2. buildx
+	// then falls back to a builder CONTAINER, and a builder is an ordinary
+	// container: created through the create filter, reached over the
+	// exec/{id}/start hijack every `docker exec` takes, holding no
+	// CAP_SYS_ADMIN, so the build failed mounting its own snapshot ("operation
+	// not permitted"). The BuildKit session is not inspected, and does not
+	// need to be: it reaches only what the builder container already can.
+	// internal/dockerproxy's TestBuildKitEntryPointsNeverReachTheEngine holds
+	// the refusals.
 	//
 	// (The caller already returned when pol.Podman == PodmanOff, so setting it
 	// unconditionally here is correct, not merely convenient.)
