@@ -55,6 +55,9 @@ type fakeEnv struct {
 	// read — and would be a fixture that lies, in a file whose whole job is to
 	// stand in for a host.
 	files map[string]bool
+	// execs are regular files with the execute bits set, for
+	// Policy.SandboxBinary's PATH lookup.
+	execs map[string]bool
 	// mounts is the fixture host's mount table, for RULE 5's filesystem half.
 	// Empty is the right default: a fixture that does not care about the rule
 	// has no pseudo-filesystem anywhere.
@@ -114,7 +117,8 @@ func newFakeEnv() *fakeEnv {
 		panic(err)
 	}
 	return &fakeEnv{
-		kube: map[string][]byte{"/home/u/.kube/config": kubeFixture, "/home/u/.kube/maximal": kubeFixture},
+		kube:  map[string][]byte{"/home/u/.kube/config": kubeFixture, "/home/u/.kube/maximal": kubeFixture},
+		execs: map[string]bool{},
 		// The procfs entries snug replaces (issue #29). Present here so the
 		// GOLDENS carry those mounts: they are the review artifact for this
 		// change, and a fixture host that published none of them would hide
@@ -247,6 +251,9 @@ func (f *fakeEnv) Stat(p string) (fs.FileInfo, error) {
 	if f.files[p] {
 		return fakeInfo{name: p}, nil
 	}
+	if f.execs[p] {
+		return fakeInfo{name: p, mode: 0o755}, nil
+	}
 	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 }
 
@@ -288,7 +295,7 @@ func (f *fakeEnv) dirInfo(p string) fakeInfo {
 // directory exists on the fixture host without every test listing it.
 func (f *fakeEnv) isAncestor(p string) bool {
 	prefix := strings.TrimSuffix(p, "/") + "/"
-	for _, m := range []map[string]bool{f.dirs, f.files, f.sockets, f.fifos} {
+	for _, m := range []map[string]bool{f.dirs, f.files, f.execs, f.sockets, f.fifos} {
 		for k := range m {
 			if strings.HasPrefix(k, prefix) {
 				return true
@@ -372,6 +379,11 @@ func testRegistry() map[ProfileName]*Profile {
 			// real default selection carries.
 			NSS: true,
 		},
+		// The real @sys's shape where this registry's @sys is coarser: /usr
+		// without all of /etc, so /etc/ssh is on the root tmpfs. The fixture
+		// for a host whose ssh reads a system file no grant supplies.
+		"sys-usr": {Name: "sys-usr", RO: []string{"/usr"},
+			Symlink: []Symlink{{At: "/bin", Target: "usr/bin"}}},
 		// Matches the real @home in base.toml, entry for entry, because the
 		// .bwrap.txt goldens are built from this registry: a fake @home with
 		// fewer grants than the shipped one makes those files describe a sandbox
@@ -517,7 +529,8 @@ func testCtx() Context {
 	return Context{Target: "/home/u/proj/sub", Home: "/home/u", HostPasswdHome: "/home/u",
 		Shell: "/bin/sh", Command: []string{"/bin/sh"},
 		HostUserName: "u", HostGroupName: "users",
-		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal}
+		StdioTerminals: StdinTerminal | StdoutTerminal | StderrTerminal,
+		HostSSHBinary:  "/usr/bin/ssh"}
 }
 
 // testCtxWithPodmanShim is testCtx plus a detected podman shim — the fixture

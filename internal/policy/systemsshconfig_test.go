@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"bytes"
 	"slices"
 	"strings"
 	"testing"
@@ -79,9 +80,10 @@ func TestIdentityReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 
 func TestSystemSSHConfigIsNotInventedWhereTheHostHasNone(t *testing.T) {
 	// The control that keeps the rule honest in the other direction. snug
-	// replaces a file this host's ssh actually reads; it does not author config
-	// at a path that does not exist, because that is a grant nobody asked for
-	// and it would make the two spellings differ from the host's reality.
+	// replaces a file this host's ssh actually reads; under a bind it does not
+	// author config at a path that does not exist, because that is a grant
+	// nobody asked for and it would make the two spellings differ from the
+	// host's reality.
 	env := newFakeEnv()
 
 	p, err := Resolve(identityRegistry("~/.ssh/id_ed25519.pub"),
@@ -103,8 +105,8 @@ func TestSystemSSHConfigIsNotInventedWhereTheHostHasNone(t *testing.T) {
 // under a read-only bind reads as 65534, OpenSSH refuses it) that is exactly
 // as true with no [identity] selected as with one. Gating the fix on identity
 // left ssh — and git-over-ssh, scp, rsync -e ssh — broken in every unpinned
-// sandbox on such a host, which is issue #40. The replacement now rides on
-// COVERAGE (is the host's file actually visible inside?), computed in
+// sandbox on such a host, which is issue #40. The replacement rides on the
+// host's ssh binary and file being inside, computed in
 // replaceSystemSSHConfig, not on p.Identity.
 func TestNoIdentityStillReplacesTheSystemSSHConfigWhereTheHostHasOne(t *testing.T) {
 	env := newFakeEnv()
@@ -172,54 +174,78 @@ func TestSystemSSHConfigIsProducedRegardlessOfSSHMode(t *testing.T) {
 	}
 }
 
-// TestSystemSSHConfigNeedsACoveringBind is the discriminator the design calls
-// for: same fake host (the file genuinely exists at the /usr spelling), but a
-// selection with no @sys — nothing at all covers /usr/etc/ssh/ssh_config, so
-// there is no bind for the ownership refusal to ever occur through, and
-// nothing must be authored. This is what proves the predicate is COVERAGE, not
-// "the host has the file" — TestSystemSSHConfigIsNotInventedWhereTheHostHasNone
-// already covers the other half (host has no file, @sys selected).
+// TestSystemSSHConfigNeedsACoveringBind holds the predicate for a path no
+// grant supplies: the host's ssh BINARY must be inside, through a bind
+// supplying its host path. Same fake host throughout (the host's ssh names
+// /etc/ssh/ssh_config, on the root tmpfs under sys-usr), so the only thing
+// varying is where the host's ssh is.
 func TestSystemSSHConfigNeedsACoveringBind(t *testing.T) {
-	env := newFakeEnv()
-	env.files["/usr/etc/ssh/ssh_config"] = true
-
-	// Validate refuses a policy with no OS runtime at all (a mount at exactly
-	// /usr or /bin) before this predicate is ever reached, so the selection
-	// needs SOME runtime grant to be a legal policy — testRegistry's
-	// "runtime-bin" deliberately does NOT cover /usr, or the test would stop
-	// discriminating anything.
-	p, err := Resolve(testRegistry(), []ProfileName{"@home", "@target-rw", "@parent-ro", "runtime-bin"}, testCtx(), env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := systemSSHConfigMounts(p); len(got) != 0 {
-		t.Fatalf("replaced %q with no profile covering /usr at all — nothing granted "+
-			"the host's file, so nothing needed fixing", got)
+	for _, tc := range []struct {
+		name, bin string
+		want      bool
+	}{
+		{"the host has no ssh", "", false},
+		{"the host's ssh is outside every grant", "/nix/store/x-openssh/bin/ssh", false},
+		// POSITIVE CONTROL: without it every case above would also pass on a
+		// replaceSystemSSHConfig that authors nothing at all.
+		{"the host's ssh is inside the /usr bind", "/usr/bin/ssh", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testCtx()
+			ctx.HostSSHConfigs = []string{"/etc/ssh/ssh_config"}
+			ctx.HostSSHTopConfig = "/etc/ssh/ssh_config"
+			ctx.HostSSHBinary = tc.bin
+			ctx.HostSSHRevoked = []byte{}
+			p, err := Resolve(testRegistry(), []ProfileName{"sys-usr", "@target-rw"}, ctx, newFakeEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := systemSSHConfigMounts(p)
+			if tc.want != (len(got) == 1) {
+				t.Fatalf("HostSSHBinary = %q: system ssh_config mounts = %q, want authored = %v",
+					tc.bin, got, tc.want)
+			}
+			if _, krl := p.Mounts[SystemRevokedHostKeysGuest]; krl != tc.want || p.SystemSSHRevoked != tc.want {
+				t.Errorf("HostSSHBinary = %q: KRL staged = %v, recorded = %v, want %v — the KRL "+
+					"rides on an authored system file", tc.bin, krl, p.SystemSSHRevoked, tc.want)
+			}
+		})
 	}
 }
 
-// TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount is the Kind fail-closed
-// arm issue #40 requires: a tmpfs covering the path grants an
-// EMPTY directory, the same verdict keepHostElement gives a tmpfs elsewhere in
-// this package. No host file is visible through it, so there is no ownership
-// refusal to fix and nothing may be authored — only KindBind may trigger the
-// replacement.
+// TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount: where no grant
+// supplies the file (a tmpfs over /etc, or nothing at all, the root tmpfs),
+// snug authors only a path the host's ssh NAMED. A floor-only
+// SystemSSHConfigPaths entry there is a file nothing reads.
 func TestSystemSSHConfigFailsClosedOnATmpfsCoveringMount(t *testing.T) {
-	env := newFakeEnv()
-	env.files["/usr/etc/ssh/ssh_config"] = true
-
 	reg := testRegistry()
-	// A profile granting a writable tmpfs at /usr instead of a bind — the same
-	// shape @home grants at {home}, aimed at the path this test needs covered.
-	reg["tmpfs-usr"] = &Profile{Name: "tmpfs-usr", Tmpfs: []string{"/usr"}}
-
-	p, err := Resolve(reg, []ProfileName{"@home", "@target-rw", "@parent-ro", "tmpfs-usr"}, testCtx(), env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := systemSSHConfigMounts(p); len(got) != 0 {
-		t.Fatalf("replaced %q under a tmpfs covering mount; a tmpfs has no host content "+
-			"to have an ownership problem with", got)
+	reg["tmpfs-etc"] = &Profile{Name: "tmpfs-etc", Tmpfs: []string{"/etc"}}
+	for _, sel := range [][]ProfileName{
+		{"sys-usr", "@target-rw", "tmpfs-etc"},
+		{"sys-usr", "@target-rw"},
+	} {
+		for _, discovered := range []bool{false, true} {
+			env := newFakeEnv()
+			env.files["/etc/ssh/ssh_config"] = true
+			ctx := testCtx()
+			if discovered {
+				ctx.HostSSHConfigs = []string{"/etc/ssh/ssh_config"}
+				ctx.HostSSHTopConfig = "/etc/ssh/ssh_config"
+			}
+			p, err := Resolve(reg, sel, ctx, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, got := p.Mounts["/etc/ssh/ssh_config"]
+			if got != discovered {
+				t.Errorf("%v, discovered = %v: authored /etc/ssh/ssh_config = %v, want %v",
+					sel, discovered, got, discovered)
+			}
+			if got && slices.ContainsFunc(p.Mounts["/etc/ssh/ssh_config"].From,
+				func(f string) bool { return strings.HasPrefix(f, "replaces:") }) {
+				t.Errorf("%v: From = %q; nothing was displaced", sel, p.Mounts["/etc/ssh/ssh_config"].From)
+			}
+		}
 	}
 }
 
@@ -386,5 +412,359 @@ func TestSystemSSHConfigCandidatesDeduplicates(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("systemSSHConfigCandidates = %q, want %q — the fixed floor in order, then\n"+
 			"each discovered path once", got, want)
+	}
+}
+
+// systemSSHEtcCtx is a host whose ssh reads /etc/ssh/ssh_config, a path no
+// test profile grants, and names a global RevokedHostKeys file.
+func systemSSHEtcCtx() Context {
+	ctx := testCtx()
+	ctx.HostSSHConfigs = []string{"/etc/ssh/ssh_config"}
+	ctx.HostSSHTopConfig = "/etc/ssh/ssh_config"
+	ctx.HostSSHRevoked = []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIg==\n")
+	return ctx
+}
+
+// TestSystemSSHConfigIsNotAuthoredForAnotherBinaryAtTheSSHPath would catch the
+// "is the host's ssh inside" question being asked of the binary's GUEST path,
+// i.e. of whatever is mounted where the host keeps ssh. A bind of /srv/other
+// at /srv/bin puts /srv/other/ssh where the host's /srv/bin/ssh would be, and
+// no bind supplies /srv/bin/ssh itself, so the ssh inside is not the binary
+// whose `ssh -G` produced the carried values, and nothing may be written on
+// its behalf at a path no grant supplies.
+func TestSystemSSHConfigIsNotAuthoredForAnotherBinaryAtTheSSHPath(t *testing.T) {
+	for _, tc := range []struct {
+		name, ro string
+		want     bool
+	}{
+		{"another host directory bound at the ssh's path", "/srv/other:/srv/bin", false},
+		// POSITIVE CONTROL: the same selection with the ssh's own directory
+		// at its own path authors the file, so the case above fails on the
+		// host-path half and not on something else in the fixture.
+		{"the ssh's own directory bound at its own path", "/srv/bin", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv()
+			env.dirs["/srv/other"] = true
+			reg := testRegistry()
+			reg["sshdir"] = &Profile{Name: "sshdir", RO: []string{tc.ro}}
+			// A path no grant supplies, so the binary is the whole trigger.
+			ctx := systemSSHEtcCtx()
+			ctx.HostSSHBinary = "/srv/bin/ssh"
+			ctx.HostSSHRevoked = []byte("revoked\n")
+			p, err := Resolve(reg, []ProfileName{"sys-usr", "@target-rw", "sshdir"}, ctx, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := systemSSHConfigMounts(p)
+			if tc.want != (len(got) == 1) {
+				t.Fatalf("ro = %q, HostSSHBinary = %q: system ssh_config mounts = %q, want authored = %v",
+					tc.ro, ctx.HostSSHBinary, got, tc.want)
+			}
+			if _, krl := p.Mounts[SystemRevokedHostKeysGuest]; krl != tc.want {
+				t.Errorf("ro = %q: KRL staged = %v, want %v", tc.ro, krl, tc.want)
+			}
+		})
+	}
+}
+
+// systemSSHConfigContents is every authored system-wide ssh_config's bytes.
+func systemSSHConfigContents(p *Policy) map[string]string {
+	out := map[string]string{}
+	for _, g := range p.SystemSSHConfigs {
+		out[g] = string(p.Mounts[g].Content)
+	}
+	return out
+}
+
+// TestSystemRevokedHostKeysIsNotStagedWithoutAConfig would catch the KRL
+// being staged on a run that authored no system ssh_config: the binary is
+// inside and the host names a KRL, but no candidate path has a file to
+// replace. A staged file nothing names is a mount nobody asked for, and
+// p.SystemSSHRevoked would make --dry-run claim a revocation list is in force.
+func TestSystemRevokedHostKeysIsNotStagedWithoutAConfig(t *testing.T) {
+	for _, hostHasFile := range []bool{false, true} {
+		env := newFakeEnv()
+		if hostHasFile {
+			env.files["/usr/etc/ssh/ssh_config"] = true
+		}
+		ctx := testCtx()
+		ctx.HostSSHRevoked = []byte("revoked\n")
+		p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, staged := p.Mounts[SystemRevokedHostKeysGuest]
+		// hostHasFile = true is the POSITIVE CONTROL: the same context stages
+		// the KRL once a config is written, so the false case is not passing
+		// on a fixture that never stages anything.
+		if staged != hostHasFile || p.SystemSSHRevoked != hostHasFile {
+			t.Errorf("host has /usr/etc/ssh/ssh_config = %v: KRL staged = %v, recorded = %v, want %v",
+				hostHasFile, staged, p.SystemSSHRevoked, hostHasFile)
+		}
+		if hostHasFile {
+			continue
+		}
+		for _, m := range p.Mounts {
+			if strings.Contains(string(m.Content), SystemRevokedHostKeysGuest) {
+				t.Errorf("%s names %s with no KRL staged", m.Guest, SystemRevokedHostKeysGuest)
+			}
+		}
+	}
+}
+
+// TestSystemRevokedHostKeysStagesTheHostsBytes would catch three ways the
+// staged KRL can differ from the host's: content rewritten, an empty file
+// treated as "none" (an empty KRL is still a file the host's ssh opens, and
+// the line naming it must survive), and nil treated as an empty file (a host
+// naming no KRL getting a RevokedHostKeys line). It also holds that every
+// authored config names the KRL exactly when one is staged.
+func TestSystemRevokedHostKeysStagesTheHostsBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		revoked []byte
+	}{
+		{"nil: the host names none", nil},
+		{"empty: the host names an empty file", []byte{}},
+		{"content", []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIg==\n@not-a-key \x00\xff\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testCtx()
+			ctx.HostSSHRevoked = tc.revoked
+			p, err := Resolve(testRegistry(), testDefaults, ctx, sysSSHProbeEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			configs := systemSSHConfigContents(p)
+			if len(configs) == 0 {
+				t.Fatal("no system ssh_config was authored, so nothing below is measured")
+			}
+			m, staged := p.Mounts[SystemRevokedHostKeysGuest]
+			if want := tc.revoked != nil; staged != want || p.SystemSSHRevoked != want {
+				t.Fatalf("KRL staged = %v, recorded = %v, want %v", staged, p.SystemSSHRevoked, want)
+			}
+			if staged {
+				if m.Kind != KindData || m.Access != AccessRO || !m.Authored {
+					t.Errorf("staged KRL is %v/%v/authored=%v, want an authored read-only data mount",
+						m.Kind, m.Access, m.Authored)
+				}
+				if !bytes.Equal(m.Content, tc.revoked) {
+					t.Errorf("staged KRL = %q, want the host's bytes %q", m.Content, tc.revoked)
+				}
+			}
+			line := "\nRevokedHostKeys " + SystemRevokedHostKeysGuest + "\n"
+			for g, c := range configs {
+				if strings.Contains(c, line) != staged {
+					t.Errorf("%s names the KRL = %v, KRL staged = %v:\n%s",
+						g, strings.Contains(c, line), staged, c)
+				}
+			}
+		})
+	}
+}
+
+// TestSystemSSHConfigDisclosesTheHostBlocksItDoesNotCarry would catch the
+// generated file dropping its statement that per-host Host and Match blocks
+// are not carried. That residual is what a reader of the file inside the
+// sandbox needs to explain why a host they configured narrowly negotiates
+// with the global values instead. It holds the sentence only, as a comment:
+// whether blocks are in fact not carried is TestUnpinnedHostBlockIsNotCarried
+// in test/integration.
+func TestSystemSSHConfigDisclosesTheHostBlocksItDoesNotCarry(t *testing.T) {
+	const want = "# Host or Match pattern matches. Host blocks for other names are not\n" +
+		"# carried, except a pinned host's, in ~/.ssh/config. A block with a\n" +
+		"# negated pattern (Host * !x, Match !host x) matches that name, so\n" +
+		"# here it applies to x too.\n"
+	for _, revoked := range []bool{false, true} {
+		if got := string(SystemSSHConfigFrom(sshValuesFixture(), revoked)); !strings.Contains(got, want) {
+			t.Errorf("revoked = %v: the generated file lacks the Host/Match disclosure:\n%s", revoked, got)
+		}
+	}
+}
+
+// TestSystemSSHConfigIsWrittenForTheHostsSSHBoundElsewhere is the redteam's
+// F2: the host's /usr/bin bound at /opt/sbin puts the host's own ssh inside,
+// at another guest path, and a predicate that also required the guest path to
+// match the host path left the sandbox's ssh reading no system file on a
+// Debian-shaped host, where /etc/ssh is on the root tmpfs: compiled-in
+// defaults, weaker than the host's. It would catch "inside" narrowing back to
+// "inside at its own path".
+func TestSystemSSHConfigIsWrittenForTheHostsSSHBoundElsewhere(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sel  []ProfileName
+		want bool
+	}{
+		{"the host's /usr/bin bound at /opt/sbin", []ProfileName{"runtime-bin", "@target-rw", "sbin"}, true},
+		// CONTROL: the same host without that bind has its ssh nowhere
+		// inside (runtime-bin binds /opt, not /usr/bin), and nothing is
+		// written, so the case above is decided by the bind.
+		{"no bind supplies the host's ssh", []ProfileName{"runtime-bin", "@target-rw"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := testRegistry()
+			reg["sbin"] = &Profile{Name: "sbin", RO: []string{"/usr/bin:/opt/sbin"}}
+			ctx := systemSSHEtcCtx()
+			ctx.HostSSHBinary = "/usr/bin/ssh"
+			p, err := Resolve(reg, tc.sel, ctx, newFakeEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.HostSSHBinaryInside != tc.want {
+				t.Errorf("HostSSHBinaryInside = %v, want %v", p.HostSSHBinaryInside, tc.want)
+			}
+			if _, got := p.Mounts["/etc/ssh/ssh_config"]; got != tc.want {
+				t.Errorf("authored /etc/ssh/ssh_config = %v, want %v (mounts %q)", got, tc.want, sortedGuests(p.Mounts))
+			}
+		})
+	}
+}
+
+// TestSystemSSHConfigReplacesABoundHostFileWhateverTheBinary is the
+// redteam's F3, and the shape this suite's own ssh wrapper hit: the ssh on
+// the host's PATH is a wrapper no grant supplies, while @sys's /usr bind
+// supplies the host's root-owned /usr/etc/ssh/ssh_config. That file is inside
+// whatever the binary does, it reads as 65534, and the /usr/bin/ssh inside
+// dies on it ("Bad owner or permissions"). It would catch the bind branch
+// being gated on the binary again.
+func TestSystemSSHConfigReplacesABoundHostFileWhateverTheBinary(t *testing.T) {
+	ctx := testCtx()
+	ctx.HostSSHBinary = "/home/u/bin/ssh"
+	p, err := Resolve(testRegistry(), testDefaults, ctx, sysSSHProbeEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture is the shape it claims: the binary is not inside.
+	if p.HostSSHBinaryInside {
+		t.Fatalf("control: %s counts as inside, so this measures nothing about the bind branch", ctx.HostSSHBinary)
+	}
+	m, ok := p.Mounts["/usr/etc/ssh/ssh_config"]
+	if !ok || m.Kind != KindData || !m.Authored {
+		t.Fatalf("the bound host file was not replaced (mounts %q); /usr/bin/ssh inside dies on it",
+			sortedGuests(p.Mounts))
+	}
+	if !slices.ContainsFunc(m.From, func(f string) bool { return strings.HasPrefix(f, "replaces:") }) {
+		t.Errorf("From = %q: the replacement does not name the bind it displaced", m.From)
+	}
+}
+
+// SandboxBinary finds the sandbox's ssh the way its PATH will: through @sys's
+// /bin symlink, a profile path entry first, and only an executable file.
+func TestSandboxBinaryFollowsTheSandboxPATH(t *testing.T) {
+	env := newFakeEnv()
+	env.execs["/usr/bin/ssh"] = true
+	env.execs["/opt/tools/bin/ssh"] = true
+	p, err := Resolve(testRegistry(), testDefaults, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, h := p.SandboxBinary(env, "ssh"); g != "/usr/bin/ssh" || h != "/usr/bin/ssh" {
+		t.Errorf("default selection: SandboxBinary = %q, %q; want /usr/bin/ssh twice", g, h)
+	}
+	if p.SandboxSSHGuest != "/usr/bin/ssh" || p.SandboxSSHHost != "/usr/bin/ssh" {
+		t.Errorf("Resolve recorded %q, %q", p.SandboxSSHGuest, p.SandboxSSHHost)
+	}
+	// envy puts /opt/tools/bin on PATH ahead of the base.
+	p, err = Resolve(testRegistry(), append(append([]ProfileName{}, testDefaults...), "envy"), testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, h := p.SandboxBinary(env, "ssh"); g != "/opt/tools/bin/ssh" || h != "/opt/tools/bin/ssh" {
+		t.Errorf("with a profile path entry: SandboxBinary = %q, %q; want /opt/tools/bin/ssh", g, h)
+	}
+	// Not executable: a plain file is not what PATH runs.
+	env = newFakeEnv()
+	env.files["/usr/bin/ssh"] = true
+	p, err = Resolve(testRegistry(), testDefaults, testCtx(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, h := p.SandboxBinary(env, "ssh"); g != "" || h != "" {
+		t.Errorf("non-executable file: SandboxBinary = %q, %q; want none", g, h)
+	}
+}
+
+// TestAnIncludedSSHConfigGetsNoNodeOnATmpfs is the redteam's F6. The chain
+// `ssh -G -v` prints names every file read, Include'd ones among them, and a
+// file Include'd from the top-level one may also be named ssh_config. Where
+// no grant supplies it, a written copy is a node nothing reads: the generated
+// top-level file has no Include line. It would catch the tmpfs arm writing
+// every discovered path again instead of the top-level one alone.
+func TestAnIncludedSSHConfigGetsNoNodeOnATmpfs(t *testing.T) {
+	const top, inc = "/etc/ssh/ssh_config", "/etc/ssh/inc/ssh_config"
+	for _, tc := range []struct {
+		name          string
+		topConfig     string
+		wantTop, want bool
+	}{
+		{"the top-level file is the system one", top, true, false},
+		// CONTROL: the same chain with the other file as top-level writes
+		// that one, so the case above is decided by HostSSHTopConfig and not
+		// by the second path being refused for some other reason.
+		{"the top-level file is the other one", inc, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testCtx()
+			ctx.HostSSHConfigs = []string{top, inc}
+			ctx.HostSSHTopConfig = tc.topConfig
+			p, err := Resolve(testRegistry(), []ProfileName{"sys-usr", "@target-rw"}, ctx, newFakeEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, gotTop := p.Mounts[top]
+			_, gotInc := p.Mounts[inc]
+			if gotTop != tc.wantTop || gotInc != tc.want {
+				t.Errorf("written: %s = %v, %s = %v; want %v, %v", top, gotTop, inc, gotInc, tc.wantTop, tc.want)
+			}
+		})
+	}
+}
+
+// TestAProfileMountAtTheStagedRevokedHostKeysRefuses is the redteam's F8. A
+// profile bind at /snug/revoked_host_keys was refused only on a run where
+// snug staged nothing there; where the host named a KRL, snug's copy
+// displaced the bind first and the refusal never saw it, so the verdict on a
+// profile depended on the host's ssh configuration. It would catch that again
+// for a read-only or writable bind, with or without a host KRL. The staged
+// case must also say what the path is for.
+func TestAProfileMountAtTheStagedRevokedHostKeysRefuses(t *testing.T) {
+	for _, access := range []string{"ro", "rw"} {
+		for _, staged := range []bool{false, true} {
+			env := sysSSHProbeEnv()
+			env.files["/srv/krl"] = true
+			ctx := testCtx()
+			if staged {
+				ctx.HostSSHRevoked = []byte("revoked\n")
+			}
+			// POSITIVE CONTROL: without the bind this context stages the KRL
+			// exactly when staged says so.
+			p, err := Resolve(testRegistry(), testDefaults, ctx, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.SystemSSHRevoked != staged {
+				t.Fatalf("control: KRL staged = %v, want %v", p.SystemSSHRevoked, staged)
+			}
+
+			reg := testRegistry()
+			bind := &Profile{Name: "intruder"}
+			if access == "ro" {
+				bind.RO = []string{"/srv/krl:" + SystemRevokedHostKeysGuest}
+			} else {
+				bind.RW = []string{"/srv/krl:" + SystemRevokedHostKeysGuest}
+			}
+			reg["intruder"] = bind
+			_, err = Resolve(reg, append(append([]ProfileName{}, testDefaults...), "intruder"), ctx, env)
+			if err == nil {
+				t.Errorf("%s bind, host KRL = %v: a profile mount at %s was ACCEPTED",
+					access, staged, SystemRevokedHostKeysGuest)
+				continue
+			}
+			if !strings.Contains(err.Error(), SystemRevokedHostKeysGuest) ||
+				!strings.Contains(err.Error(), "snug stages this host's RevokedHostKeys file here") {
+				t.Errorf("%s bind, host KRL = %v: refusal does not name the path and what it is for: %v",
+					access, staged, err)
+			}
+		}
 	}
 }

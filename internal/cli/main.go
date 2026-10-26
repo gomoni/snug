@@ -657,15 +657,15 @@ func run(cfg config) int {
 		command = []string{shell}
 	}
 
-	sshConfigs, sshValues, err := probeSSHConfig(home, notes)
-	if err != nil {
-		return refuse(cfg, exitPolicy, err)
-	}
+	// Both probes ask the host PATH's ssh. Their refusals are HELD, not
+	// returned: the sandbox may run a different ssh, and then its answers
+	// decide (resolveSandboxSSH).
+	probe, probeErr := probeSSHConfig(home, notes)
 	var pin sshPin
-	if host, pinned := identitySSHPin(reg, selected); pinned {
-		if pin, err = probeSSHPin(home, host); err != nil {
-			return refuse(cfg, exitPolicy, err)
-		}
+	var pinErr error
+	pinHost, pinned := identitySSHPin(reg, selected)
+	if pinned {
+		pin, pinErr = probeSSHPin(home, pinHost)
 	}
 
 	tmpfsSizeBytes, _ := tmpfsSizeSetting()
@@ -688,8 +688,13 @@ func run(cfg config) int {
 		// Asked once per run, before Resolve, because a pure resolver may not
 		// run a host binary. See probeSSHConfig for what the probe costs and
 		// why the fixed list is still the floor (issues #42, #43).
-		HostSSHConfigs: sshConfigs,
-		HostSSHConfig:  sshValues,
+		HostSSHConfigs:     probe.chain,
+		HostSSHTopConfig:   probe.top,
+		HostSSHConfig:      probe.values,
+		HostSSHBinary:      probe.binary,
+		HostSSHRevoked:     probe.revoked,
+		HostSSHRevokedPath: probe.revokedPath,
+		HostPathSSH:        probe.binary,
 		// The pinned host's own half of the same question (#688).
 		HostSSHPinConfig: pin.values,
 		RevokedHostKeys:  pin.revoked,
@@ -709,6 +714,17 @@ func run(cfg config) int {
 	}
 
 	pol, err := policy.Resolve(reg, selected, ctx, env)
+	if err == nil {
+		var serr error
+		if pol, err, serr = resolveSandboxSSH(reg, selected, ctx, env, pol, home, pinHost, pinned,
+			heldSSHErrs{probe: probeErr, pin: pinErr}, notes); serr != nil {
+			return refuse(cfg, exitPolicy, serr)
+		}
+	} else if held := errors.Join(probeErr, pinErr); held != nil {
+		// A refused selection never learns its sandbox's ssh; the probe
+		// refusal comes first, as it did when the probes ran before Resolve.
+		return refuse(cfg, exitPolicy, held)
+	}
 	if err != nil {
 		// Resolve's contract (see its doc comment): a refusal of the assembled
 		// policy returns the policy it refused ALONGSIDE the error, precisely so --dry-run can

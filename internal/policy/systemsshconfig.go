@@ -20,10 +20,12 @@ import (
 // host's ssh which files it reads, and whatever it names joins this list for
 // the run.
 //
-// So this list is what remains when the question cannot be asked — no ssh on
-// the host, a probe that times out, output the parser does not recognise —
-// and a host in that state is exactly as well off as it was before #42, which
-// is the fail-closed direction. See systemSSHConfigCandidates.
+// So this list is what remains when the question gets no usable answer —
+// output the parser does not recognise — and a host in that state is exactly
+// as well off as it was before #42, which is the fail-closed direction. A
+// floor entry is authored only where a bind supplies a host file at it (see
+// replaceSystemSSHConfig), and nothing is authored on a host with no ssh. See
+// systemSSHConfigCandidates.
 var SystemSSHConfigPaths = []string{
 	"/etc/ssh/ssh_config",
 	"/usr/etc/ssh/ssh_config",
@@ -106,60 +108,86 @@ func underPath(dir, p string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
-// replaceSystemSSHConfig emits SystemSSHConfigFrom(ctx.HostSSHConfig) at each guest path in
-// SystemSSHConfigPaths whose deepest covering mount is a KindBind AND whose
-// host side actually has a file there. See SystemSSHConfig for the WHY; this
-// is the WHEN — decided in issue #40, restated here in full because the
-// two halves of the condition each rule out a real, measured failure:
+// replaceSystemSSHConfig authors SystemSSHConfigFrom(ctx.HostSSHConfig, …) at
+// the guest paths the sandbox's ssh reads. ctx.HostSSHBinary is that ssh, as
+// the caller determined it from a previous Resolve's SandboxSSHHost (see its
+// doc); the values are its `ssh -G`. See SystemSSHConfigFrom for the WHY;
+// this is the WHEN.
 //
-//   - Coverage (cov.Kind == KindBind) is the FAILURE CONDITION ITSELF: the
-//     ownership refusal can only happen when the host's file is actually
-//     inside the sandbox, which happens only when some bind supplies it.
-//     Emitting unconditionally would create /etc/ssh in every sandbox on a
-//     Debian/Fedora-shaped host, where @sys does not grant /etc/ssh at all
-//     and ssh already works — a node nobody asked for, and (§1) it would also
-//     have no covering mount to name after `replaces:`.
-//   - The host env.Stat is load-bearing, not decorative: measured with bwrap,
-//     `--ro-bind-data` at a path that does not exist inside a `--ro-bind`
-//     fails the WHOLE SANDBOX with "Read-only file system", rc=1. Dropping
-//     just the Stat would break every sandbox on a host that binds /etc but
-//     has no ssh_config under it.
+// Two triggers, judged per candidate path by its deepest covering mount:
 //
-// Every other Kind fails closed: KindTmpfs covers with an empty directory (no
-// host file, no refusal, nothing to fix — the same verdict keepHostElement
-// gives a tmpfs); KindSymlink cannot be resolved without a second rule, so it
-// is left alone; KindData/KindProc/KindDev cannot occur at these paths. A
-// future Kind added to the enum skips here until someone decides — the
-// sandbox is no worse off than today in every skipped case.
+//   - KindBind whose host side env.Stat finds: author, whether or not the
+//     sandbox has an ssh on its PATH. The host's root-owned file is inside, and
+//     whatever ssh the sandbox runs would refuse it. This never creates a
+//     node: the bind already put a file there. The Stat is load-bearing,
+//     measured with bwrap: `--ro-bind-data` at a path that does not exist
+//     inside a `--ro-bind` fails the WHOLE SANDBOX with "Read-only file
+//     system", rc=1, so a host that binds /etc but has no ssh_config under it
+//     would break. The binary is deliberately not required here: any ssh
+//     run inside, from any source, would die on the host's file.
+//   - KindTmpfs, or no cover at all (the root tmpfs): author only when
+//     ctx.HostSSHBinary is set (the sandbox's PATH finds an ssh) and some
+//     KindBind in the sandbox view supplies it, AND only at
+//     ctx.HostSSHTopConfig, the top-level file that ssh opens itself. Never a
+//     floor-only SystemSSHConfigPaths entry, and never another discovered
+//     file named ssh_config: an Include'd one is read only through the
+//     top-level file, whose replacement has no Include line, so nothing
+//     inside would read a node written there. An ssh that is inside reads a
+//     system-wide file, and with none it runs on its compiled-in defaults,
+//     which on a crypto-policy host are weaker than the host's. bwrap creates the parent directories (the skeleton --dir pass on
+//     the root tmpfs, auto-created inside a tmpfs). This is the Debian/Fedora
+//     shape: @sys does not grant /etc/ssh, so /etc/ssh/ssh_config is on the
+//     root tmpfs, and the sandbox's ssh, from the /usr bind, reads snug's
+//     file there instead of nothing. NOT measured on a Debian or Fedora host.
+//   - Anything else: skip. KindSymlink cannot be resolved without a second
+//     rule; KindData/KindProc/KindDev cannot occur at these paths. A future
+//     Kind added to the enum skips here until someone decides.
+//
+// When at least one file was authored and ctx.HostSSHRevoked is non-nil, the
+// host's global RevokedHostKeys file is staged at SystemRevokedHostKeysGuest
+// and every authored file names it. Which arm wrote each path is recorded
+// (SystemSSHReplaced) for --dry-run.
 //
 // Runs AFTER every profile mount is folded (so coverage sees the final set)
 // and BEFORE applyEnvClaims (so sanitise sees the final mount set).
 func replaceSystemSSHConfig(p *Policy, ctx Context, env Environ) {
-	cfg := SystemSSHConfigFrom(ctx.HostSSHConfig)
+	// Runs before any graft can exist (Resolve, never Tier C's post-Resolve
+	// Policy.Graft), and this is a question about the PAYLOAD's own view
+	// either way — the sandbox's, explicitly.
+	view := p.SandboxView()
+	p.HostSSHBinary = ctx.HostSSHBinary
+	p.HostSSHBinaryInside = sshBinaryInside(view, ctx.HostSSHBinary)
+	revoked := ctx.HostSSHRevoked != nil
+	cfg := SystemSSHConfigFrom(ctx.HostSSHConfig, revoked)
 	for _, guest := range systemSSHConfigCandidates(ctx) {
-		// Runs before any graft can exist (Resolve, never Tier C's post-Resolve
-		// Policy.Graft), and this is a question about the PAYLOAD's own view
-		// either way — the sandbox's, explicitly.
-		cov, ok := p.SandboxView().coveringMount(guest)
-		if !ok || cov.Kind != KindBind {
-			continue
-		}
-		// What the covering bind actually supplies at this exact path — the
-		// honest spelling of "the file the sandbox will see here", which for
-		// the case that occurs (@sys binds /usr at /usr) reduces to
-		// env.Stat(guest).
-		host := cov.Host + strings.TrimPrefix(guest, cov.Guest)
-		if _, err := env.Stat(host); err != nil {
-			continue
-		}
+		cov, ok := view.coveringMount(guest)
 		from := []string{"(snug)"}
-		// Only annotate when the covering mount is an ANCESTOR, not an exact
-		// match at this guest path: an exact match is handled by Replace
-		// itself (it finds the existing p.Mounts[guest] and appends its own
-		// replaces: note), and annotating both here and there would say it
-		// twice.
-		if cov.Guest != guest {
-			from = append(from, "replaces:"+strings.Join(cov.From, "+"))
+		replaced := true
+		switch {
+		case ok && cov.Kind == KindBind:
+			// What the covering bind actually supplies at this exact path — the
+			// honest spelling of "the file the sandbox will see here", which for
+			// the case that occurs (@sys binds /usr at /usr) reduces to
+			// env.Stat(guest).
+			host := cov.Host + strings.TrimPrefix(guest, cov.Guest)
+			if _, err := env.Stat(host); err != nil {
+				continue
+			}
+			// Only annotate when the covering mount is an ANCESTOR, not an exact
+			// match at this guest path: an exact match is handled by Replace
+			// itself (it finds the existing p.Mounts[guest] and appends its own
+			// replaces: note), and annotating both here and there would say it
+			// twice.
+			if cov.Guest != guest {
+				from = append(from, "replaces:"+strings.Join(cov.From, "+"))
+			}
+		case !ok || cov.Kind == KindTmpfs:
+			if ctx.HostSSHBinary == "" || !p.HostSSHBinaryInside || guest != ctx.HostSSHTopConfig {
+				continue
+			}
+			replaced = false
+		default:
+			continue
 		}
 		p.Replace(Mount{
 			Guest:   guest,
@@ -168,12 +196,104 @@ func replaceSystemSSHConfig(p *Policy, ctx Context, env Environ) {
 			Content: cfg,
 			From:    from,
 		})
-		// Recorded rather than re-derived. --dry-run's SSH block used to walk
-		// SystemSSHConfigPaths itself, which stopped being the whole set the
-		// moment discovery landed: a run that replaced a discovered path would
-		// have shown the reader nothing at all. The screen reads what Resolve
-		// DECIDED (issue #42).
+		// Recorded rather than re-derived: the screen reads what Resolve
+		// DECIDED, because the set of paths is the floor plus whatever this
+		// host's ssh named.
 		p.SystemSSHConfigs = append(p.SystemSSHConfigs, guest)
+		if replaced {
+			p.SystemSSHReplaced = append(p.SystemSSHReplaced, guest)
+		}
 		p.SystemSSHCarried = carriedSSHKeys(ctx.HostSSHConfig)
 	}
+	if revoked && len(p.SystemSSHConfigs) > 0 {
+		p.Replace(Mount{
+			Guest:   SystemRevokedHostKeysGuest,
+			Kind:    KindData,
+			Access:  AccessRO,
+			Content: ctx.HostSSHRevoked,
+			From:    []string{"(snug)"},
+		})
+		// Replace keeps a profile's own mount here (it is inside SnugDir), and
+		// Validate refuses that mount; only snug's copy is a staged KRL.
+		p.SystemSSHRevoked = p.Mounts[SystemRevokedHostKeysGuest].Authored
+		if p.SystemSSHRevoked {
+			p.SystemSSHRevokedFrom = ctx.HostSSHRevokedPath
+		}
+	}
+}
+
+// SandboxBinary returns where the sandbox's PATH finds name: the guest path
+// the lookup lands on, and the host file behind it with symlinks resolved.
+// Both are empty when no PATH entry holds an executable regular file of that
+// name. It reads the final PATH, so call it on a resolved Policy.
+//
+// Each PATH entry is resolved in the SANDBOX's view, following snug's own
+// symlink grants (@sys's /bin -> usr/bin) and host symlinks under a bind the
+// way the kernel will inside (walkLinks). A directory supplied by a bind is
+// looked up through the host; anywhere else, only a bind AT dir/name can hold
+// a file, because a tmpfs is empty and the root tmpfs holds only what snug
+// put there. A file a payload writes into a writable PATH directory later is
+// not seen: this answers what is there when the sandbox starts.
+func (p *Policy) SandboxBinary(env Environ, name string) (guest, host string) {
+	path, _ := p.EnvValue("PATH")
+	view := p.SandboxView()
+	for _, dir := range strings.Split(path, ":") {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		cand := ""
+		if m, at, _, end, hostAt := view.walkLinks(env, dir); end == walkLanded && at != "" && hostAt != "" &&
+			m.Kind == KindBind {
+			// at is the walk's link-free end, so the walk below has one
+			// component left to resolve. A file standing where the directory
+			// should be fails there (ENOTDIR) and the Stat below refuses it.
+			cand = filepath.Join(at, name)
+		}
+		if cand == "" {
+			cand = filepath.Join(filepath.Clean(dir), name)
+			if m, ok := view.Mounts[cand]; !ok || m.Kind != KindBind {
+				continue
+			}
+		}
+		m, _, _, end, hostAt := view.walkLinks(env, cand)
+		if end != walkLanded || m.Kind != KindBind || hostAt == "" {
+			continue
+		}
+		fi, err := env.Stat(hostAt)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		if real, err := env.EvalSymlinks(hostAt); err == nil {
+			hostAt = real
+		}
+		return filepath.Join(filepath.Clean(dir), name), hostAt
+	}
+	return "", ""
+}
+
+// sshBinaryInside reports whether some KindBind in view supplies the host
+// path bin, at any guest path. It does not ask whether a deeper mount shadows
+// that part of the bind; SandboxBinary, which the caller checks bin against,
+// does.
+func sshBinaryInside(view View, bin string) bool {
+	if bin == "" {
+		return false
+	}
+	for _, m := range view.Mounts {
+		if m.Kind == KindBind && m.Host != "" && underPath(m.Host, bin) {
+			return true
+		}
+	}
+	return false
+}
+
+// SandboxWritesHost reports whether host is at or under the host side of a
+// writable bind in the sandbox's view: a file this run's payload can write.
+func (p *Policy) SandboxWritesHost(host string) bool {
+	for _, h := range writableBindHosts(p.Mounts) {
+		if underPath(h, host) {
+			return true
+		}
+	}
+	return false
 }

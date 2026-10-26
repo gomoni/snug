@@ -286,7 +286,7 @@ type Context struct {
 
 	// HostSSHConfigs are the system-wide ssh_config paths this host's ssh
 	// actually reads, discovered by the caller by asking ssh itself
-	// (`ssh -G -v`, whose debug output names every file in the chain) rather
+	// (`ssh -G -vvv`, whose debug output names every file in the chain) rather
 	// than by snug guessing spellings. It is ADDITIVE to
 	// SystemSSHConfigPaths, never a replacement for it: a host with no ssh
 	// binary, a probe that times out, or output in a shape the parser does
@@ -312,6 +312,42 @@ type Context struct {
 	// resolver's job. Only keys in SSHKeyWhitelist ever appear here, every one
 	// the host's ssh printed (#688 F6). Empty only when the host has no ssh.
 	HostSSHConfig SSHValues
+
+	// HostSSHBinary is the host file of the SANDBOX's ssh, symlinks
+	// resolved, and the binary whose `ssh -G` produced HostSSHConfigs,
+	// HostSSHTopConfig, HostSSHConfig and HostSSHRevoked. Empty when the
+	// sandbox's PATH finds no ssh. replaceSystemSSHConfig authors a
+	// system-wide ssh_config where no grant supplies one only when this is
+	// set and some bind puts it inside.
+	//
+	// Resolve cannot know the sandbox's ssh before it has the final PATH, so
+	// the caller asserts it: it resolves once, reads Policy.SandboxSSHHost,
+	// and when that differs from what it passed here, probes that binary and
+	// resolves again (internal/cli). A Policy whose SandboxSSHHost differs
+	// from the HostSSHBinary it was resolved with carries values for the
+	// wrong binary and must not run.
+	HostSSHBinary string
+
+	// HostSSHTopConfig is the top-level system-wide ssh_config in the chain
+	// HostSSHConfigs came from — the file ssh opens itself, not one an Include
+	// pulled in. Where no grant supplies a file, it is the only path
+	// replaceSystemSSHConfig writes. Empty when the probe found none.
+	HostSSHTopConfig string
+
+	// HostPathSSH is the host file of the first ssh on the HOST user's PATH,
+	// symlinks resolved, for --dry-run to name when it is not the sandbox's.
+	HostPathSSH string
+
+	// HostSSHRevoked is the content of the file this host's ssh names as
+	// RevokedHostKeys in its global configuration (`ssh -G` for a name no
+	// Host block matches), staged at SystemRevokedHostKeysGuest when a system
+	// ssh_config is authored. Nil when it names none; a non-nil empty slice is
+	// an empty file.
+	HostSSHRevoked []byte
+
+	// HostSSHRevokedPath is the host file HostSSHRevoked was read from. It is
+	// recorded for --dry-run only and never written into a generated file.
+	HostSSHRevokedPath string
 
 	// HostSSHPinConfig is the same extraction for the pinned identity.ssh.host
 	// (`ssh -G <host>`), rendered into the generated ~/.ssh/config's Host block,

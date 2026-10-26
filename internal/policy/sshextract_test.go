@@ -20,7 +20,7 @@ func sshValuesFixture() SSHValues {
 }
 
 func TestSystemSSHConfigCarriesTheHostsAlgorithmPolicy(t *testing.T) {
-	got := string(SystemSSHConfigFrom(sshValuesFixture()))
+	got := string(SystemSSHConfigFrom(sshValuesFixture(), false))
 
 	for _, want := range []string{
 		"RequiredRSASize 2048",
@@ -59,7 +59,7 @@ func TestSystemSSHConfigCarriesOnlyWhitelistedKeys(t *testing.T) {
 	} {
 		v[k] = "definitely-not-carried"
 	}
-	got := string(SystemSSHConfigFrom(v))
+	got := string(SystemSSHConfigFrom(v, false))
 	for _, line := range directiveLines(got) {
 		key := strings.ToLower(strings.Fields(line)[0])
 		if !slices.Contains(SSHKeyWhitelist, key) {
@@ -90,14 +90,14 @@ func TestSystemSSHConfigDropsAValueItCannotWriteSafely(t *testing.T) {
 	}
 	for name, val := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := string(SystemSSHConfigFrom(SSHValues{"requiredrsasize": val}))
+			got := string(SystemSSHConfigFrom(SSHValues{"requiredrsasize": val}, false))
 			for _, line := range directiveLines(got) {
 				t.Fatalf("carried %q from a value with %s:\n%s", line, name, got)
 			}
 			// POSITIVE CONTROL: the same renderer, one good value, must still
 			// write it — otherwise this test would pass on a renderer that
 			// carries nothing at all.
-			ok := string(SystemSSHConfigFrom(SSHValues{"requiredrsasize": val, "ciphers": "aes256-ctr"}))
+			ok := string(SystemSSHConfigFrom(SSHValues{"requiredrsasize": val, "ciphers": "aes256-ctr"}, false))
 			if !strings.Contains(ok, "Ciphers aes256-ctr") {
 				t.Fatalf("the control value was dropped too, so this case proves nothing:\n%s", ok)
 			}
@@ -109,7 +109,7 @@ func TestSystemSSHConfigDropsAValueItCannotWriteSafely(t *testing.T) {
 // with no ssh to ask gets: every whitelisted value is carried otherwise (#688
 // F6).
 func TestSystemSSHConfigWithNothingToCarryIsCommentOnly(t *testing.T) {
-	got := string(SystemSSHConfigFrom(nil))
+	got := string(SystemSSHConfigFrom(nil, false))
 	if d := directiveLines(got); len(d) != 0 {
 		t.Fatalf("the generated file carries %q with nothing extracted", d)
 	}
@@ -126,7 +126,7 @@ func TestSystemSSHConfigWithNothingToCarryIsCommentOnly(t *testing.T) {
 func TestCarriedSSHKeysMatchesTheFile(t *testing.T) {
 	v := sshValuesFixture()
 	v["kexalgorithms"] = "not a list" // dropped by the renderer
-	got := string(SystemSSHConfigFrom(v))
+	got := string(SystemSSHConfigFrom(v, false))
 
 	var written []string
 	for _, line := range directiveLines(got) {
@@ -173,12 +173,24 @@ func TestStrictHostKeyCheckingCarriesButNeverLoosensThePin(t *testing.T) {
 			t.Errorf("SSHValueOK admits %q", v)
 		}
 	}
-	if sys := string(SystemSSHConfigFrom(SSHValues{"stricthostkeychecking": "true"})); !strings.Contains(sys, "\nStrictHostKeyChecking true\n") {
+	if sys := string(SystemSSHConfigFrom(SSHValues{"stricthostkeychecking": "true"}, false)); !strings.Contains(sys, "\nStrictHostKeyChecking true\n") {
 		t.Errorf("system file does not carry the host's StrictHostKeyChecking:\n%s", sys)
 	}
 	id := &Identity{SSH: IdentitySSH{Agent: SSHAgentProxy}}
 	cfg := string(id.SSHConfig("/home/u", SSHValues{"stricthostkeychecking": "false"}, false))
 	if strings.Count(cfg, "StrictHostKeyChecking") != 1 || !strings.Contains(cfg, "\tStrictHostKeyChecking yes\n") {
 		t.Errorf("pin block does not hold StrictHostKeyChecking yes alone:\n%s", cfg)
+	}
+}
+
+// The global KRL line names snug's staged copy, never a host path, and only
+// when one is staged.
+func TestSystemSSHConfigNamesTheStagedRevokedHostKeys(t *testing.T) {
+	want := "\nRevokedHostKeys " + SystemRevokedHostKeysGuest + "\n"
+	if got := string(SystemSSHConfigFrom(sshValuesFixture(), true)); !strings.Contains(got, want) {
+		t.Errorf("revoked = true: the generated file does not contain %q:\n%s", want, got)
+	}
+	if got := string(SystemSSHConfigFrom(sshValuesFixture(), false)); strings.Contains(got, "\nRevokedHostKeys") {
+		t.Errorf("revoked = false: the generated file names a RevokedHostKeys file:\n%s", got)
 	}
 }

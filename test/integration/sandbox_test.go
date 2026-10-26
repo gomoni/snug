@@ -120,6 +120,9 @@ var (
 	// realSSH is the host's ssh, behind the wrapper pinSuiteKnownHosts puts
 	// first on PATH. Empty when the host has none.
 	realSSH string
+
+	// suiteSSHBin is the directory holding that wrapper.
+	suiteSSHBin string
 )
 
 // cmdTimeout bounds every snug invocation. Nothing in this suite should take
@@ -279,6 +282,9 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	os.RemoveAll(dir)
+	if suiteSSHBin != "" {
+		os.RemoveAll(filepath.Dir(suiteSSHBin))
+	}
 	os.Exit(code)
 }
 
@@ -287,20 +293,47 @@ func TestMain(m *testing.M) {
 // UserKnownHostsFile=/dev/null itself.
 const suiteGitHubHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcgUwK96NCQlqjPZlPkFyqH6IrvXdrKEmVT0asbOPTC"
 
-// pinSuiteKnownHosts puts an `ssh` first on this process's PATH that runs the
-// real one with UserKnownHostsFile pointing at suiteKnownHosts.
+// suitePinHost is a pin only the suite's known_hosts knows, for
+// TestTheSuitesSSHIsTheSandboxsAndPlainInside.
+const suitePinHost = "snug-suite-pin.invalid"
+
+// suiteKnownHostsEnv names the suite's known_hosts file to the suite's ssh
+// wrapper (pinSuiteKnownHosts). Set in this process's environment, so snug
+// and the ssh probes it runs on the host inherit it; a sandbox's environment
+// starts empty, so it is never set inside one.
+const suiteKnownHostsEnv = "SNUG_SUITE_KNOWN_HOSTS"
+
+// suiteSSHProfile is the profile that makes the suite's ssh wrapper the
+// sandbox's ssh: written into every writeProfile/writeProfiles config and
+// added to its defaults (suiteConfig). Empty on a host with no ssh.
+var suiteSSHProfile string
+
+// pinSuiteKnownHosts writes the suite's ssh wrapper and puts it first on this
+// process's PATH. With suiteKnownHostsEnv set, the wrapper runs the real ssh
+// with UserKnownHostsFile pointing at suiteKnownHosts and GlobalKnownHostsFile
+// at an empty file; without it, the real ssh untouched.
 //
 // snug refuses a pinned identity.ssh whose host has no known_hosts entry
-// (#688), and it learns which files to read from `ssh -G`, which takes the
-// user's files from getpwuid rather than $HOME, so neither a fixture home nor
-// HOME can redirect it. Without this the suite would pass on a machine whose
-// real ~/.ssh/known_hosts happens to hold github.com and refuse every pinned
-// test on one that does not. A -o on the command line wins over every config
-// file, so the wrapper changes that one setting and nothing else. A test that
-// asserts the refusal sets its own PATH.
+// (#688), and it learns which files to read by running `ssh -G`, which takes
+// the user's files from getpwuid rather than $HOME, so neither a fixture home
+// nor HOME can redirect it. snug asks the ssh the SANDBOX's PATH runs, not
+// the first one on the host's PATH, so the wrapper is also made the sandbox's
+// ssh: suiteSSHProfile grants its directory read-only and puts it first on
+// the sandbox's PATH, and suiteConfig adds that profile to every
+// writeProfile/writeProfiles config's defaults. snug's probe runs on the host
+// with this process's environment and sees suiteKnownHostsEnv; the payload's
+// ssh inside sees no such variable, so inside the wrapper is plain ssh and
+// what it checks keys against is the known_hosts snug generated.
+//
+// A selection that bypasses that config (emptyConfig, --no-defaults, a
+// test's own config.toml, the login fixture) asks whatever ssh its own PATH
+// finds, and for a pin that is the real ~/.ssh/known_hosts: such a pinned
+// test names suite-ssh with -p. A test that asserts a known_hosts refusal brings its own wrapper
+// (knownHostsSSH).
 func pinSuiteKnownHosts(dir string) error {
 	suiteKnownHosts = filepath.Join(dir, "known_hosts")
-	if err := os.WriteFile(suiteKnownHosts, []byte("github.com "+suiteGitHubHostKey+"\n"), 0o600); err != nil {
+	kh := "github.com " + suiteGitHubHostKey + "\n" + suitePinHost + " " + suiteGitHubHostKey + "\n"
+	if err := os.WriteFile(suiteKnownHosts, []byte(kh), 0o600); err != nil {
 		return err
 	}
 	ssh, err := exec.LookPath("ssh")
@@ -308,11 +341,59 @@ func pinSuiteKnownHosts(dir string) error {
 		return nil // no ssh: snug reads OpenSSH's default locations, and no test runs ssh
 	}
 	realSSH = ssh
-	bin, err := sshWrapper(dir, suiteKnownHosts)
-	if err != nil {
+	// Not under dir, which is in /tmp: a test that grants /tmp (shared-tmp)
+	// would then find suite-ssh's bind inside its grant and be refused for
+	// masking. The user cache directory is a path no test grants.
+	root := ""
+	if cache, err := os.UserCacheDir(); err == nil && os.MkdirAll(cache, 0o755) == nil {
+		root, _ = os.MkdirTemp(cache, "snug-integration-ssh")
+	}
+	if root == "" {
+		root = dir
+	}
+	bin := filepath.Join(root, "suite-ssh")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		return err
+	}
+	global := filepath.Join(dir, "suite-global-known-hosts")
+	if err := os.WriteFile(global, nil, 0o600); err != nil {
+		return err
+	}
+	wrapper := "#!/bin/sh\n" +
+		"if [ -n \"$" + suiteKnownHostsEnv + "\" ]; then\n" +
+		"\texec " + realSSH + " -o UserKnownHostsFile=\"$" + suiteKnownHostsEnv + "\" -o GlobalKnownHostsFile=" + global + " \"$@\"\n" +
+		"fi\n" +
+		"exec " + realSSH + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(wrapper), 0o755); err != nil {
+		return err
+	}
+	suiteSSHBin = bin
+	suiteSSHProfile = sandboxSSHProfile("suite-ssh", bin)
+	if err := os.Setenv(suiteKnownHostsEnv, suiteKnownHosts); err != nil {
 		return err
 	}
 	return os.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// suiteConfig writes the suite's ssh profile into cfg's profiles.d and a
+// config.toml whose defaults are snug's own plus that profile. See
+// pinSuiteKnownHosts.
+func suiteConfig(t *testing.T, cfg string) {
+	t.Helper()
+	if suiteSSHProfile == "" {
+		return
+	}
+	pd := filepath.Join(cfg, "snug", "profiles.d")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pd, "suite-ssh.toml"), []byte(suiteSSHProfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "defaults = [\"@sys\", \"@home\", \"@target-rw\", \"suite-ssh\"]\n"
+	if err := os.WriteFile(filepath.Join(cfg, "snug", "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // sshWrapper writes dir/ssh-wrapper/ssh, running realSSH with

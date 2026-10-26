@@ -146,8 +146,8 @@ profile claim puts an empty tmpfs at /snug/engine, inside snug's own namespace /
        writable bind, or a mount AT one of the directories snug creates — either
        displaces something snug put there or escapes --remount-ro / and becomes a
        writable directory ahead of /usr/bin on the PATH snug hands over.
-       Stage the FILE, never the directory:
-         ro = ["/host/path/tool:/snug/bin/tool"]
+       Grant it at a path outside /snug, or remove the grant: /snug/engine
+       is snug's to write, whether or not this run writes it.
 
 == grant_at_legacy_snugdir ==
 profile claim puts a bind of /opt at /run/snug/bin/tool, but snug's own paths moved from /run/snug to /snug

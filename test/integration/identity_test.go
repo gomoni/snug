@@ -226,6 +226,7 @@ func writeProfile(t *testing.T, toml string, extraEnv ...string) []string {
 	if err := os.WriteFile(filepath.Join(pd, "p.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	suiteConfig(t, cfg)
 	return baseEnv(append([]string{"XDG_CONFIG_HOME=" + cfg}, extraEnv...)...)
 }
 
@@ -235,6 +236,22 @@ func writeProfile(t *testing.T, toml string, extraEnv ...string) []string {
 // rather than clobber one another the way two independent XDG_CONFIG_HOME
 // values would (os/exec keeps only the LAST duplicate env entry).
 func writeProfiles(t *testing.T, tomls map[string]string, extraEnv ...string) []string {
+	t.Helper()
+	env := writeProfilesOnly(t, tomls, extraEnv...)
+	cfg := ""
+	for _, kv := range env { // the last one wins, as in os/exec
+		if v, ok := strings.CutPrefix(kv, "XDG_CONFIG_HOME="); ok {
+			cfg = v
+		}
+	}
+	suiteConfig(t, cfg)
+	return env
+}
+
+// writeProfilesOnly is writeProfiles without the suite's ssh profile and
+// defaults: for a test that brings its own ssh as the sandbox's, where two
+// PATH entries holding an ssh would leave which one runs to merge order.
+func writeProfilesOnly(t *testing.T, tomls map[string]string, extraEnv ...string) []string {
 	t.Helper()
 	cfg := t.TempDir()
 	pd := filepath.Join(cfg, "snug", "profiles.d")

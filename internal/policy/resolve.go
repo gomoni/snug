@@ -931,12 +931,13 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	// The system-wide ssh_config is replaced on EVERY run, identity pinned or
-	// not — wherever the deepest covering grant actually supplies the host's
-	// copy at that path. It is not gated on p.Identity: the ownership refusal
-	// it fixes (OpenSSH refuses a root-owned config once one uid is mapped) has
-	// nothing to do with pinning an account, and gating it on identity left ssh
-	// broken on every unpinned sandbox on such a host. See systemsshconfig.go
-	// for the coverage rule this depends on.
+	// not — where a bind supplies the host's copy, or the host's ssh binary is
+	// inside and no grant supplies one. It is not gated on p.Identity: the
+	// ownership refusal it fixes (OpenSSH refuses a root-owned config once one
+	// uid is mapped) and the compiled-in defaults it prevents have nothing to
+	// do with pinning an account, and gating it on identity left ssh broken on
+	// every unpinned sandbox on such a host. See systemsshconfig.go for the
+	// rule this depends on.
 	if err := resolveKube(p, ctx, env, target, home); err != nil {
 		return nil, err
 	}
@@ -1112,6 +1113,11 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	// to its earliest band, which is what makes prepend's guarantee literally
 	// true and what stops a profile naming /bin producing it twice.
 	p.dedupeEnvLists()
+
+	// After the PATH is final: the ssh this sandbox runs, which the caller
+	// checks against the binary it probed (Context.HostSSHBinary).
+	p.SandboxSSHGuest, p.SandboxSSHHost = p.SandboxBinary(env, "ssh")
+	p.HostPathSSH = ctx.HostPathSSH
 
 	// Topology is DERIVED, after p.Net and p.Podman are fully folded and before
 	// Validate runs, so a hand-built *Policy that skips Resolve cannot carry a

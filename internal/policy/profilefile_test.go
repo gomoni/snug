@@ -547,3 +547,45 @@ func TestColonVariableWritesALiteralColonInFileContentAndScalarEnviron(t *testin
 		t.Errorf("environ value = %+v", v)
 	}
 }
+
+// TestProfileFileAtTheStagedRevokedHostKeysRefuses would catch a profile
+// writing its own bytes at SystemRevokedHostKeysGuest, the file the generated
+// system-wide ssh_config names as RevokedHostKeys: a profile that won that
+// path would replace the host's revocation list with one of its choosing. It
+// is refused whether or not snug staged the KRL on this run (rule 4b covers
+// the run that staged nothing), and when snug did stage it the refusal says
+// what the path is for, which only generatedFileLayer's arm for it does.
+func TestProfileFileAtTheStagedRevokedHostKeysRefuses(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		ctx := testCtx()
+		if staged {
+			ctx.HostSSHRevoked = []byte("revoked\n")
+		}
+		env := newFakeEnv()
+		env.files["/usr/etc/ssh/ssh_config"] = true
+
+		// POSITIVE CONTROL: without the intruder, this context stages the KRL
+		// exactly when staged says so, so the wording assertion below is
+		// measuring the displacement arm and not rule 4b by accident.
+		p, err := Resolve(fileReg(nil), []ProfileName{"rt", "@target-rw"}, ctx, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.SystemSSHRevoked != staged {
+			t.Fatalf("control: KRL staged = %v, want %v", p.SystemSSHRevoked, staged)
+		}
+
+		reg := fileReg(map[ProfileName]*Profile{"intruder": {Name: "intruder",
+			File: []FileGrant{{Path: SystemRevokedHostKeysGuest, Content: "ssh-ed25519 AAAA\n"}}}})
+		_, err = Resolve(reg, []ProfileName{"rt", "@target-rw", "intruder"}, ctx, env)
+		if err == nil {
+			t.Fatalf("staged = %v: a profile file at %s was ACCEPTED", staged, SystemRevokedHostKeysGuest)
+		}
+		if !strings.Contains(err.Error(), SystemRevokedHostKeysGuest) {
+			t.Errorf("staged = %v: refusal does not name %s: %v", staged, SystemRevokedHostKeysGuest, err)
+		}
+		if staged && !strings.Contains(err.Error(), "stages this host's RevokedHostKeys file here") {
+			t.Errorf("refusal does not say what snug stages at %s: %v", SystemRevokedHostKeysGuest, err)
+		}
+	}
+}
