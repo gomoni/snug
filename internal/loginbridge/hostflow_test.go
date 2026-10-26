@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -451,3 +452,50 @@ func TestHostModeAnnouncesTheHostRewriteWhenTheBrowserOpens(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// TestHostModeListenerKeepsTheBridgesGate re-runs the listener's gate with
+// the exchange behind it: another uid is answered 403 and exchanges nothing;
+// a callback carrying the SANDBOX's state — the one the line from inside
+// named, not snug's — is answered 404 and the flow survives; and a second
+// callback while the first is exchanging is dropped without a second
+// exchange.
+func TestHostModeListenerKeepsTheBridgesGate(t *testing.T) {
+	r, v, files := hostRig(t)
+	v.block = make(chan struct{})
+	f, opened := openHostFlow(t, r)
+
+	r.mu.Lock()
+	r.peerUID = os.Getuid() + 1
+	r.mu.Unlock()
+	if resp := hostCallback(t, f, opened, "C"); !strings.HasPrefix(resp, "HTTP/1.1 403 ") {
+		t.Fatalf("another uid: %s", firstLineOf(resp))
+	}
+	r.mu.Lock()
+	r.peerUID = os.Getuid()
+	r.mu.Unlock()
+
+	resp := patientBrowse(t, f.Port, "GET /callback?code=C&state="+f.State+" HTTP/1.1\r\nHost: localhost:"+itoa(f.Port)+"\r\n\r\n")
+	if !strings.HasPrefix(resp, "HTTP/1.1 404 ") {
+		t.Fatalf("the sandbox's own state was accepted in host mode: %s", firstLineOf(resp))
+	}
+	if reqs, _ := v.calls(); len(reqs) != 0 {
+		t.Fatalf("a refused callback reached the token endpoint: %d request(s)", len(reqs))
+	}
+
+	first := make(chan string)
+	go func() { first <- hostCallback(t, f, opened, "C") }()
+	waitFor(t, func() bool { reqs, _ := v.calls(); return len(reqs) == 1 })
+	if second := hostCallback(t, f, opened, "C"); !strings.HasPrefix(second, "HTTP/1.1 404 ") {
+		t.Errorf("a second callback during the exchange: %s", firstLineOf(second))
+	}
+	close(v.block)
+	if resp := <-first; !strings.Contains(resp, "snug completed your Claude login") {
+		t.Fatalf("control: the first callback did not complete: %s", resp)
+	}
+	if reqs, _ := v.calls(); len(reqs) != 2 {
+		t.Errorf("token and profile requests: %d, want 2 (one exchange)", len(reqs))
+	}
+	if renewed, written := files.counts(); renewed != 1 || written != 1 {
+		t.Errorf("renewed %d, written %d", renewed, written)
+	}
+}
