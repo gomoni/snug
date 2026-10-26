@@ -281,7 +281,7 @@ func fieldOf(out, key string) string {
 	return ""
 }
 
-// TestTheBrowserBridgeWorksWithoutASystemProfile fails if login = ["claude"]
+// TestTheBrowserBridgeWorksWithoutASystemProfile fails if login.claude
 // needs a shell or a loader in the sandbox again. The runtime is a directory
 // holding nothing (granted as /usr), the payload is the static loginprobe
 // from the target, and BROWSER leads to snug's own binary. The host's fake

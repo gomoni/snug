@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// The login bridge (login = ["claude"]) lets a process in the sandbox ask
+// The login bridge (login.claude = "sandbox") lets a process in the sandbox ask
 // snug to open ONE pinned Claude login URL in the host's browser and to carry
 // the browser's callback back in. These tests run the real binary against two
 // stand-ins: testdata/loginprobe is the sandbox half of /login, and
@@ -378,7 +378,7 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 }
 
 // TestWithoutTheLoginKeyThereIsNoBridge fails if BROWSER, the FIFO, the
-// wrapper or the browser link exist in a run whose profiles do not set login = ["claude"]. The
+// wrapper or the browser link exist in a run whose profiles do not set login.claude. The
 // same script runs again with the key on and must see all three, which is what
 // shows the script looks at the right paths.
 func TestWithoutTheLoginKeyThereIsNoBridge(t *testing.T) {
