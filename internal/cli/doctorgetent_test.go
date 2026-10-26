@@ -23,9 +23,7 @@ func TestReportGetentIsSilentWhenFound(t *testing.T) {
 
 // TestReportGetentMissingNamesTheFix pins the shape a missing getent must
 // print: it must say every run refuses, and it must name a package for both
-// glibc hosts and a musl/embedded one — the two paragraphs README.md's
-// "Requirements" section repeats for a human who never runs `snug doctor` at
-// all, so the two must not drift.
+// glibc hosts and a musl/embedded one.
 func TestReportGetentMissingNamesTheFix(t *testing.T) {
 	out := captureStdout(t, func() {
 		if reportGetent(func() (string, error) {
