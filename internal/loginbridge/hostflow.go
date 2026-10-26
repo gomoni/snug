@@ -273,6 +273,11 @@ func (b *Bridge) exchangeOnHost(fl *flow, hf *hostFlow, cb Callback) outcome {
 	same := who.Present() && pin.Present() && who.AccountUUID == pin.AccountUUID &&
 		who.OrganizationUUID == pin.OrganizationUUID
 	now := b.d.Clock.Now()
+	// A Close from here on must leave both files as they were: Close waits
+	// for this goroutine, so a write that started would finish.
+	if ctx.Err() != nil {
+		return outcome{failed: "snug is shutting down"}
+	}
 	o.sandbox = hf.h.Files.RenewSandbox(ctx, r, now, same)
 
 	switch {
@@ -293,6 +298,8 @@ func (b *Bridge) exchangeOnHost(fl *flow, hf *hostFlow, cb Callback) outcome {
 			"same account only. To switch the host, run `claude auth login` there", o.email, host)
 	case !now.Add(r.ExpiresIn).After(now) || refreshEnd(r, now) <= now.Add(r.ExpiresIn).UnixMilli():
 		o.hostKept = "the new login's expiry times are not in the future; the host keeps its own login"
+	case ctx.Err() != nil:
+		return outcome{failed: "snug is shutting down"}
 	default:
 		if err := hf.h.Files.WriteHost(ctx, hf.Snapshot, r, now); err != nil {
 			o.hostKept = policy.VisibleText(err.Error())

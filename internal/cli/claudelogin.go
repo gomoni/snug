@@ -371,6 +371,9 @@ func (h *claudeHostFiles) WriteHost(ctx context.Context, snap loginbridge.HostSn
 	if !sameCredential(credentialTokens(existing), snap.File) {
 		return errNewerLogin
 	}
+	if ctx.Err() != nil {
+		return errors.New("snug is shutting down")
+	}
 	content, err := policy.RenewClaudeCredentials(existing, r, now)
 	if err != nil {
 		return err
