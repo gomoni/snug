@@ -134,6 +134,11 @@ func sshGAll(out string) map[string]string {
 	return v
 }
 
+// noRevokedHostKeys reports an `ssh -G` revokedhostkeys value that names no
+// file: OpenSSH 10.6 here prints "none", the ubuntu-latest CI runner's omits
+// the line.
+func noRevokedHostKeys(v string) bool { return v == "" || v == "none" }
+
 // payloadSection is the text between `==name==` and the next `==` line of a
 // payload that prints several.
 func payloadSection(out, name string) (string, bool) {
@@ -357,7 +362,7 @@ func TestTheSandboxsSSHIsProbedNotTheHostPATHs(t *testing.T) {
 	// wrong one shows below.
 	wrapped, real := h.hostSSHG(t, "example.invalid"), realSSHG(t, "example.invalid")
 	if wrapped["ciphers"] != narrowCipher || wrapped["revokedhostkeys"] != h.krl ||
-		real["ciphers"] == narrowCipher || real["revokedhostkeys"] != "none" {
+		real["ciphers"] == narrowCipher || !noRevokedHostKeys(real["revokedhostkeys"]) {
 		t.Fatalf("the fixture's two ssh do not differ as this test needs: wrapper ciphers %q "+
 			"revokedhostkeys %q; real ciphers %q revokedhostkeys %q",
 			wrapped["ciphers"], wrapped["revokedhostkeys"], real["ciphers"], real["revokedhostkeys"])
@@ -387,7 +392,7 @@ func TestTheSandboxsSSHIsProbedNotTheHostPATHs(t *testing.T) {
 		t.Errorf("ciphers inside %q, want the sandbox's ssh's own %q (the host PATH wrapper says %q)",
 			inside["ciphers"], real["ciphers"], narrowCipher)
 	}
-	if inside["revokedhostkeys"] != "none" || strings.Contains(r.out, h.krl) {
+	if !noRevokedHostKeys(inside["revokedhostkeys"]) || strings.Contains(r.out, h.krl) {
 		t.Errorf("the host PATH wrapper's KRL reached a sandbox that does not run it "+
 			"(revokedhostkeys %q):\n%s", inside["revokedhostkeys"], r.out)
 	}
