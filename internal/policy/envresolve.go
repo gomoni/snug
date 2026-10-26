@@ -699,10 +699,10 @@ const maxGuestLinkHops = 40
 //
 // Ground is nearestCovering, whose "stops before / and never returns it" is
 // exactly right here: no mount above means the link sits on the ROOT tmpfs,
-// which --remount-ro / covers. KindData is not treated as replaceable even
-// though it is also a non-mountpoint file, because a PATH element naming a
-// generated FILE is not a directory search path at all; if a KindData grant ever
-// becomes a directory, revisit this line rather than assuming it was considered.
+// which --remount-ro / covers. A KindData AT the path is not replaceable here,
+// because a PATH element naming a generated FILE is not a directory search path
+// at all. A path BELOW a writable one (--file, a plain file rather than a
+// mountpoint) on writable ground is: walkLinks's KindData arm.
 //
 // ok is true only for walkLanded. A chain that runs out (nothing granted at
 // the end), exhausts the hop budget, or meets a host path that cannot be read
@@ -826,9 +826,18 @@ func (v View) walkLinks(host HostLinks, guest string) (final Mount, at string, r
 				queue = append(walkQueueComponents(m.Host), queue...)
 			case m.Kind == KindData && len(queue) > 0:
 				// A generated FILE with more path left below it: ENOTDIR
-				// inside, so the path names nothing (#686). The file is a
-				// mountpoint and rejectMasking refuses any grant below it, so
-				// nothing can ever appear there.
+				// inside, so the path names nothing (#686) — unless the
+				// payload can replace the file. AccessRW is bwrap's --file,
+				// a plain file written into its parent rather than a
+				// mountpoint, so on writable ground the payload can `rm` it
+				// and `mkdir` its own directory, the same as a symlink there.
+				// --ro-bind-data is a mountpoint, and rejectMasking refuses
+				// any grant below it, so nothing can ever appear there.
+				if m.Access == AccessRW {
+					if ground, _, has := v.nearestCovering(m.Guest); has && mountIsWritable(ground) {
+						return m, "", true, walkLanded, ""
+					}
+				}
 				return Mount{}, "", replaceable, walkNowhere, ""
 			default:
 				pos = next

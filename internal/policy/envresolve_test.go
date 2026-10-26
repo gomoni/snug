@@ -2255,3 +2255,34 @@ func TestAFileInsideAWritableDirectoryStillAnswersBelowIt(t *testing.T) {
 		t.Error("ro control: GrantsGuestPath(/proj/tool/bin) = true; nothing exists below a read-only file")
 	}
 }
+
+// TestAWritableGeneratedFileOnWritableGroundIsASlotBelowIt fails if a path
+// below a `--file` KindData counts as nothing. AccessRW emits --file, which
+// writes a plain file into its parent rather than mounting one, so on a
+// writable tmpfs the payload can `rm` it and `mkdir` its own directory. The
+// controls are --ro-bind-data, a mountpoint, and --file on read-only ground.
+func TestAWritableGeneratedFileOnWritableGroundIsASlotBelowIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		access Access
+		ground Mount
+		want   ShadowVerdict
+	}{
+		{"--file on a writable tmpfs", AccessRW, Mount{Guest: "/h", Kind: KindTmpfs, Access: AccessRW}, Slot},
+		{"--file on a rw bind", AccessRW, Mount{Guest: "/h", Host: "/hh", Kind: KindBind, Access: AccessRW}, Slot},
+		{"--ro-bind-data on a writable tmpfs", AccessRO, Mount{Guest: "/h", Kind: KindTmpfs, Access: AccessRW}, NotSlot},
+		{"--file on a ro bind", AccessRW, Mount{Guest: "/h", Host: "/hh", Kind: KindBind, Access: AccessRO}, NotSlot},
+	}
+	for _, tc := range cases {
+		p := &Policy{Mounts: map[string]Mount{
+			"/h":   tc.ground,
+			"/h/f": {Guest: "/h/f", Kind: KindData, Access: tc.access},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/h/f/bin"); v != tc.want {
+			t.Errorf("%s: Shadow(/h/f/bin) = %v, want %v", tc.name, v, tc.want)
+		}
+		if keep, _ := p.keepHostElement(noHostLinks{}, "/h/f/bin"); keep {
+			t.Errorf("%s: keepHostElement(/h/f/bin) kept; nothing of the host's is below a generated file", tc.name)
+		}
+	}
+}
