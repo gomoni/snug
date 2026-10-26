@@ -11,6 +11,8 @@
 - [Identity](identity.md)
 - [Containers](containers.md)
 - [Claude Code](claude.md)
+- [The architecture](architecture.md)
+- [Threat model](threat-model.md)
 - [Built-in profiles](builtins.md)
 
 # Reference
