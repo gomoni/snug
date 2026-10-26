@@ -452,8 +452,9 @@ func containerEnv(pol *policy.Policy) {
 	// that buys was measured (issue #690, docker 29.7.2-ce, buildx 0.36.1,
 	// inside `@podman-build @net`): the client first asks for the engine's
 	// built-in BuildKit over `POST /grpc` (Upgrade: h2c), which the proxy's
-	// route allowlist refuses, as it does /session and /build?version=2. buildx
-	// then falls back to a builder CONTAINER, and a builder is an ordinary
+	// route allowlist refuses, as it does /session; /build?version=2 is
+	// refused by the build filter's checkBuilderVersion. buildx then falls
+	// back to a builder CONTAINER, and a builder is an ordinary
 	// container: created through the create filter, reached over the
 	// exec/{id}/start hijack every `docker exec` takes, holding no
 	// CAP_SYS_ADMIN, so the build failed mounting its own snapshot ("operation

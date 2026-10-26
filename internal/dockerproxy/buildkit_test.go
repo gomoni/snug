@@ -21,8 +21,9 @@ import (
 // the docker-container driver, whose first request is
 // GET /v1.44/containers/buildx_buildkit_default/json — the ownership gate's
 // to answer, not this test's. `/session` and `/build?version=2` are the
-// remaining BuildKit entry points into an engine, and are refused here by
-// name so that a future allowlist entry cannot open one quietly. With such an
+// remaining BuildKit entry points into an engine. allowed() refuses /grpc and
+// /session by default-deny, with no case of their own, so this test names
+// them: a future allowlist entry cannot open one quietly. With such an
 // entry added to allowed(), podman 6.1.2 itself answered 404 to /grpc and
 // /session: the engine snug runs serves no BuildKit today, so the refusal
 // here is what still holds if one ever does.
