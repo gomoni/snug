@@ -1,4 +1,4 @@
-# The Claude login bridge — `login = ["claude"]`
+# The Claude login bridge — `login.claude`
 
 User-facing behaviour is in `docs/src/claude.md` (`login`). This document holds
 what a contributor needs: where the pieces live, why each is shaped as it is,
@@ -8,11 +8,12 @@ Owner: `host-bridge`. Code:
 
 | piece | where |
 |---|---|
-| the key, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginSet`), `resolve.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserGuest`, `WrapperGuest`) |
+| the key, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginMode`, `LoginModes`), `resolve.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserGuest`, `WrapperGuest`, `ClaudeCredentialDirGuest`); the table's TOML shapes in `internal/profile/file.go` (`toLogin`) |
 | the client inside | `internal/wrapper` (`Browser`), dispatched from `internal/cli/main.go` on `argv[0]` |
 | the predicate and rebuild (pure) | `internal/loginbridge/authorize.go`, `callback.go`, `query.go`, `pinned.go` |
 | limits | `internal/loginbridge/limits.go` |
-| host listener, relay | `internal/loginbridge/bridge.go`, `procnet.go` |
+| host listener, relay | `internal/loginbridge/listener.go`, `bridge.go`, `procnet.go` |
+| `login.claude = "host"`: PKCE, exchange, checks | `internal/loginbridge/hostflow.go`, `exchange.go`; the file bytes in `internal/policy/claudecreds.go` (`RenewClaudeCredentials`, `ProjectClaudeLogin`); the host and run-directory files, lock and preflight in `internal/cli/claudelogin.go` |
 | opener | `internal/loginbridge/opener.go` |
 | relay sockets created in N | `internal/stage/relay.go`, the `netready` arm of `serve.go`, `WaitNetReady` in `stage.go`, `recvEventFDs` in `conn.go` |
 | P0 wiring: preflight, FIFO, reader | `internal/cli/loginbridge.go`, `main.go` |
@@ -51,8 +52,10 @@ forwarded into the namespace, and host loopback stays unreachable from inside.
 
 ## 2. Grant internals
 
-- `LoginSet` unions provider lists as a set, so the result does not depend on
-  fold order; `ParseLoginProvider` refuses any other element at profile parse.
+- `login` is a table of provider = mode, `"sandbox"` (this document) or
+  `"host"`; two profiles choosing different modes are refused naming both,
+  so the result does not depend on fold order. `ParseLoginProvider` and
+  `ParseLoginMode` refuse any other value at profile parse, `""` included.
 - No builtin sets the key, `@claude` included: the hole exists only where a user
   profile spells it, never by riding along with `-p @claude -p @net`.
 - `BROWSER` is a `conditionalEnvs` row (ENVIRONMENT-VARIABLES.md §1.1).

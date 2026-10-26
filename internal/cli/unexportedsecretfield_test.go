@@ -267,6 +267,8 @@ func loadProductionStructTables(t *testing.T) structTable {
 	collectStructTypes(t, filepath.Join("..", "..", "internal", "dockerproxy"), "dockerproxy", tables)
 	collectStructTypes(t, filepath.Join("..", "..", "internal", "profile"), "profile", tables)
 	collectStructTypes(t, filepath.Join("..", "..", "internal", "stage"), "stage", tables)
+	// loginbridge holds the host-mode verifier and tokens as policy.Secret.
+	collectStructTypes(t, filepath.Join("..", "..", "internal", "loginbridge"), "loginbridge", tables)
 	return tables
 }
 
@@ -281,6 +283,7 @@ func TestNoUnexportedByValueFieldReachesASecret(t *testing.T) {
 		"dockerproxy": "Proxy",
 		"profile":     "rawProfile",
 		"stage":       "Config",
+		"loginbridge": "HostSnapshot",
 	} {
 		if len(tables[label]) == 0 {
 			t.Fatalf("swept 0 struct types under the %q label; the sweep is reading the wrong directory", label)
