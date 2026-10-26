@@ -98,6 +98,50 @@ func ParseCallback(method, target, expectedState string) (Callback, error) {
 	return Callback{Code: code}, nil
 }
 
+// denialKeys is the key set a declined sign-in's callback may carry. Only
+// error and state are read: a description or URI the vendor adds is parsed
+// for the query's grammar and dropped, never relayed or printed. Not
+// measured — no real denial has reached snug's listener — so this is OAuth's
+// own error-response set rather than one claude.com was seen to send.
+var denialKeys = map[string]bool{
+	"error": true, "error_description": true, "error_uri": true, "state": true,
+}
+
+// ParseDenial checks a request the way ParseCallback does, for the other
+// answer an authorize page redirects with: the human declined. It accepts
+// exactly a GET of /callback whose query keys are within denialKeys, whose
+// error is access_denied and whose state is expectedState; every other
+// request is an error saying why, and the caller answers it as it answers a
+// request ParseCallback refused.
+//
+// Without it a declined sign-in was answered 404 and the flow, and the
+// client's own /login with it, waited out FlowTTL.
+func ParseDenial(method, target, expectedState string) error {
+	if method != "GET" {
+		return fmt.Errorf("method %s, want GET", policy.VisibleText(method))
+	}
+	path, query, _ := strings.Cut(target, "?")
+	if path != "/callback" {
+		return fmt.Errorf("path %s is not \"/callback\"", policy.VisibleText(path))
+	}
+	_, values, err := parseQueryPairs(query)
+	if err != nil {
+		return err
+	}
+	for k := range values {
+		if !denialKeys[k] {
+			return fmt.Errorf("parameter %q is not one a declined sign-in carries", k)
+		}
+	}
+	if values["error"] != "access_denied" {
+		return fmt.Errorf("parameter \"error\" is not access_denied")
+	}
+	if subtle.ConstantTimeCompare([]byte(values["state"]), []byte(expectedState)) != 1 {
+		return fmt.Errorf("state does not match this flow's")
+	}
+	return nil
+}
+
 // isRawCode matches the authorization code's shape in the form the query
 // string carries it — before any percent-decoding, since ParseCallback's
 // caller relays these bytes unchanged rather than decoding and
