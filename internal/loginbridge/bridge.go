@@ -76,6 +76,10 @@ type Deps struct {
 	// IPV6_V6ONLY set on the v6 one.
 	Listen func(network, addr string) (net.Listener, error)
 	Stderr io.Writer
+	// Host, when set, completes every login on the host (login.claude =
+	// "host") rather than relaying its code into the sandbox; nil is the
+	// bridge of login.claude = "sandbox".
+	Host *HostLogin
 }
 
 // Bridge is the host half of the login bridge: at most one live flow at a
@@ -163,7 +167,19 @@ func (b *Bridge) Handle(f Flow) error {
 
 	fl := &flow{f: f, expect: f.State, opened: now, conns: map[net.Conn]bool{}, slots: make(chan struct{}, maxConns)}
 	url := f.AuthorizeURL()
-	fl.deliver = func(c net.Conn, cb Callback) { b.relayCode(fl, c, cb) }
+	var announce string
+	if h := b.d.Host; h != nil {
+		hf, err := h.begin(f)
+		if err != nil {
+			return err
+		}
+		fl.expect = hf.State
+		url = Flow{Port: f.Port, CodeChallenge: hf.Challenge, State: hf.State}.AuthorizeURL()
+		fl.deliver = func(c net.Conn, cb Callback) { b.completeOnHost(fl, hf, c, cb) }
+		announce = hf.announce()
+	} else {
+		fl.deliver = func(c net.Conn, cb Callback) { b.relayCode(fl, c, cb) }
+	}
 
 	if b.live != nil {
 		b.endLocked(b.live)
@@ -187,6 +203,9 @@ func (b *Bridge) Handle(f Flow) error {
 	for _, ln := range lns {
 		b.wg.Add(1)
 		go b.accept(fl, ln)
+	}
+	if announce != "" {
+		fmt.Fprintf(b.d.Stderr, "snug: login bridge: %s\n", announce)
 	}
 	go func() {
 		if err := b.d.Open(url); err != nil {
@@ -340,6 +359,13 @@ const (
 	// deniedError and deniedText answer a sign-in declined in the browser.
 	deniedError = "access_denied"
 	deniedText  = "the sign-in was declined in the browser"
+	// completedError and completedText end the client's wait after snug
+	// completed the sign-in on the host and renewed the sandbox's token.
+	completedError = "snug_completed_login"
+	completedText  = "snug completed this sign-in on the host and renewed this sandbox's token; press Esc"
+	// failedError and failedText end it after snug could not complete it.
+	failedError = "snug_login_failed"
+	failedText  = "snug could not complete this sign-in on the host; snug's terminal says why; press Esc"
 )
 
 // RelayErrorRequest is the request snug writes into the sandbox to end the
