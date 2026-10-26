@@ -43,8 +43,8 @@ CONTAINER_CONNECTION     set       ← podman talks to the named connection from
 CONTAINER_CONNECTION     inherit   ← podman talks to the named connection from its containers.conf in place of CONTAINER_HOST (measured, podman 6.0.2), so it decides which engine runs the payload's containers
 CONTAINER_HOST           set       ← podman's client sends every request to the engine at this URL, which runs whatever container it asks for, mounts included, and it dials an ssh:// URL itself (measured, podman 6.0.2); podman = "socket" puts snug's filtering proxy here instead
 CONTAINER_HOST           inherit   ← podman's client sends every request to the engine at this URL, which runs whatever container it asks for, mounts included, and it dials an ssh:// URL itself (measured, podman 6.0.2); podman = "socket" puts snug's filtering proxy here instead
-DOCKER_BUILDKIT          set       ← 1 makes `docker build` boot a BuildKit builder and negotiate mounts over a session snug's proxy does not inspect; podman = "socket" writes 0
-DOCKER_BUILDKIT          inherit   ← 1 makes `docker build` boot a BuildKit builder and negotiate mounts over a session snug's proxy does not inspect; podman = "socket" writes 0
+DOCKER_BUILDKIT          set       ← 1 makes `docker build` use BuildKit, the engine's or a builder container's; podman = "socket" writes 0, and its proxy refuses BuildKit's endpoints
+DOCKER_BUILDKIT          inherit   ← 1 makes `docker build` use BuildKit, the engine's or a builder container's; podman = "socket" writes 0, and its proxy refuses BuildKit's endpoints
 DOCKER_CONFIG            set       ← credsStore in this directory's config.json is a program docker executes, and it runs before docker reaches a daemon (measured, docker 29.4)
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 DOCKER_HOST              set       ← the docker client and the compat-API libraries send every request to the engine at this URL, which runs whatever container they ask for, mounts included; podman = "socket" puts snug's filtering proxy here instead

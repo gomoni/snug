@@ -1620,11 +1620,13 @@ var envNotes = map[string]envNote{
 	"CONTAINER_HOST": both(shapeOpaque, "podman's client sends every request to the engine at this URL, "+
 		"which runs whatever container it asks for, mounts included, and it dials an ssh:// URL "+
 		"itself (measured, podman 6.0.2); podman = \"socket\" puts snug's filtering proxy here instead"),
-	// DOCUMENTED, NOT MEASURED ON THIS HOST: the BuildKit session is described
-	// at containerEnv (internal/cli/container.go), from docker's documentation.
-	// Tried: no docker client is installed on the host this was written on.
-	"DOCKER_BUILDKIT": both(shapeOpaque, "1 makes `docker build` boot a BuildKit builder and negotiate "+
-		"mounts over a session snug's proxy does not inspect; podman = \"socket\" writes 0"),
+	// Measured (issue #690), docker 29.7.2-ce with buildx 0.36.1 inside
+	// `@podman-build`: with 1, `docker build` opens with `POST /grpc`, which
+	// snug's proxy refuses, then falls back to a builder container that goes
+	// through the create filter like any other. See containerEnv
+	// (internal/cli/container.go).
+	"DOCKER_BUILDKIT": both(shapeOpaque, "1 makes `docker build` use BuildKit, the engine's or a builder "+
+		"container's; podman = \"socket\" writes 0, and its proxy refuses BuildKit's endpoints"),
 	// Names snug does NOT write that the tool reads IN PLACE OF one snug does
 	// (conditionalEnvs' `outranks`). Measured on the host, gh 2.96.0, with a
 	// hosts.yml holding PINNEDTOKEN for github.com, then PINNEDGHE for a GHE host:

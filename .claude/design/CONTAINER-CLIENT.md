@@ -93,9 +93,11 @@ client this sandbox's `PATH` reaches (`Policy.PodmanStubClient`). Golden:
 `internal/policy/testdata/podman-socket.bwrap.txt`.
 
 **Build selectors:** `DOCKER_BUILDKIT=0` is set for `Podman != Off` and is a
-*tightening*, not a convenience: with BuildKit, `docker build` never POSTs
-`/build` and the option surface bypasses the filter entirely. The `version`
-build param is enumerated `{"", "1"}`, refusing `2` by name, because it is a
+*convenience*, not a bound: it sends `docker build` down the classic path, the
+one build endpoint the proxy serves. BuildKit's entry points into an engine —
+`POST /grpc` (what docker 29 sends first), `/session`, `/build?version=2` — are
+refused by the route allowlist and by `checkBuilderVersion`. The `version` build
+param is enumerated `{"", "1"}`, refusing `2` by name, because it is a
 *selector* and `buildParams` already enumerates selectors.
 
 ## 9. Red team — no escape found
@@ -148,11 +150,14 @@ to skip a check.**
 - **The stub must never set `DOCKER_HOST` or `-H` to anything but the proxy.**
   This is the one way the first staged executable could carry authority the
   payload lacks. The property holds structurally; `TestContainerSocketNeverExposesEngineSocketDir` guards it.
-- **`DOCKER_BUILDKIT=0` is a default the payload can override.** On a
-  buildkit-capable host, `DOCKER_BUILDKIT=1 docker build` boots a builder
-  container (filtered at create) and then negotiates `RUN --mount=type=bind,…`
-  over the **buildkit session**, which the `/build` query-string filter never
-  inspects. State that the `/build` filter is not the only backstop *because* the
-  variable is attacker-overridable.
+- **`DOCKER_BUILDKIT=0` is a default the payload can override, and the
+  override reaches nothing new.** With `/grpc` refused, buildx falls back to the
+  `docker-container` driver: a builder container created through the create
+  filter and driven over the `exec/{id}/start` hijack. The BuildKit session
+  inside that hijack is not inspected; it reaches what the builder container
+  reaches, which is what any `docker run` reaches. Holding no `CAP_SYS_ADMIN`,
+  buildkitd there cannot mount its own snapshots, so the build fails.
+  `TestBuildKitEntryPointsNeverReachTheEngine`,
+  `TestBuildKitEntryPointsAreRefusedAtTheProxy`.
 
 ---
