@@ -15,7 +15,7 @@ import (
 // bridge on — `login = ["claude"]` alone, since @claude and @net are
 // selected directly beside it. There is no `@claude-login` builtin (issue
 // #455, a maintainer decision).
-var browserLoginProfile = &policy.Profile{Name: "login", Login: []string{"claude"}}
+var browserLoginProfile = &policy.Profile{Name: "login", Login: map[policy.LoginProvider]policy.LoginMode{policy.LoginClaude: policy.LoginSandbox}}
 
 // TestGoldenBwrapClaudeLogin pins the bwrap argv for `@claude @net login`
 // against the real builtin profiles, the same shape TestGoldenClaudeArgv

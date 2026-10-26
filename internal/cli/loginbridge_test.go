@@ -61,7 +61,7 @@ func TestBrowserPreflightExitsPolicy(t *testing.T) {
 	w.Close()
 	os.Stderr = old
 	buf.ReadFrom(r)
-	if code != 77 || !strings.HasPrefix(buf.String(), "snug: login = [\"claude\"]") {
+	if code != 77 || !strings.HasPrefix(buf.String(), "snug: login.claude") {
 		t.Fatalf("code=%d out=%q", code, buf.String())
 	}
 }
@@ -202,7 +202,7 @@ func TestRunWithoutTheKeyHasNoBridgeAndAsksForNoRelaySockets(t *testing.T) {
 	if wantsLoginBridge(&policy.Policy{}, config{}) {
 		t.Fatal("bridge wanted with the key off")
 	}
-	on := &policy.Policy{Login: policy.LoginSet(0).With(policy.LoginClaude)}
+	on := &policy.Policy{Login: policy.LoginModes{}.With(policy.LoginClaude, policy.LoginSandbox)}
 	if !wantsLoginBridge(on, config{}) {
 		t.Fatal("bridge not wanted with the key on")
 	}

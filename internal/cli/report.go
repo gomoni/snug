@@ -309,13 +309,20 @@ type reportNetwork struct {
 // carries its message, so a screen never shows a bridge a real run would not
 // start.
 type reportBrowserBridge struct {
-	// Login is the resolved `login` set by provider name, e.g. ["claude"].
-	Login       []string
+	// Login is the resolved `login` table, provider to mode, e.g.
+	// {"claude": "host"}; Keys is the same as the keys a profile writes.
+	Login       map[string]string
+	Keys        []string
 	Opener      string
 	OpenerError string
 	FIFO        string
 	MaxOpens    int
 	MaxRelays   int
+	// HostRewrite is login.claude = "host": a login the human approves
+	// rewrites the host's ~/.claude/.credentials.json. HostError is the
+	// host-mode preflight's refusal, "" when a real run would start.
+	HostRewrite bool
+	HostError   string
 }
 
 type reportTopology struct {
@@ -733,14 +740,21 @@ func buildNetworkReport(p *policy.Policy) reportNetwork {
 // asks browserPreflight, the function a real run asks, so the screen and the
 // refusal cannot disagree about whether the opener exists.
 func buildBrowserBridgeReport(env policy.Environ, p *policy.Policy) *reportBrowserBridge {
-	if !p.Login.Has(policy.LoginClaude) {
+	if !p.Login.Any() {
 		return nil
 	}
 	b := &reportBrowserBridge{
-		Login:     p.Login.Names(),
+		Login:     p.Login.Table(),
+		Keys:      p.Login.Keys(),
 		FIFO:      policy.BrowserFIFOGuest,
 		MaxOpens:  loginbridge.MaxOpensPerRun,
 		MaxRelays: loginbridge.MaxRelaysPerRun,
+	}
+	if p.Login.Mode(policy.LoginClaude) == policy.LoginHost {
+		b.HostRewrite = true
+		if _, err := claudeHostPreflight(claudeLoginReadsFor(env), p.Home); err != nil {
+			b.HostError = err.Error()
+		}
 	}
 	opener, err := browserPreflight(env)
 	if err != nil {

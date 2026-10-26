@@ -235,8 +235,8 @@ var envTypes = map[string]envType{
 	"PAGER":  {},
 	// BROWSER names a program Claude Code execs with the URL it wants opened.
 	// Its sentence is in envNotes; the row is a scalar, both verbs. When
-	// login = ["claude"] is on snug authors it and a profile's write is a
-	// conflict (envconditional.go), so this row is what the OTHER case renders.
+	// login.claude is on snug authors it and a profile's write is a conflict
+	// (envconditional.go), so this row is what the OTHER case renders.
 	"BROWSER": {},
 	// NO_COLOR is a FLAG, and for a flag EMPTY IS NOT UNSET — "set to any value,
 	// including empty" is its specification, which is why nothing in the
@@ -1335,7 +1335,7 @@ var envNotes = map[string]envNote{
 	// Measured in LOGIN-BRIDGE.md §12: Claude Code runs the program with exactly
 	// one argument, the URL.
 	"BROWSER": both(shapeProgram, "Claude Code execs this program with the URL it wants opened as its "+
-		"one argument (measured, LOGIN-BRIDGE.md section 12); login = [\"claude\"] points it at "+
+		"one argument (measured, LOGIN-BRIDGE.md section 12); login.claude points it at "+
 		"snug's login bridge instead"),
 
 	// ── the endpoint @claude inherits ────────────────────────────────────────

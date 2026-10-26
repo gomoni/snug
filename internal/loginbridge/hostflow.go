@@ -239,13 +239,13 @@ func (b *Bridge) exchangeOnHost(fl *flow, hf *hostFlow, cb Callback) outcome {
 	if err != nil {
 		return outcome{failed: err.Error()}
 	}
-	prof, perr := fetchProfile(ctx, doer, tok.Access)
+	prof, perr := fetchProfile(ctx, doer, tok.AccessToken)
 	if ctx.Err() != nil {
 		return outcome{failed: "snug is shutting down"}
 	}
 
 	r := policy.ClaudeLoginResult{
-		AccessToken: tok.Access, RefreshToken: tok.Refresh,
+		AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken,
 		ExpiresIn: tok.ExpiresIn, RefreshTokenExpiresIn: tok.RefreshExpiresIn, Scopes: tok.Scopes,
 	}
 	who := AccountPin{AccountUUID: tok.AccountUUID, OrganizationUUID: tok.OrganizationUUID, Email: tok.AccountEmail}

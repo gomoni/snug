@@ -241,9 +241,10 @@ type Mount struct {
 
 	// RunScoped states a FACT about the HOST side, like HostDestExists and
 	// unlike Authored: the host path exists for THIS run alone and no second
-	// snug can be handed the same one. It is true of the sockets snug creates
-	// per run (BindSocket's whole caller set) and of the engine's own run
-	// directory, whose names carry this process's pid; it is FALSE of every
+	// snug can be handed the same one. It is true of the sockets and the
+	// directory snug creates per run (BindSocket's and BindRunDir's whole
+	// caller sets) and of the engine's own run directory, whose names carry
+	// this process's pid; it is FALSE of every
 	// path derived from the target — the target bind itself, and the engine
 	// store and runroot, which internal/engine keys by the target hash alone.
 	//
@@ -258,12 +259,12 @@ type Mount struct {
 	//
 	// It grants nothing and is read by no rule. No profile can set it, and
 	// that is checked rather than asserted: TOML parses into Profile, Resolve
-	// never writes it (TestResolveProducesNoRunScopedMount), and the only two
+	// never writes it (TestResolveProducesNoRunScopedMount), and the only
 	// functions that do are snug's own post-resolution writers, BindSocket
-	// below and internal/engine's GraftPathsInto
-	// (TestRunScopedWritersAreTheTwoFunctionsTheFieldNames). Both run AFTER
-	// the profile fold, which is why join needs no meet for this field the way
-	// it does for Authored.
+	// and BindRunDir below and internal/engine's GraftPathsInto
+	// (TestRunScopedWritersAreTheFunctionsTheFieldNames). All run AFTER the
+	// profile fold, which is why join needs no meet for this field the way it
+	// does for Authored.
 	RunScoped bool
 }
 
@@ -490,9 +491,9 @@ type Policy struct {
 	Identity *Identity
 	Podman   PodmanMode
 
-	// Login is the union of the selected profiles' `login` lists — see
-	// LoginSet. Empty means the login bridge is off.
-	Login LoginSet
+	// Login is the selected profiles' `login` tables joined per provider —
+	// see LoginModes. Every provider off means the login bridge is off.
+	Login LoginModes
 
 	// NSS is the OR-fold of every selected profile's `nss` key (issue #612).
 	// It gates Resolve's own generated /etc/passwd, /etc/group and
@@ -758,9 +759,9 @@ func (p *Policy) Replace(m Mount) {
 // BindSocket grants a host socket or FIFO this run created at a fixed guest
 // path, after the policy is resolved. It is how the CLI hands the sandbox
 // something it had to create first — an ssh-agent proxy socket, or the login
-// bridge's FIFO — and it is deliberately one of the
-// two post-resolution writers (the other being Replace, which it uses), so the
-// set of such things stays countable.
+// bridge's FIFO — and it is deliberately one of the few post-resolution
+// writers (Replace, which it uses, and BindRunDir beside it), so the set of
+// such things stays countable.
 //
 // `from` is the provenance the socket appears under in --dry-run. It is a
 // parameter because it used to be hard-coded "(identity)", which made the
@@ -780,6 +781,21 @@ func (p *Policy) BindSocket(hostPath, guestPath, from string) {
 	p.Replace(Mount{
 		Guest: guestPath, Host: hostPath, Kind: KindBind,
 		Access: AccessRW, From: []string{from}, RunScoped: true,
+	})
+}
+
+// BindRunDir grants, READ-ONLY, a directory this run created under its own
+// runtime directory, at a fixed guest path, after the policy is resolved. It
+// is BindSocket for a directory snug keeps writing on the host while the
+// sandbox only reads it: login.claude = "host"'s ClaudeCredentialDirGuest,
+// whose file snug replaces by rename when a /login completes on the host.
+//
+// RunScoped for BindSocket's reason: the host path is under this run's own
+// runtime directory, so no second snug is handed it.
+func (p *Policy) BindRunDir(hostPath, guestPath, from string) {
+	p.Replace(Mount{
+		Guest: guestPath, Host: hostPath, Kind: KindBind,
+		Access: AccessRO, From: []string{from}, RunScoped: true,
 	})
 }
 
@@ -853,6 +869,10 @@ const (
 	// as its one argument instead of a real opener. Resolve refuses it outside
 	// a selection that also grants egress — see resolve.go.
 	LoginClaude LoginProvider = iota
+
+	// loginProviders is how many providers there are: the length of
+	// LoginModes.
+	loginProviders
 )
 
 func (l LoginProvider) String() string {
@@ -862,8 +882,17 @@ func (l LoginProvider) String() string {
 	return fmt.Sprintf("LoginProvider(%d)", uint8(l))
 }
 
-// ParseLoginProvider returns the provider one element of a profile's `login`
-// list names. Any spelling outside the accepted set is an error quoting that
+// LoginProviders lists every provider, in LoginProvider order.
+func LoginProviders() []LoginProvider {
+	out := make([]LoginProvider, 0, loginProviders)
+	for l := LoginProvider(0); l < loginProviders; l++ {
+		out = append(out, l)
+	}
+	return out
+}
+
+// ParseLoginProvider returns the provider one key of a profile's `login`
+// table names. Any spelling outside the accepted set is an error quoting that
 // set; it is never read as the nearest provider it resembles.
 func ParseLoginProvider(s string) (LoginProvider, error) {
 	switch s {
@@ -874,62 +903,127 @@ func ParseLoginProvider(s string) (LoginProvider, error) {
 	}
 }
 
-// LoginSet is the union of the selected profiles' `login` lists — a SET, so
-// two profiles naming the same provider turn it on once and the value does not
-// depend on fold order. The zero value is empty: the bridge is off. It is an
-// ordinary feature key a user profile sets — there is no builtin that turns it
-// on, and @claude does not (issue #455, a maintainer decision): the hole
-// exists only where a profile spells `login = ["claude"]` itself, never merely
-// by riding along with `@claude -p @net`.
-type LoginSet uint8
+// LoginMode is what snug does for one provider's sign-in.
+//
+// It is NOT joined by max, and there is no order between the two modes that
+// are on: one keeps the sandbox's login inside the sandbox, refresh token
+// included, and the other rewrites the host's credential file and hands the
+// sandbox an access token only. Neither is "more open" than the other, so two
+// profiles naming different modes are refused in Resolve with both names —
+// what .claude/design/INDEX.md §2.3 asks of a scalar with no permissive
+// direction. LoginOff joins with either.
+type LoginMode uint8
 
-// Has reports whether l is in the set.
-func (s LoginSet) Has(l LoginProvider) bool { return s&(1<<l) != 0 }
+const (
+	// LoginOff is the absent key: snug does nothing for /login. It is the
+	// zero value and never written: ParseLoginMode refuses the empty string.
+	LoginOff LoginMode = iota
+	// LoginSandbox is the bridge: snug opens the sandbox's login page in the
+	// host browser and relays the callback; the sandbox exchanges the code
+	// and holds the tokens until the run ends.
+	LoginSandbox
+	// LoginHost completes the login on the host: snug opens the page with its
+	// own PKCE verifier and state, exchanges the code itself, rewrites the
+	// host's ~/.claude/.credentials.json for the account the host is signed
+	// in to, and renews the sandbox's access token at ClaudeCredentialDirGuest.
+	LoginHost
+)
 
-// With returns s with l added.
-func (s LoginSet) With(l LoginProvider) LoginSet { return s | 1<<l }
-
-// Join is the union.
-func (s LoginSet) Join(o LoginSet) LoginSet { return s | o }
-
-// Providers lists the set in LoginProvider order.
-func (s LoginSet) Providers() []LoginProvider {
-	var out []LoginProvider
-	for l := LoginProvider(0); l < 8; l++ {
-		if s.Has(l) {
-			out = append(out, l)
-		}
+func (m LoginMode) String() string {
+	switch m {
+	case LoginOff:
+		return "off"
+	case LoginSandbox:
+		return "sandbox"
+	case LoginHost:
+		return "host"
 	}
-	return out
+	return fmt.Sprintf("LoginMode(%d)", uint8(m))
 }
 
-// Names lists the set's providers by their TOML spelling, in LoginProvider
+// ParseLoginMode parses the value of `login.<provider>`. "sandbox" and "host"
+// are the accepted set. The empty string is refused rather than read as the
+// absent key: a line that spells nothing can have no effect, and an author
+// who wrote it believes it does something. Anything else is refused quoting
+// the accepted set; it is never read as the nearest mode it resembles.
+func ParseLoginMode(l LoginProvider, s string) (LoginMode, error) {
+	switch s {
+	case "sandbox":
+		return LoginSandbox, nil
+	case "host":
+		return LoginHost, nil
+	case "":
+		return LoginOff, fmt.Errorf("login.%s = \"\" grants nothing: write \"sandbox\" or \"host\", "+
+			"or omit the key for no login.", l)
+	default:
+		return LoginOff, fmt.Errorf("unknown login mode %q for %s (want \"sandbox\" or \"host\")", s, l)
+	}
+}
+
+// LoginKey renders one provider's mode the way a profile spells it, e.g.
+// `login.claude = "host"`.
+func LoginKey(l LoginProvider, m LoginMode) string {
+	return fmt.Sprintf("login.%s = %q", l, m)
+}
+
+// LoginModes is the resolved `login` table: one mode per provider, LoginOff
+// where no selected profile names it. The zero value is every provider off.
+//
+// It is an ordinary feature key a user profile sets — there is no builtin
+// that turns it on, and @claude does not (issue #455, a maintainer decision):
+// the hole exists only where a profile spells `login.claude` itself, never
+// merely by riding along with `@claude -p @net`.
+type LoginModes [loginProviders]LoginMode
+
+// Mode returns l's mode.
+func (m LoginModes) Mode(l LoginProvider) LoginMode {
+	if l >= loginProviders {
+		return LoginOff
+	}
+	return m[l]
+}
+
+// With returns m with l set to mode.
+func (m LoginModes) With(l LoginProvider, mode LoginMode) LoginModes {
+	m[l] = mode
+	return m
+}
+
+// Any reports whether any provider is on.
+func (m LoginModes) Any() bool {
+	for _, mode := range m {
+		if mode != LoginOff {
+			return true
+		}
+	}
+	return false
+}
+
+// Keys renders every provider that is on as LoginKey does, in LoginProvider
 // order.
-func (s LoginSet) Names() []string {
+func (m LoginModes) Keys() []string {
 	var out []string
-	for _, l := range s.Providers() {
-		out = append(out, l.String())
+	for _, l := range LoginProviders() {
+		if mode := m.Mode(l); mode != LoginOff {
+			out = append(out, LoginKey(l, mode))
+		}
 	}
 	return out
 }
 
-// String renders the set as its TOML list, e.g. `["claude"]`; `[]` when empty.
-func (s LoginSet) String() string {
-	return fmt.Sprintf("%q", s.Names())
-}
-
-// ParseLoginSet parses a profile's `login` list. Any element ParseLoginProvider
-// refuses is an error; duplicates are not.
-func ParseLoginSet(names []string) (LoginSet, error) {
-	var s LoginSet
-	for _, n := range names {
-		l, err := ParseLoginProvider(n)
-		if err != nil {
-			return 0, err
+// Table maps every provider that is on to its mode's spelling, e.g.
+// {"claude": "host"}; nil when none is.
+func (m LoginModes) Table() map[string]string {
+	var out map[string]string
+	for _, l := range LoginProviders() {
+		if mode := m.Mode(l); mode != LoginOff {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[l.String()] = mode.String()
 		}
-		s = s.With(l)
 	}
-	return s, nil
+	return out
 }
 
 // There is deliberately no restriction operation here — no Clamp, no Apply, no

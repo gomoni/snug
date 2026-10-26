@@ -110,10 +110,12 @@ type Profile struct {
 	// written.
 	Podman string
 
-	// Login names the providers whose sign-in the login bridge completes
-	// through the host browser, unioned across profiles like Plugins. See
-	// LoginSet: it is an ordinary key, not a builtin.
-	Login []string
+	// Login is the `login` table: per provider, what snug does for that
+	// provider's sign-in. A provider the table does not name is off; Resolve
+	// joins the tables per provider and refuses two that disagree (see
+	// LoginMode). It is an ordinary key, not a builtin. The profile loader
+	// never stores LoginOff, and a LoginOff built in Go names nothing.
+	Login map[LoginProvider]LoginMode
 
 	// Identity pins one git/ssh/gh account. See identity.go.
 	Identity *Identity

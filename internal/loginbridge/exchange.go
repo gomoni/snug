@@ -185,8 +185,8 @@ func fetchProfile(ctx context.Context, d Doer, access policy.Secret) (profileAns
 
 // tokenAnswer is the token endpoint's answer, checked.
 type tokenAnswer struct {
-	Access, Refresh policy.Secret
-	ExpiresIn       time.Duration
+	AccessToken, RefreshToken policy.Secret
+	ExpiresIn                 time.Duration
 	// RefreshExpiresIn is zero when the answer named none.
 	RefreshExpiresIn time.Duration
 	Scopes           []string
@@ -225,7 +225,7 @@ func checkTokenAnswer(body []byte) (tokenAnswer, error) {
 	if !ok || access == "" || len(access) > maxAccessToken {
 		return tokenAnswer{}, fmt.Errorf("the token endpoint's answer carried no access_token of 1 to %d bytes", maxAccessToken)
 	}
-	a.Access = policy.Secret(access)
+	a.AccessToken = policy.Secret(access)
 	if raw, present := obj["token_type"]; present {
 		tt, ok := str("token_type")
 		if !ok || !strings.EqualFold(tt, "bearer") {
@@ -252,7 +252,7 @@ func checkTokenAnswer(body []byte) (tokenAnswer, error) {
 	}
 
 	if refresh, ok := str("refresh_token"); ok && refresh != "" {
-		a.Refresh = policy.Secret(refresh)
+		a.RefreshToken = policy.Secret(refresh)
 	} else {
 		a.hostProblem = "the token endpoint answered without a refresh token (an inference-only login); the host keeps its own"
 	}

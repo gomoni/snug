@@ -21,8 +21,17 @@ import (
 // guest path is the OFFENDING profile's, which a replacement would erase from
 // the one screen that exists to name it.
 func planBrowserFIFO(p *policy.Policy, refusedBy error) error {
-	if !p.Login.Has(policy.LoginClaude) || refusedBy != nil {
+	if !p.Login.Any() || refusedBy != nil {
 		return nil
+	}
+	if p.Login.Mode(policy.LoginClaude) == policy.LoginHost {
+		if _, mapped := p.Mounts[policy.ClaudeCredentialDirGuest]; !mapped {
+			dir, err := plannedClaudeRunDir()
+			if err != nil {
+				return err
+			}
+			p.BindRunDir(dir, policy.ClaudeCredentialDirGuest, policy.LoginKey(policy.LoginClaude, policy.LoginHost))
+		}
 	}
 	if _, mapped := p.Mounts[policy.BrowserFIFOGuest]; mapped {
 		return nil
@@ -43,7 +52,8 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 		return
 	}
 	scopes := loginbridge.PinnedScopes()
-	fmt.Fprintf(out, "         browser bridge  login = %q — the sandbox may ask snug to open a Claude login page\n", b.Login)
+	fmt.Fprintf(out, "         browser bridge  %s — the sandbox may ask snug to open a Claude login page\n",
+		strings.Join(b.Keys, " "))
 	fmt.Fprintf(out, "                         in YOUR browser, directly, one at a time. Accepted shape:\n")
 	fmt.Fprintf(out, "                         %s\n", loginbridge.PinnedAuthorizeBase())
 	fmt.Fprintf(out, "                         client %s, exactly %d scopes:\n", loginbridge.PinnedClientID(), len(scopes))
@@ -57,6 +67,17 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 	fmt.Fprintf(out, "                         sandbox and answers your browser itself. Nothing is forwarded\n")
 	fmt.Fprintf(out, "                         into the sandbox's namespace; host loopback stays unreachable\n")
 	fmt.Fprintf(out, "                         from inside.\n")
+	if b.HostRewrite {
+		fmt.Fprintf(out, "         host login      A LOGIN YOU APPROVE REWRITES THIS HOST'S ~/.claude/.credentials.json:\n")
+		fmt.Fprintf(out, "                         snug opens the page with its own verifier and state, exchanges\n")
+		fmt.Fprintf(out, "                         the code on the host, and replaces the host's refresh token for\n")
+		fmt.Fprintf(out, "                         the account ~/.claude.json names, never another; the sandbox gets\n")
+		fmt.Fprintf(out, "                         a fresh access token only, at %s.\n", policy.ClaudeCredentialDirGuest)
+		fmt.Fprintf(out, "                         At most %d rewrites per run, each a click of yours.\n", b.MaxRelays)
+		if b.HostError != "" {
+			fmt.Fprintf(out, "                         a real run would REFUSE to start: %s\n", visibleValue(b.HostError))
+		}
+	}
 	if b.OpenerError != "" {
 		fmt.Fprintf(out, "         opener          NONE — a real run would REFUSE to start: %s\n", visibleValue(b.OpenerError))
 	} else {
@@ -70,7 +91,7 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 // in longLivedProcesses: xdg-open is started per login, not per run, so
 // counting it would make the process count a `ps` check cannot confirm.
 func describeBrowserTopology(out io.Writer, p *policy.Policy) {
-	if !p.Login.Has(policy.LoginClaude) {
+	if !p.Login.Any() {
 		return
 	}
 	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached.\n")
