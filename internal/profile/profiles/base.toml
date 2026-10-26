@@ -622,10 +622,26 @@ dns = true
 # ordinary feature key, not something this builtin sets — @claude alone never
 # stages it, and Claude Code's own manual /login flow (print a URL, paste back
 # a code) keeps working exactly as it does today. A user profile turns it on
-# by writing `login = ["claude"]` alongside `@claude @net`:
+# by writing `login.claude = "sandbox"` or `login.claude = "host"` alongside
+# `@claude @net`.
 #
-# ABUSE: with the key on, a hostile process inside the sandbox can make snug
-# open https://claude.com/cai/oauth/authorize DIRECTLY in YOUR browser — no
+# ABUSE, login.claude = "host" (issue #662): a hostile process inside the
+# sandbox can use this to open Claude's consent page in your browser — at
+# most five times per run, one at a time, thirty seconds apart — and, if you
+# approve it, to have snug REPLACE the refresh token in your host
+# ~/.claude/.credentials.json for the account you are already signed in to,
+# never a different one, at most three times per run, and hand the sandbox a
+# fresh access token that lasts hours and renews nothing. It cannot choose
+# the URL (snug's constants, snug's own state and challenge), the account
+# (your browser's session chooses), see the code or the refresh token
+# (exchanged and stored on the host only), reach the listener (host loopback
+# is sealed from the sandbox), or put a byte into the host file (snug writes
+# it from the vendor's answers). The sandbox never holds a refresh token ONLY
+# IF YOU DO NOT PASTE A CODE into claude's own /login prompt inside: that
+# prompt is the client's, and a code pasted there is exchanged inside.
+#
+# ABUSE, login.claude = "sandbox": a hostile process inside the sandbox can
+# make snug open https://claude.com/cai/oauth/authorize DIRECTLY in YOUR browser — no
 # snug page in between — for Claude Code's own client id and the seven scopes
 # snug pins (org:create_api_key among them), with a challenge, a state and a
 # callback port the SANDBOX chose, at most five times per run and at most once
