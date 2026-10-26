@@ -48,9 +48,21 @@ type sshPin struct {
 // wrong name, and the host's ssh would be checking keys the sandbox's never
 // sees.
 //
-// A host with no ssh is asked nothing, and its known_hosts are read from
+// It asks the first ssh on the host's PATH; resolveSandboxSSH asks the
+// sandbox's own ssh instead when that is another file (probeSSHPinWith). A
+// host with no ssh is asked nothing, and its known_hosts are read from
 // OpenSSH's default locations: the sandbox may still carry an ssh of its own.
 func probeSSHPin(home, host string) (sshPin, error) {
+	ssh, err := exec.LookPath("ssh")
+	if err != nil {
+		ssh = ""
+	}
+	return probeSSHPinWith(ssh, home, host)
+}
+
+// probeSSHPinWith is probeSSHPin asking the ssh binary at ssh; "" asks
+// nothing and reads known_hosts from OpenSSH's default locations.
+func probeSSHPinWith(ssh, home, host string) (sshPin, error) {
 	// Resolve refuses the same spelling later; this is the copy that runs
 	// before host reaches an argv, where a leading '-' is an ssh option.
 	if host == "" || !policy.IsHostName(host) {
@@ -63,7 +75,7 @@ func probeSSHPin(home, host string) (sshPin, error) {
 	}
 	var pin sshPin
 	revokedFile := ""
-	if ssh, err := exec.LookPath("ssh"); err == nil {
+	if ssh != "" {
 		stdout, stderr, err := runSSHProbe(ssh, "-G", "-o", "BatchMode=yes", "-l", "git", "--", host)
 		if err != nil {
 			return sshPin{}, sshProbeError(host, err, stderr)

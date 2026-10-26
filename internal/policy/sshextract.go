@@ -30,6 +30,12 @@ import (
 // defaults. Nothing here can fail that way: an algorithm list is satisfied by
 // the ssh binary itself, and a sandbox that has a system ssh_config to replace
 // has that binary from the same bound tree (see SystemSSHConfigFrom).
+//
+// The whitelist is the set of values CARRIED FROM THE HOST. The
+// `RevokedHostKeys` line SystemSSHConfigFrom writes is not one: it is a path
+// snug authors, pointing at content snug staged, like UserKnownHostsFile and
+// RevokedHostKeys in Identity.SSHConfig. The host's path string is never
+// written.
 var SSHKeyWhitelist = []string{
 	"ciphers",
 	"macs",
@@ -162,17 +168,22 @@ func SSHKeySpelling(k string) string {
 // SystemSSHConfig is the generated replacement with nothing carried over: the
 // shape a host that customises nothing gets, and the shape every host got
 // before issue #43.
-func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
+func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil, false) }
 
 // SystemSSHConfigFrom is the generated replacement for the system-wide
-// ssh_config. It is authored by snug in EVERY sandbox whose deepest covering
-// grant actually supplies a host file at the path — see replaceSystemSSHConfig
-// for the coverage rule that decides WHEN. This has NOTHING to do with a
-// pinned identity: the failure it fixes is a configuration-chain problem, not
-// a credential one, and it fires (or does not) the same way whether or not
-// [identity] is set.
+// ssh_config. It is authored by snug where a bind supplies the host's copy,
+// and where no grant supplies one but the sandbox's PATH finds an ssh — see
+// replaceSystemSSHConfig for the rule that decides WHEN. revoked says the host's global RevokedHostKeys file
+// is staged at SystemRevokedHostKeysGuest, and adds the line naming it. This
+// has NOTHING to do with a pinned identity: the failure it fixes is a
+// configuration-chain problem, not a credential one, and it fires (or does
+// not) the same way whether or not [identity] is set.
 //
-// WHY THIS EXISTS, measured rather than reasoned: the sandbox maps exactly
+// WHY THIS EXISTS, twice over. Where no grant supplies a system file (@sys
+// does not grant /etc/ssh), the sandbox's ssh would run on its compiled-in
+// defaults, which can be weaker than the host's: this file carries the
+// host's values instead. And where a grant does supply one, measured rather
+// than reasoned: the sandbox maps exactly
 // one uid, so every root-owned file under a read-only bind reads as 65534
 // inside it. OpenSSH refuses to use a configuration file owned by neither
 // root nor the invoking user, and the refusal is fatal rather than a
@@ -207,8 +218,8 @@ func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
 //     defaults.
 //   - The lists are EXPANDED by the same ssh that will read them back. `ssh
 //     -G` resolves `^`/`+`/`-` modifiers, so no modifier syntax survives into
-//     this file, and the binary that expanded them is the binary in the
-//     bound tree the replaced config came from. A sandbox whose ssh is some
+//     this file, and the binary that expanded them is the sandbox's own
+//     PATH ssh, probed on the host (internal/cli). A sandbox whose ssh is some
 //     OTHER, older build could refuse an algorithm name it does not know —
 //     loudly ("Bad SSH2 cipher spec"), never silently, and disclosed in the
 //     SSH block of --dry-run.
@@ -223,7 +234,16 @@ func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
 // (CLAUDE.md, "PATH precedence, not overmounting"). It appears in --dry-run
 // as a `data` row with `(snug)` provenance, plus a `replaces:<profile>`
 // suffix when it displaced content a profile's bind supplied at that path —
-// see Policy.Replace and replaceSystemSSHConfig.
+// see Policy.Replace and replaceSystemSSHConfig. Where no grant supplied a
+// file there, it is a `(snug)` row alone.
+//
+// The carried values are what the host's ssh resolves for a name no Host or
+// Match pattern matches (internal/cli's probe). Host blocks for other names
+// are not carried, except the pinned host's, which the generated
+// ~/.ssh/config sets first. A block with a negated pattern (`Host * !x`,
+// `Match !host x`) DOES match that name, so inside it applies to x too, where
+// the host's ssh never applies it. That residual is stated in the file and in
+// --dry-run's SSH block.
 //
 // replaceSystemSSHConfig does not check who owns the host file it replaces —
 // owner-gating was considered and rejected (issue #40:
@@ -245,18 +265,16 @@ func SystemSSHConfig() []byte { return SystemSSHConfigFrom(nil) }
 // the sandbox's own authority — no escalation is being closed here, this is
 // legibility and robustness.
 //
-// ABUSE: a hostile process inside the sandbox can use this to run `ssh` —
-// and therefore `git` over ssh, `scp` and `rsync -e ssh` — where it
-// previously died parsing the host's root-owned config; it gains no
-// credential by it, because without a pinned identity there is no key, no
-// agent socket and no known_hosts inside, so it can only reach hosts that
-// would accept it with no secret of yours, over egress @net already granted
-// and with the same reach a plain TCP client already had. It cannot modify
-// the file. What it can READ is the host's algorithm preferences and
-// RequiredRSASize — the same facts `ssh -Q` and the bound /usr already tell
-// it, and the same ones every server it connects to is told in the clear
-// during the handshake.
-func SystemSSHConfigFrom(v SSHValues) []byte {
+// ABUSE: a hostile process inside the sandbox can use this to read the
+// host's algorithm preferences, RequiredRSASize, and which host keys the host
+// has revoked (the staged RevokedHostKeys file). That is public material and
+// a list of distrust, no credential: the algorithms are what every server it
+// connects to is told in the clear during the handshake, and a revocation
+// list names keys nobody should accept. It cannot write either file, a
+// read-only data mount under --remount-ro /, and it gains no reach: ssh
+// already ran inside on the bound binary, and this only makes it check hosts
+// as strictly as the host's ssh does.
+func SystemSSHConfigFrom(v SSHValues, revoked bool) []byte {
 	var b strings.Builder
 	b.WriteString("# Generated by snug, replacing this host's system-wide ssh_config.\n")
 	b.WriteString("#\n")
@@ -264,16 +282,31 @@ func SystemSSHConfigFrom(v SSHValues) []byte {
 	b.WriteString("# read-only bind reads as 65534 inside it. OpenSSH refuses a\n")
 	b.WriteString("# configuration file owned by neither root nor the caller — fatally,\n")
 	b.WriteString("# not as a warning — so ssh, and therefore git-over-ssh, scp and\n")
-	b.WriteString("# rsync -e ssh, did not run inside the sandbox at all on a host whose\n")
-	b.WriteString("# system-wide ssh_config lives under a granted tree. This has nothing\n")
-	b.WriteString("# to do with pinning an identity; git hits the same root cause on a\n")
-	b.WriteString("# different file and takes the same shape of fix (safe.directory = *).\n")
+	b.WriteString("# rsync -e ssh, would not run inside the sandbox at all on a host whose\n")
+	b.WriteString("# system-wide ssh_config lives under a granted tree. Where no grant\n")
+	b.WriteString("# supplies a system file, this one exists so the sandbox's ssh never\n")
+	b.WriteString("# falls back to compiled-in defaults weaker than the host's. This has\n")
+	b.WriteString("# nothing to do with pinning an identity; git hits the same root cause\n")
+	b.WriteString("# on a different file and takes the same shape of fix\n")
+	b.WriteString("# (safe.directory = *).\n")
 	b.WriteString("#\n")
 	b.WriteString("# It has no Include line for the same reason: every file it would pull\n")
 	b.WriteString("# in is root-owned too.\n")
 	b.WriteString("#\n")
 	b.WriteString("# If snug pinned an identity it also generated ~/.ssh/config; otherwise\n")
 	b.WriteString("# this file is the only ssh configuration in the sandbox.\n")
+	b.WriteString("#\n")
+	b.WriteString("# The values below are what this host's ssh resolves for a name no\n")
+	b.WriteString("# Host or Match pattern matches. Host blocks for other names are not\n")
+	b.WriteString("# carried, except a pinned host's, in ~/.ssh/config. A block with a\n")
+	b.WriteString("# negated pattern (Host * !x, Match !host x) matches that name, so\n")
+	b.WriteString("# here it applies to x too.\n")
+	if revoked {
+		b.WriteString("#\n")
+		b.WriteString("# RevokedHostKeys names a copy of the file this host's ssh names as\n")
+		b.WriteString("# RevokedHostKeys, staged by snug.\n")
+		fmt.Fprintf(&b, "RevokedHostKeys %s\n", SystemRevokedHostKeysGuest)
+	}
 
 	var carried []string
 	for _, k := range SortedSSHKeys() {

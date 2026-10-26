@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -856,7 +857,8 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	}
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
-	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
+		HostSSHBinary: "/usr/bin/ssh"}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -889,8 +891,9 @@ func TestDescribeSSHNamesTheReplacedPathAndItsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got := captureFile(t, func(f io.Writer) { describeSSH(f, plain) }); got != "" {
-		t.Errorf("SSH block printed with nothing covering either system ssh_config path: %q", got)
+	if got := captureFile(t, func(f io.Writer) { describeSSH(f, plain) }); strings.Contains(got, "REPLACED") ||
+		strings.Contains(got, "WRITTEN") {
+		t.Errorf("SSH block names a written ssh_config with nothing covering either path: %q", got)
 	}
 }
 
@@ -918,10 +921,14 @@ func TestDescribeSSHNamesADiscoveredPath(t *testing.T) {
 	}
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/usr/local/etc/ssh"}}
 	reg["runtime-only"] = &policy.Profile{Name: "runtime-only", RO: []string{runtimeOnlyDir(t, home) + ":/bin"}}
+	// The host's ssh has to be inside for anything to be authored; a
+	// directory bound at its own path stands in for a /usr/local bind.
+	sshBin := t.TempDir()
+	reg["sshbin"] = &policy.Profile{Name: "sshbin", RO: []string{sshBin}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
-		HostSSHConfigs: []string{guest}}
-	p, err := policy.Resolve(reg, []policy.ProfileName{"@home", "@target-rw", "sshhost", "runtime-only"}, ctx, policy.OSEnviron{})
+		HostSSHConfigs: []string{guest}, HostSSHBinary: filepath.Join(sshBin, "ssh")}
+	p, err := policy.Resolve(reg, []policy.ProfileName{"@home", "@target-rw", "sshhost", "runtime-only", "sshbin"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -945,7 +952,8 @@ func TestDescribeSSHNamesEveryCarriedKey(t *testing.T) {
 	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
 
 	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u", Command: []string{"/bin/sh"},
-		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr", "requiredrsasize": "2048"}}
+		HostSSHConfig: policy.SSHValues{"ciphers": "aes256-ctr", "requiredrsasize": "2048"},
+		HostSSHBinary: "/usr/bin/ssh"}
 	p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost"}, ctx, policy.OSEnviron{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -1126,5 +1134,192 @@ func TestDryRunSharedBlockOnAPolicyWithNothingWritable(t *testing.T) {
 	if strings.Contains(got, "the other's engine runs") {
 		t.Errorf("the SHARED block claims a shared engine store on a policy with no container "+
 			"profile:\n%s", got)
+	}
+}
+
+// A system ssh_config written where no grant supplied one displaced nothing,
+// so the row must not say REPLACED, and the 65534 reason does not apply.
+func TestDescribeSSHSaysWrittenWhereNothingWasReplaced(t *testing.T) {
+	const guest = "/etc/ssh/ssh_config"
+	p := &policy.Policy{
+		Mounts: map[string]policy.Mount{guest: {Guest: guest, Kind: policy.KindData,
+			Access: policy.AccessRO, From: []string{"(snug)"}, Authored: true}},
+		SystemSSHConfigs: []string{guest},
+	}
+	got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
+	if !strings.Contains(got, "WRITTEN at "+guest) || strings.Contains(got, "REPLACED") || strings.Contains(got, "65534") {
+		t.Errorf("SSH block for a file no grant supplied:\n%s", got)
+	}
+	// CONTROL: the same row with a replaces: entry is a replacement.
+	p.SystemSSHReplaced = []string{guest}
+	if got := captureFile(t, func(f io.Writer) { describeSSH(f, p) }); !strings.Contains(got, "REPLACED at "+guest) {
+		t.Errorf("SSH block for a displaced bind's file does not say REPLACED:\n%s", got)
+	}
+}
+
+// TestDescribeSSHStatesTheRevocationListAndTheHostBlocks would catch the SSH
+// block dropping either disclosure: whether this host's global
+// RevokedHostKeys is in force inside, and that per-host Host and Match blocks
+// are not carried. Without the second a human whose config narrows one host
+// reads a REPLACED/WRITTEN row and assumes their narrowing came along.
+func TestDescribeSSHStatesTheRevocationListAndTheHostBlocks(t *testing.T) {
+	const guest = "/etc/ssh/ssh_config"
+	for _, revoked := range []bool{false, true} {
+		p := &policy.Policy{
+			Mounts: map[string]policy.Mount{guest: {Guest: guest, Kind: policy.KindData,
+				Access: policy.AccessRO, From: []string{"(snug)"}, Authored: true}},
+			SystemSSHConfigs: []string{guest},
+			SystemSSHRevoked: revoked,
+		}
+		if revoked {
+			p.SystemSSHRevokedFrom = "/etc/ssh/revoked_keys"
+		}
+		got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
+		staged := "this host's global RevokedHostKeys /etc/ssh/revoked_keys,\n" +
+			"                    staged at " + policy.SystemRevokedHostKeysGuest
+		if strings.Contains(got, staged) != revoked || strings.Contains(got, "this host names none") == revoked {
+			t.Errorf("SystemSSHRevoked = %v: the revoked row says otherwise:\n%s", revoked, got)
+		}
+		if !strings.Contains(got, "per-host   the carried values are what this host's ssh resolves for a") ||
+			!strings.Contains(got, "pattern (Host * !x, Match !host x) matches that name, so") {
+			t.Errorf("SystemSSHRevoked = %v: no per-host disclosure:\n%s", revoked, got)
+		}
+	}
+	// CONTROL: with nothing authored the block is silent, so the rows above
+	// are about the authored file and not printed unconditionally.
+	if got := captureFile(t, func(f io.Writer) { describeSSH(f, &policy.Policy{}) }); strings.Contains(got, "per-host") {
+		t.Errorf("SSH block with no system ssh_config authored:\n%s", got)
+	}
+}
+
+// TestDescribeSSHSaysWhenNoSystemConfigIsWritten would catch --dry-run going
+// silent on a host that HAS ssh but got no system-wide ssh_config (the
+// redteam's F3). Silence there reads as "nothing to say". Two reasons are
+// held apart: the sandbox's PATH finds no ssh at all, so any ssh run inside
+// from elsewhere is on its compiled-in defaults; or it finds one, but no file
+// that ssh reads could be written. A host with no ssh stays silent. The rows
+// are read off the fields Resolve and resolveSandboxSSH fill
+// (HostPathSSH, SandboxSSHGuest, SandboxSSHHost, HostSSHBinary), set by hand
+// here, so this does not test that those fields are filled correctly.
+func TestDescribeSSHSaysWhenNoSystemConfigIsWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hostSSH string // the host PATH's ssh
+		sandbox string // the sandbox PATH's ssh, guest and host alike
+		want    []string
+		absent  []string
+	}{
+		{"the sandbox's PATH has no ssh", "/home/u/bin/ssh", "",
+			[]string{"SSH      no system-wide ssh_config written", "ssh        none on this sandbox's PATH", "compiled-in"},
+			[]string{"no file it reads could be written here"}},
+		{"the sandbox's ssh is inside, nothing was writable", "/usr/bin/ssh", "/usr/bin/ssh",
+			[]string{"SSH      no system-wide ssh_config written", "ssh        /usr/bin/ssh, the sandbox's PATH ssh", "no file it reads could be written here"},
+			[]string{"none on this sandbox's PATH", "probed separately"}},
+		// CONTROL: a host with no ssh prints nothing, so the rows above are
+		// conditional on a host ssh and not printed for every policy.
+		{"the host has no ssh", "", "", nil, []string{"SSH"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &policy.Policy{HostPathSSH: tc.hostSSH, SandboxSSHGuest: tc.sandbox, SandboxSSHHost: tc.sandbox}
+			if tc.sandbox != "" {
+				p.HostSSHBinary = tc.sandbox
+			}
+			got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("SSH block lacks %q:\n%s", w, got)
+				}
+			}
+			for _, a := range tc.absent {
+				if strings.Contains(got, a) {
+					t.Errorf("SSH block has %q:\n%s", a, got)
+				}
+			}
+		})
+	}
+}
+
+// TestDescribeSSHNamesThePinnedHostOnlyWhenItsConfigIsGenerated is the
+// redteam's F4: the per-host row said the pinned host's block is carried "in
+// the generated ~/.ssh/config" for identity.ssh.agent = "none", where snug
+// generates no ~/.ssh/config, so the row named a file that is not there. It
+// would catch the clause printed off anything other than the generated file
+// actually being in the policy. Both policies come from Resolve, so this also
+// fails if agent = "none" ever starts generating the file without the row
+// following.
+func TestDescribeSSHNamesThePinnedHostOnlyWhenItsConfigIsGenerated(t *testing.T) {
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	sshHost := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sshHost, "ssh_config"), []byte("# host's\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg["sshhost"] = &policy.Profile{Name: "sshhost", RO: []string{sshHost + ":/etc/ssh"}}
+	key, _ := writePinnedPubKey(t, t.TempDir())
+	const clause = "except the pinned host's"
+	for _, tc := range []struct {
+		name  string
+		agent policy.SSHMode
+		want  bool
+	}{
+		{"none", policy.SSHNone, false},
+		// POSITIVE CONTROL: proxy generates ~/.ssh/config and the clause
+		// prints, so the none case is not passing on a row that never has it.
+		{"proxy", policy.SSHAgentProxy, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := &policy.Identity{SSH: policy.IdentitySSH{Agent: tc.agent},
+				Git: policy.IdentityGit{Name: "u", Email: "u@example.com"}}
+			if tc.agent == policy.SSHAgentProxy {
+				id.SSH.Key = key
+			}
+			reg["pinned"] = &policy.Profile{Name: "pinned", Identity: id}
+			ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u",
+				Command: []string{"/bin/sh"}, HostSSHBinary: "/usr/bin/ssh"}
+			p, err := policy.Resolve(reg, []policy.ProfileName{"@sys", "@home", "@target-rw", "sshhost", "pinned"}, ctx, policy.OSEnviron{})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
+			if !strings.Contains(got, "per-host") {
+				t.Fatalf("no per-host row, so the clause is not measured:\n%s", got)
+			}
+			if strings.Contains(got, clause) != tc.want {
+				t.Errorf("agent = %s: per-host row has %q = %v, want %v:\n%s",
+					tc.name, clause, strings.Contains(got, clause), tc.want, got)
+			}
+		})
+	}
+}
+
+// TestDescribeSSHSaysWrittenOverAProfilesTmpfs is the redteam's F7. A profile
+// tmpfs exactly at the system ssh_config path is a mount snug's file lands on,
+// so the mount carries a `replaces:` note, and the screen read that note as
+// "REPLACED" with the 65534 reason, which is about a host file a bind
+// supplies. Nothing of the host's was there. It would catch the row being
+// derived from provenance again instead of from the arm Resolve took.
+func TestDescribeSSHSaysWrittenOverAProfilesTmpfs(t *testing.T) {
+	const guest = "/usr/etc/ssh/ssh_config"
+	reg := loadTestRegistry(t)
+	home, target := testTree(t)
+	reg["minusr"] = &policy.Profile{Name: "minusr", RO: []string{"/usr/bin"},
+		Symlink: []policy.Symlink{{At: "/bin", Target: "usr/bin"}}}
+	reg["exacttmp"] = &policy.Profile{Name: "exacttmp", Tmpfs: []string{guest}}
+	ctx := policy.Context{Target: target, Home: home, Shell: "/bin/sh", HostUserName: "u", HostGroupName: "u",
+		Command: []string{"/bin/sh"}, HostSSHBinary: "/usr/bin/ssh",
+		HostSSHConfigs: []string{guest}, HostSSHTopConfig: guest}
+	p, err := policy.Resolve(reg, []policy.ProfileName{"minusr", "@home", "@target-rw", "exacttmp"}, ctx, policy.OSEnviron{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// The fixture is the shape it claims: snug's file sits on the profile's
+	// tmpfs, and its provenance says it displaced that mount.
+	m, ok := p.Mounts[guest]
+	if !ok || !slices.ContainsFunc(m.From, func(f string) bool { return strings.HasPrefix(f, "replaces:") }) {
+		t.Fatalf("control: %s is %+v (present %v); want snug's file with a replaces: note", guest, m, ok)
+	}
+	got := captureFile(t, func(f io.Writer) { describeSSH(f, p) })
+	if !strings.Contains(got, "WRITTEN at "+guest) || strings.Contains(got, "REPLACED") || strings.Contains(got, "65534") {
+		t.Errorf("SSH block over a profile's tmpfs:\n%s", got)
 	}
 }

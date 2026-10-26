@@ -60,13 +60,21 @@ func goldenCases() []goldenCase {
 		// that appears right after `--ro-bind /usr /usr`.
 		{"system-ssh", testDefaults, testCtx(), sysSSHProbeEnv},
 		// The negative half, same fake host (the file genuinely exists) but a
-		// selection with no @sys: nothing covers /usr/etc/ssh/ssh_config, so the
-		// row must be ABSENT. Without this case a reviewer cannot tell "coverage
-		// decided this" from "the file happened to be there", because the only
-		// other case with the file present always has @sys too. "runtime-bin"
-		// supplies the OS-runtime grant Validate requires, deliberately at /bin
-		// rather than /usr, so it cannot accidentally cover the ssh path itself.
+		// selection with no @sys: nothing covers /usr, so neither the host's
+		// ssh binary nor its ssh_config is inside, and the row must be ABSENT.
+		// Without this case a reviewer cannot tell "the selection decided this"
+		// from "the file happened to be there", because the only other case
+		// with the file present always has @sys too. "runtime-bin" supplies the
+		// OS-runtime grant Validate requires, deliberately at /bin rather than
+		// /usr, so it cannot accidentally cover the ssh paths themselves.
 		{"system-ssh-uncovered", []ProfileName{"@home", "@target-rw", "@parent-ro", "runtime-bin"}, testCtx(), sysSSHProbeEnv},
+		// The Debian/Fedora shape: the host's ssh names /etc/ssh/ssh_config,
+		// which the real @sys does not grant (sys-usr plays it), so it lands on
+		// the root tmpfs; the host also names a global RevokedHostKeys file.
+		// The reviewable lines are the two `--ro-bind-data`s, at
+		// /etc/ssh/ssh_config and at /snug/revoked_host_keys, and the skeleton
+		// --dirs they need.
+		{"system-ssh-etc", []ProfileName{"sys-usr", "@target-rw"}, systemSSHEtcCtx(), nil},
 		// The review artifact for the OSC-52 half of --new-session (issue
 		// #528): a run whose stdio carries no terminal — a pipe, a redirect, a
 		// CI job, a hook. Byte-identical to "defaults" except for the single

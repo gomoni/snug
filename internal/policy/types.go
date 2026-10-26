@@ -524,12 +524,46 @@ type Policy struct {
 	// (issue #42: the set now includes whatever the host's ssh named).
 	SystemSSHConfigs []string
 
+	// SystemSSHReplaced is the subset of SystemSSHConfigs where a covering
+	// bind supplied a host file that snug's displaced — the root-owned file
+	// OpenSSH would refuse. Every other entry was written where no grant
+	// supplied a file. Recorded per path by replaceSystemSSHConfig, so
+	// --dry-run never infers it from provenance text.
+	SystemSSHReplaced []string
+
 	// SystemSSHCarried is the whitelisted keys snug copied from this host's
 	// resolved ssh configuration into the file it generated, sorted. Written
 	// only by replaceSystemSSHConfig, and read by --dry-run's SSH block for
 	// the same reason SystemSSHConfigs is: the screen states what Resolve
 	// decided rather than recomputing it (issue #43).
 	SystemSSHCarried []string
+
+	// SystemSSHRevoked reports that snug staged this host's global
+	// RevokedHostKeys file at SystemRevokedHostKeysGuest and the generated
+	// system-wide ssh_config names it. Written only by
+	// replaceSystemSSHConfig, read by --dry-run's SSH block.
+	SystemSSHRevoked bool
+
+	// SystemSSHRevokedFrom is the host file the staged KRL was read from
+	// (Context.HostSSHRevokedPath), for --dry-run only. Empty unless
+	// SystemSSHRevoked.
+	SystemSSHRevokedFrom string
+
+	// HostSSHBinary is Context.HostSSHBinary — the binary the carried values
+	// were read from — and HostSSHBinaryInside reports whether some bind
+	// supplies it inside the sandbox. Written only by replaceSystemSSHConfig,
+	// read by --dry-run's SSH block.
+	HostSSHBinary       string
+	HostSSHBinaryInside bool
+
+	// SandboxSSHGuest and SandboxSSHHost are the ssh this sandbox's PATH
+	// finds and the host file behind it (Policy.SandboxBinary), computed by
+	// Resolve from the final PATH; both empty when there is none. HostPathSSH
+	// is Context.HostPathSSH. The caller compares SandboxSSHHost with
+	// Context.HostSSHBinary, and --dry-run names all three.
+	SandboxSSHGuest string
+	SandboxSSHHost  string
+	HostPathSSH     string
 
 	// IdentityOwners names, per identity block ("ssh", "git", "gh"), every
 	// profile that pinned it, sorted — two profiles setting one block
@@ -704,6 +738,16 @@ func (p *Policy) Replace(m Mount) {
 	// refusals golden: `@claude` staging .claude.json over an anchor rendered
 	// as "from @claude+replaces:(snug anchor)" inside a refusal about a
 	// completely different grant.
+	// A profile's own mount inside SnugDir is NOT displaced. Validate's rule
+	// 4b refuses it, and it has to see it: displacing it here would make that
+	// refusal depend on whether snug happened to write at the same path this
+	// run (the host naming a RevokedHostKeys file, an identity pinned). The
+	// one profile mount allowed there, a staged executable, is displaced as
+	// before.
+	if old, ok := p.Mounts[m.Guest]; ok && !old.Authored && insideSnugDir(m.Guest) &&
+		!stagedFileUnderSnugDir(m.Guest, old) {
+		return
+	}
 	if old, ok := p.Mounts[m.Guest]; ok && !old.Anchor {
 		m.From = append(append([]string{}, m.From...),
 			"replaces:"+strings.Join(old.From, "+"))

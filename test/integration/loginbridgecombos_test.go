@@ -343,7 +343,16 @@ func TestTheLoginBridgeBesideTheSSHAgentProxy(t *testing.T) {
 [ -p /snug/browser.fifo ] && echo FIFO-IS-FIFO
 echo "FIFO-SRC $(awk '$5 == "/snug/browser.fifo" {print $4}' /proc/self/mountinfo)"
 echo "AGENT-SRC $(awk -v p="$SSH_AUTH_SOCK" '$5 == p {print $4}' /proc/self/mountinfo)"`
-	s := f.startWith(t, []string{"pinned"}, prelude, "release=release", "wait=30s")
+	// The login fixture's config does not carry the suite's ssh profile in
+	// its defaults (other tests here compare SNUG_PROFILES exactly), so this
+	// pinned run names it: the pin's known_hosts comes from the sandbox's
+	// ssh, and that has to be the suite's (pinSuiteKnownHosts).
+	extra := []string{"pinned"}
+	if suiteSSHProfile != "" {
+		f.addProfile(t, "suite-ssh", suiteSSHProfile)
+		extra = append(extra, "suite-ssh")
+	}
+	s := f.startWith(t, extra, prelude, "release=release", "wait=30s")
 	out := waitForLogLine(t, s, "SHIM-RC", 20*time.Second)
 	port := loginPort(t, out)
 	requireLoginHeld(t, s, port, false)

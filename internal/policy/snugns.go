@@ -134,6 +134,12 @@ const (
 	// rather than a third socket beside the two above (issue #455): it carries
 	// one line one way, and the host side reading it is the boundary.
 	BrowserFIFOGuest = SnugDir + "/browser.fifo"
+	// SystemRevokedHostKeysGuest is where snug stages the host's global
+	// RevokedHostKeys file for the system-wide ssh_config it generates. Not
+	// beside that config: on openSUSE its directory is inside the /usr bind,
+	// where a data mount at a path that does not exist fails the whole
+	// sandbox. SnugDir is snug's own, outside $HOME and every grant.
+	SystemRevokedHostKeysGuest = SnugDir + "/revoked_host_keys"
 )
 
 // EngineDir is the ONE place inside SnugDir a GRAFT may land: the engine's own

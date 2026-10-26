@@ -227,15 +227,28 @@ func (p *Policy) Validate(env Environ) error {
 		// the day the name is chosen, not on the day someone remembers to add a
 		// map entry. Between them there is no gap and no overlap.
 		if !m.Authored && insideSnugDir(g) && !stagedFileUnderSnugDir(g, m) {
+			// The fix depends on where the grant is: under the staging
+			// directory the profile meant to stage a tool; anywhere else in
+			// SnugDir it wants a path snug writes itself (the staged KRL, a
+			// proxy socket), and the fix is a path outside SnugDir.
+			fix := "Stage the FILE, never the directory:\n" +
+				"         ro = [\"/host/path/tool:" + StagedBinDir + "/tool\"]"
+			if !strings.HasPrefix(g, StagedBinDir+"/") && g != StagedBinDir {
+				fix = "Grant it at a path outside " + SnugDir + ", or remove the grant: " + g + "\n" +
+					"       is snug's to write, whether or not this run writes it."
+				if g == SystemRevokedHostKeysGuest {
+					fix += "\n       snug stages this host's RevokedHostKeys file here for the system-wide\n" +
+						"       ssh_config it generates."
+				}
+			}
 			return fmt.Errorf("profile %s puts %s at %s, inside snug's own namespace %s:\n"+
 				"       the ONE thing a profile may do there is stage a single executable read-only\n"+
 				"       under %s, which is what that directory exists for. Anything else — a tmpfs, a\n"+
 				"       writable bind, or a mount AT one of the directories snug creates — either\n"+
 				"       displaces something snug put there or escapes --remount-ro / and becomes a\n"+
 				"       writable directory ahead of /usr/bin on the PATH snug hands over.\n"+
-				"       Stage the FILE, never the directory:\n"+
-				"         ro = [\"/host/path/tool:%s/tool\"]",
-				provenance(m), describeNode(m), g, SnugDir, StagedBinDir, StagedBinDir)
+				"       %s",
+				provenance(m), describeNode(m), g, SnugDir, StagedBinDir, fix)
 		}
 		// SelfExeHost names snug's own executable and is bound at exactly one
 		// place, by snug. Resolve's canonical-host check skips it and the

@@ -67,7 +67,9 @@ func TestSymlinkedGeneratedParentCreatesNoHostFile(t *testing.T) {
 	env := writeProfiles(t, map[string]string{"repro": repro, "pinned": identity},
 		append(fixtureHome(home), "SSH_AUTH_SOCK="+sock)...)
 
-	out, code := cli(t, env, "--no-defaults", "-p", "@sys", "-p", "repro", "-p", "pinned",
+	// suite-ssh by name: --no-defaults drops it with the rest of the
+	// defaults, and the pin's known_hosts comes from the sandbox's ssh.
+	out, code := cli(t, env, "--no-defaults", "-p", "@sys", "-p", "repro", "-p", "pinned", "-p", "suite-ssh",
 		proj, "--", "true")
 
 	// (a) is the diagnostic, not the assertion — see (b) below for why.

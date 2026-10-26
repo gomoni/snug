@@ -691,8 +691,8 @@ func (i *Identity) SSHConfig(home string, pin SSHValues, revoked bool) []byte {
 const RevokedHostKeysGuest = ".ssh/revoked_host_keys"
 
 // The system-wide ssh_config replacement is no longer part of identity: it is
-// authored on every run whose deepest covering grant supplies the host's copy,
-// identity pinned or not. See SystemSSHConfigPaths, SystemSSHConfig and
+// authored on every run, identity pinned or not, where replaceSystemSSHConfig's
+// rule finds a path for it. See SystemSSHConfigPaths, SystemSSHConfig and
 // replaceSystemSSHConfig in systemsshconfig.go — this is where
 // (*Identity).SystemSSHConfig used to be.
 

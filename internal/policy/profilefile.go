@@ -414,6 +414,8 @@ func generatedFileLayer(p *Policy, g string) string {
 			"generated global one, and snug's pins (user, signing, insteadOf, safe.directory) still win there."
 	case g == p.Home+"/.ssh/config", g == p.Home+"/.ssh/known_hosts", g == p.Home+"/"+RevokedHostKeysGuest:
 		return "snug has no layer for ssh configuration yet; the generated file is what ssh reads at user scope."
+	case g == SystemRevokedHostKeysGuest:
+		return "snug stages this host's RevokedHostKeys file here for the system-wide ssh_config it generates; choose another path."
 	case base == "hosts.yml", g == p.Home+"/.kube/config", base == "allowed_signers",
 		strings.HasPrefix(base, "id_snug") && strings.HasSuffix(base, ".pub"):
 		return "this is a credential or a pin snug derives; there is no layer to add to it."

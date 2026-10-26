@@ -1570,7 +1570,9 @@ func describeCommitSigning(out io.Writer, p *policy.Policy) {
 
 // describeSSH states that snug replaced this host's system-wide ssh_config,
 // and why: a disclosure ("we generated this file instead of trusting the
-// host's") that needs to say what triggered it and what it costs.
+// host's") that needs to say what triggered it and what it costs — including
+// the global RevokedHostKeys file staged beside it, and the Host and Match
+// blocks it does not carry.
 //
 // It reads p.SystemSSHConfigs — the record Resolve wrote — rather than
 // re-deriving the coverage predicate: the screen must describe what Resolve
@@ -1594,14 +1596,48 @@ func describeCommitSigning(out io.Writer, p *policy.Policy) {
 // coincidence of two paths sharing one cause.
 func describeSSH(out io.Writer, p *policy.Policy) {
 	if len(p.SystemSSHConfigs) == 0 {
+		describeNoSSHConfig(out, p)
 		return
 	}
+	// Per path, from the arm Resolve recorded (SystemSSHReplaced): a covering
+	// bind supplied the host's file, or no grant supplied one.
+	var replaced, written bool
 	for _, guest := range p.SystemSSHConfigs {
-		fmt.Fprintf(out, "SSH      system-wide ssh_config REPLACED at %s\n", guest)
+		if slices.Contains(p.SystemSSHReplaced, guest) {
+			replaced = true
+			fmt.Fprintf(out, "SSH      system-wide ssh_config REPLACED at %s\n", guest)
+		} else {
+			written = true
+			fmt.Fprintf(out, "SSH      system-wide ssh_config WRITTEN at %s (no grant supplies one)\n", guest)
+		}
 	}
-	fmt.Fprintf(out, "         the host's is root-owned and reads as 65534 inside (one uid is\n")
-	fmt.Fprintf(out, "         mapped); OpenSSH refuses such a file, so ssh, git-over-ssh, scp\n")
-	fmt.Fprintf(out, "         and rsync -e ssh all die without this\n")
+	if replaced {
+		fmt.Fprintf(out, "         replaced: the host's is root-owned and reads as 65534 inside (one\n")
+		fmt.Fprintf(out, "         uid is mapped); OpenSSH refuses such a file, so ssh, git-over-ssh,\n")
+		fmt.Fprintf(out, "         scp and rsync -e ssh all die without this\n")
+	}
+	if written {
+		fmt.Fprintf(out, "         written: with no file the sandbox's ssh would run on its\n")
+		fmt.Fprintf(out, "         compiled-in defaults, which can be weaker than this host's\n")
+	}
+	describeSandboxSSH(out, p)
+	if p.SystemSSHRevoked {
+		fmt.Fprintf(out, "         revoked    this host's global RevokedHostKeys %s,\n",
+			policy.VisibleText(p.SystemSSHRevokedFrom))
+		fmt.Fprintf(out, "                    staged at %s\n", policy.SystemRevokedHostKeysGuest)
+	} else {
+		fmt.Fprintf(out, "         revoked    this host names none\n")
+	}
+	fmt.Fprintf(out, "         per-host   the carried values are what this host's ssh resolves for a\n")
+	fmt.Fprintf(out, "                    name no Host or Match pattern matches. Host blocks for\n")
+	if m, ok := p.Mounts[p.Home+"/.ssh/config"]; ok && m.Authored && m.Kind == policy.KindData {
+		fmt.Fprintf(out, "                    other names are not carried, except the pinned host's,\n")
+		fmt.Fprintf(out, "                    in the generated ~/.ssh/config. A block with a negated\n")
+	} else {
+		fmt.Fprintf(out, "                    other names are not carried. A block with a negated\n")
+	}
+	fmt.Fprintf(out, "                    pattern (Host * !x, Match !host x) matches that name, so\n")
+	fmt.Fprintf(out, "                    inside it applies to x too\n")
 	if len(p.SystemSSHCarried) == 0 {
 		fmt.Fprintf(out, "         cost       this host has no ssh to ask, so nothing was carried\n")
 		return
@@ -1629,6 +1665,60 @@ func describeSSH(out io.Writer, p *policy.Policy) {
 	fmt.Fprintf(out, "                    the host's ssh printed for these keys is written, so an\n")
 	fmt.Fprintf(out, "                    algorithm name this sandbox's ssh does not know is a loud\n")
 	fmt.Fprintf(out, "                    failure (`Bad SSH2 cipher spec`), never a silent one\n")
+}
+
+// describeNoSSHConfig is the SSH block for a run where snug authored no
+// system-wide ssh_config although the host has an ssh: without it the screen
+// is silent exactly where the sandbox's ssh may be running on its compiled-in
+// defaults. A host with no ssh gets nothing.
+func describeNoSSHConfig(out io.Writer, p *policy.Policy) {
+	if p.SandboxSSHHost == "" && p.HostPathSSH == "" && p.HostSSHBinary == "" {
+		return
+	}
+	fmt.Fprintf(out, "SSH      no system-wide ssh_config written\n")
+	describeSandboxSSH(out, p)
+	if p.SandboxSSHHost == "" {
+		fmt.Fprintf(out, "                    an ssh run from elsewhere inside would use its compiled-in\n")
+		fmt.Fprintf(out, "                    defaults, which can be weaker than this host's\n")
+		return
+	}
+	fmt.Fprintf(out, "                    no file it reads could be written here: it named none, or\n")
+	fmt.Fprintf(out, "                    each sits under a grant snug does not write into. It reads\n")
+	fmt.Fprintf(out, "                    what the grants supply, or runs on its compiled-in defaults\n")
+}
+
+// describeSandboxSSH names the ssh the sandbox's PATH finds — the one the
+// carried values were read from — and the host PATH's ssh when that is a
+// different file and was not the one asked.
+func describeSandboxSSH(out io.Writer, p *policy.Policy) {
+	if p.SandboxSSHHost == "" {
+		fmt.Fprintf(out, "         ssh        none on this sandbox's PATH\n")
+		if p.HostPathSSH != "" && len(p.SystemSSHConfigs) > 0 {
+			fmt.Fprintf(out, "                    the values are from this host's PATH ssh, %s\n",
+				policy.VisibleText(p.HostPathSSH))
+		}
+		return
+	}
+	if p.SandboxSSHHost == p.SandboxSSHGuest {
+		fmt.Fprintf(out, "         ssh        %s, the sandbox's PATH ssh\n", policy.VisibleText(p.SandboxSSHGuest))
+	} else {
+		fmt.Fprintf(out, "         ssh        %s, the sandbox's PATH ssh (host file %s)\n",
+			policy.VisibleText(p.SandboxSSHGuest), policy.VisibleText(p.SandboxSSHHost))
+	}
+	if p.HostPathSSH != p.SandboxSSHHost {
+		host := "this host has no ssh on its PATH"
+		if p.HostPathSSH != "" {
+			host = "this host's PATH ssh is " + policy.VisibleText(p.HostPathSSH)
+		}
+		if p.HostSSHBinary == p.SandboxSSHHost {
+			host += "; the sandbox's was probed separately"
+		}
+		fmt.Fprintf(out, "                    %s\n", host)
+	}
+	if p.HostSSHBinary != "" && p.HostSSHBinary != p.SandboxSSHHost {
+		fmt.Fprintf(out, "                    the values are from %s, NOT the sandbox's ssh\n",
+			policy.VisibleText(p.HostSSHBinary))
+	}
 }
 
 // describeCommands names EVERY executable staged in policy.StagedBinDir, which
