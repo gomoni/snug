@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -423,7 +422,7 @@ func takeStorageLock(ctx context.Context, root *os.Root, now func() time.Time) (
 	}
 }
 
-// hostLoginNote is the line --dry-run's CLAUDE block and the guidance share.
+// hostLoginLines is the host-mode paragraph of --dry-run's CLAUDE block.
 func hostLoginLines() []string {
 	return []string{
 		"login.claude = \"host\": a /login inside is completed on the HOST, which REWRITES",
@@ -437,5 +436,3 @@ func hostLoginLines() []string {
 // plannedClaudeRunDir is the --dry-run counterpart of startClaudeHostLogin:
 // it names the directory a real run would create, creating nothing.
 func plannedClaudeRunDir() (string, error) { return plannedSocket(claudeRunDirName) }
-
-func joinLines(l []string) string { return strings.Join(l, "\n") }

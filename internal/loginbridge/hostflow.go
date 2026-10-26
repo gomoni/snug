@@ -56,7 +56,7 @@ type HostFiles interface {
 	RenewSandbox(ctx context.Context, r policy.ClaudeLoginResult, now time.Time, keepPlan bool) error
 	// WriteHost rewrites the host's credential file from r if it still holds
 	// what snap recorded. A non-nil error is the reason it did not, worded
-	// to follow "the host's login was not rewritten: ".
+	// to follow "was NOT rewritten: ".
 	WriteHost(ctx context.Context, snap HostSnapshot, r policy.ClaudeLoginResult, now time.Time) error
 }
 
