@@ -1980,9 +1980,11 @@ func TestEarlyLandingNeverMatchesAnExactPath(t *testing.T) {
 		guest string
 		p     *Policy
 	}{
+		// Writable, because below a read-only file the walk ends walkNowhere
+		// (#686); only a file the payload can replace still lands early.
 		{
-			"file below a bind", env, "/ro/f/more",
-			&Policy{Mounts: map[string]Mount{"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRO}}},
+			"file below a writable bind", env, "/ro/f/more",
+			&Policy{Mounts: map[string]Mount{"/ro": {Guest: "/ro", Host: "/hro", Kind: KindBind, Access: AccessRW}}},
 		},
 		{
 			"missing component below a bind", env, "/ro/missing/tail",
@@ -1991,10 +1993,6 @@ func TestEarlyLandingNeverMatchesAnExactPath(t *testing.T) {
 		{
 			"unanchored name under a bare tmpfs", noHostLinks{}, "/tmp/x",
 			&Policy{Mounts: map[string]Mount{"/tmp": {Guest: "/tmp", Kind: KindTmpfs, Access: AccessRW}}},
-		},
-		{
-			"generated file with more path below it", noHostLinks{}, "/f/more",
-			&Policy{Mounts: map[string]Mount{"/f": {Guest: "/f", Kind: KindData, Access: AccessRO}}},
 		},
 	}
 	for _, tc := range cases {
@@ -2176,5 +2174,115 @@ func TestEngineViewWritersIncludeShadowedSandboxTarget(t *testing.T) {
 			"root must still be in hostWriters even though the graft at /home/u/proj/sub shadowed "+
 			"the ORIGINAL rw mount out of the derived mount map; a writers slice read from the "+
 			"post-shadow map instead of p.Mounts would lose it here", v)
+	}
+}
+
+// ── issue #686: nothing exists below a file ─────────────────────────────────
+//
+// walkLinks let a file cover its descendants. A generated file with path left
+// below it, and a single-file bind whose host answers ENOTDIR, both reported
+// walkLanded, so GrantsGuestPath printed no `← not granted` mark and sanitise
+// kept the element. The kernel answers ENOTDIR inside, so the path names
+// nothing.
+
+// TestNothingIsGrantedBelowAFile fails if a path below a generated file, or
+// below a bind of a host file (at its own path or translated), counts as
+// granted. The controls are the files themselves and an absent name under a
+// directory bind, which the bind still answers for.
+func TestNothingIsGrantedBelowAFile(t *testing.T) {
+	env := newFakeEnv()
+	env.files["/etc/hostname"] = true
+
+	p := &Policy{Mounts: map[string]Mount{
+		"/etc/cfile":    {Guest: "/etc/cfile", Kind: KindData, Access: AccessRO},
+		"/etc/hostname": {Guest: "/etc/hostname", Host: "/etc/hostname", Kind: KindBind, Access: AccessRO},
+		"/opt/tool":     {Guest: "/opt/tool", Host: "/etc/hostname", Kind: KindBind, Access: AccessRO},
+		"/w/file":       {Guest: "/w/file", Host: "/etc/hostname", Kind: KindBind, Access: AccessRW},
+		"/usr":          {Guest: "/usr", Host: "/usr", Kind: KindBind, Access: AccessRO},
+	}}
+
+	for _, below := range []string{"/etc/cfile/sub/x", "/etc/cfile/x", "/etc/hostname/sub/x", "/opt/tool/bin", "/w/file/bin"} {
+		if p.GrantsGuestPath(env, below) {
+			t.Errorf("GrantsGuestPath(%q) = true; nothing exists below a file (ENOTDIR inside)", below)
+		}
+		if keep, reason := p.keepHostElement(env, below); keep || reason != DropNoGrant {
+			t.Errorf("keepHostElement(%q) = (%v, %v), want (false, DropNoGrant)", below, keep, reason)
+		}
+		if v := p.Shadow(env, below); v != NotSlot {
+			t.Errorf("Shadow(%q) = %v, want NotSlot: nothing can be created below a file", below, v)
+		}
+	}
+
+	for _, at := range []string{"/etc/cfile", "/etc/hostname", "/opt/tool", "/w/file", "/usr/bin/absent"} {
+		if !p.GrantsGuestPath(env, at) {
+			t.Errorf("GrantsGuestPath(%q) = false; control, want true", at)
+		}
+	}
+	if v := p.Shadow(env, "/w/file"); v != Slot {
+		t.Errorf("Shadow(/w/file) = %v, want Slot: the rw file itself is writable", v)
+	}
+}
+
+// TestAFileInsideAWritableDirectoryStillAnswersBelowIt fails if the #686 fix
+// reports nothing below a file the payload can replace. Inside a rw directory
+// bind, or a ro one whose host tree another grant writes, `rm tool && mkdir
+// tool` makes tool/bin real, so it stays a shadow slot. The ro control, with
+// no writer, is NotSlot and not granted.
+func TestAFileInsideAWritableDirectoryStillAnswersBelowIt(t *testing.T) {
+	env := newFakeEnv()
+	env.dirs["/proj"] = true
+	env.files["/proj/tool"] = true
+
+	for name, mounts := range map[string]map[string]Mount{
+		"rw bind": {"/proj": {Guest: "/proj", Host: "/proj", Kind: KindBind, Access: AccessRW}},
+		"ro bind, aliased": {
+			"/proj": {Guest: "/proj", Host: "/proj", Kind: KindBind, Access: AccessRO},
+			"/w":    {Guest: "/w", Host: "/proj", Kind: KindBind, Access: AccessRW},
+		},
+	} {
+		p := &Policy{Mounts: mounts}
+		if v := p.Shadow(env, "/proj/tool/bin"); v != Slot {
+			t.Errorf("%s: Shadow(/proj/tool/bin) = %v, want Slot: the payload can replace the file "+
+				"with a directory", name, v)
+		}
+	}
+
+	ro := &Policy{Mounts: map[string]Mount{"/proj": {Guest: "/proj", Host: "/proj", Kind: KindBind, Access: AccessRO}}}
+	if v := ro.Shadow(env, "/proj/tool/bin"); v != NotSlot {
+		t.Errorf("ro control: Shadow(/proj/tool/bin) = %v, want NotSlot", v)
+	}
+	if ro.GrantsGuestPath(env, "/proj/tool/bin") {
+		t.Error("ro control: GrantsGuestPath(/proj/tool/bin) = true; nothing exists below a read-only file")
+	}
+}
+
+// TestAWritableGeneratedFileOnWritableGroundIsASlotBelowIt fails if a path
+// below a `--file` KindData counts as nothing. AccessRW emits --file, which
+// writes a plain file into its parent rather than mounting one, so on a
+// writable tmpfs the payload can `rm` it and `mkdir` its own directory. The
+// controls are --ro-bind-data, a mountpoint, and --file on read-only ground.
+func TestAWritableGeneratedFileOnWritableGroundIsASlotBelowIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		access Access
+		ground Mount
+		want   ShadowVerdict
+	}{
+		{"--file on a writable tmpfs", AccessRW, Mount{Guest: "/h", Kind: KindTmpfs, Access: AccessRW}, Slot},
+		{"--file on a rw bind", AccessRW, Mount{Guest: "/h", Host: "/hh", Kind: KindBind, Access: AccessRW}, Slot},
+		{"--ro-bind-data on a writable tmpfs", AccessRO, Mount{Guest: "/h", Kind: KindTmpfs, Access: AccessRW}, NotSlot},
+		{"--file on a ro bind", AccessRW, Mount{Guest: "/h", Host: "/hh", Kind: KindBind, Access: AccessRO}, NotSlot},
+	}
+	for _, tc := range cases {
+		p := &Policy{Mounts: map[string]Mount{
+			"/h":   tc.ground,
+			"/h/f": {Guest: "/h/f", Kind: KindData, Access: tc.access},
+		}}
+		if v := p.Shadow(noHostLinks{}, "/h/f/bin"); v != tc.want {
+			t.Errorf("%s: Shadow(/h/f/bin) = %v, want %v", tc.name, v, tc.want)
+		}
+		if keep, _ := p.keepHostElement(noHostLinks{}, "/h/f/bin"); keep {
+			t.Errorf("%s: keepHostElement(/h/f/bin) kept; nothing of the host's is below a generated file", tc.name)
+		}
 	}
 }

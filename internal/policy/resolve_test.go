@@ -267,6 +267,13 @@ func (f *fakeEnv) Lstat(p string) (fs.FileInfo, error) {
 	if err, ok := f.statErrs[p]; ok {
 		return nil, err
 	}
+	// A name below a fixture file is ENOTDIR, as lstat(2) answers it; walkLinks
+	// tells that apart from ENOENT (#686).
+	for q := path.Dir(p); q != "/" && q != "."; q = path.Dir(q) {
+		if f.files[q] || f.execs[q] || f.sockets[q] || f.fifos[q] {
+			return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.ENOTDIR}
+		}
+	}
 	if _, ok := f.links[p]; ok {
 		return fakeInfo{name: p, mode: fs.ModeSymlink, sys: &syscall.Stat_t{Uid: f.linkOwners[p]}}, nil
 	}

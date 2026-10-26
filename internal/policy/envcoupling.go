@@ -48,13 +48,13 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 	if !writesAnyPath(g) {
 		return nil
 	}
-	guests, links, err := profileGuestGrants(reg, name, vars)
+	guests, files, links, err := profileGuestGrants(reg, name, vars)
 	if err != nil {
 		return err
 	}
 
 	for _, k := range sortedMapKeys(g.Set) {
-		if err := checkCoupled(name, VerbSet, k, g.Set[k], vars, guests, links, g.Types); err != nil {
+		if err := checkCoupled(name, VerbSet, k, g.Set[k], vars, guests, files, links, g.Types); err != nil {
 			return err
 		}
 	}
@@ -65,7 +65,7 @@ func checkEnvCoupling(reg map[ProfileName]*Profile, name ProfileName, g EnvGrant
 		}
 		for _, k := range sortedListKeys(m) {
 			for _, raw := range m[k] {
-				if err := checkCoupled(name, verb, k, raw, vars, guests, links, g.Types); err != nil {
+				if err := checkCoupled(name, verb, k, raw, vars, guests, files, links, g.Types); err != nil {
 					return err
 				}
 			}
@@ -240,7 +240,7 @@ func valueIsAPath(name string, decl map[string]EnvKind) bool {
 }
 
 // checkCoupled is the verdict on one written value.
-func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests []string, links map[string]string, decl map[string]EnvKind) error {
+func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[string]string, guests, files []string, links map[string]string, decl map[string]EnvKind) error {
 	// TWO QUESTIONS, ASKED SEPARATELY. Coupling applies to the names the roster
 	// marks `path`; the absolute-path rule applies to every name whose value IS a
 	// path, which is a wider set (valueIsAPath). A name in the wider set only
@@ -272,7 +272,7 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 	// usr-merged host /bin is a symlink snug creates, so a profile granting /usr
 	// and naming /bin/foo named the path the sandbox will actually see.
 	resolved := resolveLinkForEnv(links, filepath.Clean(value))
-	if coversGuest(guests, resolved) {
+	if coversGuest(guests, files, resolved) {
 		return nil
 	}
 	via := ""
@@ -289,7 +289,7 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 }
 
 // coversGuest is lexical containment on `/` boundaries, DOWNWARD with no depth
-// limit: a grant covers itself and everything under it.
+// limit: a grant covers itself and everything under it, except a `file`.
 //
 // Coverage rather than an exact match, because SHELL=/usr/bin/bash against
 // ro=["/usr"] must pass and there is no principled depth at which to stop. The
@@ -297,7 +297,15 @@ func checkCoupled(profile ProfileName, verb EnvVerb, name, raw string, vars map[
 // profile including @sys+@home is checked vacuously under /usr and {home} — see
 // @podman-socket. That is correct: the profile DID bring them, on an `include`
 // line that --dry-run and $SNUG_PROFILES both render.
-func coversGuest(guests []string, path string) bool {
+//
+// A `file` grant covers only its own path: nothing exists below a file (#686).
+// A ro/rw bind of a host file still covers downward, because file-or-directory
+// is host state and this verdict is computed over text; --dry-run marks such
+// a value `← not granted` and sanitise drops it, both from the resolved walk.
+func coversGuest(guests, files []string, path string) bool {
+	if slices.Contains(files, path) {
+		return true
+	}
 	for _, g := range guests {
 		if path == g || strings.HasPrefix(path, g+"/") {
 			return true
@@ -308,7 +316,8 @@ func coversGuest(guests []string, path string) bool {
 
 // profileGuestGrants collects the GUEST side of every path grant a profile
 // makes, over its own text plus its `include` closure, and the symlink map from
-// the same closure.
+// the same closure. `file` grants are returned apart from the rest, because
+// they cover only their own path (coversGuest).
 //
 // The guest side, because that is the path the environment value will name from
 // inside; a `host:guest` spec's host side is irrelevant to what the payload sees.
@@ -319,14 +328,13 @@ func coversGuest(guests []string, path string) bool {
 // parsed again by the fold and refused there, with the right profile named.
 // Skipping makes this set SMALLER, so the coupling check gets stricter, never
 // laxer.
-func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map[string]string) ([]string, map[string]string, error) {
+func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map[string]string) (guests, files []string, links map[string]string, err error) {
 	closure := map[ProfileName]*Profile{}
 	if err := expand(reg, name, closure); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	var guests []string
-	links := map[string]string{}
+	links = map[string]string{}
 	for _, n := range sortedProfileNames(closure) {
 		prof := closure[n]
 		for _, specs := range [][]string{prof.RO, prof.RW} {
@@ -350,7 +358,7 @@ func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map
 			if err != nil {
 				continue
 			}
-			guests = append(guests, filepath.Clean(g))
+			files = append(files, filepath.Clean(g))
 		}
 		for _, s := range prof.Symlink {
 			at, err := expandVars(s.At, vars)
@@ -370,7 +378,7 @@ func profileGuestGrants(reg map[ProfileName]*Profile, name ProfileName, vars map
 			links[at] = filepath.Clean(target)
 		}
 	}
-	return guests, links, nil
+	return guests, files, links, nil
 }
 
 // sortedProfileNames is slices.Sort rather than sort.Strings for the same
