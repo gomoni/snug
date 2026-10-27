@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// The login bridge (login = ["claude"]) lets a process in the sandbox ask
+// The login bridge (login.claude = "sandbox") lets a process in the sandbox ask
 // snug to open ONE pinned Claude login URL in the host's browser and to carry
 // the browser's callback back in. These tests run the real binary against two
 // stand-ins: testdata/loginprobe is the sandbox half of /login, and
@@ -232,8 +232,55 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 	budget(t, 60*time.Second)
 	requireLoginBridgeEnv(t)
 	requireInternet(t)
+	loginLoopbackStaysClosed(t, false)
+}
+
+// TestTheHostModeLoginListenerIsUnreachableFromInside is the same measurement
+// for login.claude = "host": the listener that run holds on the host's
+// 127.0.0.1:P and [::1]:P receives the BROWSER's callback and then exchanges
+// the code with the host's credentials in hand, so a path to it from inside
+// is a path to a code snug would redeem. It fails if holding localhost:P for a
+// host-mode login makes the callback port, or any other host service, reachable
+// from inside over loopback v4 or v6, the gateways, the host's LAN address or
+// UDP. The listener binds only those two loopback addresses, so there is no
+// further address of it to probe.
+//
+// Controls are the shared ones: the host connects to P while the probe
+// dials, the sandbox reaches the internet address the host reached, and the
+// host-mode run's own preflight passed (a refused host-mode run would never
+// hold a port). It does not show the callback is unreachable from a
+// container; no profile here starts one.
+func TestTheHostModeLoginListenerIsUnreachableFromInside(t *testing.T) {
+	budget(t, 60*time.Second)
+	requireLoginBridgeEnv(t)
+	requireInternet(t)
+	loginLoopbackStaysClosed(t, true)
+}
+
+// loginLoopbackStaysClosed runs the loopback probes against a run that holds
+// a login flow open, in sandbox mode or, with host set, in host mode against
+// a scratch home.
+func loginLoopbackStaysClosed(t *testing.T, host bool) {
+	t.Helper()
 	netTarget := internetTarget(t)
 	f := newLoginFixture(t, "hold")
+	start := func(probeArgs ...string) *bgSandbox { return f.start(t, probeArgs...) }
+	if host {
+		f.addProfile(t, "login-host", "[profile.login-host]\ndescription = \"host mode\"\nlogin.claude = \"host\"\n")
+		env := append(append([]string{}, f.env...), fixtureHome(hostLoginHome(t))...)
+		start = func(probeArgs ...string) *bgSandbox {
+			cmd := exec.Command(snugFor(env), "-p", "@claude", "-p", "@net", "-p", "login-host", f.proj, "--",
+				"/bin/bash", "-c", "printf '%s\\n' "+payloadMarker+"\n./loginprobe "+strings.Join(probeArgs, " "))
+			cmd.Env = env
+			log, err := os.CreateTemp(t.TempDir(), "snug-host-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { log.Close() })
+			cmd.Stdout, cmd.Stderr = log, log
+			return &bgSandbox{proc: startBgProc(t, cmd), logPath: log.Name(), proj: f.proj}
+		}
+	}
 
 	ln4, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -295,7 +342,7 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 	}
 
 	args := append([]string{"go=go", "release=release"}, dials...)
-	s := f.start(t, args...)
+	s := start(args...)
 	out := waitForLogLine(t, s, "SHIM-RC", 15*time.Second)
 	port := loginPort(t, out)
 
@@ -304,6 +351,9 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 	requireLoginHeld(t, s, port, haveV6)
 	if !loginWaitOpenerRan(t, f.rec, 10*time.Second) {
 		t.Fatalf("precondition: the fake opener never ran, so no flow was opened:\n%s", s.log())
+	}
+	if host && !strings.Contains(s.log(), "REWRITES this host's Claude login") {
+		t.Fatalf("control: this run is not in host mode (the browser line does not announce the rewrite):\n%s", s.log())
 	}
 
 	handToPayload(t, f.proj, "go", "x")
@@ -378,7 +428,7 @@ func TestTheLoginBridgeLeavesHostLoopbackClosed(t *testing.T) {
 }
 
 // TestWithoutTheLoginKeyThereIsNoBridge fails if BROWSER, the FIFO, the
-// wrapper or the browser link exist in a run whose profiles do not set login = ["claude"]. The
+// wrapper or the browser link exist in a run whose profiles do not set login.claude. The
 // same script runs again with the key on and must see all three, which is what
 // shows the script looks at the right paths.
 func TestWithoutTheLoginKeyThereIsNoBridge(t *testing.T) {

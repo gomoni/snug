@@ -976,10 +976,19 @@ func showCapabilities(p *policy.Profile, show func(string, []string)) {
 			"starts a container engine and delegates your whole subuid range, "+
 				"even with no network profile selected"))
 	}
-	if len(p.Login) > 0 {
-		show("login", capRows(strings.Join(p.Login, " "),
-			"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
-				"it in YOUR browser only if it is exactly the Claude login page snug pins"))
+	for _, l := range policy.LoginProviders() {
+		switch mode := p.Login[l]; mode {
+		case policy.LoginSandbox:
+			show("login", capRows(fmt.Sprintf("%s = %q", l, mode),
+				"points BROWSER at a shim that hands the sandbox's chosen URL to snug, which opens "+
+					"it in YOUR browser only if it is exactly the Claude login page snug pins; the "+
+					"sandbox exchanges the code and holds a refresh token until the run ends"))
+		case policy.LoginHost:
+			show("login", capRows(fmt.Sprintf("%s = %q", l, mode),
+				"opens Claude's login page in YOUR browser when the sandbox asks; a login you approve "+
+					"is completed on the host and REWRITES ~/.claude/.credentials.json there, and the "+
+					"sandbox gets an access token only"))
+		}
 	}
 	showIdentity(p.Identity, show)
 }

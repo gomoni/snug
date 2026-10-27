@@ -1,11 +1,15 @@
 package policy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ~/.claude/.credentials.json is the one file @claude stages that is a
@@ -221,4 +225,267 @@ func sortedRawKeys(m map[string]json.RawMessage) string {
 		return "none"
 	}
 	return strings.Join(names, ", ")
+}
+
+// ── a login snug completed on the host (login.claude = "host") ──────────────
+//
+// The bytes below are what Claude Code writes at its own sign-in, as its
+// 2.1.310 bundle was read for issue #662: the claudeAiOauth object's keys in
+// this order, compact, no trailing newline. snug writes the host's file the
+// way the client does so a host `claude` reads it as its own; every value
+// comes from the vendor's two answers and the clock, and nothing from the
+// sandbox.
+
+// ClaudeRefreshDefault is the refresh token's lifetime Claude Code assumes at
+// sign-in when the token endpoint names none (the client's 2592000000 ms).
+const ClaudeRefreshDefault = 30 * 24 * time.Hour
+
+// claudeSubscriptions maps the profile endpoint's organization_type to the
+// subscriptionType the client stores; any other value stores null.
+var claudeSubscriptions = map[string]string{
+	"claude_max":        "max",
+	"claude_pro":        "pro",
+	"claude_enterprise": "enterprise",
+	"claude_team":       "team",
+}
+
+// claudeOriginStamp is the request-id shape for which the client stamps
+// subscriptionTypeSource "sign_in" rather than "profile".
+var claudeOriginStamp = regexp.MustCompile(`^req_[A-Za-z0-9_-]{1,36}$`)
+
+// ClaudeLoginResult is what a login snug completed on the host learned from
+// the vendor's token and profile endpoints, already checked by the caller. It
+// names no account: whose login it is was decided before any file is written.
+type ClaudeLoginResult struct {
+	AccessToken Secret
+	// RefreshToken is empty when the token endpoint answered without one.
+	// RenewClaudeCredentials refuses that; ProjectClaudeLogin never carries
+	// it.
+	RefreshToken Secret
+	// ExpiresIn is the access token's lifetime, expires_in.
+	ExpiresIn time.Duration
+	// RefreshTokenExpiresIn is refresh_token_expires_in; zero when the answer
+	// had none, which means ClaudeRefreshDefault.
+	RefreshTokenExpiresIn time.Duration
+	// Scopes is the scope the token endpoint granted, split on spaces.
+	Scopes []string
+	// OrganizationType is the profile endpoint's organization_type; "" when
+	// it had none or the profile request failed.
+	OrganizationType string
+	// RateLimitTier is the profile endpoint's rate_limit_tier; "" when absent.
+	RateLimitTier string
+	// RequestID is the profile response's request-id header.
+	RequestID string
+}
+
+// RenewClaudeCredentials returns the host's ~/.claude/.credentials.json after
+// a login snug completed: existing with its claudeAiOauth object replaced
+// wholesale by one built from r and now, every other top-level key carried
+// byte for byte in its place, compact, with no trailing newline.
+//
+// existing that is empty, or is not a JSON object, contributes no key: there
+// is nothing in it a reader can parse, and it is the file this login renews.
+//
+// When the profile endpoint named no subscription the client knows, the
+// subscriptionType, subscriptionTypeSource and rateLimitTier existing already
+// holds are kept rather than replaced by null: a login whose profile request
+// failed is not evidence the plan changed, and writing null would downgrade
+// what the host's `claude` shows and applies.
+//
+// The error is ErrClaudeCredentialShape when r has no access token, no
+// refresh token or no positive lifetime: such a file would not be a login.
+func RenewClaudeCredentials(existing []byte, r ClaudeLoginResult, now time.Time) (Secret, error) {
+	if len(r.RefreshToken) == 0 {
+		return nil, fmt.Errorf("%w: the login carries no refresh token, and the host's file "+
+			"needs one to stay signed in", ErrClaudeCredentialShape)
+	}
+	order, fields := claudeEnvelope(existing)
+	oauth, err := claudeLoginObject(r, now, oauthFields(fields), true)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := fields[claudeCredentialEnvelopeKey]; !ok {
+		order = append(order, claudeCredentialEnvelopeKey)
+	}
+	fields[claudeCredentialEnvelopeKey] = oauth
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, k := range order {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(jsonText(k))
+		b.WriteByte(':')
+		if err := json.Compact(&b, fields[k]); err != nil {
+			return nil, fmt.Errorf("%w: top-level key %q does not re-encode: %v", ErrClaudeCredentialShape, k, err)
+		}
+	}
+	b.WriteByte('}')
+	return Secret(b.Bytes()), nil
+}
+
+// ProjectClaudeLogin returns the sandbox's credential file after a login snug
+// completed on the host: the same object RenewClaudeCredentials would write,
+// through ProjectClaudeCredentials, so the sandbox gets exactly what @claude
+// stages at the start of a run — the access token and its description, never
+// the refresh token. existing is the sandbox's current file, read for the
+// subscription fields only, exactly as RenewClaudeCredentials reads the
+// host's; it may be nil.
+//
+// The error is ErrClaudeCredentialShape when r has no access token or no
+// positive lifetime.
+func ProjectClaudeLogin(existing []byte, r ClaudeLoginResult, now time.Time) (Secret, error) {
+	_, fields := claudeEnvelope(existing)
+	oauth, err := claudeLoginObject(r, now, oauthFields(fields), false)
+	if err != nil {
+		return nil, err
+	}
+	envelope := append(append(append([]byte(`{`), jsonText(claudeCredentialEnvelopeKey)...), ':'), oauth...)
+	projected, _, err := ProjectClaudeCredentials(append(envelope, '}'))
+	return projected, err
+}
+
+// claudeEnvelope reads the top-level keys of a credential file in the order
+// they appear. A key that appears twice keeps its first place and its last
+// value, which is what JSON.parse does with it. Anything that is not exactly
+// one JSON object reads as no keys at all.
+func claudeEnvelope(raw []byte) (order []string, fields map[string]json.RawMessage) {
+	fields = map[string]json.RawMessage{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, map[string]json.RawMessage{}
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return nil, map[string]json.RawMessage{}
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, map[string]json.RawMessage{}
+		}
+		if _, seen := fields[key]; !seen {
+			order = append(order, key)
+		}
+		fields[key] = v
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, map[string]json.RawMessage{}
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, map[string]json.RawMessage{}
+	}
+	return order, fields
+}
+
+// oauthFields is the claudeAiOauth object of an envelope claudeEnvelope read,
+// or nil when there is none or it is not an object.
+func oauthFields(envelope map[string]json.RawMessage) map[string]json.RawMessage {
+	var oauth map[string]json.RawMessage
+	if err := json.Unmarshal(envelope[claudeCredentialEnvelopeKey], &oauth); err != nil {
+		return nil
+	}
+	return oauth
+}
+
+// claudeLoginObject builds the claudeAiOauth object in the client's key
+// order. prev is the object the file held before, read for the subscription
+// fields only.
+func claudeLoginObject(r ClaudeLoginResult, now time.Time, prev map[string]json.RawMessage, withRefresh bool) (json.RawMessage, error) {
+	if len(r.AccessToken) == 0 {
+		return nil, fmt.Errorf("%w: the login carries no access token", ErrClaudeCredentialShape)
+	}
+	if r.ExpiresIn <= 0 {
+		return nil, fmt.Errorf("%w: the access token's lifetime is not positive", ErrClaudeCredentialShape)
+	}
+	refreshFor := r.RefreshTokenExpiresIn
+	if refreshFor <= 0 {
+		refreshFor = ClaudeRefreshDefault
+	}
+	scopes := r.Scopes
+	if scopes == nil {
+		scopes = []string{}
+	}
+
+	subscription, source, tier := json.RawMessage("null"), json.RawMessage(nil), json.RawMessage("null")
+	if s, ok := claudeSubscriptions[r.OrganizationType]; ok {
+		subscription = jsonText(s)
+		source = jsonText("profile")
+		if claudeOriginStamp.MatchString(r.RequestID) {
+			source = jsonText("sign_in")
+		}
+		if r.RateLimitTier != "" {
+			tier = jsonText(r.RateLimitTier)
+		}
+	} else {
+		if v, ok := prevString(prev, "subscriptionType"); ok {
+			subscription = v
+		}
+		if v, ok := prevString(prev, "subscriptionTypeSource"); ok && string(subscription) != "null" {
+			source = v
+		}
+		if v, ok := prevString(prev, "rateLimitTier"); ok {
+			tier = v
+		} else if r.RateLimitTier != "" {
+			tier = jsonText(r.RateLimitTier)
+		}
+	}
+
+	var b bytes.Buffer
+	b.WriteString(`{"accessToken":`)
+	b.Write(jsonText(string(r.AccessToken)))
+	if withRefresh {
+		b.WriteString(`,"refreshToken":`)
+		b.Write(jsonText(string(r.RefreshToken)))
+	}
+	fmt.Fprintf(&b, `,"expiresAt":%d`, now.Add(r.ExpiresIn).UnixMilli())
+	if withRefresh {
+		fmt.Fprintf(&b, `,"refreshTokenExpiresAt":%d`, now.Add(refreshFor).UnixMilli())
+	}
+	b.WriteString(`,"scopes":[`)
+	for i, s := range scopes {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(jsonText(s))
+	}
+	b.WriteString(`],"subscriptionType":`)
+	b.Write(subscription)
+	if source != nil {
+		b.WriteString(`,"subscriptionTypeSource":`)
+		b.Write(source)
+	}
+	b.WriteString(`,"rateLimitTier":`)
+	b.Write(tier)
+	b.WriteByte('}')
+	return json.RawMessage(b.Bytes()), nil
+}
+
+// prevString is prev[key] when it is a JSON string or null, compacted; a value
+// of any other kind is not one the client wrote there and is not carried.
+func prevString(prev map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	raw, ok := prev[key]
+	if !ok {
+		return nil, false
+	}
+	var s *string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, false
+	}
+	if s == nil {
+		return json.RawMessage("null"), true
+	}
+	return jsonText(*s), true
+}
+
+// jsonText is s as a JSON string the way JSON.stringify spells it: no HTML
+// escaping, which encoding/json's Marshal would add to every '<', '>' and '&'.
+func jsonText(s string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	// A string always encodes; Encode cannot fail on one.
+	_ = enc.Encode(s)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }

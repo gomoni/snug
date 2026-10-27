@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gomoni/snug/internal/loginbridge"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -198,7 +199,7 @@ func explainAbsent(out io.Writer, p *policy.Policy) {
 
 	// Also structural: snug has no setuid path and every helper is a child
 	// that dies with the sandbox (CLAUDE.md invariant 4).
-	if p.Login.Has(policy.LoginClaude) {
+	if p.Login.Any() {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
 		fmt.Fprintln(out, "  dies with the sandbox, except the xdg-open snug starts for a login and the")
 		fmt.Fprintln(out, "  browser it starts: they are yours, not the sandbox's, and may outlive this")
@@ -393,13 +394,31 @@ func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 		fmt.Fprintln(out, "  and opening one serves the sandbox into your own browser on an origin the")
 		fmt.Fprintln(out, "  browser trusts as local. That is a sandbox escape and snug does not bound it.")
 	}
-	if p.Login.Has(policy.LoginClaude) {
-		if _, err := browserPreflight(env); err != nil {
-			fmt.Fprintln(out, "  Login bridge (login = [\"claude\"]): a real run would REFUSE to start:")
+	if mode := p.Login.Mode(policy.LoginClaude); mode != policy.LoginOff {
+		key := policy.LoginKey(policy.LoginClaude, mode)
+		_, err := browserPreflight(env)
+		if err == nil && mode == policy.LoginHost {
+			_, err = claudeHostPreflight(claudeLoginReadsFor(env), p.Home)
+		}
+		if err != nil {
+			fmt.Fprintf(out, "  Login bridge (%s): a real run would REFUSE to start:\n", key)
 			fmt.Fprintf(out, "  %s\n", visibleValue(err.Error()))
 			fmt.Fprintln(out, "  Fix that, or drop the key, and re-run --explain.")
+		} else if mode == policy.LoginHost {
+			fmt.Fprintf(out, "  Login bridge (%s): the sandbox may ask snug to open Claude's login\n", key)
+			fmt.Fprintf(out, "  page in YOUR browser, at most %d times per run, one at a time. If you approve,\n",
+				loginbridge.MaxOpensPerRun)
+			fmt.Fprintln(out, "  snug completes the login ON THE HOST and REPLACES the refresh token in your")
+			fmt.Fprintln(out, "  ~/.claude/.credentials.json — for the account ~/.claude.json names, never")
+			fmt.Fprintf(out, "  another, at most %d times per run — and hands the sandbox a fresh access token\n",
+				loginbridge.MaxRelaysPerRun)
+			fmt.Fprintln(out, "  that renews nothing. The sandbox cannot choose the URL or the account, see the")
+			fmt.Fprintln(out, "  code or the refresh token, or put a byte into the host file. If you paste a")
+			fmt.Fprintln(out, "  code into claude's own /login prompt inside, the sandbox signs in by itself and")
+			fmt.Fprintln(out, "  holds a refresh token: do not. The browser xdg-open starts is yours and may")
+			fmt.Fprintln(out, "  outlive the run.")
 		} else {
-			fmt.Fprintln(out, "  Login bridge (login = [\"claude\"]): the sandbox may ask snug to open a")
+			fmt.Fprintf(out, "  Login bridge (%s): the sandbox may ask snug to open a\n", key)
 			fmt.Fprintln(out, "  Claude login page in YOUR browser. snug opens only one URL shape — Claude")
 			fmt.Fprintln(out, "  Code's own authorize URL with its client id and its seven scopes — rebuilt")
 			fmt.Fprintln(out, "  from snug's constants; anything else is refused and nothing is opened. There is")

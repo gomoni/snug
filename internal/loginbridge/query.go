@@ -1,15 +1,22 @@
-// Package loginbridge is the pure half of the Claude login browser bridge
-// (issue #455): given a line the sandbox handed snug, decide whether it is
+// Package loginbridge is the host half of the Claude login browser bridge
+// (issue #455) and of its host mode, login.claude = "host" (issue #662).
+//
+// Its predicates decide, given a line the sandbox handed snug, whether it is
 // the one Claude Code login URL snug knows how to open, and rebuild the URL
 // snug actually opens from its own constants plus the values that line
-// supplied. It also checks the browser's callback request the same way. The
+// supplied; they check the browser's callback request the same way. The
 // sandbox's own bytes never reach the browser or the sandbox's own answer —
 // only the checked, rebuilt values do; that rebuild is the whole point of
-// parsing rather than forwarding.
+// parsing rather than forwarding. ParseAuthorize, ParseCallback, ParseDenial
+// and the query grammar under them do no I/O and hold no state, so the
+// security-critical checks run as plain unit tests with no root and no
+// namespaces.
 //
-// No I/O, no globals, no exec: every function here is (input, injected
-// value) -> (result, error), so the security-critical checks run as plain
-// unit tests with no root and no namespaces.
+// The Bridge around them listens on host loopback, relays into the sandbox,
+// runs the opener and, in host mode, calls Claude's token and profile
+// endpoints. Everything it does to the outside world is injected (Deps,
+// HostLogin, HostFiles, Doer), so it is tested the same way. HostLogin's doc
+// comment carries host mode's abuse sentence.
 package loginbridge
 
 import (

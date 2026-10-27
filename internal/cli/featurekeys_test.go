@@ -27,7 +27,7 @@ var featureKeyProfiles = map[policy.ProfileName]*policy.Profile{
 	// login = ["claude"] alone refuses at Resolve for want of egress
 	// (issue #455), so this fixture carries `network` itself rather than
 	// composing with k-net.
-	"k-login": {Name: "k-login", Login: []string{"claude"}, Network: "egress", DNS: true},
+	"k-login": {Name: "k-login", Login: map[policy.LoginProvider]policy.LoginMode{policy.LoginClaude: policy.LoginSandbox}, Network: "egress", DNS: true},
 }
 
 // featureRegistry is the builtins plus featureKeyProfiles plus "rt", a runtime

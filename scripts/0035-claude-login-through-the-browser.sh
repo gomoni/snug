@@ -40,7 +40,7 @@ mkdir -p "$SC/proj" "$SC/cfg/snug/profiles.d"
 cat > "$SC/cfg/snug/profiles.d/login.toml" <<'TOML'
 [profile.login]
 description = "the login bridge, for scripts/0035"
-login = ["claude"]
+login.claude = "sandbox"
 TOML
 
 # run.sh is what runs inside the sandbox: both halves in one invocation.

@@ -769,7 +769,7 @@ func maximalProfile() *Profile {
 		MTU:         1400,
 		NSS:         true,
 		Podman:      "socket",
-		Login:       []string{"claude"},
+		Login:       map[LoginProvider]LoginMode{LoginClaude: LoginSandbox},
 		Identity: &Identity{
 			SSH: IdentitySSH{Host: "ssh.example", Key: "/home/u/.ssh/id.pub", Agent: SSHAgentProxy},
 			Git: IdentityGit{Name: "Some One", Email: "some.one@example.com",
@@ -917,13 +917,19 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 		return Resolve(reg, []ProfileName{p.Name}, testCtx(), newFakeEnv())
 	}
 
-	// login = ["claude"] refuses without egress, so against the maximal
-	// fixture the network drop only ever takes the refusal arm. The second base
-	// is the same fixture without login, so that drop still reaches the
-	// subset check.
+	// login.claude refuses without egress, so against the maximal fixture the
+	// network drop only ever takes the refusal arm; the without_login base is
+	// the same fixture without login, so that drop still reaches the subset
+	// check. The maximal fixture is sandbox mode, and one selection cannot
+	// carry both modes, so host mode is a base of its own.
 	withoutLogin := func() *Profile {
 		p := maximalProfile()
 		p.Login = nil
+		return p
+	}
+	hostLogin := func() *Profile {
+		p := maximalProfile()
+		p.Login = map[LoginProvider]LoginMode{LoginClaude: LoginHost}
 		return p
 	}
 	for _, base := range []struct {
@@ -931,6 +937,7 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 		make   func() *Profile
 	}{
 		{"", maximalProfile},
+		{"host_login/", hostLogin},
 		{"without_login/", withoutLogin},
 	} {
 		full, err := resolveWith(t, base.make())
@@ -1001,8 +1008,10 @@ func TestKeyAbsenceNeverWidens(t *testing.T) {
 				if got.Podman.Join(full.Podman) != full.Podman {
 					t.Errorf("dropping %s raised podman from %s to %s", d.key, full.Podman, got.Podman)
 				}
-				if got.Login.Join(full.Login) != full.Login {
-					t.Errorf("dropping %s added login providers: %s to %s", d.key, full.Login, got.Login)
+				for _, l := range LoginProviders() {
+					if m := got.Login.Mode(l); m != LoginOff && m != full.Login.Mode(l) {
+						t.Errorf("dropping %s turned login.%s from %s into %s", d.key, l, full.Login.Mode(l), m)
+					}
 				}
 				if got.Topology.Netns > full.Topology.Netns || got.Topology.Subuid > full.Topology.Subuid {
 					t.Errorf("dropping %s raised the topology from %s to %s", d.key, full.Topology, got.Topology)

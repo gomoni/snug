@@ -1,0 +1,12 @@
+profile     login-host
+            complete /login on the host
+defined in  {config}/snug/profiles.d/login-host.toml
+
+  login            claude = "host"
+                   opens Claude's login page in YOUR browser when the sandbox
+                   asks; a login you approve is completed on the host and
+                   REWRITES ~/.claude/.credentials.json there, and the sandbox
+                   gets an access token only
+
+To see what this actually produces for a directory:
+  snug --dry-run -p login-host <dir>

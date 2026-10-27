@@ -576,10 +576,10 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 	}
 }
 
-// TestRunScopedWritersAreTheTwoFunctionsTheFieldNames is the Authored sweep
+// TestRunScopedWritersAreTheFunctionsTheFieldNames is the Authored sweep
 // pointed at Mount.RunScoped, for the same reason and against the same
 // failure mode: the field's own doc comment argues that no profile can set it,
-// and prose cannot notice a third writer arriving.
+// and prose cannot notice an unlisted writer arriving.
 //
 // What rests on it is one screen rather than a rule — the SHARED block of
 // `snug --dry-run` OMITS a RunScoped row, on the ground that the host path
@@ -588,10 +588,10 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 // screen a human reads to find out what two sandboxes on one directory share,
 // and nothing would say so: the block would simply be shorter.
 //
-// Both writers are POST-RESOLUTION, which is the other half of the argument
+// Every writer is POST-RESOLUTION, which is the other half of the argument
 // and the reason Policy.join needs no meet for this field the way it does for
-// Authored (issue #291 part 1c): a profile's grant is folded before either
-// runs, so join never sees the field set at all.
+// Authored (issue #291 part 1c): a profile's grant is folded before any of
+// them runs, so join never sees the field set at all.
 //
 // The sweep is by NAME, not by type (findFieldWrites' own doc comment), so
 // `--dry-run --json` carrying this fact does not land here: the DTO field is
@@ -599,7 +599,7 @@ func TestAuthoredIsNotSettableFromProfileText(t *testing.T) {
 // same move internal/cli's SnugAuthored makes against the Authored sweep. The
 // list below stays the DECIDING writers, and nothing was added to it to admit
 // a copy.
-func TestRunScopedWritersAreTheTwoFunctionsTheFieldNames(t *testing.T) {
+func TestRunScopedWritersAreTheFunctionsTheFieldNames(t *testing.T) {
 	root, err := modroot.Find()
 	if err != nil {
 		t.Fatal(err)
@@ -622,6 +622,11 @@ func TestRunScopedWritersAreTheTwoFunctionsTheFieldNames(t *testing.T) {
 		"internal/engine/paths.go", // GraftPathsInto — the engine's sock dir
 		"internal/engine/paths.go", // GraftPathsInto — the engine's conf dir
 		"internal/policy/types.go", // Policy.BindSocket — this run's sockets
+		// Policy.BindRunDir — login.claude = "host"'s credential directory,
+		// created under this run's own runtime directory, which is pid-named:
+		// a peer run gets a directory of its own. Read-only, so the SHARED
+		// block, which lists writable host paths, had no row for it anyway.
+		"internal/policy/types.go",
 	}
 	if len(files) != len(want) {
 		t.Fatalf("RunScoped is written at %v (%d sites), want exactly %v.\n"+

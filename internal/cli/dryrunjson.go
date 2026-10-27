@@ -516,8 +516,8 @@ type jsonMount struct {
 	// The Go field is NOT spelled `RunScoped`, for exactly the reason
 	// SnugAuthored above is not spelled `Authored`: internal/policy sweeps the
 	// module BY NAME for writes to a field so spelled
-	// (TestRunScopedWritersAreTheTwoFunctionsTheFieldNames), because the
-	// SHARED block omits a run-scoped row and a third writer could mark a
+	// (TestRunScopedWritersAreTheFunctionsTheFieldNames), because the
+	// SHARED block omits a run-scoped row and an unlisted writer could mark a
 	// genuinely shared path run-scoped and shorten that block with nothing
 	// saying so. The sweep is textual and cannot tell this output-only DTO
 	// from a policy.Mount — and the fix is to keep the sweep maximally
@@ -585,12 +585,16 @@ type jsonNetwork struct {
 // jsonBrowserBridge is reportBrowserBridge. Opener is empty and OpenerError
 // set when a real run would refuse for want of an opener or a display.
 type jsonBrowserBridge struct {
-	Login       []string `json:"login"`
-	Opener      string   `json:"opener"`
-	OpenerError string   `json:"opener_error,omitempty"`
-	FIFO        string   `json:"fifo"`
-	MaxOpens    int      `json:"max_opens"`
-	MaxRelays   int      `json:"max_relays"`
+	Login       map[string]string `json:"login"`
+	Opener      string            `json:"opener"`
+	OpenerError string            `json:"opener_error,omitempty"`
+	FIFO        string            `json:"fifo"`
+	MaxOpens    int               `json:"max_opens"`
+	MaxRelays   int               `json:"max_relays"`
+	// HostRewrite is reportBrowserBridge's: true when a login the human
+	// approves rewrites the host's credential file.
+	HostRewrite bool   `json:"host_rewrite"`
+	HostError   string `json:"host_error,omitempty"`
 }
 
 // jsonKube is reportKube.
@@ -897,9 +901,11 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	if b := rep.BrowserBridge; b != nil {
 		opener, _ := e.text(b.Opener)
 		msg, _ := e.text(b.OpenerError)
+		hostMsg, _ := e.text(b.HostError)
 		doc.BrowserBridge = &jsonBrowserBridge{
 			Login: b.Login, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
 			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
+			HostRewrite: b.HostRewrite, HostError: hostMsg,
 		}
 	}
 	if k := rep.Kube; k != nil {

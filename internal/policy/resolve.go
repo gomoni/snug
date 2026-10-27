@@ -277,7 +277,7 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 	}
 
 	var mtuOwner ProfileName
-	var loginOwner ProfileName
+	loginOwner := map[LoginProvider]ProfileName{}
 	pluginAllow := map[string]bool{}
 	httpDoors := map[string]bool{}
 	// Environment claims are ACCUMULATED here and resolved after the fold — see
@@ -653,18 +653,27 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			p.Podman = p.Podman.Join(mode)
 		}
-		// login: a SET unioned across profiles, same reasoning as Plugins
-		// below. loginOwner is the first profile in fold order that turned the
-		// bridge on, for the refusals after the fold.
-		if len(prof.Login) > 0 {
-			set, err := ParseLoginSet(prof.Login)
-			if err != nil {
-				return nil, fmt.Errorf("profile %q: %w", name, err)
+		// login: must agree per provider (LoginMode's doc comment says why
+		// there is no max to take). loginOwner is the first profile in fold
+		// order that turned a provider on, for the refusals here and after
+		// the fold.
+		for l, mode := range prof.Login {
+			if l >= loginProviders || mode > LoginHost {
+				return nil, fmt.Errorf("profile %q: login holds %s = %s, which snug does not know", name, l, mode)
 			}
-			if p.Login == 0 {
-				loginOwner = name
+		}
+		for _, l := range LoginProviders() {
+			mode := prof.Login[l]
+			if mode == LoginOff {
+				continue
 			}
-			p.Login = p.Login.Join(set)
+			switch cur := p.Login.Mode(l); {
+			case cur == LoginOff:
+				loginOwner[l] = name
+				p.Login = p.Login.With(l, mode)
+			case cur != mode:
+				return nil, loginConflict(l, loginOwner[l], cur, name, mode)
+			}
 		}
 		p.Net.DNS = p.Net.DNS || prof.DNS
 		p.NSS = p.NSS || prof.NSS
@@ -791,29 +800,35 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 		p.AuthorEnv("LISTEN_FDNAMES", strings.Join(p.ListenNames, ":"))
 	}
 
-	// The login-bridge shim (issue #455). login is an ordinary feature key —
-	// no builtin sets it, @claude included, by maintainer decision — so the
-	// hole exists only in a selection that spells login = ["claude"]
-	// itself. Refused rather than granted-but-useless outside egress: the
-	// bridge relays the callback into the sandbox's own netns and the token
-	// exchange needs the internet, so a selection without @net would stage a
-	// BROWSER that can never complete a login.
-	if p.Login.Has(LoginClaude) {
+	// The login-bridge shim (issue #455), in both modes. login is an ordinary
+	// feature key — no builtin sets it, @claude included, by maintainer
+	// decision — so the hole exists only in a selection that spells
+	// login.claude itself. Refused rather than granted-but-useless outside
+	// egress: both modes relay a callback into the sandbox's own netns over a
+	// socket only the stage can create there, so a selection without @net
+	// would stage a BROWSER whose /login never ends.
+	if mode := p.Login.Mode(LoginClaude); mode != LoginOff {
 		if p.Net.Mode != NetEgress {
-			return nil, fmt.Errorf("profile %q sets login = %s, but nothing in this "+
-				"selection grants the network: the callback is relayed into the sandbox's "+
-				"own network namespace and the token exchange needs the internet. Add -p "+
-				"@net.", loginOwner, p.Login)
+			return nil, fmt.Errorf("profile %q turns the Claude login bridge on (mode %q), but nothing "+
+				"in this selection grants the network: the callback is relayed into the sandbox's own "+
+				"network namespace, which needs the stage @net starts. Add -p @net.", loginOwner[LoginClaude], mode)
 		}
 		p.Replace(Mount{
 			Guest: BrowserGuest, Kind: KindSymlink, Host: WrapperGuest, From: []string{"(snug)"},
 		})
 		p.AuthorEnv("BROWSER", BrowserGuest)
+		// Host mode moves Claude Code's credential storage to the directory
+		// internal/cli binds read-only at ClaudeCredentialDirGuest and renews
+		// on the host: the client reads its token there, and every write and
+		// lock it attempts there fails with EROFS.
+		if mode == LoginHost {
+			p.AuthorEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR", ClaudeCredentialDirGuest)
+		}
 	}
 
 	// snug's own executable, once for the three features above, so Replace
 	// never records snug replacing itself. A selection with none has no wrapper.
-	if podmanStub || len(p.ListenNames) > 0 || p.Login.Has(LoginClaude) {
+	if podmanStub || len(p.ListenNames) > 0 || p.Login.Any() {
 		p.Replace(Mount{
 			Guest: WrapperGuest, Kind: KindBind, Access: AccessRO,
 			Host: SelfExeHost, From: []string{"(snug)"},
@@ -1547,6 +1562,25 @@ func scalarConflict(key string, ownerA ProfileName, a any, ownerB ProfileName, b
 		"       refuses rather than choosing. Picking one would make the answer depend on the order\n"+
 		"       profiles are folded, and the model has no such order.",
 		ownerA, ownerB, key, VisibleText(fmt.Sprint(a)), VisibleText(fmt.Sprint(b)))
+}
+
+// loginConflict is the refusal for two profiles naming different modes for
+// one provider. Both owners and both modes are named, in fold order, and no
+// spelling of the key is quoted: a profile may have written either one, and a
+// refusal must not attribute text to a file that does not contain it.
+func loginConflict(l LoginProvider, ownerA ProfileName, a LoginMode, ownerB ProfileName, b LoginMode) error {
+	return fmt.Errorf("profile %q chooses %q for the %s login and profile %q chooses %q:\n"+
+		"       one /login cannot both stay in the sandbox and be completed on the host.\n"+
+		"       Make the two agree, or select one of them.",
+		ownerA, a, loginProviderLabel(l), ownerB, b)
+}
+
+// loginProviderLabel is a provider's name in prose: "Claude".
+func loginProviderLabel(l LoginProvider) string {
+	if l == LoginClaude {
+		return "Claude"
+	}
+	return l.String()
 }
 
 func sortedKeys(m map[string]bool) []string {

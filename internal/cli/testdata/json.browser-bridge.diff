@@ -62,13 +62,14 @@
      "host_addresses_sealed": true
    },
 +  "browser_bridge": {
-+    "login": [
-+      "claude"
-+    ],
++    "login": {
++      "claude": "sandbox"
++    },
 +    "opener": "/usr/bin/xdg-open",
 +    "fifo": "/snug/browser.fifo",
 +    "max_opens": 5,
-+    "max_relays": 3
++    "max_relays": 3,
++    "host_rewrite": false
 +  },
    "topology": {
      "processes": [

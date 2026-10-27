@@ -9,11 +9,11 @@ import (
 )
 
 // doorRegistry adds a profile that opens an http door and one that sets
-// login = ["claude"], neither granting anything else.
+// login.claude = "sandbox", neither granting anything else.
 func doorRegistry() map[ProfileName]*Profile {
 	reg := testRegistry()
 	reg["door"] = &Profile{Name: "door", ListenNames: []string{"web"}}
-	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
+	reg["bridge"] = &Profile{Name: "bridge", Login: map[LoginProvider]LoginMode{LoginClaude: LoginSandbox}, Network: "egress"}
 	// A runtime that is not @sys's: /usr comes from a host directory that
 	// holds no sh, and /bin is not linked to it.
 	reg["bare"] = &Profile{Name: "bare", RO: []string{"/opt/bin:/usr"}}
@@ -47,12 +47,12 @@ func TestDoorNeedsNoShell(t *testing.T) {
 	}
 }
 
-// TestLoginNeedsNoShell fails if login = ["claude"] starts requiring a shell
-// again: BROWSER is a symlink to snug's own binary.
+// TestLoginNeedsNoShell fails if login.claude starts requiring a shell again:
+// BROWSER is a symlink to snug's own binary.
 func TestLoginNeedsNoShell(t *testing.T) {
 	p, err := Resolve(doorRegistry(), []ProfileName{"bare", "@target-rw", "bridge"}, testCtx(), newFakeEnv())
 	if err != nil {
-		t.Fatalf("login = [\"claude\"] with no shell was refused: %v", err)
+		t.Fatalf("login.claude with no shell was refused: %v", err)
 	}
 	if m := p.Mounts[BrowserGuest]; m.Kind != KindSymlink || m.Host != WrapperGuest {
 		t.Errorf("BROWSER link = %+v, want a symlink to %s", m, WrapperGuest)

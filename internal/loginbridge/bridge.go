@@ -12,24 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gomoni/snug/internal/policy"
 )
 
-// The listener's per-connection bounds and the relay's (.claude/design/LOGIN-BRIDGE.md §6).
+// The relay's bounds (.claude/design/LOGIN-BRIDGE.md §6).
 const (
-	headReadDeadline = 10 * time.Second
-	maxHeadBytes     = 8 << 10
-	maxConns         = 8
-	relayDeadline    = 15 * time.Second
-	maxStatusLine    = 8 << 10
-	maxRelayDiscard  = 64 << 10
-	// noticesPrinted bounds the stderr lines the listener prints for refused
-	// connections, which anything on this host able to reach localhost can
-	// cause.
-	noticesPrinted = 5
+	relayDeadline   = 15 * time.Second
+	maxStatusLine   = 8 << 10
+	maxRelayDiscard = 64 << 10
 )
 
 // Clock is the time source a Bridge reads; tests inject a fake one.
@@ -84,13 +76,22 @@ type Deps struct {
 	// IPV6_V6ONLY set on the v6 one.
 	Listen func(network, addr string) (net.Listener, error)
 	Stderr io.Writer
+	// Host, when set, completes every login on the host (login.claude =
+	// "host") rather than relaying its code into the sandbox; nil is the
+	// bridge of login.claude = "sandbox".
+	Host *HostLogin
 }
 
 // Bridge is the host half of the login bridge: at most one live flow at a
-// time, a host listener on localhost:<port> while it lives, and the one-shot
-// relay of its callback into the sandbox.
+// time, a host listener on localhost:<port> while it lives, and the one
+// callback it accepts handed to the mode's consumer — relayed into the
+// sandbox, or exchanged on the host.
 type Bridge struct {
 	d Deps
+	// ctx is cancelled by Close, which is how an exchange in flight learns
+	// that snug is shutting down and stops before it writes anything.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu      sync.Mutex
 	closed  bool
@@ -102,9 +103,16 @@ type Bridge struct {
 }
 
 // flow is one live login: its listeners, its connections and whether its
-// callback has been relayed.
+// callback has been taken.
 type flow struct {
-	f       Flow
+	// f is the line the sandbox handed snug, as ParseAuthorize checked it.
+	f Flow
+	// expect is the state a callback must carry: the state of the URL snug
+	// opened, which is f.State in sandbox mode and snug's own in host mode.
+	expect string
+	// deliver is the mode's consumer: it is handed the one callback that
+	// passes every check, answers the browser, and returns.
+	deliver func(c net.Conn, cb Callback)
 	opened  time.Time
 	lns     []net.Listener
 	conns   map[net.Conn]bool
@@ -122,7 +130,8 @@ func New(d Deps) *Bridge {
 	if d.Listen == nil {
 		d.Listen = listenLoopback
 	}
-	return &Bridge{d: d}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Bridge{d: d, ctx: ctx, cancel: cancel}
 }
 
 // Handle starts a flow for f: checks the limits and the port, binds the host
@@ -155,15 +164,31 @@ func (b *Bridge) Handle(f Flow) error {
 	if !ok {
 		return fmt.Errorf("nothing inside listens on 127.0.0.1:%d", f.Port)
 	}
+
+	fl := &flow{f: f, expect: f.State, opened: now, conns: map[net.Conn]bool{}, slots: make(chan struct{}, maxConns)}
+	url := f.AuthorizeURL()
+	var announce string
+	if h := b.d.Host; h != nil {
+		hf, err := h.begin(f)
+		if err != nil {
+			return err
+		}
+		fl.expect = hf.State
+		url = Flow{Port: f.Port, CodeChallenge: hf.Challenge, State: hf.State}.AuthorizeURL()
+		fl.deliver = func(c net.Conn, cb Callback) { b.completeOnHost(fl, hf, c, cb) }
+		announce = hf.announce()
+	} else {
+		fl.deliver = func(c net.Conn, cb Callback) { b.relayCode(fl, c, cb) }
+	}
+
 	if b.live != nil {
 		b.endLocked(b.live)
 	}
-
 	lns, err := b.bind(f.Port)
 	if err != nil {
 		return err
 	}
-	fl := &flow{f: f, opened: now, lns: lns, conns: map[net.Conn]bool{}, slots: make(chan struct{}, maxConns)}
+	fl.lns = lns
 	fl.stopTTL = b.d.Clock.AfterFunc(FlowTTL, func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -179,7 +204,9 @@ func (b *Bridge) Handle(f Flow) error {
 		b.wg.Add(1)
 		go b.accept(fl, ln)
 	}
-	url := f.AuthorizeURL()
+	if announce != "" {
+		fmt.Fprintf(b.d.Stderr, "snug: login bridge: %s\n", announce)
+	}
 	go func() {
 		if err := b.d.Open(url); err != nil {
 			b.mu.Lock()
@@ -194,55 +221,6 @@ func (b *Bridge) Handle(f Flow) error {
 	return nil
 }
 
-// bind takes 127.0.0.1:port and [::1]:port. Any failure on the v4 side, or
-// EADDRINUSE on the v6 side, refuses the whole flow with nothing bound: a
-// family snug skipped while it is in use could be held by another uid, and
-// the browser may resolve localhost to it. A host with no v6 loopback
-// (EADDRNOTAVAIL, EAFNOSUPPORT) gets v4 only — the browser cannot reach ::1
-// there either.
-func (b *Bridge) bind(port int) ([]net.Listener, error) {
-	inUse := fmt.Errorf("localhost:%d is in use on this host; run /login again and claude picks another port", port)
-	v4, err := b.d.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			return nil, inUse
-		}
-		return nil, fmt.Errorf("could not listen on 127.0.0.1:%d: %v", port, err)
-	}
-	v6, err := b.d.Listen("tcp6", net.JoinHostPort("::1", strconv.Itoa(port)))
-	switch {
-	case err == nil:
-		return []net.Listener{v4, v6}, nil
-	case errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.EAFNOSUPPORT):
-		return []net.Listener{v4}, nil
-	case errors.Is(err, syscall.EADDRINUSE):
-		v4.Close()
-		return nil, inUse
-	default:
-		v4.Close()
-		return nil, fmt.Errorf("could not listen on [::1]:%d: %v", port, err)
-	}
-}
-
-// listenLoopback binds network/addr with IPV6_V6ONLY set explicitly on a v6
-// socket, so [::1]:port never also answers for a v4 address whatever the
-// net.ipv6.bindv6only sysctl says.
-func listenLoopback(network, addr string) (net.Listener, error) {
-	lc := net.ListenConfig{Control: func(nw, _ string, c syscall.RawConn) error {
-		if nw != "tcp6" {
-			return nil
-		}
-		var serr error
-		if err := c.Control(func(fd uintptr) {
-			serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
-		}); err != nil {
-			return err
-		}
-		return serr
-	}}
-	return lc.Listen(context.Background(), network, addr)
-}
-
 // endLocked closes fl's listeners and connections and stops its TTL. b.mu is
 // held.
 func (b *Bridge) endLocked(fl *flow) {
@@ -253,7 +231,9 @@ func (b *Bridge) endLocked(fl *flow) {
 	if b.live == fl {
 		b.live = nil
 	}
-	fl.stopTTL()
+	if fl.stopTTL != nil {
+		fl.stopTTL()
+	}
 	for _, ln := range fl.lns {
 		ln.Close()
 	}
@@ -262,11 +242,13 @@ func (b *Bridge) endLocked(fl *flow) {
 	}
 }
 
-// Close ends any live flow, refuses every later Handle and waits for the
-// listener goroutines. An opener already started is not waited for.
+// Close ends any live flow, cancels an exchange in flight, refuses every
+// later Handle and waits for the listener goroutines, the exchange's
+// included. An opener already started is not waited for.
 func (b *Bridge) Close() {
 	b.mu.Lock()
 	b.closed = true
+	b.cancel()
 	if b.live != nil {
 		b.endLocked(b.live)
 	}
@@ -292,120 +274,41 @@ func (b *Bridge) noticeLocked(format string, a ...any) {
 	}
 }
 
-func (b *Bridge) accept(fl *flow, ln net.Listener) {
-	defer b.wg.Done()
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		select {
-		case fl.slots <- struct{}{}:
-		default:
-			c.Close()
-			continue
-		}
-		b.mu.Lock()
-		if fl.ended {
-			b.mu.Unlock()
-			c.Close()
-			<-fl.slots
-			return
-		}
-		fl.conns[c] = true
-		b.mu.Unlock()
-		b.wg.Add(1)
-		go func() {
-			defer b.wg.Done()
-			b.serve(fl, c)
-			b.mu.Lock()
-			delete(fl.conns, c)
-			b.mu.Unlock()
-			c.Close()
-			<-fl.slots
-		}()
-	}
-}
-
-func addrPort(a net.Addr) (netip.AddrPort, bool) {
-	t, ok := a.(*net.TCPAddr)
-	if !ok {
-		return netip.AddrPort{}, false
-	}
-	return t.AddrPort(), true
-}
-
-// serve answers one connection: one request, then close.
-func (b *Bridge) serve(fl *flow, c net.Conn) {
-	peer, ok1 := addrPort(c.RemoteAddr())
-	local, ok2 := addrPort(c.LocalAddr())
-	if !ok1 || !ok2 {
-		writePage(c, 403, "snug refused this connection: its addresses are not TCP.")
-		return
-	}
-	uid, ok := b.d.PeerUID(peer, local)
-	if !ok {
-		b.notice("refused a connection to localhost:%d — snug could not find which user owns it.", fl.f.Port)
-		writePage(c, 403, "snug refused this connection: it could not tell which user on this machine made it.")
-		return
-	}
-	if uid != b.d.UID {
-		b.notice("refused a connection to localhost:%d from uid %d — only your uid (%d) may deliver a login callback.",
-			fl.f.Port, uid, b.d.UID)
-		writePage(c, 403, "snug refused this connection: it belongs to another user on this machine.")
-		return
-	}
-
-	c.SetReadDeadline(time.Now().Add(headReadDeadline))
-	method, target, host, err := readHead(c)
-	if err != nil {
-		b.notice("refused a request on localhost:%d — %s.", fl.f.Port, policy.VisibleText(err.Error()))
-		writePage(c, 400, "snug could not read this request: "+err.Error()+".")
-		return
-	}
-	if !hostMatches(host, fl.f.Port) {
-		b.notice("refused a request on localhost:%d — Host header %s is not localhost:%d.",
-			fl.f.Port, policy.VisibleText(host), fl.f.Port)
-		writePage(c, 400, "snug answers only requests addressed to localhost.")
-		return
-	}
-	cb, err := ParseCallback(method, target, fl.f.State)
-	if err != nil {
-		b.notice("answered 404 on localhost:%d — %s. The login is still pending.", fl.f.Port, err.Error())
-		writePage(c, 404, "Not found. snug is waiting for a Claude login callback on this port; this was not it.")
-		return
-	}
-
-	b.mu.Lock()
-	if fl.ended || fl.relayed {
-		b.mu.Unlock()
-		writePage(c, 404, "Not found. This login's callback was already delivered or the login ended.")
-		return
-	}
-	fl.relayed = true
-	b.relays++
-	b.mu.Unlock()
-
-	status, rerr := b.relay(fl, cb)
+// relayCode is sandbox mode's consumer: it writes the rebuilt callback into
+// the sandbox and answers the browser with the status that came back.
+func (b *Bridge) relayCode(fl *flow, c net.Conn, cb Callback) {
+	status, rerr := b.relay(fl, RelayRequest(fl.f.Port, cb.Code, fl.f.State))
 	if rerr != nil {
 		writePage(c, 502, "snug could not deliver the login callback to the sandbox: "+rerr.Error()+
 			". Run /login again inside the sandbox.")
 		b.notice("could not relay the login callback into the sandbox — %s.", policy.VisibleText(rerr.Error()))
-	} else {
-		writePage(c, 200, fmt.Sprintf("snug delivered the login callback to the sandbox; it answered HTTP %d. "+
-			"You can close this tab.", status))
-		fmt.Fprintf(b.d.Stderr, "snug: login bridge: delivered the login callback to the sandbox; it answered HTTP %d.\n", status)
+		return
 	}
-	b.mu.Lock()
-	b.endLocked(fl)
-	b.mu.Unlock()
+	writePage(c, 200, fmt.Sprintf("snug delivered the login callback to the sandbox; it answered HTTP %d. "+
+		"You can close this tab.", status))
+	fmt.Fprintf(b.d.Stderr, "snug: login bridge: delivered the login callback to the sandbox; it answered HTTP %d.\n", status)
 }
 
-// relay writes the rebuilt callback into the sandbox and returns the status
-// code of its answer. Nothing from the browser's request but cb.Code and the
-// flow's own state crosses, and nothing of the answer but that integer comes
-// back.
-func (b *Bridge) relay(fl *flow, cb Callback) (int, error) {
+// relayDenial is every mode's answer to a sign-in the browser declined: a
+// constant error callback ends the client's wait, in place of the code
+// there is none of.
+func (b *Bridge) relayDenial(fl *flow, c net.Conn) {
+	status, rerr := b.relay(fl, RelayErrorRequest(fl.f.Port, deniedError, deniedText, fl.f.State))
+	if rerr != nil {
+		writePage(c, 502, "You declined the Claude sign-in, and snug could not tell the sandbox: "+
+			rerr.Error()+". Press Esc in claude inside the sandbox.")
+		b.notice("the sign-in was declined, and relaying that into the sandbox failed — %s.",
+			policy.VisibleText(rerr.Error()))
+		return
+	}
+	writePage(c, 200, "You declined the Claude sign-in; snug ended the sandbox's /login. You can close this tab.")
+	fmt.Fprintf(b.d.Stderr, "snug: login bridge: the sign-in was declined in the browser; snug ended "+
+		"the sandbox's /login (it answered HTTP %d).\n", status)
+}
+
+// relay writes req into the sandbox and returns the status code of its
+// answer. Nothing of the answer but that integer comes back.
+func (b *Bridge) relay(fl *flow, req []byte) (int, error) {
 	conn, err := b.d.Relayer.Dial(fl.f.Port)
 	if err != nil {
 		return 0, err
@@ -421,7 +324,7 @@ func (b *Bridge) relay(fl *flow, cb Callback) (int, error) {
 	defer conn.Close()
 
 	conn.SetDeadline(time.Now().Add(relayDeadline))
-	if _, err := conn.Write(RelayRequest(fl.f.Port, cb.Code, fl.f.State)); err != nil {
+	if _, err := conn.Write(req); err != nil {
 		return 0, fmt.Errorf("writing the callback: %v", err)
 	}
 	br := bufio.NewReaderSize(io.LimitReader(conn, maxStatusLine+maxRelayDiscard), maxStatusLine)
@@ -449,6 +352,50 @@ func RelayRequest(port int, code, state string) []byte {
 		"Connection: close\r\n\r\n")
 }
 
+// The error callbacks snug relays in place of a code. Each is snug's own
+// constant: nothing the browser sent crosses but the fact the request
+// reached the listener with the right state.
+const (
+	// deniedError and deniedText answer a sign-in declined in the browser.
+	deniedError = "access_denied"
+	deniedText  = "the sign-in was declined in the browser"
+	// completedError and completedText end the client's wait after snug
+	// completed the sign-in on the host and renewed the sandbox's token.
+	completedError = "snug_completed_login"
+	completedText  = "snug completed this sign-in on the host and renewed this sandbox's token; press Esc"
+	// failedError and failedText end it after snug could not complete it.
+	failedError = "snug_login_failed"
+	failedText  = "snug could not complete this sign-in on the host; snug's terminal says why; press Esc"
+)
+
+// RelayErrorRequest is the request snug writes into the sandbox to end the
+// client's /login wait without a code: error and error_description, the
+// description percent-encoded, and the client's own state, which is what its
+// listener checks before it gives up waiting.
+func RelayErrorRequest(port int, errCode, description, state string) []byte {
+	return []byte("GET /callback?error=" + errCode + "&error_description=" + percentEncode(description) +
+		"&state=" + state + " HTTP/1.1\r\n" +
+		"Host: localhost:" + strconv.Itoa(port) + "\r\n" +
+		"Connection: close\r\n\r\n")
+}
+
+// percentEncode escapes every byte but RFC 3986's unreserved set, so the
+// result is one query value whatever a later edit to a constant puts in it.
+func percentEncode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '.', c == '_', c == '~':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
 // parseStatus reads the three-digit code of an HTTP/1.x status line.
 func parseStatus(line []byte) (int, bool) {
 	rest, ok := bytes.CutPrefix(line, []byte("HTTP/1."))
@@ -466,73 +413,4 @@ func parseStatus(line []byte) (int, bool) {
 	}
 	n, _ := strconv.Atoi(string(code))
 	return n, n >= 100
-}
-
-// readHead reads one request head of at most maxHeadBytes and returns its
-// method, request-target and the single Host header's value.
-func readHead(r io.Reader) (method, target, host string, err error) {
-	buf := make([]byte, 0, 1024)
-	tmp := make([]byte, 1024)
-	for !bytes.Contains(buf, []byte("\r\n\r\n")) {
-		if len(buf) >= maxHeadBytes {
-			return "", "", "", fmt.Errorf("the request head is longer than %d bytes", maxHeadBytes)
-		}
-		n, rerr := r.Read(tmp[:min(len(tmp), maxHeadBytes-len(buf))])
-		buf = append(buf, tmp[:n]...)
-		if rerr != nil && !bytes.Contains(buf, []byte("\r\n\r\n")) {
-			return "", "", "", fmt.Errorf("the request head ended early: %v", rerr)
-		}
-	}
-	head, _, _ := bytes.Cut(buf, []byte("\r\n\r\n"))
-	lines := strings.Split(string(head), "\r\n")
-	parts := strings.Split(lines[0], " ")
-	if len(parts) != 3 || parts[2] != "HTTP/1.1" && parts[2] != "HTTP/1.0" {
-		return "", "", "", errors.New("the request line is not METHOD TARGET HTTP/1.x")
-	}
-	hosts := 0
-	for _, l := range lines[1:] {
-		k, v, ok := strings.Cut(l, ":")
-		if !ok || k == "" || strings.ContainsAny(k, " \t") {
-			return "", "", "", errors.New("a header line is malformed")
-		}
-		if strings.EqualFold(k, "Host") {
-			hosts++
-			host = strings.Trim(v, " \t")
-		}
-	}
-	if hosts != 1 {
-		return "", "", "", fmt.Errorf("the request carries %d Host headers, want 1", hosts)
-	}
-	return parts[0], parts[1], host, nil
-}
-
-// hostMatches is the DNS-rebinding gate: the browser addressed localhost,
-// 127.0.0.1 or [::1] on the flow's port, and nothing else.
-func hostMatches(host string, port int) bool {
-	p := strconv.Itoa(port)
-	return host == "localhost:"+p || host == "127.0.0.1:"+p || host == "[::1]:"+p
-}
-
-// pageCSP forbids the page every subresource, form and frame: it is snug's
-// static text and needs none.
-const pageCSP = "default-src 'none'; form-action 'none'; frame-ancestors 'none'"
-
-// writePage answers with snug's own page. The body is snug's text, HTML
-// escaped; no byte of it comes from the sandbox.
-func writePage(w io.Writer, status int, text string) {
-	body := "<!doctype html>\n<meta charset=\"utf-8\">\n<title>snug login bridge</title>\n<p>" +
-		htmlEscape(text) + "</p>\n"
-	reason := map[int]string{200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 502: "Bad Gateway"}[status]
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n"+
-		"Content-Type: text/html; charset=utf-8\r\n"+
-		"Content-Length: %d\r\n"+
-		"Content-Security-Policy: %s\r\n"+
-		"Cache-Control: no-store\r\n"+
-		"Referrer-Policy: no-referrer\r\n"+
-		"X-Content-Type-Options: nosniff\r\n"+
-		"Connection: close\r\n\r\n%s", status, reason, len(body), pageCSP, body)
-}
-
-func htmlEscape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;").Replace(s)
 }

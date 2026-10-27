@@ -67,8 +67,12 @@ type rawProfile struct {
 	MTU     int    `toml:"mtu"`
 	NSS     bool   `toml:"nss"`
 
-	Podman   string       `toml:"podman"`
-	Login    []string     `toml:"login"`
+	Podman string `toml:"podman"`
+	// Login is `any` because the key has two shapes and only toLogin can
+	// tell them apart: the table (login.claude = "host") and the list it
+	// replaced. Strict decoding does not reach inside a map[string]any, so
+	// toLogin is also what refuses an unknown provider by name.
+	Login    any          `toml:"login"`
 	Identity *rawIdentity `toml:"identity"`
 }
 
@@ -408,6 +412,10 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 		if err := checkFeatureModes(r); err != nil {
 			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
 		}
+		login, err := toLogin(r.Login)
+		if err != nil {
+			return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+		}
 		reg[name] = &policy.Profile{
 			Name:        name,
 			Description: r.Description,
@@ -426,7 +434,7 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 			MTU:         r.MTU,
 			NSS:         r.NSS,
 			Podman:      r.Podman,
-			Login:       r.Login,
+			Login:       login,
 			Identity:    identity,
 			Source:      source,
 			Trusted:     trusted,
@@ -435,25 +443,87 @@ func parse(data []byte, source string, trusted bool) (Registry, error) {
 	return reg, nil
 }
 
-// checkFeatureModes refuses a `network`, `podman` or `git` value, or a `login`
-// element, no run can use. Resolve refuses it too, but `snug profile show` and `snug profile list`
+// checkFeatureModes refuses a `network` or `podman` value no run can use.
+// Resolve refuses it too, but `snug profile show` and `snug profile list`
 // do not resolve, so without this the screen a human reads to decide whether
 // to select a profile rendered `podman  sockets` with the consequence row of
 // a running engine. The same shape as toIdentity's ParseSSHMode call: a second
 // CALL to the function that owns each accepted set, not a second list.
 // An unset `network` is "" and means the join floor; ParseNetMode does not
-// accept "" because Resolve never hands it one.
+// accept "" because Resolve never hands it one. `login` is toLogin's.
 func checkFeatureModes(r rawProfile) error {
 	if r.Network != "" {
 		if _, err := policy.ParseNetMode(r.Network); err != nil {
 			return err
 		}
 	}
-	if _, err := policy.ParsePodmanMode(r.Podman); err != nil {
-		return err
-	}
-	_, err := policy.ParseLoginSet(r.Login)
+	_, err := policy.ParsePodmanMode(r.Podman)
 	return err
+}
+
+// errLoginShape is the refusal for a `login` value that is neither shape.
+var errLoginShape = errors.New(`login is a table of provider = mode; write login.claude = "host" ` +
+	`or login.claude = "sandbox"`)
+
+// toLogin turns the decoded `login` value into the table Resolve joins, and
+// is the only reader of the key's TOML shape.
+//
+// A table (`login.claude = "host"`, `login = { claude = "host" }` or a
+// `[profile.NAME.login]` subtable — one TOML table all three) names each
+// provider through ParseLoginProvider and each mode through ParseLoginMode,
+// so an unknown provider, an unknown mode and the empty mode are refused by
+// the functions that own those sets. An empty table names nothing.
+//
+// A list of provider names is the spelling the key had before the table, and
+// it is still read, as LoginSandbox for each provider it names: that is what
+// the list meant, and a file written then keeps doing what its author asked
+// for. TestTheListFormOfLoginMeansSandbox holds the equivalence. Nothing
+// shows or suggests the list — no refusal, screen or comment — so this
+// comment is the one place it is written down.
+func toLogin(v any) (map[policy.LoginProvider]policy.LoginMode, error) {
+	var out map[policy.LoginProvider]policy.LoginMode
+	set := func(l policy.LoginProvider, m policy.LoginMode) {
+		if out == nil {
+			out = map[policy.LoginProvider]policy.LoginMode{}
+		}
+		out[l] = m
+	}
+	switch v := v.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		for _, key := range sortedAnyKeys(v) {
+			l, err := policy.ParseLoginProvider(key)
+			if err != nil {
+				return nil, err
+			}
+			s, ok := v[key].(string)
+			if !ok {
+				return nil, fmt.Errorf("unknown login mode %s for %s (want \"sandbox\" or \"host\")",
+					policy.VisibleText(fmt.Sprint(v[key])), l)
+			}
+			m, err := policy.ParseLoginMode(l, s)
+			if err != nil {
+				return nil, err
+			}
+			set(l, m)
+		}
+	case []any:
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, errLoginShape
+			}
+			l, err := policy.ParseLoginProvider(s)
+			if err != nil {
+				return nil, err
+			}
+			set(l, policy.LoginSandbox)
+		}
+	default:
+		return nil, errLoginShape
+	}
+	return out, nil
 }
 
 // toEnvGrants turns one profile's raw `environ` block into the value the
