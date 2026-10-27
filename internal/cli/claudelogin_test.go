@@ -274,3 +274,33 @@ func TestHostModePreflightRefusesWhatCouldNeverBeRenewed(t *testing.T) {
 }
 
 var _ loginbridge.HostFiles = (*claudeHostFiles)(nil)
+
+// Red-team #662 round 2, N1: fileShape already carries its article, and the
+// refusal read `is a a symlink`.
+func TestHostModePreflightNamesTheFileShapeOnce(t *testing.T) {
+	_, home := hostFilesFixture(t, hostCredFixture)
+	os.Remove(hostCredPath(home))
+	if err := os.Symlink("elsewhere.json", hostCredPath(home)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := claudeHostPreflight(osClaudeLoginReads{}, home)
+	if err == nil {
+		t.Fatal("a symlinked credential file passed preflight")
+	}
+	if strings.Contains(err.Error(), "a a ") || !strings.Contains(err.Error(), "is a symlink, not a regular file") {
+		t.Errorf("refusal: %v", err)
+	}
+}
+
+// Red-team #662 round 2, N2: the browser's page deadline counts on the host
+// write giving up within loginbridge.HostWriteBudget, and the lock back-off
+// is all of that wait.
+func TestStorageLockBackoffFitsTheHostWriteBudget(t *testing.T) {
+	var total time.Duration
+	for try := range storageLockTries {
+		total += storageLockDelay(try)
+	}
+	if total >= loginbridge.HostWriteBudget {
+		t.Errorf("lock back-off %v, budget %v", total, loginbridge.HostWriteBudget)
+	}
+}

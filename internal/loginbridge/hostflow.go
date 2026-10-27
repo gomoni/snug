@@ -15,6 +15,10 @@ import (
 	"github.com/gomoni/snug/internal/policy"
 )
 
+// HostWriteBudget is how long a HostFiles.WriteHost may wait on another
+// writer before it refuses.
+const HostWriteBudget = 10 * time.Second
+
 // HostLogin is what a Bridge needs to complete each login on the host
 // (login.claude = "host"): snug opens the authorize URL with its OWN PKCE
 // verifier and state, so the code the browser brings back is exchangeable by
@@ -45,6 +49,9 @@ type HostLogin struct {
 // HostFiles is the host-file half of a host-mode login. It lives in
 // internal/cli, where host I/O lives; this package decides only what to ask
 // of it.
+//
+// A WriteHost that waits on another writer gives up within HostWriteBudget,
+// which the browser's page deadline counts on.
 type HostFiles interface {
 	// Snapshot reads, when a flow starts, the account the host is signed in
 	// to and the host credential file's tokens, for WriteHost's

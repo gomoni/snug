@@ -193,9 +193,10 @@ func (b *Bridge) serve(fl *flow, c net.Conn) {
 }
 
 // pageDeadline bounds how long the browser's connection is held for its
-// answer once a callback is claimed: the relay's deadline, or the host
-// exchange's two request timeouts, with room to write the page.
-const pageDeadline = 60 * time.Second
+// answer once a callback is claimed: in host mode the two vendor requests,
+// the host write and the relay into the sandbox, run one after another, with
+// room to write the page.
+const pageDeadline = exchangeTimeout + profileTimeout + HostWriteBudget + relayDeadline + 5*time.Second
 
 // readHead reads one request head of at most maxHeadBytes and returns its
 // method, request-target and the single Host header's value.

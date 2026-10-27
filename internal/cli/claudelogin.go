@@ -127,7 +127,7 @@ func claudeHostPreflight(r claudeLoginReads, home string) (loginbridge.AccountPi
 	}
 	creds := filepath.Join(home, ".claude", claudeCredentialsName)
 	if fi, err := r.Lstat(creds); err == nil && !fi.Mode().IsRegular() {
-		return pin, fmt.Errorf("login.claude = \"host\" rewrites ~/.claude/.credentials.json, and %q is a %s, "+
+		return pin, fmt.Errorf("login.claude = \"host\" rewrites ~/.claude/.credentials.json, and %q is %s, "+
 			"not a regular file; snug replaces only a regular file there. Make it one (run `claude` on the "+
 			"host)%s", creds, fileShape(fi.Mode()), alt)
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -356,7 +356,7 @@ func (h *claudeHostFiles) WriteHost(ctx context.Context, snap loginbridge.HostSn
 	case fi.Mode()&fs.ModeSymlink != 0:
 		return errors.New("~/.claude/.credentials.json is a symlink; snug replaces only a regular file there")
 	case !fi.Mode().IsRegular():
-		return fmt.Errorf("~/.claude/.credentials.json is a %s, not a regular file", fileShape(fi.Mode()))
+		return fmt.Errorf("~/.claude/.credentials.json is %s, not a regular file", fileShape(fi.Mode()))
 	}
 	f, err := root.OpenFile(claudeCredentialsName, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
@@ -396,7 +396,6 @@ func errOr(err error, s string) error {
 // owner left behind and is removed; otherwise snug backs off from 100 ms to
 // 1 s, storageLockTries times, as the client itself does.
 func takeStorageLock(ctx context.Context, root *os.Root, now func() time.Time) (func(), error) {
-	delay := 100 * time.Millisecond
 	for try := 0; ; try++ {
 		err := root.Mkdir(storageLockName, 0o700)
 		if err == nil {
@@ -416,10 +415,15 @@ func takeStorageLock(ctx context.Context, root *os.Root, now func() time.Time) (
 		select {
 		case <-ctx.Done():
 			return nil, errors.New("snug is shutting down")
-		case <-time.After(delay):
+		case <-time.After(storageLockDelay(try)):
 		}
-		delay = min(2*delay, time.Second)
 	}
+}
+
+// storageLockDelay is takeStorageLock's back-off before retry try+1. Its sum
+// over storageLockTries is held under loginbridge.HostWriteBudget.
+func storageLockDelay(try int) time.Duration {
+	return min(100*time.Millisecond<<try, time.Second)
 }
 
 // hostLoginLines is the host-mode paragraph of --dry-run's CLAUDE block.
