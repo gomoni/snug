@@ -1060,16 +1060,19 @@ func containerMarker() string {
 // browserPreflight, the function a real run asks. The order — the desktop
 // portal, then xdg-open — is not configurable; this only reports it. A host
 // with neither is a warning, not a failure: only login.claude needs one.
+// Every string is escaped: the bus address and a bus peer's error text are
+// the host's, but a terminal escape in them would forge a doctor line.
 func reportLoginOpener(env policy.Environ, out io.Writer) {
 	opener, err := browserPreflight(env)
 	switch {
 	case err != nil:
 		fmt.Fprintln(out, "  ⚠️  no login opener — a profile with login.claude will refuse to run")
-		fmt.Fprintf(out, "     💬 %s\n", err)
+		fmt.Fprintf(out, "     💬 %s\n", visibleValue(err.Error()))
 	case opener.Kind() == "portal":
-		fmt.Fprintf(out, "  ✅ login opener: %s\n", opener)
+		fmt.Fprintf(out, "  ✅ login opener: %s\n", visibleValue(opener.String()))
 	default:
-		fmt.Fprintf(out, "  ✅ login opener: xdg-open, no desktop portal answered: %s\n", opener.noPortal)
-		fmt.Fprintf(out, "     📍 %s\n", opener)
+		fmt.Fprintf(out, "  ✅ login opener: xdg-open, no desktop portal answered: %s\n",
+			visibleValue(opener.noPortal))
+		fmt.Fprintf(out, "     📍 %s\n", visibleValue(opener.String()))
 	}
 }

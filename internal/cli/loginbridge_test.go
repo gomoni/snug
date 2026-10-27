@@ -117,6 +117,33 @@ func TestDoctorReportsTheLoginOpener(t *testing.T) {
 	}
 }
 
+// Red team (PR #707): a bus peer's error text and the bus address reach
+// doctor's row escaped, in every branch, so neither can forge or erase a line.
+func TestDoctorLoginOpenerRowIsEscaped(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus\x1b[2J"
+	old := portalVersion
+	t.Cleanup(func() { portalVersion = old })
+	for _, c := range []struct {
+		portal func(string) (uint32, error)
+		env    browserEnv
+	}{
+		{func(string) (uint32, error) { return 5, nil },
+			browserEnv{vars: map[string]string{"DBUS_SESSION_BUS_ADDRESS": bus}}},
+		{func(string) (uint32, error) { return 0, errors.New("org.x.\x1b[31mE: \x1b[2K\r✅ forged\n\u202e") },
+			browserEnv{xdg: true, vars: map[string]string{"DISPLAY": ":0"}}},
+		{func(string) (uint32, error) { return 0, errors.New("org.x.\x1b[31mE: \x1b[2K\r✅ forged\n\u202e") },
+			browserEnv{}},
+	} {
+		portalVersion = c.portal
+		var out bytes.Buffer
+		reportLoginOpener(c.env, &out)
+		body := strings.TrimSuffix(out.String(), "\n")
+		if strings.ContainsAny(out.String(), "\x1b\r\u202e") || strings.Count(body, "\n") > 1 {
+			t.Errorf("doctor row not escaped: %q", out.String())
+		}
+	}
+}
+
 // The refusals leave through refuse with exitPolicy, the same funnel every
 // other preflight uses.
 func TestBrowserPreflightExitsPolicy(t *testing.T) {

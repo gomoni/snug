@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gomoni/snug/internal/dbus/dbustest"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -497,5 +498,56 @@ func TestHostModeListenerKeepsTheBridgesGate(t *testing.T) {
 	}
 	if renewed, written := files.counts(); renewed != 1 || written != 1 {
 		t.Errorf("renewed %d, written %d", renewed, written)
+	}
+}
+
+// Red team (PR #707): an opener failing in host mode — the portal's dialog
+// dismissed (Response 1), any other Response (2), or xdg-open failing — must
+// never advise the paste fallback, which signs the sandbox in by itself with
+// a refresh token, and the opener's error reaches stderr escaped.
+func TestHostModeOpenFailureNeverAdvisesPasting(t *testing.T) {
+	for name, open := range map[string]func(*testing.T) func(string) error{
+		"portal response 1": func(t *testing.T) func(string) error {
+			return PortalOpener{Addr: fakePortal(t, &dbustest.Portal{Version: 5, Response: 1}).Addr}.Open
+		},
+		"portal response 2": func(t *testing.T) func(string) error {
+			return PortalOpener{Addr: fakePortal(t, &dbustest.Portal{Version: 5, Response: 2}).Addr}.Open
+		},
+		"xdg-open, escape in its error": func(*testing.T) func(string) error {
+			return func(string) error { return errors.New("xdg-open failed \x1b[2K\r✅ forged") }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, files := hostRig(t)
+			r.b.d.Open = open(t)
+			r.openFlow(t)
+			waitFor(t, func() bool { return strings.Contains(r.stderr.String(), "cancelled") })
+			out := r.stderr.String()
+			line := out[strings.LastIndex(out[:strings.Index(out, "cancelled")], "\n")+1:]
+			if strings.Contains(line, "paste the code") || strings.Contains(line, "open the URL claude printed and") {
+				t.Errorf("host mode advised the paste fallback: %q", line)
+			}
+			if !strings.Contains(line, noPaste) || !strings.Contains(line, "/login again") {
+				t.Errorf("host mode's cancel line lacks its advice: %q", line)
+			}
+			if strings.ContainsAny(out, "\x1b\r") {
+				t.Errorf("opener error reached stderr raw: %q", out)
+			}
+			if renewed, written := files.counts(); renewed+written != 0 {
+				t.Errorf("a failed open renewed %d and wrote %d", renewed, written)
+			}
+		})
+	}
+}
+
+// Control: sandbox mode keeps the paste fallback, which is right there — the
+// sandbox exchanges the code in that mode anyway.
+func TestSandboxModeOpenFailureKeepsThePasteFallback(t *testing.T) {
+	r := newRig(t)
+	r.opener.err = errors.New("xdg-open exited 3")
+	r.openFlow(t)
+	waitFor(t, func() bool { return strings.Contains(r.stderr.String(), "cancelled") })
+	if !strings.Contains(r.stderr.String(), "paste the code") {
+		t.Fatalf("sandbox mode lost its fallback: %q", r.stderr.String())
 	}
 }
