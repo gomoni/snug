@@ -58,6 +58,9 @@ func TestBookExampleProfilesParse(t *testing.T) {
 // table on one line; go-toml accepts more, so an example written that way
 // would work in snug and fail in any strict parser — and users copy the
 // guide. Anything longer than a line is a [table] header, as in Cargo.toml.
+// A ```go fence is skipped: Go braces are not TOML, and a Go block carries no
+// profile. Every other fence is checked, untagged ones and shell heredocs
+// included, because that is where profiles are written.
 func TestBookHasNoMultiLineInlineTable(t *testing.T) {
 	for _, p := range bookPages(t) {
 		data, err := os.ReadFile(p)
@@ -65,6 +68,9 @@ func TestBookHasNoMultiLineInlineTable(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, f := range extractFences(string(data)) {
+			if f.lang == "go" {
+				continue
+			}
 			for i, line := range strings.Split(f.text, "\n") {
 				if strings.Count(stripTOMLStrings(line), "{") > strings.Count(stripTOMLStrings(line), "}") {
 					t.Errorf("%s %s (+%d): an inline table opens and does not close on the same "+

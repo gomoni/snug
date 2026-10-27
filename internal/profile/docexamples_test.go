@@ -10,24 +10,22 @@ import (
 
 // ── the runnable-example sweep (issue #44 follow-up) ────────────────────────
 //
-// README.md's five-verb example and the by-hand checklist's five-verb check wrote
+// The by-hand checklist's five-verb check wrote
 // `[profile.mytools.environ.inherit] COLORTERM = true` with no `declare`
 // block. COLORTERM has no roster row (internal/policy/envtypes.go), so once
 // the roster flip landed, the WHOLE profile was refused at parse time — and
 // nothing caught it: the checklist "earned its place by being executable" but
-// nothing ran it except a human, and README's examples are never run at all.
-// the checklist's own five-verb check exited 77 before its expected-output
-// fence was ever printed. Both documents now carry a `declare` block; this file is what
-// makes the NEXT such change fail `go test` instead of a human's terminal.
+// nothing ran it except a human. This file is what makes the NEXT such change
+// fail `go test` instead of a human's terminal. Profile examples in the book
+// are held by TestBookExampleProfilesParse.
 //
 // THE EXTRACTION RULE, mechanical rather than a hand-maintained list of line
-// ranges — each step is load-bearing and is exercised by a case in the two
-// documents themselves, not a hypothetical:
+// ranges — each step is load-bearing and is exercised by a case in the
+// document itself, not a hypothetical:
 //
 //  1. Every fenced code block (``` … ```) in the document, whatever its
-//     language tag. README spells its profiles in ```toml fences;
-//     scripts/README.md mostly does not — its examples are plain ```bash or
-//     ```console.
+//     language tag. scripts/README.md's examples are mostly plain ```bash
+//     or ```console.
 //  2. Within each fenced block, look for shell heredocs: a line matching
 //     `<<-?['"]?WORD['"]?` opens one, a later line that is EXACTLY `WORD`
 //     closes it. If a block contains at least one heredoc, ONLY the heredoc
@@ -61,17 +59,15 @@ import (
 // exact-header-line test already says no. Reconstructing these would mean
 // interpreting printf's OWN escaping rules — a second parser this sweep would
 // then have to keep correct — for examples that are shell-escaping
-// demonstrations first and profile text second. The two examples this sweep
-// exists to protect (README's five-verb block, and the five-verb check that
-// is a Go test now) are both
-// heredoc/fenced-block spelled, not printf-spelled.
+// demonstrations first and profile text second. The five-verb check this sweep
+// was written for is a Go test now.
 //
 // Lives in internal/profile, not internal/cli or internal/policy: `parse` (below)
 // is what already runs a profile file through BOTH the profile grammar and
 // policy.ValidateEnvGrants (file.go's parse calls it directly) — one call is
 // the real path a file on disk goes through, not a reimplementation of it.
-// internal/policy stays pure; this test only reads the two committed
-// markdown files, which is no different from Load reading profiles.d.
+// internal/policy stays pure; this test only reads a committed
+// markdown file, which is no different from Load reading profiles.d.
 
 var (
 	heredocStart  = regexp.MustCompile(`<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*$`)
@@ -82,6 +78,7 @@ var (
 type docCandidate struct {
 	source string // human-readable locator, for a failing test's error text
 	text   string
+	lang   string // the fence's info string, "" when untagged
 }
 
 // extractFences returns the BODY of every fenced code block in text (fence
@@ -92,11 +89,13 @@ func extractFences(text string) []docCandidate {
 	var out []docCandidate
 	inFence := false
 	var cur []string
+	var lang string
 	start := 0
 	for i, line := range lines {
 		if !inFence {
 			if strings.HasPrefix(line, "```") {
 				inFence = true
+				lang = strings.TrimSpace(strings.TrimPrefix(line, "```"))
 				cur = nil
 				start = i + 2 // 1-based line number of the first body line
 			}
@@ -107,6 +106,7 @@ func extractFences(text string) []docCandidate {
 			out = append(out, docCandidate{
 				source: fmt.Sprintf("line %d", start),
 				text:   strings.Join(cur, "\n"),
+				lang:   lang,
 			})
 			continue
 		}
@@ -213,12 +213,11 @@ func extractProfileExamples(t *testing.T, path string) []docCandidate {
 // pass by matching nothing.
 func TestDocumentedExampleProfilesParse(t *testing.T) {
 	var all []docCandidate
-	all = append(all, extractProfileExamples(t, "../../README.md")...)
 	all = append(all, extractProfileExamples(t, "../../scripts/README.md")...)
 
-	// NON-VACUITY CONTROL. the repository README and scripts/README.md between them write
-	// four in-scope profile examples today — measured, none and four, since the
-	// README's examples moved to the book (TestBookExampleProfilesParse); if the extraction
+	// NON-VACUITY CONTROL. scripts/README.md writes four in-scope profile
+	// examples today; the README's examples moved to the book
+	// (TestBookExampleProfilesParse). If the extraction
 	// rule ever stops matching — a doc reformatted to use tildes instead of
 	// backticks, a language-tag change that this rule does not in fact
 	// depend on but a future edit might make it start depending on, or
@@ -227,7 +226,7 @@ func TestDocumentedExampleProfilesParse(t *testing.T) {
 	// exact shape CLAUDE.md's "pasta" vs "pasta.avx2" scar describes.
 	const floor = 4
 	if len(all) < floor {
-		t.Fatalf("found only %d in-scope profile example(s) across README.md and "+
+		t.Fatalf("found only %d in-scope profile example(s) in "+
 			"scripts/README.md, want at least %d; the extraction rule stopped matching "+
 			"something (see the file comment for what it looks for), or the "+
 			"documents genuinely lost their examples", len(all), floor)

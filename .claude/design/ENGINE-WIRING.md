@@ -430,7 +430,7 @@ reaped the payload and before it sends `"exited"`.
 **"After it has reaped the payload" is the whole condition, and it covers
 more than a plain exit.** A payload that handles `Ctrl-C` and exits inside
 the second `snug` gives it for that (`payloadGraceBudget`,
-`internal/sandbox/teardown.go`; README "What dies when") has exited *normally*
+`internal/sandbox/teardown.go`; `docs/src/architecture.md` "What dies when") has exited *normally*
 — `Stage.Wait` returns an ordinary
 status — so the stop below runs for it. What does not reach the stop is a
 payload that IGNORES the signal, whose grace expires and whose stage is then
