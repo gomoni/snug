@@ -214,8 +214,14 @@ func (b *Bridge) Handle(f Flow) error {
 			if b.live == fl && !fl.relayed {
 				b.endLocked(fl)
 			}
-			fmt.Fprintf(b.d.Stderr, "snug: login bridge: %v. The login was cancelled — open the URL "+
-				"claude printed and paste the code.\n", err)
+			// Host mode's advice is never the paste fallback: a code pasted
+			// inside signs the sandbox in by itself, with a refresh token.
+			advice := "open the URL claude printed and paste the code"
+			if b.d.Host != nil {
+				advice = "press Esc in claude inside and run /login again — " + noPaste
+			}
+			fmt.Fprintf(b.d.Stderr, "snug: login bridge: %s. The login was cancelled — %s.\n",
+				policy.VisibleText(err.Error()), advice)
 		}
 	}()
 	return nil

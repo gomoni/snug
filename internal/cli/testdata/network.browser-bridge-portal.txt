@@ -1,0 +1,16 @@
+         browser bridge  login.claude = "sandbox" — the sandbox may ask snug to open a Claude login page
+                         in YOUR browser, directly, one at a time. Accepted shape:
+                         https://claude.com/cai/oauth/authorize
+                         client 9d1c250a-e61b-44d9-88ed-5944d1962f5e, exactly 7 scopes:
+                         org:create_api_key user:profile user:inference
+                         user:sessions:claude_code user:mcp_servers user:file_upload user:plugins;
+                         anything else is REFUSED, and snug rebuilds the URL it opens
+                         from its own constants.
+                         callback: snug binds localhost:<port> (127.0.0.1 and ::1) on
+                         the host only while a login is pending (at most 10m0s), admits
+                         your uid only, relays ONE rebuilt GET /callback into the
+                         sandbox and answers your browser itself. Nothing is forwarded
+                         into the sandbox's namespace; host loopback stays unreachable
+                         from inside.
+         opener          desktop portal, org.freedesktop.portal.OpenURI version 5, on the session bus unix:path=/run/user/1000/bus
+         limits          5 opens and 3 callbacks per run, 1 login pending at a time

@@ -23,7 +23,7 @@
 -      "claude": "sandbox"
 +      "claude": "host"
      },
-     "opener": "/usr/bin/xdg-open",
+     "opener_kind": "xdg-open",
 @@
      "max_opens": 5,
      "max_relays": 3,

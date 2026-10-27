@@ -65,7 +65,9 @@
 +    "login": {
 +      "claude": "sandbox"
 +    },
++    "opener_kind": "xdg-open",
 +    "opener": "/usr/bin/xdg-open",
++    "portal_error": "DBUS_SESSION_BUS_ADDRESS is not set",
 +    "fifo": "/snug/browser.fifo",
 +    "max_opens": 5,
 +    "max_relays": 3,

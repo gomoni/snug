@@ -100,6 +100,34 @@ func TestGoldenBrowserBridgeScreens(t *testing.T) {
 	}))
 }
 
+// TestGoldenBrowserBridgePortalScreens is the same screens on a host whose
+// desktop portal answers: the opener row names the portal and its bus, and
+// --explain says snug runs no program to open the page.
+func TestGoldenBrowserBridgePortalScreens(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus"
+	stubPortal(t, bus, 5)
+	env := newBridgeEnv(true)
+	env.env["DBUS_SESSION_BUS_ADDRESS"] = bus
+	delete(env.env, "WAYLAND_DISPLAY")
+	p := resolveBridge(t, env, true)
+	rep := buildReport(env, p, nil, config{}, nil, nil)
+	if b := rep.BrowserBridge; b.OpenerKind != "portal" || b.OpenerError != "" {
+		t.Fatalf("no xdg-open, no display, portal answering: %+v", b)
+	}
+	var net strings.Builder
+	renderBrowserBridge(&net, rep.BrowserBridge)
+	goldenText(t, "network.browser-bridge-portal.txt", net.String())
+	var ex bytes.Buffer
+	if err := explain(env, &ex, p, p.BwrapArgs(0, 0), config{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	s := strings.Join(strings.Fields(ex.String()), " ")
+	if !strings.Contains(s, "The desktop portal opens the page: snug runs no program for it") ||
+		strings.Contains(s, "would REFUSE") {
+		t.Errorf("--explain with a portal:\n%s", ex.String())
+	}
+}
+
 // TestGoldenBrowserBridgeJSON pins the machine document for the bridge as a
 // DIFF against the same selection without it, not as a second whole document.
 // It fails if turning the bridge on moves any line outside

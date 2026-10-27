@@ -82,20 +82,27 @@ func renderBrowserBridge(out io.Writer, b *reportBrowserBridge) {
 		fmt.Fprintf(out, "         opener          NONE — a real run would REFUSE to start: %s\n", visibleValue(b.OpenerError))
 	} else {
 		fmt.Fprintf(out, "         opener          %s\n", visibleValue(b.Opener))
+		if b.PortalError != "" {
+			fmt.Fprintf(out, "                         not the desktop portal: %s\n", visibleValue(b.PortalError))
+		}
 	}
 	fmt.Fprintf(out, "         limits          %d opens and %d callbacks per run, %d login pending at a time\n",
 		b.MaxOpens, b.MaxRelays, loginbridge.MaxLiveFlows)
 }
 
 // describeBrowserTopology prints the TOPOLOGY rows for the opener. It is not
-// in longLivedProcesses: xdg-open is started per login, not per run, so
-// counting it would make the process count a `ps` check cannot confirm.
+// in longLivedProcesses: xdg-open is started per login, not per run, and the
+// portal starts nothing in snug's tree, so counting either would make the
+// process count a `ps` check cannot confirm. NETWORK's opener row names which
+// one this host gets; this block reads only the policy.
 func describeBrowserTopology(out io.Writer, p *policy.Policy) {
 	if !p.Login.Any() {
 		return
 	}
-	fmt.Fprintf(out, "  login opener    xdg-open, started by snug once per accepted login, detached.\n")
-	fmt.Fprintf(out, "                  snug waits at most %s PER LOGIN for its exit status, and reaps\n", loginbridge.OpenerPatience.Round(time.Second))
-	fmt.Fprintf(out, "                  it only while snug is alive: xdg-open itself, and the BROWSER it\n")
-	fmt.Fprintf(out, "                  starts — YOURS, not a child of the sandbox — may outlive this run.\n")
+	fmt.Fprintf(out, "  login opener    once per accepted login: the desktop portal's OpenURI, or, where\n")
+	fmt.Fprintf(out, "                  no portal answers, xdg-open started by snug, detached. snug waits\n")
+	fmt.Fprintf(out, "                  at most %s PER LOGIN for the portal's answer or xdg-open's exit\n", loginbridge.OpenerPatience.Round(time.Second))
+	fmt.Fprintf(out, "                  status, and reaps xdg-open only while snug is alive: xdg-open\n")
+	fmt.Fprintf(out, "                  itself, and the BROWSER either one starts — YOURS, not a child\n")
+	fmt.Fprintf(out, "                  of the sandbox — may outlive this run.\n")
 }

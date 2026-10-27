@@ -656,8 +656,10 @@ dns = true
 # machine cannot deliver the callback: snug refuses any connection not owned
 # by your uid. "Your uid" includes your own rootless host containers opened to
 # host loopback; lacking the state, they can only hold connection slots, never
-# deliver a callback. xdg-open, and the browser it starts, are yours, not
-# processes snug started, and either may outlive this run.
+# deliver a callback. snug opens the page through the desktop portal on your
+# session bus, or with xdg-open where no portal answers; the browser, and an
+# xdg-open, are yours, not processes snug started, and either may outlive
+# this run.
 [profile.claude]
 description = "Claude Code: binary and skills read-only, credentials projected and settings generated."
 include = ["sys", "home"]

@@ -60,6 +60,7 @@ var (
 	loginBuildOnce  sync.Once
 	loginProbeBin   string
 	loginOpenerDir  string
+	loginPortalBin  string
 	loginBuildError error
 )
 
@@ -73,8 +74,10 @@ func buildLoginFixtures(t *testing.T) {
 			return
 		}
 		loginProbeBin = filepath.Join(integrationTmp, "loginprobe")
+		loginPortalBin = filepath.Join(integrationTmp, "fakeportal")
 		for _, b := range []struct{ out, pkg string }{
 			{loginProbeBin, "./test/integration/testdata/loginprobe"},
+			{loginPortalBin, "./test/integration/testdata/fakeportal"},
 			{filepath.Join(loginOpenerDir, "xdg-open"), "./test/integration/testdata/fakeopener"},
 		} {
 			cmd := exec.Command("go", "build", "-o", b.out, b.pkg)
@@ -108,7 +111,10 @@ type loginFixture struct {
 //
 // DISPLAY is set because the preflight refuses a run with neither it nor
 // WAYLAND_DISPLAY, and that refusal is not what the callers want to measure
-// (TestTheLoginBridgeRefusesWithoutADisplay is).
+// (TestTheLoginBridgeRefusesWithoutADisplay is). DBUS_SESSION_BUS_ADDRESS is
+// emptied because snug asks the desktop portal before xdg-open: on a desktop
+// host the real portal would answer, and every test would open the
+// developer's real browser instead of the fake opener.
 func newLoginFixture(t *testing.T, mode string, extraEnv ...string) *loginFixture {
 	t.Helper()
 	buildLoginFixtures(t)
@@ -133,6 +139,7 @@ func newLoginFixture(t *testing.T, mode string, extraEnv ...string) *loginFixtur
 		"XDG_CONFIG_HOME=" + cfg,
 		"PATH=" + loginOpenerDir + ":" + os.Getenv("PATH"),
 		"DISPLAY=:99",
+		"DBUS_SESSION_BUS_ADDRESS=",
 		"FAKEOPENER_DIR=" + rec,
 		"FAKEOPENER_MODE=" + mode,
 	}, extraEnv...)...)

@@ -14,10 +14,11 @@ Owner: `host-bridge`. Code:
 | limits | `internal/loginbridge/limits.go` |
 | host listener, relay | `internal/loginbridge/listener.go`, `bridge.go`, `procnet.go` |
 | `login.claude = "host"`: PKCE, exchange, checks | `internal/loginbridge/hostflow.go`, `exchange.go`; the file bytes in `internal/policy/claudecreds.go` (`RenewClaudeCredentials`, `ProjectClaudeLogin`); the host and run-directory files, lock and preflight in `internal/cli/claudelogin.go` |
-| opener | `internal/loginbridge/opener.go` |
+| opener | `internal/loginbridge/portal.go` (desktop portal), `opener.go` (xdg-open), chosen by `browserPreflight` in `internal/cli/loginbridge.go` |
+| D-Bus client | `internal/dbus`; the fake bus and portal for tests in `internal/dbus/dbustest` |
 | relay sockets created in N | `internal/stage/relay.go`, the `netready` arm of `serve.go`, `WaitNetReady` in `stage.go`, `recvEventFDs` in `conn.go` |
 | P0 wiring: preflight, FIFO, reader | `internal/cli/loginbridge.go`, `main.go` |
-| `--dry-run`, JSON, `--explain` | `internal/cli/loginbridgedryrun.go`, `dryrunjson.go`, `explain.go` |
+| `--dry-run`, JSON, `--explain`, `snug doctor` | `internal/cli/loginbridgedryrun.go`, `dryrunjson.go`, `explain.go`, `doctor.go` (`reportLoginOpener`) |
 
 The abuse sentence is the comment above `[profile.claude]` in
 `internal/profile/profiles/base.toml`; it is the authority on what the hole
@@ -33,7 +34,7 @@ costs, and this document does not restate it.
    one pinned shape, everything else refused with a named reason (§3).
 3. `Bridge.Handle` checks the limits (§7), checks that something inside listens
    on `127.0.0.1:<port>` (§5), binds `127.0.0.1:<port>` and `[::1]:<port>` on
-   the host, and runs `xdg-open` on `Flow.AuthorizeURL()` — the URL rebuilt
+   the host, and hands `Flow.AuthorizeURL()` to the opener (§8) — the URL rebuilt
    from snug's constants plus the three validated values (challenge, state,
    port). There is no snug page in between: the browser goes straight to
    `https://claude.com/cai/oauth/authorize`.
@@ -265,8 +266,33 @@ tests one round).
 
 ## 8. The opener
 
+`browserPreflight` picks one opener per run, before the sandbox starts:
+the portal, else xdg-open. The order is not configurable — no key, no flag.
+`snug doctor`'s "login opener" row, `--dry-run`'s `opener` row, `--explain`
+and the JSON `opener_kind` name the choice. A host with neither is refused,
+naming both reasons and the paste fallback.
+
+**The desktop portal, when it answers.** snug reads `DBUS_SESSION_BUS_ADDRESS`
+from its own environment (`unix:path=` or `unix:abstract=` only), connects,
+authenticates with SASL EXTERNAL, and reads
+`org.freedesktop.portal.OpenURI`'s `version` property on
+`org.freedesktop.portal.Desktop`, bounded by `PortalProbeTimeout` (5 s, the
+`--timeout 5` xdg-utils passes to `gdbus` for the same call). A version reply
+selects the portal. Opening is one `OpenURI("", url, {handle_token})` call
+after an `AddMatch` on the request's `Response`, waited for up to
+`OpenerPatience`: 0 opened, 1 the portal's dialog dismissed, 2 anything else.
+No host program runs in snug's tree, no PATH is searched, and the browser
+starts in the desktop session with the session's environment. A portal that
+fails at open time fails that flow; the run does not switch to xdg-open.
+
+**xdg-open, when no portal answers.**
+
 - `xdg-open` is resolved once with `LookPath` at preflight; the absolute path is
   executed and shown on `--dry-run`.
+- Preflight requires `DISPLAY` or `WAYLAND_DISPLAY`. That is xdg-open's own
+  test (`has_display()` in xdg-utils 1.2.0): without it xdg-open's generic
+  branch falls back to `$BROWSER` and then a text browser — on snug's
+  terminal, which the payload shares (THREAT-MODEL §3.6).
 - Its argv is `xdg-open <rebuilt authorize URL>`, its environment
   `os.Environ()` — snug's own, stated explicitly: this starts the host user's
   browser, and nothing in it comes from the sandbox.
@@ -281,6 +307,34 @@ tests one round).
   goroutine that reaps it. **The browser `xdg-open` starts may outlive the run**;
   that is accepted, and stated in the profile comment, `--explain` and
   `--dry-run`'s TOPOLOGY block.
+
+### Why the portal comes first
+
+Measured on the development host (openSUSE Tumbleweed distrobox on GNOME,
+xdg-utils 1.2.0+20251025, xdg-desktop-portal OpenURI version 5):
+
+- `az login` (azure-cli 2.91.0, in a venv) with stub openers first on PATH ran
+  `xdg-open <authorize URL>` with a display set, and `www-browser <URL>` with
+  `DISPLAY` and `WAYLAND_DISPLAY` unset: Python's `webbrowser`, the same
+  display gate snug's xdg-open path has. Python 3.13's `webbrowser` alone
+  behaved the same, and picked nothing at all without `TERM`.
+- The D-Bus call seen when `az` opened its page was xdg-open's own: inside a
+  toolbx or distrobox `/run/.toolboxenv` exists, xdg-open's `detectDE` sets
+  `DE=toolbx` before reading `XDG_CURRENT_DESKTOP`, and that branch runs
+  `gdbus call --session … --method org.freedesktop.portal.OpenURI.OpenURI
+  --timeout 5 "" <url> {}` — with or without a display (measured with a stub
+  `gdbus` on PATH).
+- `OpenURI` called directly with `DISPLAY` and `WAYLAND_DISPLAY` unset opened
+  the page: the portal emitted `org.gtk.gio.DesktopAppInfo.Launched` for the
+  flatpak Firefox's desktop file, origin `/usr/libexec/xdg-desktop-portal`.
+
+So the display test refused hosts where a browser could open (ssh or tmux into
+a logged-in desktop, a systemd user unit), and the portal's precondition — it
+answers — is the real one. Not measured: KDE, sway/wlroots
+(xdg-desktop-portal-wlr), and what `OpenURI` does on a portal with no
+backend for its dialog. `scripts/0038-the-portal-on-this-hosts-bus.sh` checks
+the client's wire format against sd-bus and the preflight's choice on the host
+it runs on.
 
 ### Why there is no snug confirmation page
 
@@ -302,9 +356,10 @@ and can draw a fake prompt and read the keystroke first (THREAT-MODEL §3.6).
 
 Sandbox-derived text on stderr goes through `VisibleText`. The `--dry-run`
 rows (`renderBrowserBridge`, `describeBrowserTopology`) are pinned by
-`TestGoldenBrowserBridgeScreens` and `TestGoldenBrowserBridgeJSON`. The opener is
-not in `longLivedProcesses`: it is per login, and counting it would make a
-process count `ps` cannot confirm.
+`TestGoldenBrowserBridgeScreens`, `TestGoldenBrowserBridgePortalScreens` and
+`TestGoldenBrowserBridgeJSON`. The opener is not in `longLivedProcesses`: it is
+per login (and the portal starts nothing in snug's tree), and counting it would
+make a process count `ps` cannot confirm.
 
 ## 10. Teardown
 
@@ -315,6 +370,7 @@ process count `ps` cannot confirm.
 | relay sockets in N | P0 descriptors, CLOEXEC | closed by `close` | kernel closes them; they hold a reference to N only while P0 lives, and P0 is upstream of bwrap |
 | `setns` thread in P1 | P1, transient | destroyed at goroutine exit, then verified absent | — |
 | `xdg-open` | its own session | reaped by a goroutine only while snug lives; one still running when the run ends is reparented to the session's subreaper and outlives the run | reparented |
+| portal request | P0 goroutine and one session-bus connection, per login | closed on the `Response`; one still pending after 30 s keeps its connection while snug lives | kernel closes the connection |
 
 A failure in P1 while making the sockets answers `netready` with an error and
 the run is refused. A panic in P0 collapses the run. Nothing touches pasta, the
@@ -379,5 +435,6 @@ Kernel facts the design rests on, measured on the development host:
   … > /x.fifo'` exited 0 and the host reader got the line.
 
 Not CI-able, in `scripts/`: `0035-claude-login-through-the-browser.sh` (the real
-claude and browser) and `0036-another-uid-cannot-deliver-the-callback.sh`
-(needs a second uid).
+claude and browser), `0036-another-uid-cannot-deliver-the-callback.sh`
+(needs a second uid) and `0038-the-portal-on-this-hosts-bus.sh` (needs a
+session bus).

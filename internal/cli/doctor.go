@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,6 +136,7 @@ func doctor(argv []string) int {
 	}
 
 	reportPodmanHelpers()
+	reportLoginOpener(policy.OSEnviron{}, os.Stdout)
 
 	fmt.Println()
 	fmt.Println("🐧 kernel — what this kernel lets snug build")
@@ -1052,4 +1054,25 @@ func containerMarker() string {
 		return "running inside a docker container"
 	}
 	return ""
+}
+
+// reportLoginOpener prints what opens a login page for login.claude, asking
+// browserPreflight, the function a real run asks. The order — the desktop
+// portal, then xdg-open — is not configurable; this only reports it. A host
+// with neither is a warning, not a failure: only login.claude needs one.
+// Every string is escaped: the bus address and a bus peer's error text are
+// the host's, but a terminal escape in them would forge a doctor line.
+func reportLoginOpener(env policy.Environ, out io.Writer) {
+	opener, err := browserPreflight(env)
+	switch {
+	case err != nil:
+		fmt.Fprintln(out, "  ⚠️  no login opener — a profile with login.claude will refuse to run")
+		fmt.Fprintf(out, "     💬 %s\n", visibleValue(err.Error()))
+	case opener.Kind() == "portal":
+		fmt.Fprintf(out, "  ✅ login opener: %s\n", visibleValue(opener.String()))
+	default:
+		fmt.Fprintf(out, "  ✅ login opener: xdg-open, no desktop portal answered: %s\n",
+			visibleValue(opener.noPortal))
+		fmt.Fprintf(out, "     📍 %s\n", visibleValue(opener.String()))
+	}
 }

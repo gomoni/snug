@@ -41,8 +41,106 @@ func TestBrowserPreflightRefusals(t *testing.T) {
 		t.Fatalf("no display: %v", err)
 	}
 	got, err := browserPreflight(browserEnv{xdg: true, vars: map[string]string{"WAYLAND_DISPLAY": "w0"}})
-	if err != nil || got != "/usr/bin/xdg-open" {
+	if err != nil || got.Kind() != "xdg-open" || got.String() != "/usr/bin/xdg-open" {
 		t.Fatalf("wayland only: %q %v", got, err)
+	}
+}
+
+// stubPortal makes portalVersion answer v for addr, and fail for any other.
+func stubPortal(t *testing.T, addr string, v uint32) {
+	t.Helper()
+	old := portalVersion
+	portalVersion = func(a string) (uint32, error) {
+		if a == addr && a != "" {
+			return v, nil
+		}
+		return 0, errors.New("no portal here")
+	}
+	t.Cleanup(func() { portalVersion = old })
+}
+
+// The portal comes first and needs neither xdg-open nor a display: it opens
+// the browser in the desktop session, which is the case the display test
+// refused for no reason (ssh or tmux into a logged-in desktop, toolbx).
+func TestBrowserPreflightPrefersThePortal(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus"
+	stubPortal(t, bus, 5)
+	got, err := browserPreflight(browserEnv{vars: map[string]string{"DBUS_SESSION_BUS_ADDRESS": bus}})
+	if err != nil || got.Kind() != "portal" || !strings.Contains(got.String(), "version 5") ||
+		!strings.Contains(got.String(), bus) {
+		t.Fatalf("portal answering, no xdg-open, no display: %q %v", got, err)
+	}
+	got, err = browserPreflight(browserEnv{xdg: true, vars: map[string]string{
+		"DBUS_SESSION_BUS_ADDRESS": bus, "DISPLAY": ":0"}})
+	if err != nil || got.Kind() != "portal" {
+		t.Fatalf("portal and xdg-open both usable: %q %v", got, err)
+	}
+}
+
+// Without a portal the run falls back to xdg-open, and a refusal names why
+// the portal did not answer as well as what xdg-open lacked.
+func TestBrowserPreflightFallsBackToXdgOpenAndNamesThePortal(t *testing.T) {
+	stubPortal(t, "unix:path=/elsewhere", 5)
+	vars := map[string]string{"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus", "DISPLAY": ":0"}
+	got, err := browserPreflight(browserEnv{xdg: true, vars: vars})
+	if err != nil || got.Kind() != "xdg-open" {
+		t.Fatalf("no portal, xdg-open usable: %q %v", got, err)
+	}
+	_, err = browserPreflight(browserEnv{vars: vars})
+	if err == nil || !strings.Contains(err.Error(), "no portal here") || !strings.Contains(err.Error(), "no xdg-open") {
+		t.Fatalf("neither: %v", err)
+	}
+}
+
+// snug doctor reports the opener browserPreflight chooses — portal, else
+// xdg-open with the portal's reason, else a warning — and offers no choice.
+func TestDoctorReportsTheLoginOpener(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus"
+	stubPortal(t, bus, 5)
+	for _, c := range []struct {
+		env  browserEnv
+		want []string
+	}{
+		{browserEnv{vars: map[string]string{"DBUS_SESSION_BUS_ADDRESS": bus}},
+			[]string{"✅ login opener: desktop portal", "version 5"}},
+		{browserEnv{xdg: true, vars: map[string]string{"DISPLAY": ":0"}},
+			[]string{"✅ login opener: xdg-open, no desktop portal answered: no portal here"}},
+		{browserEnv{}, []string{"⚠️  no login opener", "no xdg-open on PATH"}},
+	} {
+		var out bytes.Buffer
+		reportLoginOpener(c.env, &out)
+		for _, w := range c.want {
+			if !strings.Contains(out.String(), w) {
+				t.Errorf("doctor row %q lacks %q", out.String(), w)
+			}
+		}
+	}
+}
+
+// Red team (PR #707): a bus peer's error text and the bus address reach
+// doctor's row escaped, in every branch, so neither can forge or erase a line.
+func TestDoctorLoginOpenerRowIsEscaped(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus\x1b[2J"
+	old := portalVersion
+	t.Cleanup(func() { portalVersion = old })
+	for _, c := range []struct {
+		portal func(string) (uint32, error)
+		env    browserEnv
+	}{
+		{func(string) (uint32, error) { return 5, nil },
+			browserEnv{vars: map[string]string{"DBUS_SESSION_BUS_ADDRESS": bus}}},
+		{func(string) (uint32, error) { return 0, errors.New("org.x.\x1b[31mE: \x1b[2K\r✅ forged\n\u202e") },
+			browserEnv{xdg: true, vars: map[string]string{"DISPLAY": ":0"}}},
+		{func(string) (uint32, error) { return 0, errors.New("org.x.\x1b[31mE: \x1b[2K\r✅ forged\n\u202e") },
+			browserEnv{}},
+	} {
+		portalVersion = c.portal
+		var out bytes.Buffer
+		reportLoginOpener(c.env, &out)
+		body := strings.TrimSuffix(out.String(), "\n")
+		if strings.ContainsAny(out.String(), "\x1b\r\u202e") || strings.Count(body, "\n") > 1 {
+			t.Errorf("doctor row not escaped: %q", out.String())
+		}
 	}
 }
 

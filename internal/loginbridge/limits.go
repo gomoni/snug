@@ -17,6 +17,7 @@ const (
 	SupersedeAfter = 30 * time.Second
 	// FlowTTL is how long snug holds the host port for one flow.
 	FlowTTL = 10 * time.Minute
-	// OpenerPatience is how long snug waits for xdg-open to exit.
+	// OpenerPatience is how long snug waits for xdg-open to exit, or for
+	// the desktop portal to answer an OpenURI request.
 	OpenerPatience = 30 * time.Second
 )

@@ -582,11 +582,13 @@ type jsonNetwork struct {
 	HostAddressesSealed bool `json:"host_addresses_sealed"`
 }
 
-// jsonBrowserBridge is reportBrowserBridge. Opener is empty and OpenerError
-// set when a real run would refuse for want of an opener or a display.
+// jsonBrowserBridge is reportBrowserBridge. OpenerKind and Opener are empty
+// and OpenerError set when a real run would refuse for want of an opener.
 type jsonBrowserBridge struct {
 	Login       map[string]string `json:"login"`
+	OpenerKind  string            `json:"opener_kind"`
 	Opener      string            `json:"opener"`
+	PortalError string            `json:"portal_error,omitempty"`
 	OpenerError string            `json:"opener_error,omitempty"`
 	FIFO        string            `json:"fifo"`
 	MaxOpens    int               `json:"max_opens"`
@@ -901,9 +903,10 @@ func (e *lossyEncoder) document(rep Report) jsonDoc {
 	if b := rep.BrowserBridge; b != nil {
 		opener, _ := e.text(b.Opener)
 		msg, _ := e.text(b.OpenerError)
+		portalErr, _ := e.text(b.PortalError)
 		hostMsg, _ := e.text(b.HostError)
 		doc.BrowserBridge = &jsonBrowserBridge{
-			Login: b.Login, Opener: opener, OpenerError: msg, FIFO: b.FIFO,
+			Login: b.Login, OpenerKind: b.OpenerKind, Opener: opener, PortalError: portalErr, OpenerError: msg, FIFO: b.FIFO,
 			MaxOpens: b.MaxOpens, MaxRelays: b.MaxRelays,
 			HostRewrite: b.HostRewrite, HostError: hostMsg,
 		}

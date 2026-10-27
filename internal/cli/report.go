@@ -304,16 +304,21 @@ type reportNetwork struct {
 }
 
 // reportBrowserBridge is the login bridge as a fact about this run, nil when
-// the policy's login set lacks claude. Opener is xdg-open's resolved path;
-// when browserPreflight would refuse the run, Opener is empty and OpenerError
+// the policy's login set lacks claude. OpenerKind is "portal" or "xdg-open",
+// and Opener the portal's bus and version or xdg-open's resolved path; when
+// browserPreflight would refuse the run, both are empty and OpenerError
 // carries its message, so a screen never shows a bridge a real run would not
 // start.
 type reportBrowserBridge struct {
 	// Login is the resolved `login` table, provider to mode, e.g.
 	// {"claude": "host"}; Keys is the same as the keys a profile writes.
-	Login       map[string]string
-	Keys        []string
-	Opener      string
+	Login      map[string]string
+	Keys       []string
+	OpenerKind string
+	Opener     string
+	// PortalError is why the desktop portal was not chosen when OpenerKind
+	// is "xdg-open".
+	PortalError string
 	OpenerError string
 	FIFO        string
 	MaxOpens    int
@@ -760,7 +765,9 @@ func buildBrowserBridgeReport(env policy.Environ, p *policy.Policy) *reportBrows
 	if err != nil {
 		b.OpenerError = err.Error()
 	} else {
-		b.Opener = opener
+		b.OpenerKind = opener.Kind()
+		b.Opener = opener.String()
+		b.PortalError = opener.noPortal
 	}
 	return b
 }
