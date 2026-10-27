@@ -1,5 +1,5 @@
 #!/bin/bash
-# 0037 — the login bridge's D-Bus client against THIS host's real session bus
+# 0038 — the login bridge's D-Bus client against THIS host's real session bus
 # (issue #661). CI has no session bus, so test/integration only ever talks to
 # testdata/fakeportal, which shares package internal/dbus with the client: a
 # marshalling bug in that package would pass both sides. Here the decoder is
@@ -44,17 +44,17 @@ SNUG_REAL_BUS=$DBUS_SESSION_BUS_ADDRESS CGO_ENABLED=0 go test -count=1 -v \
 $(cat "$SC/test")"
 sleep 0.5
 kill "$mpid"; mpid=
-call=$(awk '/Destination=org.snug.NoSuchName0037/{on=1} on{print} on&&/^  };/{exit}' "$SC/mon")
+call=$(awk '/Destination=org.snug.NoSuchName0038/{on=1} on{print} on&&/^  };/{exit}' "$SC/mon")
 [ -n "$call" ] || fail "busctl never saw the call"
 printf '%s\n' "$call"
 want='  MESSAGE "ssa{sv}" {
           STRING "";
-          STRING "https://claude.com/snug-0037";
+          STRING "https://claude.com/snug-0038";
           ARRAY "{sv}" {
                   DICT_ENTRY "sv" {
                           STRING "handle_token";
                           VARIANT "s" {
-                                  STRING "snug0037";
+                                  STRING "snug0038";
                           };
                   };
                   DICT_ENTRY "sv" {
@@ -79,8 +79,8 @@ echo "busctl: OpenURI version $(cat "$SC/ver")"
 mkdir -p "$SC/proj" "$SC/cfg/snug/profiles.d"
 cat >"$SC/cfg/snug/profiles.d/login.toml" <<'TOML'
 [profile.login]
-description = "the login bridge, for scripts/0037"
-login = ["claude"]
+description = "the login bridge, for scripts/0038"
+login.claude = "sandbox"
 TOML
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY XDG_CONFIG_HOME="$SC/cfg" \
 	"$SNUG" --dry-run -p @claude -p @net -p login "$SC/proj" 2>&1)

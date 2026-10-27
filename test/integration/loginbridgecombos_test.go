@@ -35,7 +35,7 @@ func loginRemoveOnce(t *testing.T, ops []string, want string) []string {
 }
 
 // TestAnHTTPDoorAndTheLoginBridgeInOneSelection fails if selecting a door
-// (listen_names) and login = ["claude"] together stops resolving, stops
+// (listen_names) and login.claude together stops resolving, stops
 // either from working, changes what the door grants, lets the door's socket
 // carry a callback or the bridge's listener carry door traffic, or lets a host
 // request that holds the sandbox's code and state do more than one relayed
@@ -532,7 +532,7 @@ echo "BROWSER-IS $BROWSER"
 			if !slices.Contains(ops, "--setenv BROWSER /snug/lib/snug/browser") {
 				t.Errorf("--dry-run's argv lacks BROWSER")
 			}
-			if dry.BrowserBridge == nil || !reflect.DeepEqual(dry.BrowserBridge.Login, []string{"claude"}) {
+			if dry.BrowserBridge == nil || !reflect.DeepEqual(dry.BrowserBridge.Login, map[string]string{"claude": "sandbox"}) {
 				t.Errorf("--dry-run --json has no browser_bridge row for a selection that has the bridge: %+v", dry.BrowserBridge)
 			}
 		})
@@ -554,7 +554,7 @@ func TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn(t *testing.T) {
 		flag string
 		key  string
 	}{
-		{"--dry-run", `browser bridge  login = ["claude"]`},
+		{"--dry-run", `browser bridge  login.claude = "sandbox"`},
 		{"--dry-run", "login opener"},
 		{"--dry-run", "/snug/browser.fifo"},
 		{"--explain", "Login bridge"},

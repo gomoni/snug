@@ -1,7 +1,7 @@
 // Package dbustest is a fake session bus with a fake desktop portal on it,
 // for tests of the login bridge's portal opener. It speaks the wire protocol
 // through package dbus, so it cannot catch a marshalling bug the client
-// shares with it; that is what scripts/0037 against a real bus is for.
+// shares with it; that is what scripts/0038 against a real bus is for.
 package dbustest
 
 import (

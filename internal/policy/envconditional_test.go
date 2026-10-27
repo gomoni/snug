@@ -125,19 +125,47 @@ func TestConditionalEnvListenFDsRefused(t *testing.T) {
 }
 
 // TestBrowserIsAConditionalName: a profile's BROWSER in a selection whose
-// login = ["claude"] makes snug point BROWSER at its own login-bridge
-// shim (issue #455).
+// login.claude makes snug point BROWSER at its own login-bridge shim (issue
+// #455), in either mode.
 func TestBrowserIsAConditionalName(t *testing.T) {
-	reg := testRegistry()
-	reg["bridge"] = &Profile{Name: "bridge", Login: []string{"claude"}, Network: "egress"}
-	reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
-		Set: map[string]string{"BROWSER": "/usr/bin/firefox"}}}
-	_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge", "ptr"}, testCtx(), newFakeEnv())
-	if err == nil {
-		t.Fatal("BROWSER beside login = [\"claude\"] resolved")
+	for _, m := range []LoginMode{LoginSandbox, LoginHost} {
+		reg := testRegistry()
+		reg["bridge"] = &Profile{Name: "bridge", Login: map[LoginProvider]LoginMode{LoginClaude: m}, Network: "egress"}
+		reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
+			Set: map[string]string{"BROWSER": "/usr/bin/firefox"}}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge", "ptr"}, testCtx(), newFakeEnv())
+		if err == nil {
+			t.Fatalf("BROWSER beside login.claude = %q resolved", m)
+		}
+		if want := `bridge sets the Claude login to "` + m.String() + `"`; !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name the key that made snug the author (%q): %v", want, err)
+		}
 	}
-	if !strings.Contains(err.Error(), `bridge sets login = ["claude"]`) {
-		t.Errorf("refusal does not name the key that made snug the author: %v", err)
+}
+
+// TestClaudeStorageDirIsAConditionalNameOfHostModeOnly: a profile's
+// CLAUDE_SECURESTORAGE_CONFIG_DIR is refused beside login.claude = "host",
+// which makes snug its author, and carried beside login.claude = "sandbox",
+// which does not — the predicate reads the mode, not the key.
+func TestClaudeStorageDirIsAConditionalNameOfHostModeOnly(t *testing.T) {
+	resolve := func(m LoginMode) error {
+		reg := testRegistry()
+		reg["bridge"] = &Profile{Name: "bridge", Login: map[LoginProvider]LoginMode{LoginClaude: m}, Network: "egress"}
+		reg["ptr"] = &Profile{Name: "ptr", Environ: EnvGrants{
+			Set: map[string]string{"CLAUDE_SECURESTORAGE_CONFIG_DIR": "/tmp/mine"}}}
+		_, err := Resolve(reg, []ProfileName{"@sys", "@target-rw", "bridge", "ptr"}, testCtx(), newFakeEnv())
+		return err
+	}
+	err := resolve(LoginHost)
+	if err == nil {
+		t.Fatal(`CLAUDE_SECURESTORAGE_CONFIG_DIR beside login.claude = "host" resolved`)
+	}
+	if !strings.Contains(err.Error(), `bridge sets the Claude login to "host"`) ||
+		!strings.Contains(err.Error(), "CLAUDE_SECURESTORAGE_CONFIG_DIR has two authors") {
+		t.Errorf("refusal does not name the variable and the key: %v", err)
+	}
+	if err := resolve(LoginSandbox); err != nil {
+		t.Errorf(`control: the profile's value beside login.claude = "sandbox" was refused: %v`, err)
 	}
 }
 
@@ -152,15 +180,16 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 			t.Errorf("%s is both unconditionally and conditionally owned", n)
 		}
 	}
-	// Twelve written (the nine of issue #621, LISTEN_PID which the #621 red
-	// team found exported by the staged door script, BROWSER for the
-	// login bridge of issue #455, KUBECONFIG for identity.kubectl, and
-	// GNUPGHOME for identity.gpg), five that outrank them.
-	if got := len(ConditionalEnvNames()); got != 13 {
-		t.Errorf("ConditionalEnvNames() = %v, want 13 names", ConditionalEnvNames())
+	// Fourteen written (the nine of issue #621, LISTEN_PID which the #621
+	// red team found exported by the staged door script, BROWSER for the
+	// login bridge of issue #455, CLAUDE_SECURESTORAGE_CONFIG_DIR for its host
+	// mode, KUBECONFIG for identity.kubectl, and GNUPGHOME for identity.gpg),
+	// five that outrank them.
+	if got := len(ConditionalEnvNames()); got != 14 {
+		t.Errorf("ConditionalEnvNames() = %v, want 14 names", ConditionalEnvNames())
 	}
-	if got := len(ConditionalEnvClaimed()); got != 18 {
-		t.Errorf("ConditionalEnvClaimed() = %v, want 18 names", ConditionalEnvClaimed())
+	if got := len(ConditionalEnvClaimed()); got != 19 {
+		t.Errorf("ConditionalEnvClaimed() = %v, want 19 names", ConditionalEnvClaimed())
 	}
 }
 

@@ -176,12 +176,13 @@ var bookOwnedGroups = []struct {
 // fails unless every feature has a row and every row a feature; the text is
 // prose over conditionalEnv.on and is checked by review.
 var bookConditionalWhen = map[string]string{
-	"CONTAINER_HOST":    "`podman` is `\"socket\"` or `\"build\"`",
-	"SSH_AUTH_SOCK":     "`identity.ssh.agent` is `\"proxy\"`",
-	"GNUPGHOME":         "an `identity.gpg` block",
-	"GH_CONFIG_DIR":     "`identity.gh.user` is set",
-	"GIT_CONFIG_GLOBAL": "an `identity.ssh` or `identity.git` block",
-	"KUBECONFIG":        "an `identity.kubectl` block",
-	"LISTEN_FDNAMES":    "`listen_names` is set",
-	"BROWSER":           "`login` includes `\"claude\"`",
+	"CONTAINER_HOST":                  "`podman` is `\"socket\"` or `\"build\"`",
+	"SSH_AUTH_SOCK":                   "`identity.ssh.agent` is `\"proxy\"`",
+	"GNUPGHOME":                       "an `identity.gpg` block",
+	"GH_CONFIG_DIR":                   "`identity.gh.user` is set",
+	"GIT_CONFIG_GLOBAL":               "an `identity.ssh` or `identity.git` block",
+	"KUBECONFIG":                      "an `identity.kubectl` block",
+	"LISTEN_FDNAMES":                  "`listen_names` is set",
+	"BROWSER":                         "`login.claude` is `\"sandbox\"` or `\"host\"`",
+	"CLAUDE_SECURESTORAGE_CONFIG_DIR": "`login.claude` is `\"host\"`",
 }

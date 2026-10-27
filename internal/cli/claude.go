@@ -265,7 +265,8 @@ func stageClaudeCredentials(pol *policy.Policy, home string, n *notes) {
 			"      The sandbox will start LOGGED OUT rather than receive a credential file snug\n"+
 			"      could not read — copying it verbatim would hand the sandbox a refresh token\n"+
 			"      that outlives it (issue #58).\n"+
-			"      Fix: run `claude` on the host to re-authenticate, then start snug again.\n",
+			"      Fix: run `claude` on the host to re-authenticate, then start snug again —\n"+
+			"      or set login.claude = \"host\" and run /login inside.\n",
 			path, visibleValue(err.Error()))
 		return
 	}
@@ -280,7 +281,8 @@ func stageClaudeCredentials(pol *policy.Policy, home string, n *notes) {
 		n.aside("snug: the staged Anthropic access token expired %s.\n"+
 			"      snug stages the access token only, not the refresh token, so nothing inside\n"+
 			"      the sandbox can renew it (issue #58).\n"+
-			"      Fix: run `claude` on the host to refresh it, then start snug again.\n",
+			"      Fix: run `claude` on the host to refresh it, then start snug again —\n"+
+			"      or set login.claude = \"host\" and run /login inside.\n",
 			time.UnixMilli(expiresAt).Format(time.RFC3339))
 	}
 
@@ -1261,6 +1263,17 @@ func claudeGuidance(pol *policy.Policy) []byte {
 	b.WriteString("both persist to the host (and both show in `git status`); that half is not closed.\n\n")
 	b.WriteString("A token you refresh here does not reach the host; it is lost when this session\n")
 	b.WriteString("ends.\n\n")
+	if pol.Login.Mode(policy.LoginClaude) == policy.LoginHost {
+		b.WriteString("A `/login` here is completed on the HOST: snug opens the sign-in page in the\n")
+		b.WriteString("human's browser, exchanges the code itself, and replaces this sandbox's\n")
+		fmt.Fprintf(&b, "credential, `%s/.credentials.json` (read-only here), with a fresh access\n",
+			policy.ClaudeCredentialDirGuest)
+		b.WriteString("token. Claude Code reports that `/login` as failed, because snug and not it\n")
+		b.WriteString("exchanged the code; that is expected. The first request after it may fail once\n")
+		b.WriteString("with an authentication error — retry it. Do not open the URL `/login` prints\n")
+		b.WriteString("here and do not paste a code into it: that signs only this process in, by\n")
+		b.WriteString("itself.\n\n")
+	}
 
 	// Containers, and only the two facts an agent would otherwise burn turns
 	// on. Both are consequences of snug authoring image provenance rather than

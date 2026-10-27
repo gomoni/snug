@@ -62,15 +62,16 @@
      "host_addresses_sealed": true
    },
 +  "browser_bridge": {
-+    "login": [
-+      "claude"
-+    ],
++    "login": {
++      "claude": "sandbox"
++    },
 +    "opener_kind": "xdg-open",
 +    "opener": "/usr/bin/xdg-open",
 +    "portal_error": "DBUS_SESSION_BUS_ADDRESS is not set",
 +    "fifo": "/snug/browser.fifo",
 +    "max_opens": 5,
-+    "max_relays": 3
++    "max_relays": 3,
++    "host_rewrite": false
 +  },
    "topology": {
      "processes": [

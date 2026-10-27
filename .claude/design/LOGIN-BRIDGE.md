@@ -1,4 +1,4 @@
-# The Claude login bridge — `login = ["claude"]`
+# The Claude login bridge — `login.claude`
 
 User-facing behaviour is in `docs/src/claude.md` (`login`). This document holds
 what a contributor needs: where the pieces live, why each is shaped as it is,
@@ -8,16 +8,17 @@ Owner: `host-bridge`. Code:
 
 | piece | where |
 |---|---|
-| the key, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginSet`), `resolve.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserGuest`, `WrapperGuest`) |
+| the key, `BROWSER`, Resolve refusals | `internal/policy/types.go` (`LoginProvider`, `LoginMode`, `LoginModes`), `resolve.go`, `envconditional.go`, `snugns.go` (`BrowserFIFOGuest`, `BrowserGuest`, `WrapperGuest`, `ClaudeCredentialDirGuest`); the table's TOML shapes in `internal/profile/file.go` (`toLogin`) |
 | the client inside | `internal/wrapper` (`Browser`), dispatched from `internal/cli/main.go` on `argv[0]` |
 | the predicate and rebuild (pure) | `internal/loginbridge/authorize.go`, `callback.go`, `query.go`, `pinned.go` |
 | limits | `internal/loginbridge/limits.go` |
-| host listener, relay | `internal/loginbridge/bridge.go`, `procnet.go` |
+| host listener, relay | `internal/loginbridge/listener.go`, `bridge.go`, `procnet.go` |
+| `login.claude = "host"`: PKCE, exchange, checks | `internal/loginbridge/hostflow.go`, `exchange.go`; the file bytes in `internal/policy/claudecreds.go` (`RenewClaudeCredentials`, `ProjectClaudeLogin`); the host and run-directory files, lock and preflight in `internal/cli/claudelogin.go` |
 | opener | `internal/loginbridge/portal.go` (desktop portal), `opener.go` (xdg-open), chosen by `browserPreflight` in `internal/cli/loginbridge.go` |
 | D-Bus client | `internal/dbus`; the fake bus and portal for tests in `internal/dbus/dbustest` |
 | relay sockets created in N | `internal/stage/relay.go`, the `netready` arm of `serve.go`, `WaitNetReady` in `stage.go`, `recvEventFDs` in `conn.go` |
 | P0 wiring: preflight, FIFO, reader | `internal/cli/loginbridge.go`, `main.go` |
-| `--dry-run`, JSON, `--explain` | `internal/cli/loginbridgedryrun.go`, `dryrunjson.go`, `explain.go` |
+| `--dry-run`, JSON, `--explain`, `snug doctor` | `internal/cli/loginbridgedryrun.go`, `dryrunjson.go`, `explain.go`, `doctor.go` (`reportLoginOpener`) |
 
 The abuse sentence is the comment above `[profile.claude]` in
 `internal/profile/profiles/base.toml`; it is the authority on what the hole
@@ -52,8 +53,10 @@ forwarded into the namespace, and host loopback stays unreachable from inside.
 
 ## 2. Grant internals
 
-- `LoginSet` unions provider lists as a set, so the result does not depend on
-  fold order; `ParseLoginProvider` refuses any other element at profile parse.
+- `login` is a table of provider = mode, `"sandbox"` (this document) or
+  `"host"`; two profiles choosing different modes are refused naming both,
+  so the result does not depend on fold order. `ParseLoginProvider` and
+  `ParseLoginMode` refuse any other value at profile parse, `""` included.
 - No builtin sets the key, `@claude` included: the hole exists only where a user
   profile spells it, never by riding along with `-p @claude -p @net`.
 - `BROWSER` is a `conditionalEnvs` row (ENVIRONMENT-VARIABLES.md §1.1).
@@ -263,9 +266,11 @@ tests one round).
 
 ## 8. The opener
 
-`browserPreflight` picks one opener per run, before the sandbox starts, and
-`--dry-run`'s `opener` row, `--explain` and the JSON `opener_kind` name it. A
-host with neither is refused, naming both reasons and the paste fallback.
+`browserPreflight` picks one opener per run, before the sandbox starts:
+the portal, else xdg-open. The order is not configurable — no key, no flag.
+`snug doctor`'s "login opener" row, `--dry-run`'s `opener` row, `--explain`
+and the JSON `opener_kind` name the choice. A host with neither is refused,
+naming both reasons and the paste fallback.
 
 **The desktop portal, when it answers.** snug reads `DBUS_SESSION_BUS_ADDRESS`
 from its own environment (`unix:path=` or `unix:abstract=` only), connects,
@@ -327,7 +332,7 @@ So the display test refused hosts where a browser could open (ssh or tmux into
 a logged-in desktop, a systemd user unit), and the portal's precondition — it
 answers — is the real one. Not measured: KDE, sway/wlroots
 (xdg-desktop-portal-wlr), and what `OpenURI` does on a portal with no
-backend for its dialog. `scripts/0037-the-portal-on-this-hosts-bus.sh` checks
+backend for its dialog. `scripts/0038-the-portal-on-this-hosts-bus.sh` checks
 the client's wire format against sd-bus and the preflight's choice on the host
 it runs on.
 
@@ -431,5 +436,5 @@ Kernel facts the design rests on, measured on the development host:
 
 Not CI-able, in `scripts/`: `0035-claude-login-through-the-browser.sh` (the real
 claude and browser), `0036-another-uid-cannot-deliver-the-callback.sh`
-(needs a second uid) and `0037-the-portal-on-this-hosts-bus.sh` (needs a
+(needs a second uid) and `0038-the-portal-on-this-hosts-bus.sh` (needs a
 session bus).

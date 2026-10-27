@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gomoni/snug/internal/loginbridge"
 	"github.com/gomoni/snug/internal/policy"
 )
 
@@ -198,7 +199,7 @@ func explainAbsent(out io.Writer, p *policy.Policy) {
 
 	// Also structural: snug has no setuid path and every helper is a child
 	// that dies with the sandbox (CLAUDE.md invariant 4).
-	if p.Login.Has(policy.LoginClaude) {
+	if p.Login.Any() {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
 		fmt.Fprintln(out, "  dies with the sandbox, except what opens a login: the browser, and the")
 		fmt.Fprintln(out, "  xdg-open snug starts where no desktop portal answers. They are yours, not")
@@ -394,13 +395,31 @@ func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 		fmt.Fprintln(out, "  and opening one serves the sandbox into your own browser on an origin the")
 		fmt.Fprintln(out, "  browser trusts as local. That is a sandbox escape and snug does not bound it.")
 	}
-	if p.Login.Has(policy.LoginClaude) {
-		if opener, err := browserPreflight(env); err != nil {
-			fmt.Fprintln(out, "  Login bridge (login = [\"claude\"]): a real run would REFUSE to start:")
+	if mode := p.Login.Mode(policy.LoginClaude); mode != policy.LoginOff {
+		key := policy.LoginKey(policy.LoginClaude, mode)
+		opener, err := browserPreflight(env)
+		if err == nil && mode == policy.LoginHost {
+			_, err = claudeHostPreflight(claudeLoginReadsFor(env), p.Home)
+		}
+		if err != nil {
+			fmt.Fprintf(out, "  Login bridge (%s): a real run would REFUSE to start:\n", key)
 			fmt.Fprintf(out, "  %s\n", visibleValue(err.Error()))
 			fmt.Fprintln(out, "  Fix that, or drop the key, and re-run --explain.")
+		} else if mode == policy.LoginHost {
+			fmt.Fprintf(out, "  Login bridge (%s): the sandbox may ask snug to open Claude's login\n", key)
+			fmt.Fprintf(out, "  page in YOUR browser, at most %d times per run, one at a time. If you approve,\n",
+				loginbridge.MaxOpensPerRun)
+			fmt.Fprintln(out, "  snug completes the login ON THE HOST and REPLACES the refresh token in your")
+			fmt.Fprintln(out, "  ~/.claude/.credentials.json — for the account ~/.claude.json names, never")
+			fmt.Fprintf(out, "  another, at most %d times per run — and hands the sandbox a fresh access token\n",
+				loginbridge.MaxRelaysPerRun)
+			fmt.Fprintln(out, "  that renews nothing. The sandbox cannot choose the URL or the account, see the")
+			fmt.Fprintln(out, "  code or the refresh token, or put a byte into the host file. If you paste a")
+			fmt.Fprintln(out, "  code into claude's own /login prompt inside, the sandbox signs in by itself and")
+			fmt.Fprintln(out, "  holds a refresh token: do not.")
+			explainOpener(out, opener)
 		} else {
-			fmt.Fprintln(out, "  Login bridge (login = [\"claude\"]): the sandbox may ask snug to open a")
+			fmt.Fprintf(out, "  Login bridge (%s): the sandbox may ask snug to open a\n", key)
 			fmt.Fprintln(out, "  Claude login page in YOUR browser. snug opens only one URL shape — Claude")
 			fmt.Fprintln(out, "  Code's own authorize URL with its client id and its seven scopes — rebuilt")
 			fmt.Fprintln(out, "  from snug's constants; anything else is refused and nothing is opened. There is")
@@ -408,17 +427,23 @@ func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 			fmt.Fprintln(out, "  login is pending snug listens on localhost on the HOST — your uid only — and")
 			fmt.Fprintln(out, "  relays one rebuilt callback into the sandbox; host loopback is still not")
 			fmt.Fprintln(out, "  reachable from inside.")
-			if opener.Kind() == "portal" {
-				fmt.Fprintln(out, "  The desktop portal opens the page: snug runs no program for it, and the")
-				fmt.Fprintln(out, "  browser starts in your desktop session, yours, and may outlive the run.")
-			} else {
-				fmt.Fprintln(out, "  snug runs xdg-open to open the page; the browser it starts is yours and")
-				fmt.Fprintln(out, "  may outlive the run. No desktop portal answered:")
-				fmt.Fprintf(out, "  %s\n", visibleValue(opener.noPortal))
-			}
+			explainOpener(out, opener)
 		}
 	}
 	fmt.Fprintln(out)
+}
+
+// explainOpener says what opens the login page: the desktop portal, or the
+// xdg-open snug runs and why no portal answered.
+func explainOpener(out io.Writer, opener browserOpener) {
+	if opener.Kind() == "portal" {
+		fmt.Fprintln(out, "  The desktop portal opens the page: snug runs no program for it, and the")
+		fmt.Fprintln(out, "  browser starts in your desktop session, yours, and may outlive the run.")
+		return
+	}
+	fmt.Fprintln(out, "  snug runs xdg-open to open the page; the browser it starts is yours and")
+	fmt.Fprintln(out, "  may outlive the run. No desktop portal answered:")
+	fmt.Fprintf(out, "  %s\n", visibleValue(opener.noPortal))
 }
 
 func explainEngine(out io.Writer, p *policy.Policy) {

@@ -385,7 +385,7 @@ lifetime), so authoring it is a grant, and it belongs to whichever profile creat
 directory meeting them. `CONTAINER_HOST`/`DOCKER_HOST` are URLs, not paths;
 podman dials an `ssh://` URL itself and does not read `DOCKER_HOST` at all
 (measured, podman 6.0.2). `BROWSER` is the login bridge's client
-(`/snug/lib/snug/browser`, snug's own executable) when `login = ["claude"]`;
+(`/snug/lib/snug/browser`, snug's own executable) when `login.claude` is set;
 Claude Code execs the program with the URL as its argument. A raw `SSH_AUTH_SOCK` signs with every key
 the agent holds.
 

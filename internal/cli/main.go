@@ -864,8 +864,24 @@ func run(cfg config) int {
 		if perr != nil {
 			return refuse(cfg, exitPolicy, perr)
 		}
+		// login.claude = "host": refused here, before any browser opens, if
+		// the host could never be renewed; otherwise the sandbox's
+		// credential directory is created and bound before Validate, like
+		// the FIFO below.
+		var hostFiles *claudeHostFiles
+		if pol.Login.Mode(policy.LoginClaude) == policy.LoginHost {
+			if _, herr := claudeHostPreflight(osClaudeLoginReads{}, pol.Home); herr != nil {
+				return refuse(cfg, exitPolicy, herr)
+			}
+			h, herr := startClaudeHostLogin(pol, runDir)
+			if herr != nil {
+				return refuse(cfg, exitPolicy, herr)
+			}
+			hostFiles = h
+			defer h.close()
+		}
 		b, berr := startLoginBridge(pol, runDir.Socket, os.Stderr, func(lb *loginBridge) flowHandler {
-			return lb.hostHandler(opener, os.Stderr)
+			return lb.hostHandler(opener, hostFiles, os.Stderr)
 		})
 		if berr != nil {
 			return refuse(cfg, exitPolicy, berr)

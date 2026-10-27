@@ -1,0 +1,101 @@
+@@
+     },
+     {
++      "guest": "/snug/claude",
++      "host": "/run/user/1000/snug/run-PID/claude",
++      "kind": "bind",
++      "access": "ro",
++      "from": [
++        "login.claude = \"host\""
++      ],
++      "optional": false,
++      "authored": true,
++      "executable": false,
++      "yielded": false,
++      "run_scoped": true
++    },
++    {
+       "guest": "/home/u/.cache",
+       "host": "",
+@@
+   "browser_bridge": {
+     "login": {
+-      "claude": "sandbox"
++      "claude": "host"
+     },
+     "opener_kind": "xdg-open",
+@@
+     "max_opens": 5,
+     "max_relays": 3,
+-    "host_rewrite": false
++    "host_rewrite": true
+   },
+   "topology": {
+@@
+     },
+     {
++      "name": "CLAUDE_SECURESTORAGE_CONFIG_DIR",
++      "entries": [
++        {
++          "value": "/snug/claude",
++          "verb": "(snug)",
++          "from": null,
++          "authored_by": "",
++          "type_unknown": false,
++          "grant": "",
++          "grants_inside": 0
++        }
++      ]
++    },
++    {
+       "name": "HOME",
+       "entries": [
+@@
+       "20",
+       "/snug/browser.fifo",
++      "--ro-bind-fd",
++      "21",
++      "/snug/claude",
+       "--size",
+       "1073741824",
+@@
+       "/home/u/.local/state",
+       "--bind-fd",
+-      "21",
++      "22",
+       "/home/u/proj/sub",
+       "--symlink",
+@@
+       "/snug/lib/snug/browser",
+       "--ro-bind-fd",
+-      "22",
++      "23",
+       "/snug/lib/snug/wrapper",
+       "--remount-ro",
+@@
+       "/snug/lib/snug/browser",
+       "--setenv",
++      "CLAUDE_SECURESTORAGE_CONFIG_DIR",
++      "/snug/claude",
++      "--setenv",
+       "HOME",
+       "/home/u",
+@@
+       {
+         "fd": 21,
++        "host": "/run/user/1000/snug/run-PID/claude",
++        "guest": "/snug/claude",
++        "access": "ro",
++        "optional": false
++      },
++      {
++        "fd": 22,
+         "host": "/home/u/proj/sub",
+         "guest": "/home/u/proj/sub",
+@@
+       },
+       {
+-        "fd": 22,
++        "fd": 23,
+         "host": "/proc/self/exe",
+         "guest": "/snug/lib/snug/wrapper",

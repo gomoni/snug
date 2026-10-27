@@ -44,7 +44,7 @@ func resolveBridge(t *testing.T, env policy.Environ, on bool) *policy.Policy {
 	m := map[policy.ProfileName]*policy.Profile(reg)
 	sel := []policy.ProfileName{"@sys", "@target-rw", "@net"}
 	if on {
-		m["bridge"] = &policy.Profile{Name: "bridge", Login: []string{"claude"}}
+		m["bridge"] = &policy.Profile{Name: "bridge", Login: map[policy.LoginProvider]policy.LoginMode{policy.LoginClaude: policy.LoginSandbox}}
 		sel = append(sel, "bridge")
 	}
 	p, err := policy.Resolve(m, sel, envGoldenCtx(), env)
@@ -282,7 +282,7 @@ func TestBrowserBridgeDryRunShowsTheFilesystemRowsAndEnv(t *testing.T) {
 	human := bridgeHuman(t, env, p)
 	for _, want := range []string{
 		policy.BrowserGuest, policy.WrapperGuest, policy.BrowserFIFOGuest,
-		"BROWSER", "browser bridge  login = [\"claude\"]", "opener          /usr/bin/xdg-open",
+		"BROWSER", "browser bridge  login.claude = \"sandbox\"", "opener          /usr/bin/xdg-open",
 		"org:create_api_key", "login opener",
 	} {
 		if !strings.Contains(human, want) {

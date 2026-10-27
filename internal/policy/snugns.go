@@ -68,8 +68,8 @@ const StagedBinDir = SnugDir + "/bin"
 const SnugLibDir = SnugDir + "/lib/snug"
 
 // WrapperGuest is snug's OWN running executable, bound read-only by descriptor
-// whenever a selection opens an http door, sets login = ["claude"] or stages
-// the podman stub. It is the door's entry (DoorExecVerb), through BrowserGuest
+// whenever a selection opens an http door, sets login.claude or stages the
+// podman stub. It is the door's entry (DoorExecVerb), through BrowserGuest
 // the login bridge's BROWSER, and through PodmanStubGuest the podman stub
 // (internal/wrapper).
 //
@@ -130,10 +130,16 @@ const (
 	ContainerSocketGuest = SnugDir + "/podman.sock"
 	AgentSocketGuest     = SnugDir + "/ssh-agent.sock"
 	// BrowserFIFOGuest is where snug binds the FIFO BrowserGuest writes to —
-	// a profile's login = ["claude"] only, never present otherwise. A FIFO
-	// rather than a third socket beside the two above (issue #455): it carries
-	// one line one way, and the host side reading it is the boundary.
+	// a profile's login.claude only, never present otherwise. A FIFO rather
+	// than a third socket beside the two above (issue #455): it carries one
+	// line one way, and the host side reading it is the boundary.
 	BrowserFIFOGuest = SnugDir + "/browser.fifo"
+	// ClaudeCredentialDirGuest is where login.claude = "host" binds, read-only,
+	// a directory snug created for this run on the host, holding the
+	// sandbox's projected .credentials.json; CLAUDE_SECURESTORAGE_CONFIG_DIR
+	// names it. A directory rather than the file: snug renews the file by
+	// rename, and a bind of the file would pin the inode it replaced.
+	ClaudeCredentialDirGuest = SnugDir + "/claude"
 	// SystemRevokedHostKeysGuest is where snug stages the host's global
 	// RevokedHostKeys file for the system-wide ssh_config it generates. Not
 	// beside that config: on openSUSE its directory is inside the /usr bind,

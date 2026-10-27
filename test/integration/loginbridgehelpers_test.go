@@ -134,7 +134,7 @@ func newLoginFixture(t *testing.T, mode string, extraEnv ...string) *loginFixtur
 	}
 	f.addProfile(t, "login", "[profile.login]\n"+
 		"description = \"the login bridge, for the integration suite\"\n"+
-		"login = [\"claude\"]\n")
+		"login.claude = \"sandbox\"\n")
 	f.env = baseEnv(append([]string{
 		"XDG_CONFIG_HOME=" + cfg,
 		"PATH=" + loginOpenerDir + ":" + os.Getenv("PATH"),
@@ -545,7 +545,7 @@ type loginDry struct {
 		Argv []string `json:"argv"`
 	} `json:"pasta"`
 	BrowserBridge *struct {
-		Login []string `json:"login"`
+		Login map[string]string `json:"login"`
 	} `json:"browser_bridge"`
 }
 

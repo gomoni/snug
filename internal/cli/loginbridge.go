@@ -90,16 +90,16 @@ func browserPreflight(env policy.Environ) (browserOpener, error) {
 	portal := "the desktop portal did not answer (" + perr.Error() + ")"
 	xdg, err := env.LookPath("xdg-open")
 	if err != nil {
-		return browserOpener{}, fmt.Errorf("login = [\"claude\"] opens your browser with the desktop "+
+		return browserOpener{}, fmt.Errorf("login.claude opens your browser with the desktop "+
 			"portal or xdg-open: %s, and there is no xdg-open on PATH. Run snug in your desktop "+
-			"session, or install xdg-utils — or drop login = [\"claude\"] from the profile that "+
+			"session, or install xdg-utils — or drop login.claude from the profile that "+
 			"sets it: %s", portal, fallback)
 	}
 	if env.Getenv("DISPLAY") == "" && env.Getenv("WAYLAND_DISPLAY") == "" {
-		return browserOpener{}, fmt.Errorf("login = [\"claude\"] opens your browser with the desktop "+
+		return browserOpener{}, fmt.Errorf("login.claude opens your browser with the desktop "+
 			"portal or xdg-open: %s, and neither DISPLAY nor WAYLAND_DISPLAY is set in snug's "+
 			"environment, without which xdg-open would start a text browser on this terminal. Run "+
-			"snug from your desktop session — or drop login = [\"claude\"] from the profile that "+
+			"snug from your desktop session — or drop login.claude from the profile that "+
 			"sets it: %s", portal, fallback)
 	}
 	return browserOpener{xdg: xdg, noPortal: perr.Error()}, nil
@@ -108,7 +108,7 @@ func browserPreflight(env policy.Environ) (browserOpener, error) {
 // wantsLoginBridge is whether this run starts the bridge at all: the key is on
 // and the run is real, since --dry-run and --explain start nothing.
 func wantsLoginBridge(pol *policy.Policy, cfg config) bool {
-	return pol.Login.Has(policy.LoginClaude) && !cfg.startsNothing()
+	return pol.Login.Any() && !cfg.startsNothing()
 }
 
 // apply asks the stage for the relay sockets. A nil bridge — the key is off —
@@ -150,7 +150,7 @@ func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), s
 	}
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		return nil, fmt.Errorf("could not create the login bridge's FIFO %s: %w (the run directory "+
-			"must be writable by you; drop login = [\"claude\"] to run without the bridge)", path, err)
+			"must be writable by you; drop login.claude to run without the bridge)", path, err)
 	}
 	// HOSTREAD-EXEMPT: the FIFO was created two lines up, in this run's own
 	// 0700 directory; O_RDWR never blocks the opener.
@@ -170,11 +170,12 @@ func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), s
 	return b, nil
 }
 
-// hostHandler builds the host half — listener, relay, opener — over this
-// bridge's relay sockets and the sandbox init's /proc, and returns its
-// Handle. opener is what browserPreflight chose.
-func (b *loginBridge) hostHandler(opener browserOpener, stderr io.Writer) flowHandler {
-	h := loginbridge.New(loginbridge.Deps{
+// hostHandler builds the host half — listener, relay or exchange, opener —
+// over this bridge's relay sockets and the sandbox init's /proc, and returns
+// its Handle. opener is what browserPreflight chose; files is
+// login.claude = "host"'s host-file half, nil in sandbox mode.
+func (b *loginBridge) hostHandler(opener browserOpener, files *claudeHostFiles, stderr io.Writer) flowHandler {
+	d := loginbridge.Deps{
 		Clock:     loginbridge.RealClock{},
 		Relayer:   b,
 		Listening: b.listening,
@@ -182,7 +183,11 @@ func (b *loginBridge) hostHandler(opener browserOpener, stderr io.Writer) flowHa
 		UID:       os.Getuid(),
 		Open:      opener.open(),
 		Stderr:    stderr,
-	})
+	}
+	if files != nil {
+		d.Host = &loginbridge.HostLogin{Files: files}
+	}
+	h := loginbridge.New(d)
 	b.mu.Lock()
 	b.host = h
 	b.mu.Unlock()

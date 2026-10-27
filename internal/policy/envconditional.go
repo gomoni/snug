@@ -132,13 +132,19 @@ var conditionalEnvs = []conditionalEnv{
 	},
 	{
 		names: []string{"BROWSER"},
-		key:   func(prof *Profile) string { return fmt.Sprintf("login = %q", prof.Login) },
-		on:    func(p *Policy) bool { return p.Login.Has(LoginClaude) },
-		by: func(prof *Profile) bool {
-			s, err := ParseLoginSet(prof.Login)
-			return err == nil && s.Has(LoginClaude)
-		},
+		// The mode, never a spelling of the key: the profile may have written
+		// either one (loginConflict says why that matters).
+		key:    func(prof *Profile) string { return fmt.Sprintf("the Claude login to %q", prof.Login[LoginClaude]) },
+		on:     func(p *Policy) bool { return p.Login.Mode(LoginClaude) != LoginOff },
+		by:     func(prof *Profile) bool { return prof.Login[LoginClaude] != LoginOff },
 		writes: "points Claude Code's browser opener at snug's login bridge",
+	},
+	{
+		names:  []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR"},
+		key:    func(*Profile) string { return fmt.Sprintf("the Claude login to %q", LoginHost) },
+		on:     func(p *Policy) bool { return p.Login.Mode(LoginClaude) == LoginHost },
+		by:     func(prof *Profile) bool { return prof.Login[LoginClaude] == LoginHost },
+		writes: "points Claude Code's credential storage at the read-only directory it renews",
 	},
 }
 

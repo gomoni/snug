@@ -1969,6 +1969,11 @@ func describeClaude(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                    network defence, not a property of the token. Selecting\n")
 			fmt.Fprintf(out, "                    '@net' alongside '@claude' removes it\n")
 		}
+		if p.Login.Mode(policy.LoginClaude) == policy.LoginHost {
+			for _, l := range hostLoginLines() {
+				fmt.Fprintf(out, "                    %s\n", l)
+			}
+		}
 	} else {
 		// "snug staged nothing at this path", NOT "Claude Code will start
 		// LOGGED OUT". The second is a claim about the SANDBOX where this code
@@ -2267,7 +2272,7 @@ func describeNetwork(out io.Writer, p *policy.Policy) {
 			fmt.Fprintf(out, "                         reached through ordinary egress — a LAN resolver address\n")
 			fmt.Fprintf(out, "                         discloses the network the host sits on)\n")
 		}
-		if p.Login.Has(policy.LoginClaude) {
+		if p.Login.Any() {
 			fmt.Fprintf(out, "         host -> sandbox CLOSED — except the login bridge's one relayed\n")
 			fmt.Fprintf(out, "                         callback, see below. Nothing else is forwarded into this\n")
 			fmt.Fprintf(out, "                         namespace. A door a human can open is declared with\n")
@@ -3493,7 +3498,8 @@ func claudeCredentialExpiry(m policy.Mount, now time.Time) (string, bool) {
 	at := time.UnixMilli(ms).UTC()
 	left := at.Sub(now).Round(time.Minute)
 	if left <= 0 {
-		return at.Format(time.RFC3339) + " (ALREADY EXPIRED — run `claude` on the host)", true
+		return at.Format(time.RFC3339) + " (ALREADY EXPIRED — run `claude` on the host, or set " +
+			"login.claude = \"host\" and run /login inside)", true
 	}
 	return fmt.Sprintf("%s (in %dh%02dm)", at.Format(time.RFC3339),
 		int(left.Hours()), int(left.Minutes())%60), true

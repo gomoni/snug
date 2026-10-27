@@ -80,4 +80,5 @@ reads them in place of what snug wrote.
 | an `identity.ssh` or `identity.git` block | `GIT_CONFIG_GLOBAL` |  |
 | an `identity.kubectl` block | `KUBECONFIG` |  |
 | `listen_names` is set | `LISTEN_FDNAMES` `LISTEN_FDS` `LISTEN_PID` |  |
-| `login` includes `"claude"` | `BROWSER` |  |
+| `login.claude` is `"sandbox"` or `"host"` | `BROWSER` |  |
+| `login.claude` is `"host"` | `CLAUDE_SECURESTORAGE_CONFIG_DIR` |  |
