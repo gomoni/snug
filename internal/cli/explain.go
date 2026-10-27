@@ -200,9 +200,10 @@ func explainAbsent(out io.Writer, p *policy.Policy) {
 	// that dies with the sandbox (CLAUDE.md invariant 4).
 	if p.Login.Has(policy.LoginClaude) {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
-		fmt.Fprintln(out, "  dies with the sandbox, except the xdg-open snug starts for a login and the")
-		fmt.Fprintln(out, "  browser it starts: they are yours, not the sandbox's, and may outlive this")
-		fmt.Fprintln(out, "  run. snug reaps xdg-open only while it is alive.")
+		fmt.Fprintln(out, "  dies with the sandbox, except what opens a login: the browser, and the")
+		fmt.Fprintln(out, "  xdg-open snug starts where no desktop portal answers. They are yours, not")
+		fmt.Fprintln(out, "  the sandbox's, and may outlive this run. snug reaps xdg-open only while it")
+		fmt.Fprintln(out, "  is alive.")
 	} else {
 		fmt.Fprintln(out, "  No root, no setuid, and no process snug did not start — everything here")
 		fmt.Fprintln(out, "  dies with the sandbox.")
@@ -394,7 +395,7 @@ func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 		fmt.Fprintln(out, "  browser trusts as local. That is a sandbox escape and snug does not bound it.")
 	}
 	if p.Login.Has(policy.LoginClaude) {
-		if _, err := browserPreflight(env); err != nil {
+		if opener, err := browserPreflight(env); err != nil {
 			fmt.Fprintln(out, "  Login bridge (login = [\"claude\"]): a real run would REFUSE to start:")
 			fmt.Fprintf(out, "  %s\n", visibleValue(err.Error()))
 			fmt.Fprintln(out, "  Fix that, or drop the key, and re-run --explain.")
@@ -406,8 +407,15 @@ func explainNetwork(env policy.Environ, out io.Writer, p *policy.Policy) {
 			fmt.Fprintln(out, "  no snug page first: if you did not just type /login, close the tab. While a")
 			fmt.Fprintln(out, "  login is pending snug listens on localhost on the HOST — your uid only — and")
 			fmt.Fprintln(out, "  relays one rebuilt callback into the sandbox; host loopback is still not")
-			fmt.Fprintln(out, "  reachable from inside. The browser xdg-open starts is yours and may outlive")
-			fmt.Fprintln(out, "  the run.")
+			fmt.Fprintln(out, "  reachable from inside.")
+			if opener.Kind() == "portal" {
+				fmt.Fprintln(out, "  The desktop portal opens the page: snug runs no program for it, and the")
+				fmt.Fprintln(out, "  browser starts in your desktop session, yours, and may outlive the run.")
+			} else {
+				fmt.Fprintln(out, "  snug runs xdg-open to open the page; the browser it starts is yours and")
+				fmt.Fprintln(out, "  may outlive the run. No desktop portal answered:")
+				fmt.Fprintf(out, "  %s\n", visibleValue(opener.noPortal))
+			}
 		}
 	}
 	fmt.Fprintln(out)

@@ -58,7 +58,7 @@ description = "the login bridge, for scripts/0036"
 login = ["claude"]
 TOML
 
-XDG_CONFIG_HOME="$SC/cfg" PATH="$SC/bin:$PATH" DISPLAY=${DISPLAY:-:99} \
+XDG_CONFIG_HOME="$SC/cfg" PATH="$SC/bin:$PATH" DISPLAY=${DISPLAY:-:99} DBUS_SESSION_BUS_ADDRESS= \
 	FAKEOPENER_DIR="$SC/rec" FAKEOPENER_MODE=hold \
 	"$SNUG" -p @claude -p @net -p login "$SC/proj" -- ./loginprobe wait=60s \
 	>"$SC/out" 2>&1 &

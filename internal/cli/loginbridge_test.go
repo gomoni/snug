@@ -41,8 +41,54 @@ func TestBrowserPreflightRefusals(t *testing.T) {
 		t.Fatalf("no display: %v", err)
 	}
 	got, err := browserPreflight(browserEnv{xdg: true, vars: map[string]string{"WAYLAND_DISPLAY": "w0"}})
-	if err != nil || got != "/usr/bin/xdg-open" {
+	if err != nil || got.Kind() != "xdg-open" || got.String() != "/usr/bin/xdg-open" {
 		t.Fatalf("wayland only: %q %v", got, err)
+	}
+}
+
+// stubPortal makes portalVersion answer v for addr, and fail for any other.
+func stubPortal(t *testing.T, addr string, v uint32) {
+	t.Helper()
+	old := portalVersion
+	portalVersion = func(a string) (uint32, error) {
+		if a == addr && a != "" {
+			return v, nil
+		}
+		return 0, errors.New("no portal here")
+	}
+	t.Cleanup(func() { portalVersion = old })
+}
+
+// The portal comes first and needs neither xdg-open nor a display: it opens
+// the browser in the desktop session, which is the case the display test
+// refused for no reason (ssh or tmux into a logged-in desktop, toolbx).
+func TestBrowserPreflightPrefersThePortal(t *testing.T) {
+	const bus = "unix:path=/run/user/1000/bus"
+	stubPortal(t, bus, 5)
+	got, err := browserPreflight(browserEnv{vars: map[string]string{"DBUS_SESSION_BUS_ADDRESS": bus}})
+	if err != nil || got.Kind() != "portal" || !strings.Contains(got.String(), "version 5") ||
+		!strings.Contains(got.String(), bus) {
+		t.Fatalf("portal answering, no xdg-open, no display: %q %v", got, err)
+	}
+	got, err = browserPreflight(browserEnv{xdg: true, vars: map[string]string{
+		"DBUS_SESSION_BUS_ADDRESS": bus, "DISPLAY": ":0"}})
+	if err != nil || got.Kind() != "portal" {
+		t.Fatalf("portal and xdg-open both usable: %q %v", got, err)
+	}
+}
+
+// Without a portal the run falls back to xdg-open, and a refusal names why
+// the portal did not answer as well as what xdg-open lacked.
+func TestBrowserPreflightFallsBackToXdgOpenAndNamesThePortal(t *testing.T) {
+	stubPortal(t, "unix:path=/elsewhere", 5)
+	vars := map[string]string{"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus", "DISPLAY": ":0"}
+	got, err := browserPreflight(browserEnv{xdg: true, vars: vars})
+	if err != nil || got.Kind() != "xdg-open" {
+		t.Fatalf("no portal, xdg-open usable: %q %v", got, err)
+	}
+	_, err = browserPreflight(browserEnv{vars: vars})
+	if err == nil || !strings.Contains(err.Error(), "no portal here") || !strings.Contains(err.Error(), "no xdg-open") {
+		t.Fatalf("neither: %v", err)
 	}
 }
 

@@ -37,4 +37,5 @@ NETWORK  egress — private netns (one per sandbox) with a pasta helper.
                          into the sandbox's namespace; host loopback stays unreachable
                          from inside.
          opener          /usr/bin/xdg-open
+                         not the desktop portal: DBUS_SESSION_BUS_ADDRESS is not set
          limits          5 opens and 3 callbacks per run, 1 login pending at a time

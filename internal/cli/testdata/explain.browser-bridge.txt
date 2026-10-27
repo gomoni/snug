@@ -42,9 +42,10 @@ WHAT IS NOT IN HERE
   from inside, under every profile, including the networked ones.
   No ~/.ssh. Your private keys are not in this filesystem at all.
   No root, no setuid, and no process snug did not start — everything here
-  dies with the sandbox, except the xdg-open snug starts for a login and the
-  browser it starts: they are yours, not the sandbox's, and may outlive this
-  run. snug reaps xdg-open only while it is alive.
+  dies with the sandbox, except what opens a login: the browser, and the
+  xdg-open snug starts where no desktop portal answers. They are yours, not
+  the sandbox's, and may outlive this run. snug reaps xdg-open only while it
+  is alive.
 
 NETWORK
   Full outbound internet, through a pasta helper in a namespace of its own.
@@ -59,8 +60,10 @@ NETWORK
   no snug page first: if you did not just type /login, close the tab. While a
   login is pending snug listens on localhost on the HOST — your uid only — and
   relays one rebuilt callback into the sandbox; host loopback is still not
-  reachable from inside. The browser xdg-open starts is yours and may outlive
-  the run.
+  reachable from inside.
+  snug runs xdg-open to open the page; the browser it starts is yours and
+  may outlive the run. No desktop portal answered:
+  DBUS_SESSION_BUS_ADDRESS is not set
 
 COMMAND
   /bin/sh

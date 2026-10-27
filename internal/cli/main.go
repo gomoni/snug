@@ -857,14 +857,15 @@ func run(cfg config) int {
 	// last.
 	var bridge *loginBridge
 	if wantsLoginBridge(pol, cfg) {
-		// Resolving xdg-open here makes a missing one a refusal at start,
-		// and the opener execs this absolute path without searching PATH.
-		xdg, perr := browserPreflight(env)
+		// Choosing the opener here makes a host with neither a portal nor a
+		// usable xdg-open a refusal at start, and xdg-open is execed by the
+		// absolute path resolved now, without searching PATH.
+		opener, perr := browserPreflight(env)
 		if perr != nil {
 			return refuse(cfg, exitPolicy, perr)
 		}
 		b, berr := startLoginBridge(pol, runDir.Socket, os.Stderr, func(lb *loginBridge) flowHandler {
-			return lb.hostHandler(xdg, os.Stderr)
+			return lb.hostHandler(opener, os.Stderr)
 		})
 		if berr != nil {
 			return refuse(cfg, exitPolicy, berr)

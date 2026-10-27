@@ -558,7 +558,7 @@ func TestTheBridgeRowsAppearExactlyWhenTheKeyIsOn(t *testing.T) {
 		{"--dry-run", "login opener"},
 		{"--dry-run", "/snug/browser.fifo"},
 		{"--explain", "Login bridge"},
-		{"--explain", "except the xdg-open snug starts"},
+		{"--explain", "except what opens a login"},
 	} {
 		for _, sel := range []struct {
 			args []string

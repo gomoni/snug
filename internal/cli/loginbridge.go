@@ -32,24 +32,77 @@ const (
 	loginRelaySockets = 3
 )
 
+// browserOpener is the opener browserPreflight chose for a run: the desktop
+// portal when it answered on the session bus, xdg-open otherwise. Exactly one
+// field group is set, and the choice holds for the whole run: a portal that
+// stops answering later fails that open, it does not fall back.
+type browserOpener struct {
+	portal  string // DBUS_SESSION_BUS_ADDRESS the portal answered on
+	version uint32 // its OpenURI interface version
+	xdg     string // xdg-open's absolute path, when no portal answered
+	// noPortal is why the portal was not chosen, set with xdg, so a screen
+	// naming xdg-open also says what the portal answered.
+	noPortal string
+}
+
+// Kind names the opener for the JSON report: "portal" or "xdg-open".
+func (o browserOpener) Kind() string {
+	if o.portal != "" {
+		return "portal"
+	}
+	return "xdg-open"
+}
+
+func (o browserOpener) String() string {
+	if o.portal != "" {
+		return fmt.Sprintf("desktop portal, org.freedesktop.portal.OpenURI version %d, on the session bus %s",
+			o.version, o.portal)
+	}
+	return o.xdg
+}
+
+// open is the Deps.Open of the bridge's host half.
+func (o browserOpener) open() func(string) error {
+	if o.portal != "" {
+		return loginbridge.PortalOpener{Addr: o.portal}.Open
+	}
+	return loginbridge.Opener{Path: o.xdg}.Open
+}
+
+// portalVersion is loginbridge.PortalVersion; a test replaces it.
+var portalVersion = loginbridge.PortalVersion
+
 // browserPreflight refuses a run whose profile turns the login bridge on in a
-// host that cannot open a browser. It returns xdg-open's absolute path,
-// resolved once, so the opener never searches PATH a second time.
-func browserPreflight(env policy.Environ) (string, error) {
+// host that cannot open a browser. It asks the desktop portal first, over the
+// session bus in snug's own environment; when no portal answers, it resolves
+// xdg-open once, so the opener never searches PATH a second time.
+//
+// The portal needs no DISPLAY: it runs in the desktop session and opens the
+// browser there. xdg-open does — without DISPLAY or WAYLAND_DISPLAY it falls
+// back to a text browser on snug's terminal, which the sandbox shares.
+func browserPreflight(env policy.Environ) (browserOpener, error) {
 	const fallback = "/login inside still works by opening the URL claude prints and pasting the code"
+	addr := env.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	v, perr := portalVersion(addr)
+	if perr == nil {
+		return browserOpener{portal: addr, version: v}, nil
+	}
+	portal := "the desktop portal did not answer (" + perr.Error() + ")"
 	xdg, err := env.LookPath("xdg-open")
 	if err != nil {
-		return "", fmt.Errorf("login = [\"claude\"] opens your browser with xdg-open, and "+
-			"there is none on PATH. Install xdg-utils — or drop login = [\"claude\"] from "+
-			"the profile that sets it: %s", fallback)
+		return browserOpener{}, fmt.Errorf("login = [\"claude\"] opens your browser with the desktop "+
+			"portal or xdg-open: %s, and there is no xdg-open on PATH. Run snug in your desktop "+
+			"session, or install xdg-utils — or drop login = [\"claude\"] from the profile that "+
+			"sets it: %s", portal, fallback)
 	}
 	if env.Getenv("DISPLAY") == "" && env.Getenv("WAYLAND_DISPLAY") == "" {
-		return "", fmt.Errorf("login = [\"claude\"] needs a graphical session to open your "+
-			"browser, and neither DISPLAY nor WAYLAND_DISPLAY is set in snug's environment. Run "+
-			"snug from your desktop session — or drop login = [\"claude\"] from the "+
-			"profile that sets it: %s", fallback)
+		return browserOpener{}, fmt.Errorf("login = [\"claude\"] opens your browser with the desktop "+
+			"portal or xdg-open: %s, and neither DISPLAY nor WAYLAND_DISPLAY is set in snug's "+
+			"environment, without which xdg-open would start a text browser on this terminal. Run "+
+			"snug from your desktop session — or drop login = [\"claude\"] from the profile that "+
+			"sets it: %s", portal, fallback)
 	}
-	return xdg, nil
+	return browserOpener{xdg: xdg, noPortal: perr.Error()}, nil
 }
 
 // wantsLoginBridge is whether this run starts the bridge at all: the key is on
@@ -119,15 +172,15 @@ func startLoginBridge(pol *policy.Policy, socket func(string) (string, error), s
 
 // hostHandler builds the host half — listener, relay, opener — over this
 // bridge's relay sockets and the sandbox init's /proc, and returns its
-// Handle. xdg is the absolute path browserPreflight resolved.
-func (b *loginBridge) hostHandler(xdg string, stderr io.Writer) flowHandler {
+// Handle. opener is what browserPreflight chose.
+func (b *loginBridge) hostHandler(opener browserOpener, stderr io.Writer) flowHandler {
 	h := loginbridge.New(loginbridge.Deps{
 		Clock:     loginbridge.RealClock{},
 		Relayer:   b,
 		Listening: b.listening,
 		PeerUID:   loginbridge.PeerUID,
 		UID:       os.Getuid(),
-		Open:      loginbridge.Opener{Path: xdg}.Open,
+		Open:      opener.open(),
 		Stderr:    stderr,
 	})
 	b.mu.Lock()

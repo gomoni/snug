@@ -20,8 +20,9 @@
 # INSIDE the same sandbox invocation: run.sh does `claude auth login` and then
 # `claude -p` in one go. A second invocation would not see the token.
 #
-# SKIP: no snug binary, stdin or stderr not a tty, no DISPLAY or
-# WAYLAND_DISPLAY, no xdg-open, no claude on PATH.
+# SKIP: no snug binary, stdin or stderr not a tty, no opener (neither a
+# desktop portal answering on the session bus nor xdg-open with DISPLAY or
+# WAYLAND_DISPLAY), no claude on PATH. The opener snug picked is printed.
 set -u
 
 SNUG=${SNUG:-./bin/snug}
@@ -31,8 +32,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -x "$SNUG" ] || { echo "SKIP: no snug binary at $SNUG — run make build" >&2; exit $skip; }
 SNUG=$(cd "$(dirname "$SNUG")" && pwd)/$(basename "$SNUG")
 [ -t 0 ] && [ -t 2 ] || { echo "SKIP: not on a terminal — this check needs a human" >&2; exit $skip; }
-[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || { echo "SKIP: neither DISPLAY nor WAYLAND_DISPLAY is set, so there is no browser to open" >&2; exit $skip; }
-command -v xdg-open >/dev/null 2>&1 || { echo "SKIP: no xdg-open on PATH" >&2; exit $skip; }
+if busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+	org.freedesktop.portal.OpenURI version >/dev/null 2>&1; then
+	echo "opener: the desktop portal (snug asks it first)"
+else
+	[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || { echo "SKIP: no desktop portal answers and neither DISPLAY nor WAYLAND_DISPLAY is set, so there is no browser to open" >&2; exit $skip; }
+	command -v xdg-open >/dev/null 2>&1 || { echo "SKIP: no desktop portal answers and there is no xdg-open on PATH" >&2; exit $skip; }
+	echo "opener: xdg-open (no desktop portal answers)"
+fi
 command -v claude >/dev/null 2>&1 || { echo "SKIP: no claude binary on PATH" >&2; exit $skip; }
 
 SC=$(mktemp -d); trap 'rm -rf "$SC"' EXIT

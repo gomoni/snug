@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -532,6 +533,71 @@ func TestTheLoginBridgeRefusesWithoutADisplay(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "PAYLOAD-RAN") {
 		t.Errorf("control: with DISPLAY set the run should work (exit %d):\n%s", code, out)
 	}
+}
+
+// TestTheLoginBridgeOpensThroughThePortal fails if a host whose desktop portal
+// answers on the session bus does not get its login page opened through
+// OpenURI, or if snug still runs xdg-open, or still asks for a display, there.
+// testdata/fakeportal is the bus and the portal; it hands the URL to the
+// fake browser in a directory of its own, so a record in the fixture's
+// directory would mean the fake xdg-open on PATH ran.
+//
+// Control: the same environment without the bus address is refused for want
+// of a display, so the run below starting is the portal's doing.
+func TestTheLoginBridgeOpensThroughThePortal(t *testing.T) {
+	budget(t, 40*time.Second)
+	requireLoginBridgeEnv(t)
+	f := newLoginFixture(t, "callback")
+	browserRec := t.TempDir()
+	portal := exec.Command(loginPortalBin, t.TempDir(), filepath.Join(loginOpenerDir, "xdg-open"), browserRec)
+	stdout, err := portal.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := portal.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { portal.Process.Kill(); portal.Wait() })
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	addr, ok := strings.CutPrefix(strings.TrimSpace(line), "READY ")
+	if err != nil || !ok {
+		t.Fatalf("fakeportal did not start: %q %v", line, err)
+	}
+
+	var env []string
+	for _, e := range f.env {
+		if !strings.HasPrefix(e, "DISPLAY=") && !strings.HasPrefix(e, "WAYLAND_DISPLAY=") {
+			env = append(env, e)
+		}
+	}
+	out, code := cli(t, env, append(append([]string{}, loginBridgeArgs...), f.proj, "--", "/bin/sh", "-c", "echo PAYLOAD-RAN")...)
+	if code != exitPolicyCode || !strings.Contains(out, "WAYLAND_DISPLAY") {
+		t.Fatalf("control: no portal and no display should refuse (exit %d):\n%s", code, out)
+	}
+
+	env = append(env, "DBUS_SESSION_BUS_ADDRESS="+addr)
+	s := startBgSandbox(t, env, loginBridgeArgs, f.proj, "./loginprobe state="+loginState+" challenge="+loginChallenge)
+	if code := loginWaitExit(t, s, 30*time.Second); code != 0 {
+		t.Fatalf("snug exited %d:\n%s", code, s.log())
+	}
+	out = s.log()
+	port := loginPort(t, out)
+	want := fmt.Sprintf("GET /callback?code=CODE-1_x&state=%s HTTP/1.1\r\nHost: localhost:%d\r\n"+
+		"Connection: close\r\n\r\n", loginState, port)
+	if got := loginReceived(t, out); got != want {
+		t.Errorf("the sandbox received\n%q\nwant\n%q\n%s", got, want, out)
+	}
+	argv, ok := loginRec(t, browserRec, "argv")
+	if !ok {
+		t.Fatalf("the portal never handed a URL to the browser:\n%s", out)
+	}
+	if wantArgv := "argc=1\nargv=" + fmt.Sprintf(loginRebuiltFmt, port, loginChallenge, loginState) + "\n"; argv != wantArgv {
+		t.Errorf("the portal was handed\n%q\nwant the rebuilt URL\n%q", argv, wantArgv)
+	}
+	if _, ran := loginRec(t, f.rec, "ran"); ran {
+		t.Errorf("xdg-open ran although the portal answered:\n%s", out)
+	}
+	requireLoginPortClosed(t, port, "after the flow")
 }
 
 // TestTheWrapperAndFIFOAreReadOnlyOrScoped fails if the sandbox can rewrite or
