@@ -69,6 +69,14 @@ GITHUB_ENTERPRISE_TOKEN  set       ← gh uses this token for an Enterprise host
 GITHUB_ENTERPRISE_TOKEN  inherit   ← gh uses this token for an Enterprise host in place of the one in hosts.yml, so it decides which account gh acts as there (measured, gh 2.96.0)
 GITHUB_TOKEN             set       ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
 GITHUB_TOKEN             inherit   ← gh uses this token for github.com in place of the one in hosts.yml, so it decides which account gh acts as (measured, gh 2.96.0)
+GITLAB_ACCESS_TOKEN      set       ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
+GITLAB_ACCESS_TOKEN      inherit   ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
+GITLAB_HOST              set       ← the host glab sends requests to, with the token config.yml holds for it (source v1.124.0, not measured)
+GITLAB_HOST              inherit   ← the host glab sends requests to, with the token config.yml holds for it (source v1.124.0, not measured)
+GITLAB_TOKEN             set       ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
+GITLAB_TOKEN             inherit   ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
+GITLAB_URI               set       ← an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)
+GITLAB_URI               inherit   ← an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)
 GIT_ALLOW_PROTOCOL       set       ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
 GIT_ALLOW_PROTOCOL       inherit   ← re-enables git's ext:: transport, which runs an arbitrary command as the transport (measured, with the control)
 GIT_ASKPASS              set       ← git runs this to ask for a credential, so it is handed whatever it asks for and its answer is used (measured, git 2.55.0, with the control)
@@ -101,6 +109,10 @@ GIT_SSH_COMMAND          set       ← git runs this as the transport for every 
 GIT_SSH_COMMAND          inherit   ← git runs this as the transport for every fetch and push, with whatever ssh identity this sandbox was given (measured, git 2.55.0)
 GIT_TEMPLATE_DIR         set       ← the hooks in this directory are installed into every repository `git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)
 GIT_TEMPLATE_DIR         inherit   ← the hooks in this directory are installed into every repository `git clone` and `git init` create afterwards (measured: post-checkout fired on the clone)
+GLAB_CONFIG_DIR          set       ← glab reads its tokens from config.yml in this directory (source v1.124.0, not measured)
+GLAB_CONFIG_DIR          inherit   ← taking the host's value points glab back at the host's config, every host's token included; identity.glab.user stages one (source v1.124.0, not measured)
+GL_HOST                  set       ← an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)
+GL_HOST                  inherit   ← an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)
 HOSTALIASES              set       ← glibc rewrites a DOT-FREE hostname to another NAME through this file before it is resolved; a name with a dot in it is untouched (measured, glibc 2.43)
 HOSTALIASES              inherit   ← glibc rewrites a DOT-FREE hostname to another NAME through this file before it is resolved; a name with a dot in it is untouched (measured, glibc 2.43)
 JAVA_TOOL_OPTIONS        set       ← every JVM in the sandbox parses these flags before main(), and they can load an agent from a path — measured, temurin 21, in a container: the agent's premain ran before main
@@ -136,6 +148,8 @@ NODE_PATH                prepend   ← node resolves require() from here and run
 NODE_PATH                sanitise  ← node resolves require() from here and runs the module's top-level code; core modules are not shadowed (measured, node 26.4, with the control)
 NPM_CONFIG_USERCONFIG    set       ← the .npmrc this names carries script-shell, the shell npm runs every lifecycle and `run` script with (measured inside a sandbox, npm 12.0.2)
 NPM_CONFIG_USERCONFIG    inherit   ← taking the host's value points npm back at the host's .npmrc, auth tokens included; `set` it to a path a profile authored
+OAUTH_TOKEN              set       ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
+OAUTH_TOKEN              inherit   ← glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)
 PAGER                    set       ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)
 PAGER                    inherit   ← the value is a command; git runs it over log, diff and show via GIT_PAGER -> core.pager -> PAGER (measured)
 PERL5LIB                 merge     ← perl searches these BEFORE the system directories, so a module here replaces the real one and its top-level code runs (measured, perl 5.44)
@@ -237,6 +251,8 @@ DOCKER_CONFIG            set       ← credsStore in this directory's config.jso
 DOCKER_CONFIG            inherit   ← taking the host's value points docker back at the host's config, credentials included; `set` it to a path a profile authored
 GH_CONFIG_DIR            set       ← gh reads its tokens from hosts.yml in this directory, and a `!` alias in its config.yml is a shell command gh runs (measured, gh 2.96.0)
 GH_CONFIG_DIR            inherit   ← taking the host's value points gh back at the host's config, tokens included; identity.gh.user mints one token for one account instead
+GLAB_CONFIG_DIR          set       ← glab reads its tokens from config.yml in this directory (source v1.124.0, not measured)
+GLAB_CONFIG_DIR          inherit   ← taking the host's value points glab back at the host's config, every host's token included; identity.glab.user stages one (source v1.124.0, not measured)
 
 ## what the VALUE is, and therefore whether a relative one is refused
 #
@@ -274,6 +290,10 @@ GH_HOST                  opaque    (no row)     accepted
 GH_TOKEN                 opaque    (no row)     accepted
 GITHUB_ENTERPRISE_TOKEN  opaque    (no row)     accepted
 GITHUB_TOKEN             opaque    (no row)     accepted
+GITLAB_ACCESS_TOKEN      opaque    (no row)     accepted
+GITLAB_HOST              opaque    (no row)     accepted
+GITLAB_TOKEN             opaque    (no row)     accepted
+GITLAB_URI               opaque    (no row)     accepted
 GIT_ALLOW_PROTOCOL       opaque    (no row)     accepted
 GIT_ASKPASS              program   (no row)     accepted
 GIT_COMMON_DIR           path      (no row)     REFUSED
@@ -290,6 +310,8 @@ GIT_SEQUENCE_EDITOR      program   (no row)     accepted
 GIT_SSH                  program   (no row)     accepted
 GIT_SSH_COMMAND          program   (no row)     accepted
 GIT_TEMPLATE_DIR         path      (no row)     REFUSED
+GLAB_CONFIG_DIR          path      (no row)     REFUSED
+GL_HOST                  opaque    (no row)     accepted
 GOFLAGS                  opaque    -            accepted
 GOPATH                   -         path         REFUSED
 HOSTALIASES              path      (no row)     REFUSED
@@ -314,6 +336,7 @@ NODE_OPTIONS             opaque    (no row)     accepted
 NODE_PATH                path      path         REFUSED
 NO_COLOR                 -         -            accepted
 NPM_CONFIG_USERCONFIG    path      path         REFUSED
+OAUTH_TOKEN              opaque    (no row)     accepted
 PAGER                    program   -            accepted
 PATH                     -         path         REFUSED
 PERL5LIB                 path      path         REFUSED

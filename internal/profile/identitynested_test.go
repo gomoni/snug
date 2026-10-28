@@ -106,14 +106,14 @@ func TestIdentityFieldKeysMatchTheProfileTOMLTags(t *testing.T) {
 	for i := 0; i < raw.NumField(); i++ {
 		f := raw.Field(i)
 		switch f.Name {
-		case "SSH", "Git", "GPG", "Gh", "Kube":
+		case "SSH", "Git", "GPG", "Gh", "Glab", "Kube":
 			prefix := f.Tag.Get("toml") + "."
 			nested := f.Type
 			for j := 0; j < nested.NumField(); j++ {
 				got = append(got, prefix+nested.Field(j).Tag.Get("toml"))
 			}
 		default:
-			t.Fatalf("rawIdentity.%s is none of ssh, git, gh or kube: [identity] is a container "+
+			t.Fatalf("rawIdentity.%s is none of ssh, git, gpg, gh, glab or kube: [identity] is a container "+
 				"of per-tool blocks with no keys of its own, and a field here that is not "+
 				"one of the blocks decodes a key policy.IdentityFieldKeys() cannot name",
 				f.Name)

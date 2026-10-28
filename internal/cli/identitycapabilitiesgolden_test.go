@@ -33,7 +33,8 @@ func TestGoldenShowIdentityCapabilities(t *testing.T) {
 				Name:       "Some One",
 				Email:      "some.one@example.com",
 			},
-			Gh: policy.IdentityGh{User: "some-one", Host: "github.com"},
+			Gh:   policy.IdentityGh{User: "some-one", Host: "github.com"},
+			Glab: policy.IdentityGlab{User: "some-one", Host: "gitlab.example.com"},
 		},
 	}
 

@@ -147,6 +147,7 @@ type rawIdentity struct {
 	Git  rawIdentityGit  `toml:"git"`
 	GPG  rawIdentityGPG  `toml:"gpg"`
 	Gh   rawIdentityGh   `toml:"gh"`
+	Glab rawIdentityGlab `toml:"glab"`
 	Kube rawIdentityKube `toml:"kubectl"`
 }
 
@@ -180,6 +181,12 @@ type rawIdentityGPG struct {
 type rawIdentityGh struct {
 	Host string `toml:"host"`
 	User string `toml:"user"`
+}
+
+type rawIdentityGlab struct {
+	Host        string `toml:"host"`
+	User        string `toml:"user"`
+	TokenSource string `toml:"token_source"`
 }
 
 // nameFault and nameByteDesc are policy.NameFault and policy.NameByteDesc, and
@@ -696,6 +703,21 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Two doors, one author, like ParseSSHMode above: both the accepted set and
+	// the half-block verdict are properties of the profile TEXT, so `snug
+	// profile show` reports them. The raw spelling is stored; Resolve normalises.
+	if _, err := policy.ParseGlabTokenSource(r.Glab.TokenSource); err != nil {
+		return nil, fmt.Errorf("%s: profile %q: %w", source, name, err)
+	}
+	pn, err := policy.NewProfileName(name)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", source, err)
+	}
+	if err := policy.RefuseHalfGlabBlock(pn, policy.IdentityGlab{
+		Host: r.Glab.Host, User: r.Glab.User, TokenSource: policy.GlabTokenSource(r.Glab.TokenSource),
+	}); err != nil {
+		return nil, fmt.Errorf("%s: %w", source, err)
+	}
 	id := &policy.Identity{
 		SSH: policy.IdentitySSH{
 			Host:  r.SSH.Host,
@@ -714,6 +736,11 @@ func toIdentity(r *rawIdentity, name, source string) (*policy.Identity, error) {
 		Gh: policy.IdentityGh{
 			Host: r.Gh.Host,
 			User: r.Gh.User,
+		},
+		Glab: policy.IdentityGlab{
+			Host:        r.Glab.Host,
+			User:        r.Glab.User,
+			TokenSource: policy.GlabTokenSource(r.Glab.TokenSource),
 		},
 		Kube: policy.IdentityKube{
 			Context:    r.Kube.Context,

@@ -101,6 +101,7 @@ type Identity struct {
 	Git  IdentityGit  `snug:"git"`
 	GPG  IdentityGPG  `snug:"gpg"`
 	Gh   IdentityGh   `snug:"gh"`
+	Glab IdentityGlab `snug:"glab"`
 	Kube IdentityKube `snug:"kubectl"`
 }
 
@@ -189,6 +190,66 @@ type IdentityGh struct {
 	// four consumers would otherwise name a host the profile never wrote.
 	Host string `snug:"host"`
 	User string `snug:"user"`
+}
+
+// GlabTokenSource says where the host's GitLab credential is read from. The
+// ZERO value is the glab CLI, so a block that omits `token_source` stores the
+// empty string and still means glab; `glab` is normalised to it before the
+// identity join, which compares text.
+type GlabTokenSource string
+
+const (
+	// GlabTokenFromGlab asks the host's `glab config get token` for the account's
+	// token. It is the zero value; `glab` and the empty string normalise to it.
+	GlabTokenFromGlab GlabTokenSource = ""
+
+	// GlabTokenFromNetrc reads the host's ~/.netrc entry for the pinned host.
+	GlabTokenFromNetrc GlabTokenSource = "netrc"
+)
+
+// ParseGlabTokenSource is the door into GlabTokenSource, with ParseSSHMode's
+// rule: a named set, anything else unknown and quoting the whole set. `glab`
+// and the empty string are the same value, so a profile that spells the default
+// out joins equal to one that omits it. Neither value is wider than the other
+// in what the sandbox receives: both stage one token for the one pinned account.
+func ParseGlabTokenSource(s string) (GlabTokenSource, error) {
+	switch GlabTokenSource(s) {
+	case "glab", "":
+		return GlabTokenFromGlab, nil
+	case GlabTokenFromNetrc:
+		return GlabTokenFromNetrc, nil
+	default:
+		return "", fmt.Errorf("unknown identity.glab.token_source %q (want glab or netrc)", s)
+	}
+}
+
+// IdentityGlab pins one GitLab account on one instance.
+//
+// A hostile process inside the sandbox can read the staged GitLab personal access
+// token (~/.config/glab-cli/config.yml and ~/.netrc, 0600, on tmpfs) and do
+// everything the token's scopes allow on that one instance, as that one account,
+// from anywhere, until the token expires or is revoked on the host. With `api`
+// scope that is the whole account: it can add an SSH key or mint another token,
+// effects that OUTLIVE the sandbox. A PAT may have no expiry at all. Any https
+// client inside that reads ~/.netrc (git, curl -n, Python requests, Go modules)
+// sends it to that host unasked. Use a narrowly-scoped, expiring token if that
+// matters.
+//
+// Host has NO DEFAULT, unlike Gh.Host: self-managed instances are the common
+// case, and a default of gitlab.com would stage a token for a host the profile
+// never wrote. User VERIFIES and never selects: glab keeps one token per host, so
+// the stored login is compared to User and a mismatch refuses.
+//
+// TokenSource is chosen by key, never by precedence, and a missing or unreadable
+// entry in the chosen source refuses; there is no fallback to the other one.
+//
+// RESIDUAL: with token_source = "netrc" snug cannot tell an OAuth access token
+// from a personal access token, since ~/.netrc records only login and password.
+// The glab source reads `is_oauth2` and refuses an OAuth host.
+type IdentityGlab struct {
+	Host        string          `snug:"host"`
+	User        string          `snug:"user"`
+	TokenSource GlabTokenSource `snug:"token_source"`
 }
 
 // IdentityGPG pins one OpenPGP key, by FINGERPRINT, for signing and/or
@@ -431,7 +492,7 @@ func (p *Policy) IdentityOwner(block string) ProfileName {
 	return ""
 }
 
-// Pinned reports whether block key ("ssh", "git", "gh", "kubectl") is set. It is false
+// Pinned reports whether block key ("ssh", "git", "gh", "glab", "kubectl") is set. It is false
 // for a nil Identity and for a key that names no block.
 func (i *Identity) Pinned(key string) bool {
 	if i == nil {
@@ -573,7 +634,7 @@ func (i *Identity) CheckText(profileName ProfileName) error {
 			}
 			return fmt.Errorf("profile %q: identity.%s contains %q. Every identity field is "+
 				"interpolated into a config file snug GENERATES — ~/.gitconfig, ~/.ssh/config, "+
-				"gh's hosts.yml, the sandbox's ~/.kube/config — where a NEWLINE writes a directive snug did not author, "+
+				"gh's hosts.yml, glab's config.yml, ~/.netrc, the sandbox's ~/.kube/config — where a NEWLINE writes a directive snug did not author, "+
 				"and none of it is a Mount that Validate could refuse. They are also "+
 				"rendered into the ~/.claude/CLAUDE.md the agent reads, and there "+
 				"%s. Remove it",

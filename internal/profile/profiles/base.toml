@@ -475,6 +475,33 @@ dns = true
 #     # kubeconfig = "{home}/.kube/config"
 # KUBE-TEMPLATE-END
 
+# GITLAB: [identity.glab] pins ONE account on ONE instance and stages its
+# personal access token. Unlike identity.gh and identity.ssh it has no default host
+# (self-managed instances are the common case), so host and user are both required.
+#
+# ABUSE: a hostile process inside the sandbox can read the staged GitLab personal
+# access token (~/.config/glab-cli/config.yml and ~/.netrc, 0600, on tmpfs) and do
+# everything the token's scopes allow on that one instance, as that one account,
+# from anywhere, until the token expires or is revoked on the host. With `api`
+# scope that is the whole account: it can add an SSH key or mint another token,
+# effects that OUTLIVE the sandbox. A PAT may have no expiry at all. Any https
+# client inside that reads ~/.netrc (git, curl -n, Python requests, Go modules)
+# sends it to that host unasked. Use a narrowly-scoped, expiring token if that
+# matters.
+#
+# user VERIFIES and never selects: the login the host's glab (or ~/.netrc)
+# holds for the host must equal it, else snug refuses. token_source names where
+# the token is read FROM, "glab" (the default) or "netrc", and a missing entry in
+# the one you named refuses rather than trying the other. An OAuth login in glab
+# is refused; a netrc entry cannot be told from a PAT, so that check does not
+# exist for "netrc". Pinning ssh beside it requires identity.ssh.host, because
+# nothing is inherited between blocks.
+#
+#   [profile.work.identity.glab]
+#   host = "gitlab.example.com"
+#   user = "you"
+#   # token_source = "netrc"
+
 # ── Claude Code ──────────────────────────────────────────────────────────────
 # ABUSE: the sandbox can spend your Anthropic credits and read your Claude
 # settings and personal skills. It CANNOT read your host session history, your

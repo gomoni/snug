@@ -58,6 +58,11 @@ const MaxSSHPublicKeyBytes = 64 << 10
 // kubeconfig, and the read must not be a memory-exhaustion primitive.
 const MaxKubeconfigBytes = 1 << 20
 
+// MaxNetrcBytes bounds ~/.netrc. A netrc is one short line per machine; 64 KiB
+// is hundreds of entries, and past that it is not a file a person keeps by hand,
+// so the read must not be a memory-exhaustion primitive.
+const MaxNetrcBytes = 64 << 10
+
 // read is the shared mechanism: open without blocking on a FIFO, refuse
 // anything that is not a regular file, and read at most maxBytes.
 //
@@ -226,6 +231,46 @@ func Required(path string, maxBytes int64) ([]byte, error) {
 // path, and a kernel or filter that does not offer openat2(2).
 func RequiredNoLinks(path string, maxBytes int64) ([]byte, error) {
 	return required(path, maxBytes, openNoLinks)
+}
+
+// ErrNotPrivate is wrapped by RequiredNoLinksPrivate when the file is readable
+// by group or other, or is owned by another user.
+var ErrNotPrivate = errors.New("file is not private to the invoking user")
+
+// RequiredNoLinksPrivate is RequiredNoLinks for a file that holds a credential
+// and that its owner is expected to have locked down: it refuses, naming the
+// path, a regular file with any group or other permission bit set or owned by a
+// uid other than uid (errors.Is ErrNotPrivate).
+//
+// The mode and owner are read from the SAME descriptor the bytes come from, so a
+// file swapped between a stat by path and the read cannot pass the check and
+// supply the content. Other readers of such a file (curl, for one) do not check
+// its mode, so snug does: a credential another local user can read is not one
+// snug should copy into a sandbox on the profile's say-so alone.
+func RequiredNoLinksPrivate(path string, maxBytes int64, uid int) ([]byte, error) {
+	return required(path, maxBytes, func(p string) (*os.File, error) {
+		f, err := openNoLinks(p)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("%s: could not be inspected (%v)", p, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return f, nil // read refuses it with its own wording
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			f.Close()
+			return nil, fmt.Errorf("%s: mode %04o is readable by others: %w", p, fi.Mode().Perm(), ErrNotPrivate)
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != uid {
+			f.Close()
+			return nil, fmt.Errorf("%s: owned by uid %d, not %d: %w", p, st.Uid, uid, ErrNotPrivate)
+		}
+		return f, nil
+	})
 }
 
 func required(path string, maxBytes int64, open func(string) (*os.File, error)) ([]byte, error) {

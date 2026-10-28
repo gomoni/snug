@@ -80,3 +80,43 @@ func TestRequiredNoLinksRefusesALinkSwappedInAfterResolve(t *testing.T) {
 		check(t, key)
 	})
 }
+
+// TestRequiredNoLinksPrivateRefusesOtherReadableAndLinks fails if a credential
+// file with a group or other bit set, or reached through a link, is returned.
+// The control is the 0600 regular file, which must read. Ownership by another
+// uid is the third refusal and is not exercised here: it needs a file this
+// user does not own.
+func TestRequiredNoLinksPrivateRefusesOtherReadableAndLinks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cred")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RequiredNoLinksPrivate(path, 64, os.Getuid()); err != nil || string(got) != "secret\n" {
+		t.Fatalf("control: %q, %v", got, err)
+	}
+	if _, err := RequiredNoLinksPrivate(path, 64, os.Getuid()+1); !errors.Is(err, ErrNotPrivate) {
+		t.Errorf("a file owned by another uid: err = %v, want ErrNotPrivate", err)
+	}
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o644} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RequiredNoLinksPrivate(path, 64, os.Getuid()); !errors.Is(err, ErrNotPrivate) {
+			t.Errorf("mode %04o: err = %v, want ErrNotPrivate", mode, err)
+		}
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RequiredNoLinksPrivate(link, 64, os.Getuid()); err == nil {
+		t.Error("a symlink was followed")
+	}
+	if _, err := RequiredNoLinksPrivate(path, 3, os.Getuid()); err == nil {
+		t.Error("a file over the cap was read")
+	}
+}
