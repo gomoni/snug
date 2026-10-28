@@ -288,8 +288,12 @@ func exitOnStageError(err error) {
 	os.Exit(0)
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `snug — run a command in a sandbox that shares nothing by default
+func usage() { writeUsage(os.Stderr) }
+
+// writeUsage is usage's text, written to w so the book's command-line page
+// (TestBookCommandLinePageIsGenerated) is rendered from the same string.
+func writeUsage(w io.Writer) {
+	fmt.Fprint(w, `snug — run a command in a sandbox that shares nothing by default
 
 usage:
   snug [flags] [dir] [-- command ...]     run a sandbox on dir (default: .)
