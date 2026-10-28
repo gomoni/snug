@@ -290,8 +290,8 @@ func exitOnStageError(err error) {
 
 func usage() { writeUsage(os.Stderr) }
 
-// writeUsage is usage's text, written to w so the book's command-line page
-// (TestBookCommandLinePageIsGenerated) is rendered from the same string.
+// writeUsage is usage's text, written to w so TestUsageListsEveryFlagParseArgsAccepts
+// can read it.
 func writeUsage(w io.Writer) {
 	fmt.Fprint(w, `snug — run a command in a sandbox that shares nothing by default
 

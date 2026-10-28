@@ -19,4 +19,3 @@
 
 - [Profile keys](reference/profile-keys.md)
 - [Environment names](reference/environment-names.md)
-- [Command line](reference/command-line.md)
