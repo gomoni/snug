@@ -76,6 +76,7 @@ $HOME/.ssh/id_ed25519
 $HOME/.gnupg
 $HOME/.aws/credentials
 $HOME/.config/gh/hosts.yml
+$HOME/.config/glab-cli
 $HOME/.netrc
 $HOME/.git-credentials
 ASSETS
