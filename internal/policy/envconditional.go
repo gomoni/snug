@@ -102,6 +102,17 @@ var conditionalEnvs = []conditionalEnv{
 		writes:   "points gh at the config it generates for that one account",
 	},
 	{
+		// GITLAB_URI and GL_HOST are the host aliases and the three token names
+		// are the ones glab reads for ANY host in place of config.yml. Sourced
+		// from the spec for #709 (glab v1.124.0 envVarMapping), not measured here.
+		names:    []string{"GLAB_CONFIG_DIR", "GITLAB_HOST"},
+		outranks: []string{"GITLAB_ACCESS_TOKEN", "GITLAB_TOKEN", "GITLAB_URI", "GL_HOST", "OAUTH_TOKEN"},
+		key:      func(*Profile) string { return "identity.glab.user" },
+		on:       func(p *Policy) bool { return p.Identity != nil && p.Identity.Glab.User != "" },
+		by:       func(prof *Profile) bool { return profileSetsBlock(prof, "glab") },
+		writes:   "points glab at the config it generates for that one account",
+	},
+	{
 		names: []string{"GIT_CONFIG_GLOBAL"},
 		key:   func(*Profile) string { return "identity" },
 		on: func(p *Policy) bool {

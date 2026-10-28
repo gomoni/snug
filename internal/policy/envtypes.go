@@ -1583,6 +1583,26 @@ var envNotes = map[string]envNote{
 		host: "taking the host's value points gh back at the host's config, tokens included; " +
 			"identity.gh.user mints one token for one account instead",
 	},
+	// DOCUMENTED, NOT MEASURED ON THIS HOST: glab v1.124.0 as the #709 spec describes
+	// it. Tried: `which glab` finds nothing here, and the v1.124.0 source clone the
+	// spec cites was not available to confirm the name.
+	"GLAB_CONFIG_DIR": {shape: shapePath,
+		authored: "glab reads its tokens from config.yml in this directory (source v1.124.0, not measured)",
+		host: "taking the host's value points glab back at the host's config, every host's token " +
+			"included; identity.glab.user stages one (source v1.124.0, not measured)",
+	},
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"GITLAB_HOST": both(shapeOpaque, "the host glab sends requests to, with the token config.yml holds for it (source v1.124.0, not measured)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"GITLAB_TOKEN": both(shapeOpaque, "glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"GITLAB_ACCESS_TOKEN": both(shapeOpaque, "glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"OAUTH_TOKEN": both(shapeOpaque, "glab uses this token for ANY host in place of config.yml, so it decides which account glab acts as (source v1.124.0, not measured)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"GITLAB_URI": both(shapeOpaque, "an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)"),
+	// DOCUMENTED, NOT MEASURED ON THIS HOST. Tried: no glab here (see GLAB_CONFIG_DIR).
+	"GL_HOST": both(shapeOpaque, "an alias glab reads for GITLAB_HOST, so it decides the host glab sends the token to (source v1.124.0, not measured)"),
 	// Measured on the host, gh 2.96.0, GH_DEBUG=api, hosts.yml holding a fake
 	// token for evil.invalid:
 	//
@@ -2003,6 +2023,7 @@ var inlineConfigPointers = []inlineConfigPointer{
 	// sentence like every other writable pointer.
 	{"DOCKER_CONFIG", ""},
 	{"GH_CONFIG_DIR", ""},
+	{"GLAB_CONFIG_DIR", ""},
 }
 
 // namesAPointerFile reports whether name is one of the names snug's OWN tables

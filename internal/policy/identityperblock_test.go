@@ -28,16 +28,18 @@ var (
 	gitBlock  = IdentityGit{Name: "Base Name", Email: "base@example.com"}
 	gpgBlock  = IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "sign"}
 	ghBlock   = IdentityGh{User: "base-user"}
+	glabBlock = IdentityGlab{Host: "gitlab.example", User: "base-user"}
 	kubeBlock = IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,
 		Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "/home/u/.kube/config"}
 )
 
 func TestIdentityPinPerBlockRefusesNamingBothOwners(t *testing.T) {
 	differ := map[string][2]Identity{
-		"ssh": {{SSH: sshBlock}, {SSH: IdentitySSH{Key: "/home/u/.ssh/other.pub", Agent: SSHAgentProxy}}},
-		"git": {{Git: gitBlock}, {Git: IdentityGit{Name: "Other", Email: "other@example.com"}}},
-		"gpg": {{GPG: gpgBlock}, {GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "decrypt"}}},
-		"gh":  {{Gh: ghBlock}, {Gh: IdentityGh{User: "other-user"}}},
+		"ssh":  {{SSH: sshBlock}, {SSH: IdentitySSH{Key: "/home/u/.ssh/other.pub", Agent: SSHAgentProxy}}},
+		"git":  {{Git: gitBlock}, {Git: IdentityGit{Name: "Other", Email: "other@example.com"}}},
+		"gpg":  {{GPG: gpgBlock}, {GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "decrypt"}}},
+		"gh":   {{Gh: ghBlock}, {Gh: IdentityGh{User: "other-user"}}},
+		"glab": {{Glab: glabBlock}, {Glab: IdentityGlab{Host: "gitlab.example", User: "other-user"}}},
 		"kubectl": {{Kube: kubeBlock}, {Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialToken,
 			Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "/home/u/.kube/config"}}},
 	}

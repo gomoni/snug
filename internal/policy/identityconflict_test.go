@@ -115,10 +115,11 @@ func TestIdentityDifferentBlocksStillRefuseNamingBoth(t *testing.T) {
 // resolves on its own for every reason OTHER than the one leaf under test.
 func baseNestedIdentity() Identity {
 	return Identity{
-		SSH: IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
-		Git: IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
-		GPG: IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "sign"},
-		Gh:  IdentityGh{Host: "fixed.example", User: "base-user"},
+		SSH:  IdentitySSH{Host: "fixed.example", Key: "/home/u/.ssh/id_auth.pub", Agent: SSHAgentProxy},
+		Git:  IdentityGit{Name: "Base Name", Email: "base@example.com", SigningKey: "/home/u/.ssh/id_sign.pub"},
+		GPG:  IdentityGPG{Fingerprint: "6732361300BBFDAE7F22972CD4381E1CE2880244", Scope: "sign"},
+		Gh:   IdentityGh{Host: "fixed.example", User: "base-user"},
+		Glab: IdentityGlab{Host: "fixed.example", User: "base-glab"},
 		Kube: IdentityKube{Context: "aks-dev", Credential: KubeCredentialClientCert,
 			Server: "https://aks-dev.example.azmk8s.io:443", Kubeconfig: "/home/u/.kube/config"},
 	}
@@ -164,6 +165,10 @@ func TestIdentityPinRefusesTwoProfilesDifferingOnlyInEachLeaf(t *testing.T) {
 				// kubectl.credential above.
 				av.SetString("6732361300BBFDAE7F22972CD4381E1CE2880244")
 				bv.SetString("0000000000000000000000000000000000000000")
+			} else if f.Key == "glab.token_source" {
+				// Both accepted; "" is the default and "netrc" the other value.
+				av.SetString(string(GlabTokenFromNetrc))
+				bv.SetString("")
 			} else if f.Key == "gpg.scope" {
 				// Both accepted, both canonical, both non-empty: the conflict is
 				// the difference, not the absence of a key.

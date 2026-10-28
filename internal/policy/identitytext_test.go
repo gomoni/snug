@@ -121,6 +121,7 @@ var wantIdentityLeaves = []string{
 	"git.name", "git.email", "git.signing_key",
 	"gpg.fingerprint", "gpg.scope",
 	"gh.host", "gh.user",
+	"glab.host", "glab.user", "glab.token_source",
 	"kubectl.context", "kubectl.server", "kubectl.credential", "kubectl.kubeconfig",
 }
 

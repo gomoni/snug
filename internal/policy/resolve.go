@@ -469,6 +469,16 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 			}
 			id := *prof.Identity
 			id.SSH.Agent = mode
+			// Before the token source is normalised, so a block holding only
+			// `token_source = "glab"` is refused as the half block it is.
+			if err := RefuseHalfGlabBlock(name, id.Glab); err != nil {
+				return nil, err
+			}
+			src, err := ParseGlabTokenSource(string(id.Glab.TokenSource))
+			if err != nil {
+				return nil, fmt.Errorf("profile %q: %w", name, err)
+			}
+			id.Glab.TokenSource = src
 			if _, err := ParseKubeCredential(string(id.Kube.Credential)); err != nil {
 				return nil, fmt.Errorf("profile %q: %w", name, err)
 			}
@@ -512,6 +522,9 @@ func Resolve(reg map[ProfileName]*Profile, selected []ProfileName, ctx Context, 
 				return nil, err
 			}
 			if err := refuseUnpinnedGhAccount(name, id); err != nil {
+				return nil, err
+			}
+			if err := refuseUnuserlikeGlabUser(name, id); err != nil {
 				return nil, err
 			}
 			// Every key path gets the same treatment: expand, and refuse a
@@ -1996,12 +2009,12 @@ func refuseUnprincipledSigningEmail(name ProfileName, id Identity) error {
 		"single address, or remove identity.git.signing_key", name, AllowedSignersGuest, why)
 }
 
-// refuseUnhostlikeHost refuses an identity.ssh.host or identity.gh.host that is
-// not a plain host name.
+// refuseUnhostlikeHost refuses an identity.ssh.host, identity.gh.host or
+// identity.glab.host that is not a plain host name.
 //
-// The value is written UNQUOTED into syntax in three generated files: git's
-// `[url "git@<host>:"]` section header, ssh_config's `Host <host>` line, and
-// gh's hosts.yml key. gitQuote does not reach a section header, and a `"]`
+// The value is written UNQUOTED into syntax in five generated files: git's
+// `[url "git@<host>:"]` section header, ssh_config's `Host <host>` line, gh's
+// hosts.yml key, glab's config.yml key and the `machine` word of ~/.netrc. gitQuote does not reach a section header, and a `"]`
 // there closes it. Measured on this branch, git 2.55: ssh.host
 // `a"] [core] sshCommand = id ["x` rendered `[url "git@a"] [core] sshCommand =
 // id ["x:"]`, and `git config --list --show-scope` inside reported
@@ -2017,12 +2030,14 @@ func refuseUnhostlikeHost(name ProfileName, id Identity) error {
 	for _, h := range []struct{ key, v string }{
 		{"identity.ssh.host", id.SSH.Host},
 		{"identity.gh.host", id.Gh.Host},
+		{"identity.glab.host", id.Glab.Host},
 	} {
 		if h.v == "" || IsHostName(h.v) {
 			continue
 		}
 		return fmt.Errorf("profile %q: %s = %s is not a host name. snug writes it unquoted "+
-			"into git's [url] section header, ssh's Host line and gh's hosts.yml, where a "+
+			"into git's [url] section header, ssh's Host line, gh's hosts.yml, glab's config.yml "+
+			"and ~/.netrc, where a "+
 			"quote, bracket or space becomes syntax rather than part of the name. Use the bare "+
 			"host, letters, digits, '.' and '-' only (for example ghe.corp)",
 			name, h.key, VisibleText(strconv.Quote(h.v)))
@@ -2137,6 +2152,9 @@ func refuseHalfNamedHost(p *Policy) error {
 	case id.Gh.Host != "" && id.SSH.Host == "" && sshActive:
 		return halfNamedHost(p.IdentityOwner("gh"), p.IdentityOwner("ssh"), "gh", id.Gh.Host, "ssh",
 			"~/.ssh/config, ~/.ssh/known_hosts and git's insteadOf rule")
+	case id.Glab.Host != "" && id.SSH.Host == "" && sshActive:
+		return halfNamedHost(p.IdentityOwner("glab"), p.IdentityOwner("ssh"), "glab", id.Glab.Host, "ssh",
+			"~/.ssh/config, ~/.ssh/known_hosts and git's insteadOf rule")
 	case id.SSH.Host != "" && id.Gh.Host == "" && ghActive:
 		return halfNamedHost(p.IdentityOwner("ssh"), p.IdentityOwner("gh"), "ssh", id.SSH.Host, "gh",
 			"the gh token and GH_HOST")
@@ -2188,6 +2206,66 @@ func refuseUnpinnedGhAccount(name ProfileName, id Identity) error {
 		"       or remove identity.gh.host — identity.ssh.* alone still pins git-over-ssh, and\n"+
 		"       gh then gets no token and no GH_CONFIG_DIR.\n",
 		name, VisibleText(strconv.Quote(id.Gh.Host)), name)
+}
+
+// RefuseHalfGlabBlock refuses an identity.glab block that names some of host and
+// user but not both, and a block holding only token_source. It is exported
+// because the profile loader asks it too: the verdict is a property of the
+// profile text, and `snug profile show` never resolves.
+//
+// host has no default, so a block with a user and no host would stage a token
+// for a host the profile never named; user VERIFIES the stored login, so a host
+// with no user would stage whichever account glab happens to hold for it, which
+// is the unpinned credential identity exists to prevent. A token_source with
+// neither selects where a credential comes from and for whom: nothing.
+func RefuseHalfGlabBlock(name ProfileName, g IdentityGlab) error {
+	if g.Host != "" && g.User != "" || g == (IdentityGlab{}) {
+		return nil
+	}
+	missing, example := "user", `user = "you"`
+	switch {
+	case g.Host == "" && g.User == "":
+		missing, example = "host and user", "host = \"gitlab.example.com\"\n         user = \"you\""
+	case g.Host == "":
+		missing, example = "host", `host = "gitlab.example.com"`
+	}
+	return fmt.Errorf("profile %q: identity.glab is missing %s. host has no default and user is "+
+		"the account the stored token must belong to; a block with only some of them would "+
+		"stage a credential this profile does not name.\n"+
+		"       Name both:\n"+
+		"         [profile.%s.identity.glab]\n"+
+		"         %s\n"+
+		"       or remove the block.\n", name, missing, name, example)
+}
+
+// refuseUnuserlikeGlabUser refuses an identity.glab.user that is not a plain
+// account name.
+//
+// The user is written UNQUOTED into ~/.netrc, where whitespace is the field
+// separator: `user = "u password X"` authors a second credential on the line
+// snug generates. CheckText does not refuse a space, since it is not a forging
+// rune. The shape held is the one GitLab usernames have: letters, digits, `.`,
+// `_` and `-`, starting with a letter or digit.
+func refuseUnuserlikeGlabUser(name ProfileName, id Identity) error {
+	u := id.Glab.User
+	if u == "" {
+		return nil
+	}
+	ok := u[0] != '.' && u[0] != '_' && u[0] != '-'
+	for _, r := range u {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			ok = false
+		}
+	}
+	if ok {
+		return nil
+	}
+	return fmt.Errorf("profile %q: identity.glab.user = %s is not an account name. snug writes it "+
+		"unquoted into ~/.netrc, where whitespace separates fields and a user such as "+
+		"`u password X` would author a second credential. Use the bare account name, letters, "+
+		"digits, '.', '_' and '-' only", name, VisibleText(strconv.Quote(u)))
 }
 
 // visibleErr renders an error whose text carries a path snug did not author.

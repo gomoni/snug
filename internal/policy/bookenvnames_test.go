@@ -180,6 +180,7 @@ var bookConditionalWhen = map[string]string{
 	"SSH_AUTH_SOCK":                   "`identity.ssh.agent` is `\"proxy\"`",
 	"GNUPGHOME":                       "an `identity.gpg` block",
 	"GH_CONFIG_DIR":                   "`identity.gh.user` is set",
+	"GLAB_CONFIG_DIR":                 "`identity.glab.user` is set",
 	"GIT_CONFIG_GLOBAL":               "an `identity.ssh` or `identity.git` block",
 	"KUBECONFIG":                      "an `identity.kubectl` block",
 	"LISTEN_FDNAMES":                  "`listen_names` is set",

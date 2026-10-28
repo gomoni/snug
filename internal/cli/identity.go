@@ -123,6 +123,10 @@ func startIdentity(pol *policy.Policy, verbose, dryRun bool) (cleanup func(), er
 		cleanup()
 		return nil, err
 	}
+	if err := stageGlabConfig(pol, id, dryRun, glabToken, func() ([]byte, error) { return readHostNetrc(pol.Home) }); err != nil {
+		cleanup()
+		return nil, err
+	}
 	return cleanup, nil
 }
 

@@ -180,16 +180,17 @@ func TestConditionalEnvNamesPassParseTime(t *testing.T) {
 			t.Errorf("%s is both unconditionally and conditionally owned", n)
 		}
 	}
-	// Fourteen written (the nine of issue #621, LISTEN_PID which the #621
+	// Sixteen written (the nine of issue #621, LISTEN_PID which the #621
 	// red team found exported by the staged door script, BROWSER for the
 	// login bridge of issue #455, CLAUDE_SECURESTORAGE_CONFIG_DIR for its host
 	// mode, KUBECONFIG for identity.kubectl, and GNUPGHOME for identity.gpg),
-	// five that outrank them.
-	if got := len(ConditionalEnvNames()); got != 14 {
-		t.Errorf("ConditionalEnvNames() = %v, want 14 names", ConditionalEnvNames())
+	// five that outrank them; identity.glab adds two written (GLAB_CONFIG_DIR,
+	// GITLAB_HOST) and five outranking.
+	if got := len(ConditionalEnvNames()); got != 16 {
+		t.Errorf("ConditionalEnvNames() = %v, want 16 names", ConditionalEnvNames())
 	}
-	if got := len(ConditionalEnvClaimed()); got != 19 {
-		t.Errorf("ConditionalEnvClaimed() = %v, want 19 names", ConditionalEnvClaimed())
+	if got := len(ConditionalEnvClaimed()); got != 26 {
+		t.Errorf("ConditionalEnvClaimed() = %v, want 26 names", ConditionalEnvClaimed())
 	}
 }
 

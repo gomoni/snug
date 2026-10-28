@@ -1121,6 +1121,18 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"anything inside can add an SSH key to the account, an effect that "+
 				"OUTLIVES the sandbox. Use a fine-grained token if that matters.")...)
 	}
+	if id.Glab.User != "" {
+		rows = append(rows, capRows("glab "+visibleValue(id.Glab.User)+" @ "+visibleValue(id.Glab.Host),
+			"THE SANDBOX HOLDS A GITLAB PERSONAL ACCESS TOKEN FOR THIS ACCOUNT in two files it can "+
+				"read (~/.config/glab-cli/config.yml and ~/.netrc, 0600, on tmpfs). A hostile process "+
+				"inside can do everything the token's scopes allow on that one instance, as that one "+
+				"account, from anywhere, until the token expires or is revoked on the host. With `api` "+
+				"scope that is the whole account: it can add an SSH key or mint another token, effects "+
+				"that OUTLIVE the sandbox. A PAT may have no expiry at all. Any client inside that "+
+				"reads ~/.netrc (git, curl -n, Python requests, Go modules) sends it to that host "+
+				"unasked, on any port and over plain http too: netrc is keyed by host alone. Use a "+
+				"narrowly-scoped, expiring token if that matters.")...)
+	}
 	if id.Kube.Context != "" {
 		cred := string(id.Kube.Credential)
 		if cred == "" {

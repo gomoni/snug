@@ -33,6 +33,9 @@ Every key a `[profile.NAME]` table accepts. Any other key is an error.
 | `identity.gpg.scope` | array of strings | `["sign"]`, `["decrypt"]`, both | union | [Identity](../identity.md#identitygpg) |
 | `identity.gh.host` | string | host name | the block must match | [Identity](../identity.md#identitygh) |
 | `identity.gh.user` | string | account name | the block must match | [Identity](../identity.md#identitygh) |
+| `identity.glab.host` | string | host name; required, no default | the block must match | [Identity](../identity.md) |
+| `identity.glab.user` | string | account name; required | the block must match | [Identity](../identity.md) |
+| `identity.glab.token_source` | string | `"glab"`, `"netrc"`; absent: `"glab"` | the block must match | [Identity](../identity.md) |
 | `identity.kubectl.context` | string | context name in the kubeconfig | the block must match | [Identity](../identity.md#identitykubectl) |
 | `identity.kubectl.server` | string | API server URL | the block must match | [Identity](../identity.md#identitykubectl) |
 | `identity.kubectl.credential` | string | `"client-certificate"`, `"token"` | the block must match | [Identity](../identity.md#identitykubectl) |

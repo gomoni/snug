@@ -186,9 +186,11 @@ func collectAuthoredNames(t *testing.T, path string, into map[string]bool) {
 // guard, so a profile's line beside it would be discarded.
 //
 // What it does NOT reach, said plainly rather than left to be assumed:
-// SSH_AUTH_SOCK (startIdentity binds a socket it has to create first) and
+// SSH_AUTH_SOCK (startIdentity binds a socket it has to create first),
 // GH_CONFIG_DIR/GH_HOST (stageGhConfig shells out to `gh` for a token and
-// returns early without one). Those two are covered by the static test alone —
+// returns early without one) and GLAB_CONFIG_DIR/GITLAB_HOST (stageGlabConfig
+// asks the host's glab or ~/.netrc and returns early without a credential).
+// Those are covered by the static test alone —
 // which is exactly why the static test refuses a computed name.
 func TestResolvedPolicyAuthorsOnlyOwnedNames(t *testing.T) {
 	reg, err := profile.Builtins()

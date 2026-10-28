@@ -77,6 +77,7 @@ reads them in place of what snug wrote.
 | `identity.ssh.agent` is `"proxy"` | `SSH_AUTH_SOCK` |  |
 | an `identity.gpg` block | `GNUPGHOME` |  |
 | `identity.gh.user` is set | `GH_CONFIG_DIR` `GH_HOST` | `GH_ENTERPRISE_TOKEN` `GH_TOKEN` `GITHUB_ENTERPRISE_TOKEN` `GITHUB_TOKEN` |
+| `identity.glab.user` is set | `GITLAB_HOST` `GLAB_CONFIG_DIR` | `GITLAB_ACCESS_TOKEN` `GITLAB_TOKEN` `GITLAB_URI` `GL_HOST` `OAUTH_TOKEN` |
 | an `identity.ssh` or `identity.git` block | `GIT_CONFIG_GLOBAL` |  |
 | an `identity.kubectl` block | `KUBECONFIG` |  |
 | `listen_names` is set | `LISTEN_FDNAMES` `LISTEN_FDS` `LISTEN_PID` |  |
