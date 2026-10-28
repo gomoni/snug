@@ -230,10 +230,11 @@ func ParseGlabTokenSource(s string) (GlabTokenSource, error) {
 // everything the token's scopes allow on that one instance, as that one account,
 // from anywhere, until the token expires or is revoked on the host. With `api`
 // scope that is the whole account: it can add an SSH key or mint another token,
-// effects that OUTLIVE the sandbox. A PAT may have no expiry at all. Any https
-// client inside that reads ~/.netrc (git, curl -n, Python requests, Go modules)
-// sends it to that host unasked. Use a narrowly-scoped, expiring token if that
-// matters.
+// effects that OUTLIVE the sandbox. A PAT may have no expiry at all. Any client
+// inside that reads ~/.netrc (git, curl -n, Python requests, Go modules) sends it
+// to that host unasked, on any port and over plain http too: netrc is keyed by
+// host alone, so a repository whose remote is http://HOST:PORT gets it in
+// cleartext after a 401. Use a narrowly-scoped, expiring token if that matters.
 //
 // Host has NO DEFAULT, unlike Gh.Host: self-managed instances are the common
 // case, and a default of gitlab.com would stage a token for a host the profile

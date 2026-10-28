@@ -1128,9 +1128,10 @@ func showIdentity(id *policy.Identity, show func(string, []string)) {
 				"inside can do everything the token's scopes allow on that one instance, as that one "+
 				"account, from anywhere, until the token expires or is revoked on the host. With `api` "+
 				"scope that is the whole account: it can add an SSH key or mint another token, effects "+
-				"that OUTLIVE the sandbox. A PAT may have no expiry at all. Any https client inside "+
-				"that reads ~/.netrc (git, curl -n, Python requests, Go modules) sends it to that host "+
-				"unasked. Use a narrowly-scoped, expiring token if that matters.")...)
+				"that OUTLIVE the sandbox. A PAT may have no expiry at all. Any client inside that "+
+				"reads ~/.netrc (git, curl -n, Python requests, Go modules) sends it to that host "+
+				"unasked, on any port and over plain http too: netrc is keyed by host alone. Use a "+
+				"narrowly-scoped, expiring token if that matters.")...)
 	}
 	if id.Kube.Context != "" {
 		cred := string(id.Kube.Credential)

@@ -88,9 +88,9 @@ func TestNetrcExtractsOnlyOneMachine(t *testing.T) {
 	if login != "u" || string(pw) != "S3cret~+/=.-_" {
 		t.Errorf("got %q, %q", login, pw)
 	}
-	// Exact bytes: a different case is a different machine.
-	if _, _, err := ParseNetrcEntry([]byte(data), "GITLAB.EXAMPLE"); err == nil {
-		t.Error("host compared case-insensitively")
+	// Case-insensitive, as curl's lookup is: TestNetrcMatchesTheMachineCaseInsensitively.
+	if login, _, err := ParseNetrcEntry([]byte(data), "GITLAB.EXAMPLE"); err != nil || login != "u" {
+		t.Errorf("an upper-case pin did not find the entry: %q %v", login, err)
 	}
 	// One line, every keyword.
 	login, pw, err = ParseNetrcEntry([]byte("machine "+netrcHost+" login u password p"), netrcHost)
@@ -123,5 +123,43 @@ func TestCheckForgeTokenRefusesYAMLAndWhitespace(t *testing.T) {
 		if bad != "" && strings.Contains(err.Error(), bad) {
 			t.Errorf("refusal printed the token %q: %v", bad, err)
 		}
+	}
+}
+
+// TestNetrcRefusesFormFeedAndVerticalTab is redteam finding F1 on #709. curl
+// 8.23.0 keeps \f and \v inside a token, so for this file it sends DECOYPW to
+// decoy.example and nothing to the pinned host. Splitting on them here read
+// DECOYPW as the pinned host's password and staged it.
+func TestNetrcRefusesFormFeedAndVerticalTab(t *testing.T) {
+	for _, sep := range []string{"\f", "\v"} {
+		wantNetrcRefusal(t, "machine decoy.example login alice"+sep+"machine "+netrcHost+
+			" password SECRETPW login alice\n", "control byte")
+	}
+}
+
+// TestNetrcRefusesNUL is redteam finding F2 on #709: curl stops a line at NUL
+// and snug read past it, so the two disagreed on which entry a password
+// belonged to.
+func TestNetrcRefusesNUL(t *testing.T) {
+	wantNetrcRefusal(t, "machine decoy.example\x00 machine "+netrcHost+"\nlogin alice password SECRETPW\n", "control byte")
+	wantNetrcRefusal(t, "machine decoy.example login a password SECRETPW\x00\nmachine "+netrcHost+
+		" login a password REAL\n", "control byte")
+}
+
+// TestNetrcRefusesCaseVariantDuplicateMachine is redteam finding F2 on #709.
+// curl matches the machine name case-insensitively and takes the first entry,
+// so for this file it sends SECRETPW; an exact-bytes compare skipped the first
+// entry, missed the duplicate and staged REAL.
+func TestNetrcRefusesCaseVariantDuplicateMachine(t *testing.T) {
+	wantNetrcRefusal(t, "machine "+strings.ToUpper(netrcHost)+" login u password SECRETPW\n"+
+		"machine "+netrcHost+" login u password REAL\n", "two `machine")
+}
+
+// TestNetrcMatchesTheMachineCaseInsensitively is the positive half: a single
+// entry spelled in another case is the pinned host's, as it is for curl.
+func TestNetrcMatchesTheMachineCaseInsensitively(t *testing.T) {
+	login, pw, err := ParseNetrcEntry([]byte("machine "+strings.ToUpper(netrcHost)+" login u password tok\n"), netrcHost)
+	if err != nil || login != "u" || string(pw) != "tok" {
+		t.Fatalf("got (%q, %d bytes, %v), want (\"u\", 3 bytes, nil)", login, len(pw), err)
 	}
 }

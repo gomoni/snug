@@ -18,19 +18,31 @@ import (
 //   - `macdef` is refused anywhere. A macro body runs to the next blank line and
 //     may contain a forged `machine HOST login x password y`; whether a reader
 //     skips the body is exactly what readers disagree about.
+//
 //   - A token starting with `"` is refused. Some netrc readers honour quoting
 //     and some do not, so a password written with a space inside it is a
 //     different credential depending on who reads the file.
+//
 //   - An unknown keyword, a keyword with no value, a login or password keyword
 //     before any machine, and a repeated login or password inside the entry
 //     are refused.
+//
 //   - Two `machine host` entries are refused: which one wins is a property of
 //     the reader.
+//
 //   - `default` ends the parse. If host was not found before it, the error
 //     says so; snug never stages a default credential, because it was never
 //     the pinned host's.
 //
-// The comparison on host is exact bytes. A line whose first non-blank
+//   - Any control byte other than tab, CR and LF is refused anywhere in the
+//     file. curl splits tokens on space, tab, CR and LF only, so a vertical tab
+//     or form feed is part of a token there; a reader that split on it would
+//     move a password from one machine entry to the next (redteam on #709).
+//     NUL is refused for the same reason: C readers stop at it.
+//
+// The comparison on host is ASCII case-insensitive, as curl's is, so
+// `machine GITLAB.example.com` is the same entry as `machine gitlab.example.com`
+// and two of them are the duplicate refused above. A line whose first non-blank
 // character is `#` is a comment; `account` takes a value and discards it.
 //
 // Errors name line numbers and keywords, never a token's text: an unknown
@@ -56,6 +68,13 @@ func ParseNetrcEntry(data []byte, host string) (login string, pw Secret, err err
 	)
 	pending := kwNone
 
+	for i, b := range data {
+		if (b < 0x20 && b != '\t' && b != '\r' && b != '\n') || b == 0x7f {
+			return "", nil, fmt.Errorf("the netrc file holds control byte 0x%02x at offset %d. Readers split "+
+				"tokens on different control bytes, so snug refuses the file", b, i)
+		}
+	}
+
 lines:
 	for n, line := range strings.Split(string(data), "\n") {
 		lineNo := n + 1
@@ -80,7 +99,7 @@ lines:
 				switch pending {
 				case kwMachine:
 					inAny = true
-					inWant = t == host
+					inWant = strings.EqualFold(t, host)
 					if inWant {
 						if want.seen {
 							return "", nil, fmt.Errorf("the netrc file has two `machine %s` entries (the second on line %d); "+
@@ -156,13 +175,13 @@ lines:
 	return want.login, Secret(want.password), nil
 }
 
-// netrcFields splits on ASCII whitespace only. strings.Fields would also split
-// on U+0085 and U+00A0, which curl does not, so a password holding either would
-// be read as two tokens here and one by the client that uses it.
+// netrcFields splits on space, tab and CR, the separators curl uses on a line.
+// strings.Fields would also split on \v, \f, U+0085 and U+00A0, which curl does
+// not; the control bytes never get here, ParseNetrcEntry refuses them first.
 func netrcFields(line string) []string {
 	return strings.FieldsFunc(line, func(r rune) bool {
 		switch r {
-		case ' ', '\t', '\r', '\v', '\f':
+		case ' ', '\t', '\r':
 			return true
 		}
 		return false
